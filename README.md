@@ -1,3 +1,66 @@
+# Gunyah Windows guest drivers for DroidVM
+
+This fork ports the Windows guest drivers to the **Gunyah protected VM**
+platform (DroidVM: Windows 11 ARM64 running under crosvm + the Gunyah
+hypervisor on an Android phone), on top of upstream virtio-win.
+
+## How it works
+
+In a protected VM, guest memory is not visible to the host by default
+(lent memory). The only region shared with the host is the **restricted
+DMA pool**, declared in the boot FDT and surfaced to Windows by edk2-fork as
+an `ACPI\RDMA0000` node. The crosvm virtio backends can only read and
+write pages inside that pool, so the vrings, request/response headers
+and the I/O payload itself must either live in the pool or be bounced
+through it.
+
+- **rdmapool.sys** (new) binds `ACPI\RDMA0000` and exposes pool
+  allocate/free through an IOCTL interface.
+- **StorPort** (viostor/vioscsi) shares the static library
+  `rdmapool/rdmaclient.c`: pool connection, a lock-free SLIST bounce
+  allocator (control slots + large contiguous data chunks) and a
+  completion poll thread.
+- **NDIS** (NetKVM) uses `ParaNdis_RdmaPool`: vrings, RX/control and TX
+  copy pages all live in the pool; TX is forced through the copy path.
+- **WDF drivers** (vioinput, ...) are routed centrally by
+  `VirtIO/WDF` (Dma.c / VirtIOWdf.c).
+
+Every pVM path is gated on the presence of the `ACPI\RDMA0000` device
+interface: the same disk image falls back to the stock virtio paths on
+QEMU/KVM.
+
+## Driver status
+
+Legend:
+* ✨ new driver added by this fork 
+* ✅ ported and vrified 
+* ⚠️ ported but not yet verified 
+* ❌ not ported
+
+| Driver | Status | Notes |
+|---|:---:|---|
+| rdmapool.sys | ✨ | restricted DMA pool provider (`ACPI\RDMA0000`)<br> pool allocate/free IOCTL interface every other pVM driver builds on |
+| pvmpower.sys | ✨ | PSCI shutdown/reboot bridge<br> detect S5 `ShutdownType` and launch gunyah hypercall to shutdown/restart the VM |
+| viostor | ✅ | rdmaclient bounce + completion poll thread + forced INTx |
+| NetKVM | ✅ | `ParaNdis_RdmaPool`, TX forced through the copy path |
+| vioinput | ✅ | via the VirtIO-WDF routing; in daily use (VNC input) |
+| vioscsi | ⚠️ | port complete, untested on a pVM |
+| vioserial | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
+| viorng | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
+| viosock | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
+| Balloon | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
+| viomem | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
+| viofs | ⚠️ | VirtIO-WDF routing in place, data path unreviewed |
+| viogpu | ❌ | not ported; need huge works(~~dxvk~~ -> ~~gfxstream~~ -> Turnip Driver -> AHardwareBuffer) |
+| pvpanic | ❌ | not ported |
+| fwcfg  | ❌ | not ported |
+| ivshmem | ❌ | not ported |
+| viocrypt | ❌ | not ported |
+| pciserial | ❌ | not ported |
+
+
+---
+
 # KVM/QEMU Windows guest drivers (virtio-win) #
 
 This repository contains KVM/QEMU Windows guest drivers, for both
