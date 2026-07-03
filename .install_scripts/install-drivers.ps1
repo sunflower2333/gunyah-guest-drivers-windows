@@ -2,7 +2,8 @@ $ErrorActionPreference='Continue'
 $base = $PSScriptRoot
 Write-Host "DroidVM ARM64 driver installer" -ForegroundColor Cyan
 # NetKVM LAST: on a protected VM, touching a live NIC can bugcheck; do the others first.
-$order = @('rdmapool','viostor','vioinput','NetKVM')
+$order = @('rdmapool','pvmpower','viostor','vioscsi','vioinput','NetKVM')
+
 function Get-Pkgs {
   $r=@(); $pub=$null
   foreach($l in (pnputil /enum-drivers)){
@@ -17,6 +18,9 @@ foreach($d in $order){
   $orig = $inf.Name.ToLower()
   Write-Host ""
   Write-Host ("== install " + $d + " : " + $inf.Name + " ==") -ForegroundColor Cyan
+  # pvmpower binds to a root-enumerated ROOT\PVMPOWER device; create the devnode
+  # (idempotent, also cleans filter-era leftovers) before installing its package.
+  if($d -eq 'pvmpower'){ & (Join-Path $base 'pvmpower-devnode.ps1') }
   $before = @(Get-Pkgs | Where-Object { $_.Orig -eq $orig } | ForEach-Object Pub)
   pnputil /add-driver $inf.FullName /install | Write-Host
   $after = @(Get-Pkgs | Where-Object { $_.Orig -eq $orig } | ForEach-Object Pub)
