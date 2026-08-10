@@ -522,8 +522,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                     break;
                 }
 
-                DXGK_PHYSICAL_MEMORY_CAPS *pPhysicalMemoryCaps =
-                    (DXGK_PHYSICAL_MEMORY_CAPS *)pQueryAdapterInfo->pOutputData;
+                DXGK_PHYSICAL_MEMORY_CAPS *pPhysicalMemoryCaps = (DXGK_PHYSICAL_MEMORY_CAPS *)pQueryAdapterInfo->pOutputData;
                 RtlZeroMemory(pPhysicalMemoryCaps, pQueryAdapterInfo->OutputDataSize);
                 pPhysicalMemoryCaps->HighestVisibleAddress.QuadPart = -1LL;
                 status = STATUS_SUCCESS;
