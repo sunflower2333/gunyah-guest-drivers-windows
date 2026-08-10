@@ -2737,7 +2737,10 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         status = VioGpuAdapterInit(pDispInfo);
         if (!NT_SUCCESS(status))
         {
-            DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu HWInit: VioGpuAdapterInit failed, status=0x%08X\n", status);
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu HWInit: VioGpuAdapterInit failed, status=0x%08X\n",
+                       status);
             DbgPrint(TRACE_LEVEL_FATAL, ("%s Failed initialize adapter %x\n", __FUNCTION__, status));
             VioGpuDbgBreak();
             break;
