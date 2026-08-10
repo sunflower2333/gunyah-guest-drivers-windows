@@ -499,6 +499,37 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
     switch (pQueryAdapterInfo->Type)
     {
+        case DXGKQAITYPE_WDDMDEVICECAPS:
+            {
+                if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_WDDMDEVICECAPS))
+                {
+                    status = STATUS_BUFFER_TOO_SMALL;
+                    break;
+                }
+
+                DXGK_WDDMDEVICECAPS *pWddmDeviceCaps = (DXGK_WDDMDEVICECAPS *)pQueryAdapterInfo->pOutputData;
+                RtlZeroMemory(pWddmDeviceCaps, pQueryAdapterInfo->OutputDataSize);
+                pWddmDeviceCaps->WDDMVersion = DXGKDDI_WDDMv3_1;
+                status = STATUS_SUCCESS;
+                break;
+            }
+
+        case DXGKQAITYPE_PHYSICAL_MEMORY_CAPS:
+            {
+                if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_PHYSICAL_MEMORY_CAPS))
+                {
+                    status = STATUS_BUFFER_TOO_SMALL;
+                    break;
+                }
+
+                DXGK_PHYSICAL_MEMORY_CAPS *pPhysicalMemoryCaps =
+                    (DXGK_PHYSICAL_MEMORY_CAPS *)pQueryAdapterInfo->pOutputData;
+                RtlZeroMemory(pPhysicalMemoryCaps, pQueryAdapterInfo->OutputDataSize);
+                pPhysicalMemoryCaps->HighestVisibleAddress.QuadPart = -1LL;
+                status = STATUS_SUCCESS;
+                break;
+            }
+
         case DXGKQAITYPE_DRIVERCAPS:
             {
                 if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_DRIVERCAPS))
