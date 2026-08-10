@@ -5,6 +5,8 @@
 #include "../../rdmapool/rdmapool_interface.h"
 
 #define VIOGPU_RDMAPOOL_MAX_SIZE (128ULL * 1024 * 1024)
+#define VIOGPU_RDMAPOOL_MIN_SIZE (20ULL * 1024 * 1024)
+#define VIOGPU_RDMAPOOL_STEP_SIZE (1ULL * 1024 * 1024)
 #define VIOGPU_RDMAPOOL_TAG      'GDRG'
 #define VIOGPU_RDMA_ALLOC_MAGIC  'ADRG'
 
@@ -139,19 +141,32 @@ NTSTATUS VioGpuRdmaPool::Connect(void)
 
     RDMAPOOL_ALLOCATE_INPUT input = {};
     RDMAPOOL_ALLOCATE_OUTPUT output = {};
-    input.NumPages = (ULONG)(arenaSize / PAGE_SIZE);
-    status = RdmaPoolIoctl(m_DeviceObject,
-                           m_FileObject,
-                           (ULONG)IOCTL_RDMAPOOL_ALLOCATE,
-                           &input,
-                           sizeof(input),
-                           &output,
-                           sizeof(output));
+    SIZE_T minimumArenaSize = min(arenaSize, (SIZE_T)VIOGPU_RDMAPOOL_MIN_SIZE);
+    do
+    {
+        input.NumPages = (ULONG)(arenaSize / PAGE_SIZE);
+        status = RdmaPoolIoctl(m_DeviceObject,
+                               m_FileObject,
+                               (ULONG)IOCTL_RDMAPOOL_ALLOCATE,
+                               &input,
+                               sizeof(input),
+                               &output,
+                               sizeof(output));
+        if (NT_SUCCESS(status) || status != STATUS_INSUFFICIENT_RESOURCES || arenaSize == minimumArenaSize)
+        {
+            break;
+        }
+
+        arenaSize = max(minimumArenaSize, arenaSize - (SIZE_T)VIOGPU_RDMAPOOL_STEP_SIZE);
+    } while (TRUE);
     if (!NT_SUCCESS(status))
     {
         Disconnect();
         return status;
     }
+
+    DbgPrint(TRACE_LEVEL_INFORMATION,
+             ("viogpu rdmapool arena: %I64u bytes (%lu pages)\n", (ULONG64)arenaSize, input.NumPages));
 
     m_BaseVA = output.VirtualAddress;
     m_BasePA = output.PhysicalAddress;

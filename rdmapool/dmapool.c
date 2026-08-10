@@ -128,11 +128,34 @@ DmaPoolAllocatePages(_In_ ULONG NumPages, _Out_ PVOID *VirtualAddress, _Out_ PHY
 
     if (!BitmapFindFreeRun(NumPages, &StartPage))
     {
+        ULONG FreePages = 0;
+        ULONG LargestFreeRun = 0;
+        ULONG CurrentFreeRun = 0;
+
+        for (i = 0; i < gPoolTotalPages; i++)
+        {
+            if (BitmapTestBit(i))
+            {
+                CurrentFreeRun = 0;
+            }
+            else
+            {
+                FreePages++;
+                CurrentFreeRun++;
+                if (CurrentFreeRun > LargestFreeRun)
+                {
+                    LargestFreeRun = CurrentFreeRun;
+                }
+            }
+        }
+
         KeReleaseSpinLock(&gPoolLock, OldIrql);
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
-                   "rdmapool: pool exhausted (requested %u pages, total %u)\n",
+                   "rdmapool: pool exhausted (requested %u pages, free %u, largest run %u, total %u)\n",
                    NumPages,
+                   FreePages,
+                   LargestFreeRun,
                    gPoolTotalPages);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
