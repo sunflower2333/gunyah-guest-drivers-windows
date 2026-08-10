@@ -31,6 +31,7 @@
 
 #include "viogpu.h"
 #include "viogpu_queue.h"
+#include "viogpu_rdma.h"
 
 #pragma pack(push)
 #pragma pack(1)
@@ -124,6 +125,10 @@ class VioGpuAdapter : IVioGpuPCI
         return m_FrameSegment.GetSize();
     }
     PDXGKRNL_INTERFACE GetDxgkInterface(void);
+    PVOID AllocateDmaMemory(SIZE_T size, SIZE_T alignment);
+    void FreeDmaMemory(PVOID address);
+    PHYSICAL_ADDRESS GetDmaPhysicalAddress(PVOID address);
+    BOOLEAN IsRestrictedDmaActive(void);
 
     PVIDEO_MODE_INFORMATION GetModeInfo(UINT idx)
     {
@@ -193,6 +198,7 @@ class VioGpuAdapter : IVioGpuPCI
 
     VirtIODevice m_VioDev;
     CPciResources m_PciResources;
+    VioGpuRdmaPool m_RdmaPool;
     UINT64 m_u64HostFeatures;
     UINT64 m_u64GuestFeatures;
     UINT32 m_u32NumCapsets;

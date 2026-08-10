@@ -29,6 +29,7 @@
 
 #pragma once
 #include "viogpu.h"
+#include "viogpu_pci.h"
 
 #pragma pack(1)
 typedef struct virtio_gpu_config
@@ -71,7 +72,9 @@ class VioGpuBuf
     ~VioGpuBuf();
     PGPU_VBUFFER GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void *resp_buf);
     void FreeBuf(_In_ PGPU_VBUFFER pbuf);
-    BOOLEAN Init(_In_ UINT cnt);
+    BOOLEAN Init(_In_ UINT cnt, _In_ IVioGpuPCI *pPci);
+    PVOID AllocateMemory(SIZE_T size, SIZE_T alignment = PAGE_SIZE);
+    void FreeMemory(PVOID address);
 
   private:
     void Close(void);
@@ -82,6 +85,7 @@ class VioGpuBuf
     KSPIN_LOCK m_SpinLock;
     UINT m_uCount;
     UINT m_uCountMin = 0;
+    IVioGpuPCI *m_pPci;
 };
 
 class VioGpuMemSegment
@@ -102,7 +106,7 @@ class VioGpuMemSegment
     {
         return m_pSGList;
     }
-    BOOLEAN Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr);
+    BOOLEAN Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr, _In_ IVioGpuPCI *pPci);
     BOOLEAN IsSystemMemory(void)
     {
         return m_bSystemMemory;
@@ -116,6 +120,8 @@ class VioGpuMemSegment
     PVOID m_pVAddr;
     PMDL m_pMdl;
     SIZE_T m_Size;
+    IVioGpuPCI *m_pPci;
+    BOOLEAN m_bRestrictedDma;
 };
 
 class VioGpuObj
@@ -220,6 +226,7 @@ class VioGpuQueue
 
   protected:
     VioGpuBuf *m_pBuf;
+    IVioGpuPCI *m_pPci;
 };
 
 class CtrlQueue : public VioGpuQueue
