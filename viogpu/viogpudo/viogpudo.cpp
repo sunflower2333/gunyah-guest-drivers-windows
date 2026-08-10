@@ -123,7 +123,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     if (pDxgkInterface->Size > sizeof(m_DxgkInterface))
     {
         RtlCopyMemory(&m_DxgkInterface, pDxgkInterface, sizeof(m_DxgkInterface));
-        m_DxgkInterface.Version = DXGKDDI_INTERFACE_VERSION;
+        m_DxgkInterface.Version = DXGKDDI_INTERFACE_VERSION_WDDM3_1;
         m_DxgkInterface.Size = sizeof(m_DxgkInterface);
         DbgPrint(TRACE_LEVEL_FATAL,
                  ("VIOGPU: Provided interface version cannot be used by Viogpudo (version %u, size %u), degrading to "
@@ -462,7 +462,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
     {
         case DXGKQAITYPE_DRIVERCAPS:
             {
-                if (!pQueryAdapterInfo->OutputDataSize)
+                if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_DRIVERCAPS))
                 {
                     DbgPrint(TRACE_LEVEL_ERROR,
                              ("pQueryAdapterInfo->OutputDataSize (0x%u) is smaller than sizeof(DXGK_DRIVERCAPS) "
@@ -473,12 +473,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                 }
 
                 DXGK_DRIVERCAPS *pDriverCaps = (DXGK_DRIVERCAPS *)pQueryAdapterInfo->pOutputData;
-                DbgPrint(TRACE_LEVEL_ERROR,
-                         ("InterruptMessageNumber = %d, WDDMVersion = %d\n",
-                          pDriverCaps->InterruptMessageNumber,
-                          pDriverCaps->WDDMVersion));
-                RtlZeroMemory(pDriverCaps, pQueryAdapterInfo->OutputDataSize /*sizeof(DXGK_DRIVERCAPS)*/);
-                pDriverCaps->WDDMVersion = DXGKDDI_WDDMv1_2;
+                RtlZeroMemory(pDriverCaps, pQueryAdapterInfo->OutputDataSize);
                 pDriverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
 
                 if (IsPointerEnabled())

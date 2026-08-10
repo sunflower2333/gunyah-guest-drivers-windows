@@ -78,7 +78,7 @@ extern "C" NTSTATUS DriverEntry(_In_ DRIVER_OBJECT *pDriverObject, _In_ UNICODE_
 
     KMDDOD_INITIALIZATION_DATA InitialData = {0};
 
-    InitialData.Version = DXGKDDI_INTERFACE_VERSION_WIN8; // DXGKDDI_INTERFACE_VERSION;
+    InitialData.Version = DXGKDDI_INTERFACE_VERSION_WDDM3_1;
 
     InitialData.DxgkDdiAddDevice = VioGpuDodAddDevice;
     InitialData.DxgkDdiStartDevice = VioGpuDodStartDevice;
