@@ -142,6 +142,9 @@
     <CustomBuildAfterTargets>dvl</CustomBuildAfterTargets>
   </PropertyGroup>
   <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WDDM3_1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <CustomBuildStep>
       <Command>copy /Y $(ProjectDir)viogpudo.DVL.XML $(ProjectDir)$(PackOne_DestinationPrefix)Install\$(TargetOS)\$(TargetArch)</Command>
       <Inputs>$(ProjectDir)viogpudo.DVL.XML</Inputs>
