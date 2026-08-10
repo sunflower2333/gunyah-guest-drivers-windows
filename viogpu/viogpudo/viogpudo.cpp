@@ -41,6 +41,9 @@
 
 static UINT g_InstanceId = 0;
 
+#define VIOGPU_RDMAPOOL_RETRY_COUNT 100
+#define VIOGPU_RDMAPOOL_RETRY_MS    100
+
 PAGED_CODE_SEG_BEGIN
 VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     : m_pPhysicalDevice(pPhysicalDeviceObject), m_MonitorPowerState(PowerDeviceD0), m_AdapterPowerState(PowerDeviceD0),
@@ -50,6 +53,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     *((UINT *)&m_Flags) = 0;
+    SetRestrictedDmaRequired(TRUE);
     RtlZeroMemory(&m_DxgkInterface, sizeof(m_DxgkInterface));
     RtlZeroMemory(&m_DeviceInfo, sizeof(m_DeviceInfo));
     RtlZeroMemory(&m_CurrentMode, sizeof(m_CurrentMode));
@@ -2281,6 +2285,13 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
         SetUsePresentProgress(!!value);
     }
 
+    value = 1;
+    Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"RequireRestrictedDma", &value);
+    if (NT_SUCCESS(Status))
+    {
+        SetRestrictedDmaRequired(!!value);
+    }
+
     // The following keys are optional and no need to report error if them are missing
     value = 0;
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"PersistentDispMode0Width", &value);
@@ -2326,6 +2337,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_u32NumScanouts = 0;
 
     KeInitializeEvent(&m_ConfigUpdateEvent, SynchronizationEvent, FALSE);
+    KeInitializeEvent(&m_WorkThreadExited, NotificationEvent, FALSE);
 }
 
 VioGpuAdapter::~VioGpuAdapter(void)
@@ -2388,6 +2400,11 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
         DbgPrint(TRACE_LEVEL_FATAL, ("Already Initialized\n"));
         VioGpuDbgBreak();
         return status;
+    }
+    if (m_pVioGpuDod->IsRestrictedDmaRequired() && !m_RdmaPool.IsActive())
+    {
+        DbgPrint(TRACE_LEVEL_FATAL, ("restricted DMA is required before virtio queue initialization\n"));
+        return STATUS_DEVICE_NOT_READY;
     }
     status = VirtIoDeviceInit();
     if (!NT_SUCCESS(status))
@@ -2616,6 +2633,33 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
             break;
         }
 
+        for (ULONG retry = 0;; retry++)
+        {
+            status = m_RdmaPool.Connect();
+            if (status != STATUS_NOT_FOUND || !m_pVioGpuDod->IsRestrictedDmaRequired() ||
+                retry + 1 >= VIOGPU_RDMAPOOL_RETRY_COUNT)
+            {
+                break;
+            }
+
+            LARGE_INTEGER delay;
+            delay.QuadPart = -(LONGLONG)VIOGPU_RDMAPOOL_RETRY_MS * 10 * 1000;
+            KeDelayExecutionThread(KernelMode, FALSE, &delay);
+        }
+
+        if (status == STATUS_NOT_FOUND && !m_pVioGpuDod->IsRestrictedDmaRequired())
+        {
+            DbgPrint(TRACE_LEVEL_INFORMATION, ("rdmapool not present, restricted DMA disabled by configuration\n"));
+            status = STATUS_SUCCESS;
+        }
+        else if (!NT_SUCCESS(status))
+        {
+            DbgPrint(TRACE_LEVEL_FATAL,
+                     ("rdmapool required but unavailable (0x%x); refusing normal DMA virtqueues\n", status));
+            status = STATUS_DEVICE_NOT_READY;
+            break;
+        }
+
         status = VioGpuAdapterInit(pDispInfo);
         if (!NT_SUCCESS(status))
         {
@@ -2628,7 +2672,7 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         DbgPrint(TRACE_LEVEL_FATAL, ("%s size %d\n", __FUNCTION__, size));
         ASSERT(size);
 
-        if (!m_GpuBuf.Init(size))
+        if (!m_GpuBuf.Init(size, this))
         {
             DbgPrint(TRACE_LEVEL_FATAL, ("Failed to initialize buffers\n"));
             status = STATUS_INSUFFICIENT_RESOURCES;
@@ -2668,8 +2712,21 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         VioGpuDbgBreak();
         return status;
     }
-    ObReferenceObjectByHandle(threadHandle, THREAD_ALL_ACCESS, NULL, KernelMode, (PVOID *)(&m_pWorkThread), NULL);
-
+    status = ObReferenceObjectByHandle(threadHandle,
+                                       THREAD_ALL_ACCESS,
+                                       NULL,
+                                       KernelMode,
+                                       (PVOID *)(&m_pWorkThread),
+                                       NULL);
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to reference worker thread, status %x\n", __FUNCTION__, status));
+        m_bStopWorkThread = TRUE;
+        KeSetEvent(&m_ConfigUpdateEvent, IO_NO_INCREMENT, FALSE);
+        (void)KeWaitForSingleObject(&m_WorkThreadExited, Executive, KernelMode, FALSE, NULL);
+        ZwClose(threadHandle);
+        return status;
+    }
     ZwClose(threadHandle);
 
     status = BuildModeList(pDispInfo);
@@ -2693,6 +2750,14 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
 
     req_size = max(req_size, (max_res_size * 4));
 
+    if (m_RdmaPool.IsActive())
+    {
+        fb_pa.QuadPart = 0;
+        fb_size = req_size;
+        pDispInfo->PhysicAddress.QuadPart = 0;
+        m_pVioGpuDod->SetUsePhysicalMemory(FALSE);
+    }
+
     if (fb_pa.QuadPart != 0LL)
     {
         pDispInfo->PhysicAddress = fb_pa;
@@ -2709,7 +2774,7 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         fb_size = max(req_size, fb_size);
     }
 
-    if (!m_FrameSegment.Init(fb_size, &fb_pa))
+    if (!m_FrameSegment.Init(fb_size, &fb_pa, this))
     {
         DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to allocate FB memory segment\n", __FUNCTION__));
         status = STATUS_INSUFFICIENT_RESOURCES;
@@ -2717,7 +2782,7 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         return status;
     }
 
-    if (!m_CursorSegment.Init(POINTER_SIZE * POINTER_SIZE * 4, NULL))
+    if (!m_CursorSegment.Init(POINTER_SIZE * POINTER_SIZE * 4, NULL, this))
     {
         DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to allocate Cursor memory segment\n", __FUNCTION__));
         status = STATUS_INSUFFICIENT_RESOURCES;
@@ -2734,19 +2799,16 @@ NTSTATUS VioGpuAdapter::HWClose(void)
     DbgPrint(TRACE_LEVEL_INFORMATION, ("---> %s\n", __FUNCTION__));
     m_pVioGpuDod->SetHardwareInit(FALSE);
 
-    LARGE_INTEGER timeout = {0};
-    timeout.QuadPart = Int32x32To64(1000, -10000);
-
-    m_bStopWorkThread = TRUE;
-    KeSetEvent(&m_ConfigUpdateEvent, IO_NO_INCREMENT, FALSE);
-
-    if (KeWaitForSingleObject(m_pWorkThread, Executive, KernelMode, FALSE, &timeout) == STATUS_TIMEOUT)
+    if (m_pWorkThread != NULL)
     {
-        DbgPrint(TRACE_LEVEL_FATAL, ("---> Failed to exit the worker thread\n"));
-        VioGpuDbgBreak();
-    }
+        m_bStopWorkThread = TRUE;
+        KeSetEvent(&m_ConfigUpdateEvent, IO_NO_INCREMENT, FALSE);
 
-    ObDereferenceObject(m_pWorkThread);
+        (void)KeWaitForSingleObject(m_pWorkThread, Executive, KernelMode, FALSE, NULL);
+
+        ObDereferenceObject(m_pWorkThread);
+        m_pWorkThread = NULL;
+    }
 
     m_FrameSegment.Close();
     m_CursorSegment.Close();
@@ -3741,6 +3803,7 @@ void VioGpuAdapter::ThreadWorkRoutine(void)
 
         if (m_bStopWorkThread)
         {
+            KeSetEvent(&m_WorkThreadExited, IO_NO_INCREMENT, FALSE);
             PsTerminateSystemThread(STATUS_SUCCESS);
             break;
         }
@@ -4011,7 +4074,7 @@ BOOLEAN VioGpuAdapter::GpuObjectAttach(UINT res_id, VioGpuObj *obj)
     UINT size = 0;
     sgl = obj->GetSGList();
     size = sizeof(GPU_MEM_ENTRY) * sgl->NumberOfElements;
-    ents = reinterpret_cast<PGPU_MEM_ENTRY>(new (NonPagedPoolNx) BYTE[size]);
+    ents = reinterpret_cast<PGPU_MEM_ENTRY>(m_GpuBuf.AllocateMemory(size));
 
     if (!ents)
     {
@@ -4042,4 +4105,28 @@ PAGED_CODE_SEG_END
 PDXGKRNL_INTERFACE VioGpuAdapter::GetDxgkInterface()
 {
     return m_pVioGpuDod->GetDxgkInterface();
+}
+
+PVOID VioGpuAdapter::AllocateDmaMemory(SIZE_T size, SIZE_T alignment)
+{
+    return m_RdmaPool.Allocate(size, alignment);
+}
+
+void VioGpuAdapter::FreeDmaMemory(PVOID address)
+{
+    m_RdmaPool.Free(address);
+}
+
+PHYSICAL_ADDRESS VioGpuAdapter::GetDmaPhysicalAddress(PVOID address)
+{
+    if (m_RdmaPool.IsActive())
+    {
+        return m_RdmaPool.GetPhysicalAddress(address);
+    }
+    return MmGetPhysicalAddress(address);
+}
+
+BOOLEAN VioGpuAdapter::IsRestrictedDmaActive(void)
+{
+    return m_RdmaPool.IsActive();
 }

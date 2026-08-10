@@ -102,10 +102,14 @@ void WriteVirtIODeviceWord(ULONG_PTR ulRegister, u16 wValue)
 
 void *mem_alloc_contiguous_pages(void *context, size_t size)
 {
+    IVioGpuPCI *device = reinterpret_cast<IVioGpuPCI *>(context);
+    if (device->IsRestrictedDmaActive())
+    {
+        return device->AllocateDmaMemory(size, PAGE_SIZE);
+    }
+
     PHYSICAL_ADDRESS HighestAcceptable;
     PVOID ptr = NULL;
-
-    UNREFERENCED_PARAMETER(context);
 
     HighestAcceptable.QuadPart = 0xFFFFFFFFFF;
     ptr = MmAllocateContiguousMemory(size, HighestAcceptable);
@@ -122,18 +126,24 @@ void *mem_alloc_contiguous_pages(void *context, size_t size)
 
 void mem_free_contiguous_pages(void *context, void *virt)
 {
-    UNREFERENCED_PARAMETER(context);
+    IVioGpuPCI *device = reinterpret_cast<IVioGpuPCI *>(context);
     if (virt)
     {
-        MmFreeContiguousMemory(virt);
+        if (device->IsRestrictedDmaActive())
+        {
+            device->FreeDmaMemory(virt);
+        }
+        else
+        {
+            MmFreeContiguousMemory(virt);
+        }
     }
 }
 
 ULONGLONG mem_get_physical_address(void *context, void *virt)
 {
-    UNREFERENCED_PARAMETER(context);
-
-    PHYSICAL_ADDRESS pa = MmGetPhysicalAddress(virt);
+    IVioGpuPCI *device = reinterpret_cast<IVioGpuPCI *>(context);
+    PHYSICAL_ADDRESS pa = device->GetDmaPhysicalAddress(virt);
     return pa.QuadPart;
 }
 
