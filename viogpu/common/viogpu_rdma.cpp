@@ -114,7 +114,7 @@ NTSTATUS VioGpuRdmaPool::Connect(void)
     RDMAPOOL_QUERY_POOL_OUTPUT query = {};
     status = RdmaPoolIoctl(m_DeviceObject,
                            m_FileObject,
-                           IOCTL_RDMAPOOL_QUERY_POOL,
+                           (ULONG)IOCTL_RDMAPOOL_QUERY_POOL,
                            NULL,
                            0,
                            &query,
@@ -142,7 +142,7 @@ NTSTATUS VioGpuRdmaPool::Connect(void)
     input.NumPages = (ULONG)(arenaSize / PAGE_SIZE);
     status = RdmaPoolIoctl(m_DeviceObject,
                            m_FileObject,
-                           IOCTL_RDMAPOOL_ALLOCATE,
+                           (ULONG)IOCTL_RDMAPOOL_ALLOCATE,
                            &input,
                            sizeof(input),
                            &output,
@@ -180,7 +180,7 @@ void VioGpuRdmaPool::Disconnect(void)
         input.NumPages = (ULONG)(m_Size / PAGE_SIZE);
         (void)RdmaPoolIoctl(m_DeviceObject,
                             m_FileObject,
-                            IOCTL_RDMAPOOL_FREE,
+                            (ULONG)IOCTL_RDMAPOOL_FREE,
                             &input,
                             sizeof(input),
                             NULL,

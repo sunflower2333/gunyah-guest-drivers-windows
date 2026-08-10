@@ -76,7 +76,7 @@ jobs:
           $minor = 58000 + [int]$n
           if ($minor -gt 65535) { Write-Host "::warning::driver minor $minor 超過 65535，請開新 epoch 或 bump 第三段"; $minor = 65535 }
           Write-Host "Driver version = 100.6.101.$minor"
-          $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
+          $common = @('/m','/p:ApiValidator_Enable=false','/p:InfVerif_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
                       "/p:_BUILD_MINOR_VERSION_=$minor")
           $jobs = @(
             @{ p='NetKVM/Mof/Mof.vcxproj';                  c='Header';        plat='x64'   ; dep=$true },

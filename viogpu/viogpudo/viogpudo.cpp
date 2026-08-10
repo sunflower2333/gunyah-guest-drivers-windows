@@ -2326,6 +2326,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_u32NumScanouts = 0;
 
     KeInitializeEvent(&m_ConfigUpdateEvent, SynchronizationEvent, FALSE);
+    KeInitializeEvent(&m_WorkThreadExited, NotificationEvent, FALSE);
 }
 
 VioGpuAdapter::~VioGpuAdapter(void)
@@ -2691,7 +2692,7 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to reference worker thread, status %x\n", __FUNCTION__, status));
         m_bStopWorkThread = TRUE;
         KeSetEvent(&m_ConfigUpdateEvent, IO_NO_INCREMENT, FALSE);
-        (void)ZwWaitForSingleObject(threadHandle, FALSE, NULL);
+        (void)KeWaitForSingleObject(&m_WorkThreadExited, Executive, KernelMode, FALSE, NULL);
         ZwClose(threadHandle);
         return status;
     }
@@ -3771,6 +3772,7 @@ void VioGpuAdapter::ThreadWorkRoutine(void)
 
         if (m_bStopWorkThread)
         {
+            KeSetEvent(&m_WorkThreadExited, IO_NO_INCREMENT, FALSE);
             PsTerminateSystemThread(STATUS_SUCCESS);
             break;
         }
