@@ -558,6 +558,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
                 DXGK_DRIVERCAPS *pDriverCaps = (DXGK_DRIVERCAPS *)pQueryAdapterInfo->pOutputData;
                 RtlZeroMemory(pDriverCaps, pQueryAdapterInfo->OutputDataSize);
+                pDriverCaps->WDDMVersion = DXGKDDI_WDDMv1_2;
                 pDriverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
 
                 if (IsPointerEnabled())
@@ -571,7 +572,8 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                 pDriverCaps->SupportSmoothRotation = TRUE;
                 DbgPrintEx(DPFLTR_DEFAULT_ID,
                            DPFLTR_INFO_LEVEL,
-                           "viogpu DriverCaps: vga=%u nonVga=%u smoothRotation=%u pointerCaps=0x%08X\n",
+                           "viogpu DriverCaps: wddm=0x%04X vga=%u nonVga=%u smoothRotation=%u pointerCaps=0x%08X\n",
+                           pDriverCaps->WDDMVersion,
                            IsVgaDevice(),
                            pDriverCaps->SupportNonVGA,
                            pDriverCaps->SupportSmoothRotation,
