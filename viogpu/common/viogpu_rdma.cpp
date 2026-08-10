@@ -165,12 +165,13 @@ NTSTATUS VioGpuRdmaPool::Connect(void)
         return status;
     }
 
-    DbgPrint(TRACE_LEVEL_INFORMATION,
-             ("viogpu rdmapool arena: %lu pages (free %lu, largest run %lu, ACPI total %I64u bytes)\n",
-              input.NumPages,
-              allocation.FreePages,
-              allocation.LargestFreeRunPages,
-              query.TotalSize));
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu rdmapool arena: %lu pages (free %lu, largest run %lu, ACPI total %I64u bytes)\n",
+               input.NumPages,
+               allocation.FreePages,
+               allocation.LargestFreeRunPages,
+               query.TotalSize);
 
     m_BaseVA = output.VirtualAddress;
     m_BasePA = output.PhysicalAddress;
