@@ -4,8 +4,8 @@
 #include <initguid.h>
 #include "../../rdmapool/rdmapool_interface.h"
 
-#define VIOGPU_RDMAPOOL_TAG      'GDRG'
-#define VIOGPU_RDMA_ALLOC_MAGIC  'ADRG'
+#define VIOGPU_RDMAPOOL_TAG     'GDRG'
+#define VIOGPU_RDMA_ALLOC_MAGIC 'ADRG'
 
 typedef struct _VIOGPU_RDMA_ALLOCATION
 {
@@ -45,14 +45,14 @@ static NTSTATUS RdmaPoolIoctl(PDEVICE_OBJECT deviceObject,
     IO_STATUS_BLOCK ioStatus = {};
     KeInitializeEvent(&event, NotificationEvent, FALSE);
     PIRP irp = IoBuildDeviceIoControlRequest(controlCode,
-                                              deviceObject,
-                                              inputBuffer,
-                                              inputLength,
-                                              outputBuffer,
-                                              outputLength,
-                                              FALSE,
-                                              &event,
-                                              &ioStatus);
+                                             deviceObject,
+                                             inputBuffer,
+                                             inputLength,
+                                             outputBuffer,
+                                             outputLength,
+                                             FALSE,
+                                             &event,
+                                             &ioStatus);
     if (irp == NULL)
     {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -69,8 +69,8 @@ static NTSTATUS RdmaPoolIoctl(PDEVICE_OBJECT deviceObject,
 }
 
 VioGpuRdmaPool::VioGpuRdmaPool()
-        : m_Active(FALSE), m_FileObject(NULL), m_DeviceObject(NULL), m_BaseVA(NULL), m_Size(0), m_PageCount(0),
-            m_Bitmap(NULL)
+    : m_Active(FALSE), m_FileObject(NULL), m_DeviceObject(NULL), m_BaseVA(NULL), m_Size(0), m_PageCount(0),
+      m_Bitmap(NULL)
 {
     m_BasePA.QuadPart = 0;
     KeInitializeSpinLock(&m_Lock);
@@ -198,13 +198,7 @@ void VioGpuRdmaPool::Disconnect(void)
         RDMAPOOL_FREE_INPUT input = {};
         input.VirtualAddress = m_BaseVA;
         input.NumPages = (ULONG)(m_Size / PAGE_SIZE);
-        (void)RdmaPoolIoctl(m_DeviceObject,
-                            m_FileObject,
-                            (ULONG)IOCTL_RDMAPOOL_FREE,
-                            &input,
-                            sizeof(input),
-                            NULL,
-                            0);
+        (void)RdmaPoolIoctl(m_DeviceObject, m_FileObject, (ULONG)IOCTL_RDMAPOOL_FREE, &input, sizeof(input), NULL, 0);
     }
     if (m_FileObject != NULL)
     {
@@ -234,8 +228,7 @@ PVOID VioGpuRdmaPool::Allocate(SIZE_T size, SIZE_T alignment)
     {
         alignment = sizeof(PVOID);
     }
-    if ((alignment & (alignment - 1)) != 0 ||
-        size > MAXULONG_PTR - (alignment - 1) - sizeof(VIOGPU_RDMA_ALLOCATION))
+    if ((alignment & (alignment - 1)) != 0 || size > MAXULONG_PTR - (alignment - 1) - sizeof(VIOGPU_RDMA_ALLOCATION))
     {
         return NULL;
     }
