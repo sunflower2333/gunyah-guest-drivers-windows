@@ -567,8 +567,15 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                     pDriverCaps->PointerCaps.Color = 1;
                     pDriverCaps->PointerCaps.MaskedColor = 1;
                 }
-                pDriverCaps->SupportNonVGA = IsVgaDevice();
+                pDriverCaps->SupportNonVGA = TRUE;
                 pDriverCaps->SupportSmoothRotation = TRUE;
+                DbgPrintEx(DPFLTR_DEFAULT_ID,
+                           DPFLTR_INFO_LEVEL,
+                           "viogpu DriverCaps: vga=%u nonVga=%u smoothRotation=%u pointerCaps=0x%08X\n",
+                           IsVgaDevice(),
+                           pDriverCaps->SupportNonVGA,
+                           pDriverCaps->SupportSmoothRotation,
+                           pDriverCaps->PointerCaps.Value);
                 DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s 1\n", __FUNCTION__));
                 status = STATUS_SUCCESS;
                 break;
