@@ -2903,11 +2903,12 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
     }
 
     DbgPrintEx(DPFLTR_DEFAULT_ID,
-               DPFLTR_INFO_LEVEL,
-               "viogpu HWInit: success, modes=%u frameBytes=%u restrictedDma=%u\n",
+               NT_SUCCESS(status) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+               "viogpu HWInit: completed, modes=%u frameBytes=%u restrictedDma=%u status=0x%08X\n",
                m_ModeCount,
                fb_size,
-               m_RdmaPool.IsActive());
+               m_RdmaPool.IsActive(),
+               status);
     return status;
 }
 
