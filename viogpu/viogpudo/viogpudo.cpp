@@ -144,6 +144,10 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     Status = m_DxgkInterface.DxgkCbGetDeviceInformation(m_DxgkInterface.DeviceHandle, &m_DeviceInfo);
     if (!NT_SUCCESS(Status))
     {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu StartDevice: DxgkCbGetDeviceInformation failed, status=0x%08X\n",
+                   Status);
         VIOGPU_LOG_ASSERTION1("DxgkCbGetDeviceInformation failed with status 0x%X\n", Status);
         return Status;
     }
@@ -155,6 +159,10 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     if (!m_pHWDevice)
     {
         Status = STATUS_NO_MEMORY;
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu StartDevice: adapter allocation failed, status=0x%08X\n",
+                   Status);
         DbgPrint(TRACE_LEVEL_ERROR, ("StartDevice failed to allocate memory\n"));
         return Status;
     }
@@ -168,6 +176,10 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     Status = m_pHWDevice->HWInit(m_DeviceInfo.TranslatedResourceList, &m_CurrentMode.DispInfo);
     if (!NT_SUCCESS(Status))
     {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu StartDevice: HWInit failed, status=0x%08X\n",
+                   Status);
         DbgPrint(TRACE_LEVEL_ERROR, ("HWInit failed with status 0x%X\n", Status));
         return Status;
     }
@@ -181,6 +193,10 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     Status = SetRegisterInfo(m_pHWDevice->GetInstanceId(), 0);
     if (!NT_SUCCESS(Status))
     {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu StartDevice: SetRegisterInfo failed, status=0x%08X\n",
+                   Status);
         VIOGPU_LOG_ASSERTION1("RegisterHWInfo failed with status 0x%X\n", Status);
         return Status;
     }
@@ -192,6 +208,10 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
 
     if (!NT_SUCCESS(Status))
     {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu StartDevice: DxgkCbAcquirePostDisplayOwnership failed, status=0x%08X\n",
+                   Status);
         DbgPrint(TRACE_LEVEL_FATAL,
                  ("DxgkCbAcquirePostDisplayOwnership failed with status 0x%X Width = %d\n",
                   Status,
@@ -236,6 +256,13 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     *pNumberOfViews = MAX_VIEWS;
     *pNumberOfChildren = MAX_CHILDREN;
     m_Flags.DriverStarted = TRUE;
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu StartDevice: success, dxgk version=0x%08X size=%lu views=%lu children=%lu\n",
+               pDxgkInterface->Version,
+               pDxgkInterface->Size,
+               *pNumberOfViews,
+               *pNumberOfChildren);
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return STATUS_SUCCESS;
 }
@@ -458,18 +485,21 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
     VIOGPU_ASSERT(pQueryAdapterInfo != NULL);
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
+    NTSTATUS status;
+
     switch (pQueryAdapterInfo->Type)
     {
         case DXGKQAITYPE_DRIVERCAPS:
             {
                 if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_DRIVERCAPS))
                 {
+                    status = STATUS_BUFFER_TOO_SMALL;
                     DbgPrint(TRACE_LEVEL_ERROR,
                              ("pQueryAdapterInfo->OutputDataSize (0x%u) is smaller than sizeof(DXGK_DRIVERCAPS) "
                               "(0x%u)\n",
                               pQueryAdapterInfo->OutputDataSize,
                               sizeof(DXGK_DRIVERCAPS)));
-                    return STATUS_BUFFER_TOO_SMALL;
+                    break;
                 }
 
                 DXGK_DRIVERCAPS *pDriverCaps = (DXGK_DRIVERCAPS *)pQueryAdapterInfo->pOutputData;
@@ -486,15 +516,26 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                 pDriverCaps->SupportNonVGA = IsVgaDevice();
                 pDriverCaps->SupportSmoothRotation = TRUE;
                 DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s 1\n", __FUNCTION__));
-                return STATUS_SUCCESS;
+                status = STATUS_SUCCESS;
+                break;
             }
 
         default:
             {
                 DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
-                return STATUS_NOT_SUPPORTED;
+                status = STATUS_NOT_SUPPORTED;
+                break;
             }
     }
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               NT_SUCCESS(status) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+               "viogpu QueryAdapterInfo: type=%u output=%u driverCaps=%u status=0x%08X\n",
+               pQueryAdapterInfo->Type,
+               pQueryAdapterInfo->OutputDataSize,
+               (ULONG)sizeof(DXGK_DRIVERCAPS),
+               status);
+    return status;
 }
 
 NTSTATUS VioGpuDod::SetPointerPosition(_In_ CONST DXGKARG_SETPOINTERPOSITION *pSetPointerPosition)
