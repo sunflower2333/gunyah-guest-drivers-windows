@@ -41,6 +41,9 @@
 
 static UINT g_InstanceId = 0;
 
+#define VIOGPU_RDMAPOOL_RETRY_COUNT 100
+#define VIOGPU_RDMAPOOL_RETRY_MS    100
+
 PAGED_CODE_SEG_BEGIN
 VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     : m_pPhysicalDevice(pPhysicalDeviceObject), m_MonitorPowerState(PowerDeviceD0), m_AdapterPowerState(PowerDeviceD0),
@@ -50,6 +53,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     *((UINT *)&m_Flags) = 0;
+    SetRestrictedDmaRequired(TRUE);
     RtlZeroMemory(&m_DxgkInterface, sizeof(m_DxgkInterface));
     RtlZeroMemory(&m_DeviceInfo, sizeof(m_DeviceInfo));
     RtlZeroMemory(&m_CurrentMode, sizeof(m_CurrentMode));
@@ -2281,6 +2285,13 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
         SetUsePresentProgress(!!value);
     }
 
+    value = 1;
+    Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"RequireRestrictedDma", &value);
+    if (NT_SUCCESS(Status))
+    {
+        SetRestrictedDmaRequired(!!value);
+    }
+
     // The following keys are optional and no need to report error if them are missing
     value = 0;
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"PersistentDispMode0Width", &value);
@@ -2389,6 +2400,11 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
         DbgPrint(TRACE_LEVEL_FATAL, ("Already Initialized\n"));
         VioGpuDbgBreak();
         return status;
+    }
+    if (m_pVioGpuDod->IsRestrictedDmaRequired() && !m_RdmaPool.IsActive())
+    {
+        DbgPrint(TRACE_LEVEL_FATAL, ("restricted DMA is required before virtio queue initialization\n"));
+        return STATUS_DEVICE_NOT_READY;
     }
     status = VirtIoDeviceInit();
     if (!NT_SUCCESS(status))
@@ -2617,15 +2633,30 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
             break;
         }
 
-        status = m_RdmaPool.Connect();
-        if (status == STATUS_NOT_FOUND)
+        for (ULONG retry = 0;; retry++)
         {
-            DbgPrint(TRACE_LEVEL_INFORMATION, ("rdmapool not present, using normal DMA\n"));
+            status = m_RdmaPool.Connect();
+            if (status != STATUS_NOT_FOUND || !m_pVioGpuDod->IsRestrictedDmaRequired() ||
+                retry + 1 >= VIOGPU_RDMAPOOL_RETRY_COUNT)
+            {
+                break;
+            }
+
+            LARGE_INTEGER delay;
+            delay.QuadPart = -(LONGLONG)VIOGPU_RDMAPOOL_RETRY_MS * 10 * 1000;
+            KeDelayExecutionThread(KernelMode, FALSE, &delay);
+        }
+
+        if (status == STATUS_NOT_FOUND && !m_pVioGpuDod->IsRestrictedDmaRequired())
+        {
+            DbgPrint(TRACE_LEVEL_INFORMATION, ("rdmapool not present, restricted DMA disabled by configuration\n"));
             status = STATUS_SUCCESS;
         }
         else if (!NT_SUCCESS(status))
         {
-            DbgPrint(TRACE_LEVEL_FATAL, ("rdmapool connect failed 0x%x\n", status));
+            DbgPrint(TRACE_LEVEL_FATAL,
+                     ("rdmapool required but unavailable (0x%x); refusing normal DMA virtqueues\n", status));
+            status = STATUS_DEVICE_NOT_READY;
             break;
         }
 

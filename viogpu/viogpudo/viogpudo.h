@@ -45,7 +45,8 @@ typedef struct
     UINT FlexResolution : 1;
     UINT UsePhysicalMemory : 1;
     UINT UsePresentProgress : 1;
-    UINT Unused : 25;
+    UINT RequireRestrictedDma : 1;
+    UINT Unused : 24;
 } DRIVER_STATUS_FLAG;
 
 #pragma pack(pop)
@@ -297,6 +298,14 @@ class VioGpuDod
     void SetUsePresentProgress(BOOLEAN enable)
     {
         m_Flags.UsePresentProgress = enable;
+    }
+    BOOLEAN IsRestrictedDmaRequired() const
+    {
+        return m_Flags.RequireRestrictedDma;
+    }
+    void SetRestrictedDmaRequired(BOOLEAN required)
+    {
+        m_Flags.RequireRestrictedDma = required;
     }
     void SetPersistentDispMode0Width(USHORT res)
     {
