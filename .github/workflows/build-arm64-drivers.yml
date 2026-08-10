@@ -235,8 +235,8 @@ jobs:
             Write-Host "packed $($d.n): $has"
           }
           # --- bundle installer into the artifact (source: .install_scripts/) ---
-          # INSTALL.cmd (UAC launcher) + install-drivers.ps1 install the 6 pVM drivers
-          # (rdmapool, pvmpower, viostor, vioscsi, vioinput, NetKVM -- NetKVM last) and remove
+          # INSTALL.cmd (UAC launcher) + install-drivers.ps1 install the pVM drivers
+          # (rdmapool first, then viogpu/pvmpower/storage/input, NetKVM last) and remove
           # older versions.
           Copy-Item .install_scripts\INSTALL.cmd, .install_scripts\install-drivers.ps1, .install_scripts\pvmpower-devnode.ps1 out\ -Force
           Write-Host "[pkg] bundled out\INSTALL.cmd + installer scripts"
