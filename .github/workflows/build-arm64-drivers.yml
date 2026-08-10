@@ -76,7 +76,7 @@ jobs:
           $minor = 58000 + [int]$n
           if ($minor -gt 65535) { Write-Host "::warning::driver minor $minor 超過 65535，請開新 epoch 或 bump 第三段"; $minor = 65535 }
           Write-Host "Driver version = 100.6.101.$minor"
-          $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
+          $common = @('/m','/p:ApiValidator_Enable=false','/p:InfVerif_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
                       "/p:_BUILD_MINOR_VERSION_=$minor")
           $jobs = @(
             @{ p='NetKVM/Mof/Mof.vcxproj';                  c='Header';        plat='x64'   ; dep=$true },
@@ -89,6 +89,10 @@ jobs:
             @{ p='viorng/cng/um/viorngum.vcxproj';          c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='vioinput/hidpassthrough/hidpassthrough.vcxproj'; c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='vioinput/sys/vioinput.vcxproj';           c='Win11 Release'; plat='ARM64' },
+            @{ p='viogpu/viogpuap/viogpuap.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
+            @{ p='viogpu/viogpusc/viogpusc.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
+            @{ p='viogpu/viogpures/viogpures.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
+            @{ p='viogpu/viogpudo/viogpudo.vcxproj';        c='Win11 Release'; plat='ARM64' },
             @{ p='viostor/viostor.vcxproj';                 c='Win11 Release'; plat='ARM64' },
             @{ p='vioscsi/vioscsi.vcxproj';                 c='Win11 Release'; plat='ARM64' },
             @{ p='vioserial/sys/vioser.vcxproj';            c='Win11 Release'; plat='ARM64' },
@@ -155,6 +159,7 @@ jobs:
             @{ n='viosock';   root='viosock';   bins=@('viosock.sys','viosocklib.dll','viosockwspsvc.exe'); inf='viosock.inf' },
             @{ n='NetKVM';    root='NetKVM';    bins=@('netkvm.sys','netkvmp.exe'); inf='netkvm.inf' },
             @{ n='vioinput';  root='vioinput';  bins=@('vioinput.sys','viohidkmdf.sys'); inf='vioinput.inf' },
+            @{ n='viogpu';    root='viogpu';    bins=@('viogpudo.sys','viogpudo.pdb','viogpuap.exe','viogpuap.pdb','vgpusrv.exe','vgpusrv.pdb','viogpures.exe','viogpures.pdb'); inf='viogpudo.inf' },
             @{ n='rdmapool';  root='rdmapool';  bins=@('rdmapool.sys'); inf='rdmapool.inf' },
             @{ n='pvmpower';  root='pvmpower';  bins=@('pvmpower.sys'); inf='pvmpower.inf' }
           )
@@ -230,8 +235,8 @@ jobs:
             Write-Host "packed $($d.n): $has"
           }
           # --- bundle installer into the artifact (source: .install_scripts/) ---
-          # INSTALL.cmd (UAC launcher) + install-drivers.ps1 install the 6 pVM drivers
-          # (rdmapool, pvmpower, viostor, vioscsi, vioinput, NetKVM -- NetKVM last) and remove
+          # INSTALL.cmd (UAC launcher) + install-drivers.ps1 install the pVM drivers
+          # (rdmapool first, then viogpu/pvmpower/storage/input, NetKVM last) and remove
           # older versions.
           Copy-Item .install_scripts\INSTALL.cmd, .install_scripts\install-drivers.ps1, .install_scripts\pvmpower-devnode.ps1 out\ -Force
           Write-Host "[pkg] bundled out\INSTALL.cmd + installer scripts"
