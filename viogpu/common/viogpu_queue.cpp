@@ -567,8 +567,7 @@ UINT CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
     {
         if (!BuildSGElement(m_pPci, &sg[outcnt + incnt], (PVOID)buf->resp_buf, buf->resp_size))
         {
-            DbgPrint(TRACE_LEVEL_ERROR,
-                     ("<--> %s invalid response DMA address %p\n", __FUNCTION__, buf->resp_buf));
+            DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid response DMA address %p\n", __FUNCTION__, buf->resp_buf));
             return 0;
         }
         else
@@ -955,8 +954,7 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
         m_pVAddr = pPci->AllocateDmaMemory(size, PAGE_SIZE);
         if (!m_pVAddr)
         {
-            DbgPrint(TRACE_LEVEL_FATAL,
-                     ("%s restricted DMA pool cannot allocate %x bytes\n", __FUNCTION__, size));
+            DbgPrint(TRACE_LEVEL_FATAL, ("%s restricted DMA pool cannot allocate %x bytes\n", __FUNCTION__, size));
             return FALSE;
         }
         m_bSystemMemory = TRUE;
