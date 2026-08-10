@@ -67,6 +67,11 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
 VioGpuDod::~VioGpuDod(void)
 {
     PAGED_CODE();
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu adapter teardown: started=%u hardware=%u\n",
+               IsDriverActive(),
+               IsHardwareInit());
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s 0x%p\n", __FUNCTION__, m_pHWDevice));
     delete m_pHWDevice;
     m_pHWDevice = NULL;
@@ -156,6 +161,10 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     {
         m_pHWDevice = new (NonPagedPoolNx) VioGpuAdapter(this);
     }
+    else
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu StartDevice: CheckHardware failed\n");
+    }
     if (!m_pHWDevice)
     {
         Status = STATUS_NO_MEMORY;
@@ -170,16 +179,17 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     Status = GetRegisterInfo();
     if (!NT_SUCCESS(Status))
     {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_WARNING_LEVEL,
+                   "viogpu StartDevice: GetRegisterInfo warning, status=0x%08X\n",
+                   Status);
         DbgPrint(TRACE_LEVEL_WARNING, ("GetRegisterInfo failed with status 0x%X\n", Status));
     }
 
     Status = m_pHWDevice->HWInit(m_DeviceInfo.TranslatedResourceList, &m_CurrentMode.DispInfo);
     if (!NT_SUCCESS(Status))
     {
-        DbgPrintEx(DPFLTR_DEFAULT_ID,
-                   DPFLTR_ERROR_LEVEL,
-                   "viogpu StartDevice: HWInit failed, status=0x%08X\n",
-                   Status);
+        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu StartDevice: HWInit failed, status=0x%08X\n", Status);
         DbgPrint(TRACE_LEVEL_ERROR, ("HWInit failed with status 0x%X\n", Status));
         return Status;
     }
@@ -2445,6 +2455,10 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
     status = VirtIoDeviceInit();
     if (!NT_SUCCESS(status))
     {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu HWInit: VirtIoDeviceInit failed, status=0x%08X\n",
+                   status);
         DbgPrint(TRACE_LEVEL_FATAL, ("Failed to initialize virtio device, error %x\n", status));
         VioGpuDbgBreak();
         return status;
@@ -2458,6 +2472,10 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
         if (!AckFeature(VIRTIO_F_VERSION_1))
         {
             status = STATUS_UNSUCCESSFUL;
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu HWInit: VIRTIO_F_VERSION_1 unavailable, status=0x%08X\n",
+                       status);
             break;
         }
 
@@ -2466,6 +2484,10 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
         status = virtio_set_features(&m_VioDev, m_u64GuestFeatures);
         if (!NT_SUCCESS(status))
         {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu HWInit: virtio_set_features failed, status=0x%08X\n",
+                       status);
             DbgPrint(TRACE_LEVEL_FATAL, ("%s virtio_set_features failed with %x\n", __FUNCTION__, status));
             VioGpuDbgBreak();
             break;
@@ -2474,6 +2496,10 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
         status = virtio_find_queues(&m_VioDev, 2, vqs);
         if (!NT_SUCCESS(status))
         {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu HWInit: virtio_find_queues failed, status=0x%08X\n",
+                       status);
             DbgPrint(TRACE_LEVEL_FATAL, ("virtio_find_queues failed with error %x\n", status));
             VioGpuDbgBreak();
             break;
@@ -2483,6 +2509,10 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
         {
             DbgPrint(TRACE_LEVEL_FATAL, ("Failed to initialize virtio queues\n"));
             status = STATUS_INSUFFICIENT_RESOURCES;
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu HWInit: queue initialization failed, status=0x%08X\n",
+                       status);
             VioGpuDbgBreak();
             break;
         }
@@ -2665,6 +2695,10 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         {
             DbgPrint(TRACE_LEVEL_FATAL, ("Incomplete resources\n"));
             status = STATUS_INSUFFICIENT_RESOURCES;
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu HWInit: PCI resource initialization failed, status=0x%08X\n",
+                       status);
             VioGpuDbgBreak();
             break;
         }
@@ -2690,6 +2724,10 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         }
         else if (!NT_SUCCESS(status))
         {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu HWInit: rdmapool connection failed, status=0x%08X\n",
+                       status);
             DbgPrint(TRACE_LEVEL_FATAL,
                      ("rdmapool required but unavailable (0x%x); refusing normal DMA virtqueues\n", status));
             status = STATUS_DEVICE_NOT_READY;
@@ -2699,6 +2737,7 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         status = VioGpuAdapterInit(pDispInfo);
         if (!NT_SUCCESS(status))
         {
+            DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu HWInit: VioGpuAdapterInit failed, status=0x%08X\n", status);
             DbgPrint(TRACE_LEVEL_FATAL, ("%s Failed initialize adapter %x\n", __FUNCTION__, status));
             VioGpuDbgBreak();
             break;
@@ -2712,6 +2751,11 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         {
             DbgPrint(TRACE_LEVEL_FATAL, ("Failed to initialize buffers\n"));
             status = STATUS_INSUFFICIENT_RESOURCES;
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu HWInit: GPU buffer initialization failed, bytes=%u status=0x%08X\n",
+                       size,
+                       status);
             VioGpuDbgBreak();
             break;
         }
@@ -2723,6 +2767,10 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         {
             DbgPrint(TRACE_LEVEL_FATAL, ("Failed to initialize id generator\n"));
             status = STATUS_INSUFFICIENT_RESOURCES;
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu HWInit: IDR initialization failed, status=0x%08X\n",
+                       status);
             VioGpuDbgBreak();
             break;
         }
@@ -2731,6 +2779,10 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
     // Exit if the block above failed
     if (!NT_SUCCESS(status))
     {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu HWInit: initialization block failed, status=0x%08X\n",
+                   status);
         return status;
     }
 
@@ -2744,6 +2796,10 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
 
     if (!NT_SUCCESS(status))
     {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu HWInit: PsCreateSystemThread failed, status=0x%08X\n",
+                   status);
         DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to create system thread, status %x\n", __FUNCTION__, status));
         VioGpuDbgBreak();
         return status;
@@ -2756,6 +2812,10 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
                                        NULL);
     if (!NT_SUCCESS(status))
     {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu HWInit: ObReferenceObjectByHandle failed, status=0x%08X\n",
+                   status);
         DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to reference worker thread, status %x\n", __FUNCTION__, status));
         m_bStopWorkThread = TRUE;
         KeSetEvent(&m_ConfigUpdateEvent, IO_NO_INCREMENT, FALSE);
@@ -2768,6 +2828,10 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
     status = BuildModeList(pDispInfo);
     if (!NT_SUCCESS(status))
     {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu HWInit: BuildModeList failed, status=0x%08X\n",
+                   status);
         DbgPrint(TRACE_LEVEL_FATAL, ("%s GetModeList failed with %x\n", __FUNCTION__, status));
         VioGpuDbgBreak();
     }
@@ -2814,6 +2878,11 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
     {
         DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to allocate FB memory segment\n", __FUNCTION__));
         status = STATUS_INSUFFICIENT_RESOURCES;
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu HWInit: frame segment initialization failed, bytes=%u status=0x%08X\n",
+                   fb_size,
+                   status);
         VioGpuDbgBreak();
         return status;
     }
@@ -2822,10 +2891,20 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
     {
         DbgPrint(TRACE_LEVEL_FATAL, ("%s failed to allocate Cursor memory segment\n", __FUNCTION__));
         status = STATUS_INSUFFICIENT_RESOURCES;
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu HWInit: cursor segment initialization failed, status=0x%08X\n",
+                   status);
         VioGpuDbgBreak();
         return status;
     }
 
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu HWInit: success, modes=%u frameBytes=%u restrictedDma=%u\n",
+               m_ModeCount,
+               fb_size,
+               m_RdmaPool.IsActive());
     return status;
 }
 
