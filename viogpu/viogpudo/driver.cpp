@@ -170,6 +170,7 @@ VioGpuDodRemoveDevice(_In_ VOID *pDeviceContext)
 {
     PAGED_CODE();
     DbgPrint(TRACE_LEVEL_FATAL, ("---> %s 0x%p\n", __FUNCTION__, pDeviceContext));
+    DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "viogpu DDI: RemoveDevice enter\n");
 
     VioGpuDod *pVioGpuDod = reinterpret_cast<VioGpuDod *>(pDeviceContext);
 
@@ -178,6 +179,7 @@ VioGpuDodRemoveDevice(_In_ VOID *pDeviceContext)
         delete pVioGpuDod;
     }
 
+    DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "viogpu DDI: RemoveDevice status=0x%08X\n", STATUS_SUCCESS);
     DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s\n", __FUNCTION__));
     return STATUS_SUCCESS;
 }
@@ -205,7 +207,9 @@ VioGpuDodStopDevice(_In_ VOID *pDeviceContext)
     DbgPrint(TRACE_LEVEL_INFORMATION, ("<---> %s\n", __FUNCTION__));
 
     VioGpuDod *pVioGpuDod = reinterpret_cast<VioGpuDod *>(pDeviceContext);
-    return pVioGpuDod->StopDevice();
+    NTSTATUS status = pVioGpuDod->StopDevice();
+    DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "viogpu DDI: StopDevice status=0x%08X\n", status);
+    return status;
 }
 
 NTSTATUS
@@ -254,7 +258,13 @@ VioGpuDodQueryChildRelations(_In_ VOID *pDeviceContext,
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<---> %s\n", __FUNCTION__));
 
     VioGpuDod *pVioGpuDod = reinterpret_cast<VioGpuDod *>(pDeviceContext);
-    return pVioGpuDod->QueryChildRelations(pChildRelations, ChildRelationsSize);
+    NTSTATUS status = pVioGpuDod->QueryChildRelations(pChildRelations, ChildRelationsSize);
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               NT_SUCCESS(status) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+               "viogpu DDI: QueryChildRelations size=%lu status=0x%08X\n",
+               ChildRelationsSize,
+               status);
+    return status;
 }
 
 NTSTATUS
@@ -267,7 +277,15 @@ VioGpuDodQueryChildStatus(_In_ VOID *pDeviceContext,
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<---> %s\n", __FUNCTION__));
 
     VioGpuDod *pVioGpuDod = reinterpret_cast<VioGpuDod *>(pDeviceContext);
-    return pVioGpuDod->QueryChildStatus(pChildStatus, NonDestructiveOnly);
+    NTSTATUS status = pVioGpuDod->QueryChildStatus(pChildStatus, NonDestructiveOnly);
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               NT_SUCCESS(status) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+               "viogpu DDI: QueryChildStatus child=%lu type=%u nondestructive=%u status=0x%08X\n",
+               pChildStatus->ChildUid,
+               pChildStatus->Type,
+               NonDestructiveOnly,
+               status);
+    return status;
 }
 
 NTSTATUS
@@ -285,7 +303,15 @@ VioGpuDodQueryDeviceDescriptor(_In_ VOID *pDeviceContext,
         DbgPrint(TRACE_LEVEL_WARNING, ("VIOGPU (%p) is being called when not active!", pVioGpuDod));
         return STATUS_UNSUCCESSFUL;
     }
-    return pVioGpuDod->QueryDeviceDescriptor(ChildUid, pDeviceDescriptor);
+    NTSTATUS status = pVioGpuDod->QueryDeviceDescriptor(ChildUid, pDeviceDescriptor);
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               NT_SUCCESS(status) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+               "viogpu DDI: QueryDeviceDescriptor child=%lu offset=%lu length=%lu status=0x%08X\n",
+               ChildUid,
+               pDeviceDescriptor->DescriptorOffset,
+               pDeviceDescriptor->DescriptorLength,
+               status);
+    return status;
 }
 
 NTSTATUS
@@ -387,6 +413,11 @@ VioGpuDodStopDeviceAndReleasePostDisplayOwnership(_In_ VOID *pDeviceContext,
     {
         status = pVioGpuDod->StopDeviceAndReleasePostDisplayOwnership(TargetId, DisplayInfo);
     }
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               NT_SUCCESS(status) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+               "viogpu DDI: StopDeviceAndReleasePostDisplayOwnership target=%u status=0x%08X\n",
+               TargetId,
+               status);
     return status;
 }
 
