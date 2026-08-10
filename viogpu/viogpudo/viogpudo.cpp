@@ -509,7 +509,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
                 DXGK_WDDMDEVICECAPS *pWddmDeviceCaps = (DXGK_WDDMDEVICECAPS *)pQueryAdapterInfo->pOutputData;
                 RtlZeroMemory(pWddmDeviceCaps, pQueryAdapterInfo->OutputDataSize);
-                pWddmDeviceCaps->WDDMVersion = DXGKDDI_WDDMv3_1;
+                pWddmDeviceCaps->WDDMVersion = DXGKDDI_WDDMv1_2;
                 status = STATUS_SUCCESS;
                 break;
             }
