@@ -529,6 +529,20 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                 break;
             }
 
+        case DXGKQAITYPE_IOMMU_CAPS:
+            {
+                if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_IOMMU_CAPS))
+                {
+                    status = STATUS_BUFFER_TOO_SMALL;
+                    break;
+                }
+
+                DXGK_IOMMU_CAPS *pIommuCaps = (DXGK_IOMMU_CAPS *)pQueryAdapterInfo->pOutputData;
+                RtlZeroMemory(pIommuCaps, pQueryAdapterInfo->OutputDataSize);
+                status = STATUS_SUCCESS;
+                break;
+            }
+
         case DXGKQAITYPE_DRIVERCAPS:
             {
                 if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_DRIVERCAPS))
