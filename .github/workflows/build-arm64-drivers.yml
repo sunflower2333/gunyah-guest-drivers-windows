@@ -224,6 +224,11 @@ jobs:
               $infBroken = $true
               continue
             }
+            if ((Get-Content $infPath -Raw) -match 'NT(?:ARM64|AMD64|x86)(?:\.\d+){2,}\.\.\.\d+\.\d+\.\d+') {
+              Write-Host "::error::$($d.n): $($d.inf) 含重複 TargetOSVersion 裝飾，略過簽署。"
+              $infBroken = $true
+              continue
+            }
             # 簽所有 PE
             Get-ChildItem "$dest\*" -Include *.sys,*.dll,*.exe -EA SilentlyContinue |
               ForEach-Object { & $signtool sign /fd SHA256 /f $pfx /p "$pfxPw" $_.FullName }

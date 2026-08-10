@@ -92,6 +92,9 @@
   </PropertyGroup>
   <Import Project="$(MSBuildProjectDirectory)\viogpudo.props" />
   <Import Project="$(MSBuildProjectDirectory)\..\..\build\Driver.Common.props" />
+  <PropertyGroup Condition="'$(Configuration)'=='Win11 Release' OR '$(Configuration)'=='Win11 Debug'">
+    <InfArch>$(TargetArch).10.0...22621</InfArch>
+  </PropertyGroup>
   <ImportGroup Label="ExtensionSettings">
   </ImportGroup>
   <ImportGroup Label="PropertySheets">
