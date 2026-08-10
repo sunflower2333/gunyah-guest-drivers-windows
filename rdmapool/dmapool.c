@@ -39,6 +39,31 @@ static __forceinline VOID BitmapClearBit(ULONG Index)
     gBitmap[Index / 8] &= (UCHAR) ~(1U << (Index % 8));
 }
 
+static VOID BitmapQueryFreePages(_Out_ ULONG *FreePages, _Out_ ULONG *LargestFreeRunPages)
+{
+    ULONG CurrentFreeRun = 0;
+    ULONG i;
+
+    *FreePages = 0;
+    *LargestFreeRunPages = 0;
+    for (i = 0; i < gPoolTotalPages; i++)
+    {
+        if (BitmapTestBit(i))
+        {
+            CurrentFreeRun = 0;
+        }
+        else
+        {
+            (*FreePages)++;
+            CurrentFreeRun++;
+            if (CurrentFreeRun > *LargestFreeRunPages)
+            {
+                *LargestFreeRunPages = CurrentFreeRun;
+            }
+        }
+    }
+}
+
 /*
  * Find a contiguous run of free pages in the bitmap.
  */
@@ -128,11 +153,18 @@ DmaPoolAllocatePages(_In_ ULONG NumPages, _Out_ PVOID *VirtualAddress, _Out_ PHY
 
     if (!BitmapFindFreeRun(NumPages, &StartPage))
     {
+        ULONG FreePages;
+        ULONG LargestFreeRun;
+
+        BitmapQueryFreePages(&FreePages, &LargestFreeRun);
+
         KeReleaseSpinLock(&gPoolLock, OldIrql);
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
-                   "rdmapool: pool exhausted (requested %u pages, total %u)\n",
+                   "rdmapool: pool exhausted (requested %u pages, free %u, largest run %u, total %u)\n",
                    NumPages,
+                   FreePages,
+                   LargestFreeRun,
                    gPoolTotalPages);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -213,6 +245,15 @@ VOID DmaPoolQueryInfo(_Out_ PVOID *BaseVirtualAddress,
     *BaseVirtualAddress = gPoolVirtBase;
     *BasePhysicalAddress = gPoolPhysBase;
     *TotalSize = (ULONG64)gPoolTotalSize;
+}
+
+VOID DmaPoolQueryAllocation(_Out_ ULONG *FreePages, _Out_ ULONG *LargestFreeRunPages)
+{
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&gPoolLock, &OldIrql);
+    BitmapQueryFreePages(FreePages, LargestFreeRunPages);
+    KeReleaseSpinLock(&gPoolLock, OldIrql);
 }
 
 NTSTATUS

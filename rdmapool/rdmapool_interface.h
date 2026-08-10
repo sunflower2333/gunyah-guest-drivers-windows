@@ -66,6 +66,14 @@ DEFINE_GUID(GUID_DEVINTERFACE_RDMAPOOL, 0x7b5e2f3a, 0x9c1d, 0x4e8f, 0xa6, 0xb2, 
  */
 #define IOCTL_RDMAPOOL_RESERVE    CTL_CODE(FILE_DEVICE_RDMAPOOL, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
+/*
+ * IOCTL_RDMAPOOL_QUERY_ALLOCATION
+ *   Query the allocator's current free space.
+ *   Input:  None
+ *   Output: RDMAPOOL_QUERY_ALLOCATION_OUTPUT
+ */
+#define IOCTL_RDMAPOOL_QUERY_ALLOCATION CTL_CODE(FILE_DEVICE_RDMAPOOL, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
 #pragma pack(push, 8)
 
 typedef struct _RDMAPOOL_ALLOCATE_INPUT
@@ -91,6 +99,12 @@ typedef struct _RDMAPOOL_QUERY_POOL_OUTPUT
     PHYSICAL_ADDRESS BasePhysicalAddress; /* Physical address of pool base */
     ULONG64 TotalSize;                    /* Total pool size in bytes */
 } RDMAPOOL_QUERY_POOL_OUTPUT, *PRDMAPOOL_QUERY_POOL_OUTPUT;
+
+typedef struct _RDMAPOOL_QUERY_ALLOCATION_OUTPUT
+{
+    ULONG FreePages;           /* Pages currently available */
+    ULONG LargestFreeRunPages; /* Largest contiguous free range */
+} RDMAPOOL_QUERY_ALLOCATION_OUTPUT, *PRDMAPOOL_QUERY_ALLOCATION_OUTPUT;
 
 typedef struct _RDMAPOOL_RESERVE_INPUT
 {
