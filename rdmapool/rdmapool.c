@@ -304,6 +304,28 @@ VOID RdmaPoolEvtIoDeviceControl(_In_ WDFQUEUE Queue,
                 break;
             }
 
+        case IOCTL_RDMAPOOL_QUERY_ALLOCATION:
+            {
+                PRDMAPOOL_QUERY_ALLOCATION_OUTPUT output;
+
+                if (OutputBufferLength < sizeof(*output))
+                {
+                    status = STATUS_BUFFER_TOO_SMALL;
+                    break;
+                }
+
+                status = WdfRequestRetrieveOutputBuffer(Request, sizeof(*output), (PVOID *)&output, NULL);
+                if (!NT_SUCCESS(status))
+                {
+                    break;
+                }
+
+                DmaPoolQueryAllocation(&output->FreePages, &output->LargestFreeRunPages);
+                bytesReturned = sizeof(*output);
+                status = STATUS_SUCCESS;
+                break;
+            }
+
         case IOCTL_RDMAPOOL_RESERVE:
             {
                 PRDMAPOOL_RESERVE_INPUT input;

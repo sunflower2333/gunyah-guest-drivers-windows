@@ -4,9 +4,6 @@
 #include <initguid.h>
 #include "../../rdmapool/rdmapool_interface.h"
 
-#define VIOGPU_RDMAPOOL_MAX_SIZE (128ULL * 1024 * 1024)
-#define VIOGPU_RDMAPOOL_MIN_SIZE (20ULL * 1024 * 1024)
-#define VIOGPU_RDMAPOOL_STEP_SIZE (1ULL * 1024 * 1024)
 #define VIOGPU_RDMAPOOL_TAG      'GDRG'
 #define VIOGPU_RDMA_ALLOC_MAGIC  'ADRG'
 
@@ -114,37 +111,46 @@ NTSTATUS VioGpuRdmaPool::Connect(void)
     }
 
     RDMAPOOL_QUERY_POOL_OUTPUT query = {};
-    status = RdmaPoolIoctl(m_DeviceObject,
-                           m_FileObject,
-                           (ULONG)IOCTL_RDMAPOOL_QUERY_POOL,
-                           NULL,
-                           0,
-                           &query,
-                           sizeof(query));
-    if (!NT_SUCCESS(status))
-    {
-        Disconnect();
-        return status;
-    }
-
-    SIZE_T arenaSize = (SIZE_T)(query.TotalSize / 2);
-    if (arenaSize > VIOGPU_RDMAPOOL_MAX_SIZE)
-    {
-        arenaSize = VIOGPU_RDMAPOOL_MAX_SIZE;
-    }
-    arenaSize &= ~(SIZE_T)(PAGE_SIZE - 1);
-    if (arenaSize == 0)
-    {
-        Disconnect();
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
-
+    RDMAPOOL_QUERY_ALLOCATION_OUTPUT allocation = {};
     RDMAPOOL_ALLOCATE_INPUT input = {};
     RDMAPOOL_ALLOCATE_OUTPUT output = {};
-    SIZE_T minimumArenaSize = min(arenaSize, (SIZE_T)VIOGPU_RDMAPOOL_MIN_SIZE);
+    ULONG arenaPages = 0;
     do
     {
-        input.NumPages = (ULONG)(arenaSize / PAGE_SIZE);
+        status = RdmaPoolIoctl(m_DeviceObject,
+                               m_FileObject,
+                               (ULONG)IOCTL_RDMAPOOL_QUERY_POOL,
+                               NULL,
+                               0,
+                               &query,
+                               sizeof(query));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        status = RdmaPoolIoctl(m_DeviceObject,
+                               m_FileObject,
+                               (ULONG)IOCTL_RDMAPOOL_QUERY_ALLOCATION,
+                               NULL,
+                               0,
+                               &allocation,
+                               sizeof(allocation));
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        ULONG targetPages = (ULONG)(query.TotalSize / PAGE_SIZE / 2);
+        ULONG previousArenaPages = arenaPages;
+        arenaPages = min(targetPages, allocation.LargestFreeRunPages);
+        if (arenaPages == 0 || arenaPages == previousArenaPages)
+        {
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            break;
+        }
+
+        input.NumPages = arenaPages;
         status = RdmaPoolIoctl(m_DeviceObject,
                                m_FileObject,
                                (ULONG)IOCTL_RDMAPOOL_ALLOCATE,
@@ -152,13 +158,7 @@ NTSTATUS VioGpuRdmaPool::Connect(void)
                                sizeof(input),
                                &output,
                                sizeof(output));
-        if (NT_SUCCESS(status) || status != STATUS_INSUFFICIENT_RESOURCES || arenaSize == minimumArenaSize)
-        {
-            break;
-        }
-
-        arenaSize = max(minimumArenaSize, arenaSize - (SIZE_T)VIOGPU_RDMAPOOL_STEP_SIZE);
-    } while (TRUE);
+    } while (status == STATUS_INSUFFICIENT_RESOURCES);
     if (!NT_SUCCESS(status))
     {
         Disconnect();
@@ -166,11 +166,15 @@ NTSTATUS VioGpuRdmaPool::Connect(void)
     }
 
     DbgPrint(TRACE_LEVEL_INFORMATION,
-             ("viogpu rdmapool arena: %I64u bytes (%lu pages)\n", (ULONG64)arenaSize, input.NumPages));
+             ("viogpu rdmapool arena: %lu pages (free %lu, largest run %lu, ACPI total %I64u bytes)\n",
+              input.NumPages,
+              allocation.FreePages,
+              allocation.LargestFreeRunPages,
+              query.TotalSize));
 
     m_BaseVA = output.VirtualAddress;
     m_BasePA = output.PhysicalAddress;
-    m_Size = arenaSize;
+    m_Size = (SIZE_T)arenaPages * PAGE_SIZE;
     m_PageCount = input.NumPages;
     SIZE_T bitmapSize = (m_PageCount + 7) / 8;
     m_Bitmap = (PUCHAR)ExAllocatePoolUninitialized(NonPagedPoolNx, bitmapSize, VIOGPU_RDMAPOOL_TAG);

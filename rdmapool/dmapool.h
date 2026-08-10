@@ -53,6 +53,8 @@ VOID DmaPoolQueryInfo(_Out_ PVOID *BaseVirtualAddress,
                       _Out_ PHYSICAL_ADDRESS *BasePhysicalAddress,
                       _Out_ ULONG64 *TotalSize);
 
+VOID DmaPoolQueryAllocation(_Out_ ULONG *FreePages, _Out_ ULONG *LargestFreeRunPages);
+
 /*
  * Reserve pages at the start of the pool (mark as allocated in bitmap).
  * Does not zero memory or return addresses.

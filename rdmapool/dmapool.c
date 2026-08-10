@@ -39,6 +39,31 @@ static __forceinline VOID BitmapClearBit(ULONG Index)
     gBitmap[Index / 8] &= (UCHAR) ~(1U << (Index % 8));
 }
 
+static VOID BitmapQueryFreePages(_Out_ ULONG *FreePages, _Out_ ULONG *LargestFreeRunPages)
+{
+    ULONG CurrentFreeRun = 0;
+    ULONG i;
+
+    *FreePages = 0;
+    *LargestFreeRunPages = 0;
+    for (i = 0; i < gPoolTotalPages; i++)
+    {
+        if (BitmapTestBit(i))
+        {
+            CurrentFreeRun = 0;
+        }
+        else
+        {
+            (*FreePages)++;
+            CurrentFreeRun++;
+            if (CurrentFreeRun > *LargestFreeRunPages)
+            {
+                *LargestFreeRunPages = CurrentFreeRun;
+            }
+        }
+    }
+}
+
 /*
  * Find a contiguous run of free pages in the bitmap.
  */
@@ -128,26 +153,10 @@ DmaPoolAllocatePages(_In_ ULONG NumPages, _Out_ PVOID *VirtualAddress, _Out_ PHY
 
     if (!BitmapFindFreeRun(NumPages, &StartPage))
     {
-        ULONG FreePages = 0;
-        ULONG LargestFreeRun = 0;
-        ULONG CurrentFreeRun = 0;
+        ULONG FreePages;
+        ULONG LargestFreeRun;
 
-        for (i = 0; i < gPoolTotalPages; i++)
-        {
-            if (BitmapTestBit(i))
-            {
-                CurrentFreeRun = 0;
-            }
-            else
-            {
-                FreePages++;
-                CurrentFreeRun++;
-                if (CurrentFreeRun > LargestFreeRun)
-                {
-                    LargestFreeRun = CurrentFreeRun;
-                }
-            }
-        }
+        BitmapQueryFreePages(&FreePages, &LargestFreeRun);
 
         KeReleaseSpinLock(&gPoolLock, OldIrql);
         DbgPrintEx(DPFLTR_DEFAULT_ID,
@@ -236,6 +245,15 @@ VOID DmaPoolQueryInfo(_Out_ PVOID *BaseVirtualAddress,
     *BaseVirtualAddress = gPoolVirtBase;
     *BasePhysicalAddress = gPoolPhysBase;
     *TotalSize = (ULONG64)gPoolTotalSize;
+}
+
+VOID DmaPoolQueryAllocation(_Out_ ULONG *FreePages, _Out_ ULONG *LargestFreeRunPages)
+{
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&gPoolLock, &OldIrql);
+    BitmapQueryFreePages(FreePages, LargestFreeRunPages);
+    KeReleaseSpinLock(&gPoolLock, OldIrql);
 }
 
 NTSTATUS
