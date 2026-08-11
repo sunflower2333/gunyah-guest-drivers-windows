@@ -509,7 +509,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
                 DXGK_WDDMDEVICECAPS *pWddmDeviceCaps = (DXGK_WDDMDEVICECAPS *)pQueryAdapterInfo->pOutputData;
                 RtlZeroMemory(pWddmDeviceCaps, pQueryAdapterInfo->OutputDataSize);
-                pWddmDeviceCaps->WDDMVersion = DXGKDDI_WDDMv1_2;
+                pWddmDeviceCaps->WDDMVersion = DXGKDDI_WDDMv3_1;
                 status = STATUS_SUCCESS;
                 break;
             }
@@ -558,7 +558,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
                 DXGK_DRIVERCAPS *pDriverCaps = (DXGK_DRIVERCAPS *)pQueryAdapterInfo->pOutputData;
                 RtlZeroMemory(pDriverCaps, pQueryAdapterInfo->OutputDataSize);
-                pDriverCaps->WDDMVersion = DXGKDDI_WDDMv1_2;
+                pDriverCaps->WDDMVersion = DXGKDDI_WDDMv3_1;
                 pDriverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
 
                 if (IsPointerEnabled())
