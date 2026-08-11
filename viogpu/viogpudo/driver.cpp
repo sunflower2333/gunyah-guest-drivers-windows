@@ -68,13 +68,15 @@ void InitializeDebugPrints(IN PDRIVER_OBJECT DriverObject, IN PUNICODE_STRING Re
 }
 #endif
 
+#if !defined(VIOGPU_EXTERNAL_DRIVER_ENTRY)
 extern "C" NTSTATUS DriverEntry(_In_ DRIVER_OBJECT *pDriverObject, _In_ UNICODE_STRING *pRegistryPath)
 {
     PAGED_CODE();
     WPP_INIT_TRACING(pDriverObject, pRegistryPath);
 
     //    VioGpuDbgBreak();
-    DbgPrint(TRACE_LEVEL_FATAL, ("---> KMDOD build on on %s %s\n", __DATE__, __TIME__));
+    DbgPrint(TRACE_LEVEL_FATAL,
+             ("---> KMDOD build on %s %s\n", __DATE__, __TIME__));
 
     KMDDOD_INITIALIZATION_DATA InitialData = {0};
 
@@ -119,6 +121,7 @@ extern "C" NTSTATUS DriverEntry(_In_ DRIVER_OBJECT *pDriverObject, _In_ UNICODE_
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return Status;
 }
+#endif
 // END: Init Code
 #pragma code_seg(pop)
 

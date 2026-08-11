@@ -14,6 +14,7 @@ class VioGpuRdmaPool
     void Free(PVOID address);
     BOOLEAN Contains(PVOID address) const;
     PHYSICAL_ADDRESS GetPhysicalAddress(PVOID address) const;
+    BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
     BOOLEAN IsActive(void) const
     {
         return m_Active;
@@ -28,5 +29,8 @@ class VioGpuRdmaPool
     SIZE_T m_Size;
     ULONG m_PageCount;
     PUCHAR m_Bitmap;
+    PVOID m_VidMmBaseVA;
+    PHYSICAL_ADDRESS m_VidMmBasePA;
+    SIZE_T m_VidMmSize;
     KSPIN_LOCK m_Lock;
 };

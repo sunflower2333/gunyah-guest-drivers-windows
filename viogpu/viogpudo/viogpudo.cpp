@@ -509,7 +509,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
                 DXGK_WDDMDEVICECAPS *pWddmDeviceCaps = (DXGK_WDDMDEVICECAPS *)pQueryAdapterInfo->pOutputData;
                 RtlZeroMemory(pWddmDeviceCaps, pQueryAdapterInfo->OutputDataSize);
-                pWddmDeviceCaps->WDDMVersion = DXGKDDI_WDDMv3_1;
+                pWddmDeviceCaps->WDDMVersion = DXGKDDI_WDDMv1_2;
                 DbgPrintEx(DPFLTR_DEFAULT_ID,
                            DPFLTR_INFO_LEVEL,
                            "viogpu WddmDeviceCaps: wddm=0x%04X\n",
@@ -562,7 +562,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
                 DXGK_DRIVERCAPS *pDriverCaps = (DXGK_DRIVERCAPS *)pQueryAdapterInfo->pOutputData;
                 RtlZeroMemory(pDriverCaps, pQueryAdapterInfo->OutputDataSize);
-                pDriverCaps->WDDMVersion = DXGKDDI_WDDMv3_1;
+                pDriverCaps->WDDMVersion = DXGKDDI_WDDMv1_2;
                 pDriverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
 
                 if (IsPointerEnabled())
@@ -4305,4 +4305,11 @@ PHYSICAL_ADDRESS VioGpuAdapter::GetDmaPhysicalAddress(PVOID address)
 BOOLEAN VioGpuAdapter::IsRestrictedDmaActive(void)
 {
     return m_RdmaPool.IsActive();
+}
+
+BOOLEAN VioGpuAdapter::QueryVidMmSegment(PVOID *baseAddress,
+                                         PPHYSICAL_ADDRESS physicalAddress,
+                                         SIZE_T *size) const
+{
+    return m_RdmaPool.QueryVidMmSegment(baseAddress, physicalAddress, size);
 }

@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Win11 Release|ARM64">
+      <Configuration>Win11 Release</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{1A97C6D5-1236-4C4D-9CC4-C22421C73225}</ProjectGuid>
+    <TemplateGuid>{dd38f7fc-d7bd-488b-9242-7d8754cde80d}</TemplateGuid>
+    <TargetFrameworkVersion>v4.5.2</TargetFrameworkVersion>
+    <MinimumVisualStudioVersion>12.0</MinimumVisualStudioVersion>
+    <Configuration>Win11 Release</Configuration>
+    <Platform Condition="'$(Platform)' == ''">ARM64</Platform>
+    <SignMode>Off</SignMode>
+    <WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win11 Release|ARM64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <ALLOW_DATE_TIME>1</ALLOW_DATE_TIME>
+  </PropertyGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\..\build\Driver.Common.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win11 Release|ARM64'">
+    <TargetName>viogpuwddm</TargetName>
+    <OutDir>objfre_win11_arm64_ci\arm64\</OutDir>
+    <IntDir>objfre_win11_arm64_ci\arm64\</IntDir>
+    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win11 Release|ARM64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories);$(DDK_INC_PATH);$(SDK_INC_PATH);..\common;..\shared;..\..\VirtIO;..\viogpudo;</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>VIOGPU_DOD=1;VIOGPU_FULL_WDDM=1;VIOGPU_EXTERNAL_DRIVER_ENTRY=1;VIOGPU_WDDM_CI_ONLY=1;DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WIN8;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WppEnabled>true</WppEnabled>
+      <WppScanConfigurationData>..\viogpudo\trace.h</WppScanConfigurationData>
+      <WppMinimalRebuildFromTracking>false</WppMinimalRebuildFromTracking>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;$(DDK_LIB_PATH)\displib.lib;virtiolib.lib</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\..\VirtIO\objfre_win11_arm64\arm64\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="..\common\baseobj.h" />
+    <ClInclude Include="..\common\bitops.h" />
+    <ClInclude Include="..\common\edid.h" />
+    <ClInclude Include="..\common\helper.h" />
+    <ClInclude Include="..\common\viogpu_rdma.h" />
+    <ClInclude Include="..\common\viogpu_3d_wire.h" />
+    <ClInclude Include="..\viogpudo\driver.h" />
+    <ClInclude Include="..\viogpudo\trace.h" />
+    <ClInclude Include="..\viogpudo\viogpudo.h" />
+    <ClInclude Include="wddmddi.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\common\baseobj.cpp" />
+    <ClCompile Include="..\common\bitops.cpp" />
+    <ClCompile Include="..\common\edid.cpp" />
+    <ClCompile Include="..\common\viogpu_idr.cpp" />
+    <ClCompile Include="..\common\viogpu_pci.cpp" />
+    <ClCompile Include="..\common\viogpu_queue.cpp" />
+    <ClCompile Include="..\common\viogpu_rdma.cpp" />
+    <ClCompile Include="..\viogpudo\driver.cpp" />
+    <ClCompile Include="..\viogpudo\viogpudo.cpp" />
+    <ClCompile Include="driver_entry.cpp" />
+    <ClCompile Include="wddmddi.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="$(MSBuildProjectDirectory)\..\..\build\Driver.Common.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

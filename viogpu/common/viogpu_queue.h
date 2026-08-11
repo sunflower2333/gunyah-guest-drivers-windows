@@ -240,8 +240,16 @@ class CtrlQueue : public VioGpuQueue
     PVOID AllocCmd(PGPU_VBUFFER *buf, int sz);
     PVOID AllocCmdResp(PGPU_VBUFFER *buf, int cmd_sz, PVOID resp_buf, int resp_sz);
 
-    UINT QueueBuffer(PGPU_VBUFFER buf);
+    int QueueBuffer(PGPU_VBUFFER buf);
     PGPU_VBUFFER DequeueBuffer(_Out_ UINT *len);
+
+    PGPU_VBUFFER PrepareNativeSubmit(UINT context_id, const void *command, UINT command_size);
+    BOOLEAN RefreshNativeSubmit(PGPU_VBUFFER buf, const void *command, UINT command_size);
+    int QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id);
+    BOOLEAN QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info);
+    BOOLEAN QueryCapset(UINT capset_id, UINT capset_version, UINT capset_size, PGPU_CAPSET_DRM capset);
+    BOOLEAN CreateNativeContext(UINT context_id);
+    BOOLEAN DestroyNativeContext(UINT context_id);
 
     void CreateResource(UINT res_id, UINT format, UINT width, UINT height);
     void DestroyResource(UINT id);
@@ -257,6 +265,7 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN GetEdidInfo(PGPU_VBUFFER buf, UINT id, PBYTE edid);
 
   private:
+    BOOLEAN SubmitSynchronous(PGPU_VBUFFER buf);
     volatile LONG m_FenceIdr;
 };
 

@@ -1,0 +1,67 @@
+name: Check viogpu full WDDM ARM64 contract
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "viogpu/common/**"
+      - "viogpu/tests/native-context-wire/**"
+      - "viogpu/viogpudo/**"
+      - "viogpu/viogpuwddm/**"
+      - "VirtIO/**"
+      - ".github/workflows/viogpuwddm-arm64-ci.yml"
+  push:
+    branches: [ master, viogpu-wddm3.1 ]
+    paths:
+      - "viogpu/common/**"
+      - "viogpu/tests/native-context-wire/**"
+      - "viogpu/viogpudo/**"
+      - "viogpu/viogpuwddm/**"
+      - "VirtIO/**"
+      - ".github/workflows/viogpuwddm-arm64-ci.yml"
+
+jobs:
+  contract-check:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Add MSVC to PATH
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Check native-context wire ABI manifest
+        shell: cmd
+        run: viogpu\tests\native-context-wire\run-msvc.cmd
+
+      - name: Build VirtIO dependency
+        shell: pwsh
+        run: |
+          msbuild VirtIO/VirtioLib.vcxproj /m `
+            /p:Configuration="Win11 Release" /p:Platform=ARM64 `
+            /p:SpectreMitigation=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build full WDDM contract target
+        shell: pwsh
+        run: |
+          msbuild viogpu/viogpuwddm/viogpuwddm.vcxproj /m `
+            /p:Configuration="Win11 Release" /p:Platform=ARM64 `
+            /p:ApiValidator_Enable=false /p:InfVerif_Enable=false `
+            /p:SpectreMitigation=false /p:SignMode=Off
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload compile-only artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: viogpuwddm-arm64-ci-do-not-install
+          path: |
+            viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.sys
+            viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.pdb
+            viogpu/viogpuwddm/README.md
+          if-no-files-found: error

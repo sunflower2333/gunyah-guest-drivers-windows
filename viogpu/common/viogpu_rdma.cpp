@@ -70,9 +70,10 @@ static NTSTATUS RdmaPoolIoctl(PDEVICE_OBJECT deviceObject,
 
 VioGpuRdmaPool::VioGpuRdmaPool()
     : m_Active(FALSE), m_FileObject(NULL), m_DeviceObject(NULL), m_BaseVA(NULL), m_Size(0), m_PageCount(0),
-      m_Bitmap(NULL)
+      m_Bitmap(NULL), m_VidMmBaseVA(NULL), m_VidMmSize(0)
 {
     m_BasePA.QuadPart = 0;
+    m_VidMmBasePA.QuadPart = 0;
     KeInitializeSpinLock(&m_Lock);
 }
 
@@ -186,6 +187,16 @@ NTSTATUS VioGpuRdmaPool::Connect(void)
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     RtlZeroMemory(m_Bitmap, bitmapSize);
+#if defined(VIOGPU_FULL_WDDM)
+    ULONG vidMmStartPage = m_PageCount / 2;
+    for (ULONG page = vidMmStartPage; page < m_PageCount; page++)
+    {
+        BitmapSet(m_Bitmap, page, TRUE);
+    }
+    m_VidMmBaseVA = (PUCHAR)m_BaseVA + ((SIZE_T)vidMmStartPage * PAGE_SIZE);
+    m_VidMmBasePA.QuadPart = m_BasePA.QuadPart + ((ULONGLONG)vidMmStartPage * PAGE_SIZE);
+    m_VidMmSize = (SIZE_T)(m_PageCount - vidMmStartPage) * PAGE_SIZE;
+#endif
     m_Active = TRUE;
     RtlZeroMemory(m_BaseVA, m_Size);
     return STATUS_SUCCESS;
@@ -216,6 +227,9 @@ void VioGpuRdmaPool::Disconnect(void)
     m_Size = 0;
     m_PageCount = 0;
     m_Bitmap = NULL;
+    m_VidMmBaseVA = NULL;
+    m_VidMmBasePA.QuadPart = 0;
+    m_VidMmSize = 0;
 }
 
 PVOID VioGpuRdmaPool::Allocate(SIZE_T size, SIZE_T alignment)
@@ -325,4 +339,20 @@ PHYSICAL_ADDRESS VioGpuRdmaPool::GetPhysicalAddress(PVOID address) const
         physicalAddress.QuadPart = m_BasePA.QuadPart + ((PUCHAR)address - (PUCHAR)m_BaseVA);
     }
     return physicalAddress;
+}
+
+BOOLEAN VioGpuRdmaPool::QueryVidMmSegment(PVOID *baseAddress,
+                                          PPHYSICAL_ADDRESS physicalAddress,
+                                          SIZE_T *size) const
+{
+    if (!m_Active || m_VidMmBaseVA == NULL || m_VidMmSize == 0 || baseAddress == NULL ||
+        physicalAddress == NULL || size == NULL)
+    {
+        return FALSE;
+    }
+
+    *baseAddress = m_VidMmBaseVA;
+    *physicalAddress = m_VidMmBasePA;
+    *size = m_VidMmSize;
+    return TRUE;
 }

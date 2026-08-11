@@ -130,6 +130,7 @@ class VioGpuAdapter : IVioGpuPCI
     void FreeDmaMemory(PVOID address);
     PHYSICAL_ADDRESS GetDmaPhysicalAddress(PVOID address);
     BOOLEAN IsRestrictedDmaActive(void);
+    BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
 
     PVIDEO_MODE_INFORMATION GetModeInfo(UINT idx)
     {
@@ -379,6 +380,10 @@ class VioGpuDod
     PDXGKRNL_INTERFACE GetDxgkInterface(void)
     {
         return &m_DxgkInterface;
+    }
+    BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
+    {
+        return m_pHWDevice != NULL && m_pHWDevice->QueryVidMmSegment(baseAddress, physicalAddress, size);
     }
 
   private:

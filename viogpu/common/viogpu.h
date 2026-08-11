@@ -39,55 +39,9 @@ extern "C"
 #include "viogpu_pci.h"
 #include "viogpu_idr.h"
 #include "viogpum.h"
+#include "viogpu_3d_wire.h"
 
 extern VirtIOSystemOps VioGpuSystemOps;
-
-enum virtio_gpu_ctrl_type
-{
-    VIRTIO_GPU_UNDEFINED = 0,
-
-    /* 2d commands */
-    VIRTIO_GPU_CMD_GET_DISPLAY_INFO = 0x0100,
-    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-    VIRTIO_GPU_CMD_RESOURCE_UNREF,
-    VIRTIO_GPU_CMD_SET_SCANOUT,
-    VIRTIO_GPU_CMD_RESOURCE_FLUSH,
-    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
-    VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-    VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING,
-    VIRTIO_GPU_CMD_GET_CAPSET_INFO,
-    VIRTIO_GPU_CMD_GET_CAPSET,
-    VIRTIO_GPU_CMD_GET_EDID,
-
-    /* 3d commands */
-    VIRTIO_GPU_CMD_CTX_CREATE = 0x0200,
-    VIRTIO_GPU_CMD_CTX_DESTROY,
-    VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE,
-    VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE,
-    VIRTIO_GPU_CMD_RESOURCE_CREATE_3D,
-    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D,
-    VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
-    VIRTIO_GPU_CMD_SUBMIT_3D,
-
-    /* cursor commands */
-    VIRTIO_GPU_CMD_UPDATE_CURSOR = 0x0300,
-    VIRTIO_GPU_CMD_MOVE_CURSOR,
-
-    /* success responses */
-    VIRTIO_GPU_RESP_OK_NODATA = 0x1100,
-    VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
-    VIRTIO_GPU_RESP_OK_CAPSET_INFO,
-    VIRTIO_GPU_RESP_OK_CAPSET,
-    VIRTIO_GPU_RESP_OK_EDID,
-
-    /* error responses */
-    VIRTIO_GPU_RESP_ERR_UNSPEC = 0x1200,
-    VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY,
-    VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID,
-    VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID,
-    VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID,
-    VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER,
-};
 
 #define VIRTIO_GPU_EVENT_DISPLAY (1 << 0)
 
@@ -115,8 +69,6 @@ typedef struct virtio_gpu_rect
 } GPU_RECT, *PGPU_RECT;
 #pragma pack()
 
-#define VIRTIO_GPU_FLAG_FENCE (1 << 0)
-
 #pragma pack(1)
 typedef struct virtio_gpu_ctrl_hdr
 {
@@ -124,9 +76,91 @@ typedef struct virtio_gpu_ctrl_hdr
     ULONG flags;
     ULONGLONG fence_id;
     ULONG ctx_id;
-    ULONG padding;
+    UCHAR ring_idx;
+    UCHAR padding[3];
 } GPU_CTRL_HDR, *PGPU_CTRL_HDR;
 #pragma pack()
+
+/* VIRTIO_GPU_CMD_GET_CAPSET_INFO */
+#pragma pack(1)
+typedef struct virtio_gpu_get_capset_info
+{
+    GPU_CTRL_HDR hdr;
+    ULONG capset_index;
+    ULONG padding;
+} GPU_CMD_GET_CAPSET_INFO, *PGPU_CMD_GET_CAPSET_INFO;
+#pragma pack()
+
+/* VIRTIO_GPU_RESP_OK_CAPSET_INFO */
+#pragma pack(1)
+typedef struct virtio_gpu_resp_capset_info
+{
+    GPU_CTRL_HDR hdr;
+    ULONG capset_id;
+    ULONG capset_max_version;
+    ULONG capset_max_size;
+    ULONG padding;
+} GPU_RESP_CAPSET_INFO, *PGPU_RESP_CAPSET_INFO;
+#pragma pack()
+
+/* VIRTIO_GPU_CMD_GET_CAPSET */
+#pragma pack(1)
+typedef struct virtio_gpu_get_capset
+{
+    GPU_CTRL_HDR hdr;
+    ULONG capset_id;
+    ULONG capset_version;
+} GPU_CMD_GET_CAPSET, *PGPU_CMD_GET_CAPSET;
+#pragma pack()
+
+/* VIRTIO_GPU_CMD_CTX_CREATE */
+#define VIRTIO_GPU_CONTEXT_NAME_LENGTH 64
+#pragma pack(1)
+typedef struct virtio_gpu_ctx_create
+{
+    GPU_CTRL_HDR hdr;
+    ULONG nlen;
+    ULONG context_init;
+    UCHAR debug_name[VIRTIO_GPU_CONTEXT_NAME_LENGTH];
+} GPU_CMD_CTX_CREATE, *PGPU_CMD_CTX_CREATE;
+#pragma pack()
+
+/* VIRTIO_GPU_CMD_CTX_DESTROY */
+#pragma pack(1)
+typedef struct virtio_gpu_ctx_destroy
+{
+    GPU_CTRL_HDR hdr;
+} GPU_CMD_CTX_DESTROY, *PGPU_CMD_CTX_DESTROY;
+#pragma pack()
+
+/* VIRTIO_GPU_CMD_SUBMIT_3D */
+#pragma pack(1)
+typedef struct virtio_gpu_cmd_submit
+{
+    GPU_CTRL_HDR hdr;
+    ULONG size;
+    ULONG num_in_fences;
+} GPU_CMD_SUBMIT_3D, *PGPU_CMD_SUBMIT_3D;
+#pragma pack()
+
+/* VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB */
+#pragma pack(1)
+typedef struct virtio_gpu_resource_create_blob
+{
+    GPU_CTRL_HDR hdr;
+    ULONG resource_id;
+    ULONG blob_mem;
+    ULONG blob_flags;
+    ULONG nr_entries;
+    ULONGLONG blob_id;
+    ULONGLONG size;
+} GPU_CMD_RESOURCE_CREATE_BLOB, *PGPU_CMD_RESOURCE_CREATE_BLOB;
+#pragma pack()
+
+static_assert(sizeof(GPU_CTRL_HDR) == 24, "virtio-gpu control header wire size");
+static_assert(sizeof(GPU_CMD_SUBMIT_3D) == 32, "virtio-gpu submit wire size");
+static_assert(sizeof(GPU_CMD_CTX_CREATE) == 96, "virtio-gpu context create wire size");
+static_assert(sizeof(GPU_CMD_RESOURCE_CREATE_BLOB) == 56, "virtio-gpu blob create wire size");
 
 #pragma pack(1)
 typedef struct virtio_gpu_display_one
@@ -324,9 +358,6 @@ typedef struct _COLOR_CHARACTERISTICS
 } COLOR_CHARACTERISTICS, *PCOLOR_CHARACTERISTICS;
 
 #pragma pack(pop)
-
-#define VIRTIO_GPU_F_VIRGL 0
-#define VIRTIO_GPU_F_EDID  1
 
 #define ISR_REASON_DISPLAY 1
 #define ISR_REASON_CURSOR  2

@@ -143,7 +143,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <PreprocessorDefinitions>DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WDDM3_1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WIN8;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <CustomBuildStep>
       <Command>copy /Y $(ProjectDir)viogpudo.DVL.XML $(ProjectDir)$(PackOne_DestinationPrefix)Install\$(TargetOS)\$(TargetArch)</Command>
@@ -258,6 +258,7 @@
     <ClInclude Include="..\common\edid.h" />
     <ClInclude Include="..\common\helper.h" />
     <ClInclude Include="..\common\viogpu_rdma.h" />
+    <ClInclude Include="..\common\viogpu_3d_wire.h" />
     <ClInclude Include="driver.h" />
     <ClInclude Include="trace.h" />
     <ClInclude Include="viogpudo.h" />
