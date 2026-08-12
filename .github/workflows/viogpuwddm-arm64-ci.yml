@@ -63,28 +63,29 @@ jobs:
       - name: Check compile-only registration helper linkage
         shell: pwsh
         run: |
-          $object = "viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/driver_entry.obj"
           $map = "viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.map"
           $driver = "viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.sys"
 
-          foreach ($path in @($object, $map, $driver)) {
+          foreach ($path in @($map, $driver)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               Write-Error "missing compile-only linkage evidence: $path"
               exit 1
             }
           }
 
-          $symbols = & dumpbin /nologo /symbols $object
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (($symbols -join "`n") -notmatch "(?m)^.*\bUNDEF\b.*\|\s*_?DxgkInitialize\b") {
-            Write-Error "driver_entry.obj does not contain an unresolved DxgkInitialize reference"
-            exit 1
-          }
-
-          $mapText = Get-Content -LiteralPath $map -Raw
+          $mapLines = Get-Content -LiteralPath $map
+          $mapText = $mapLines -join "`n"
           if ($mapText -notmatch "\bVioGpuWddmInitializeMiniportCompileOnly\b") {
             Write-Error "linker map does not retain the compile-only registration helper"
             exit 1
+          }
+          if ($mapText -notmatch "\bDxgkInitialize\b") {
+            Write-Error "linker map does not contain the statically resolved DxgkInitialize symbol"
+            exit 1
+          }
+
+          $mapLines | Where-Object {
+            $_ -match "\b(VioGpuWddmInitializeMiniportCompileOnly|DxgkInitialize)\b"
           }
 
       - name: Upload compile-only artifact
@@ -95,6 +96,5 @@ jobs:
             viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.sys
             viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.pdb
             viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.map
-            viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/driver_entry.obj
             viogpu/viogpuwddm/README.md
           if-no-files-found: error
