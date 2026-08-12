@@ -1,8 +1,16 @@
 #include "wddmddi.h"
 
-namespace
-{
-VOID InitializeFullWddmCallbacks(DRIVER_INITIALIZATION_DATA *initialData)
+#if !DBG
+#include "driver_entry.tmh"
+#endif
+
+#pragma code_seg(push)
+#pragma code_seg("INIT")
+
+static_assert(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WIN8,
+              "viogpuwddm must remain on the WDDM 1.2 interface");
+
+VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData)
 {
     RtlZeroMemory(initialData, sizeof(*initialData));
     initialData->Version = DXGKDDI_INTERFACE_VERSION;
@@ -59,18 +67,34 @@ VOID InitializeFullWddmCallbacks(DRIVER_INITIALIZATION_DATA *initialData)
     initialData->DxgkDdiSystemDisplayEnable = VioGpuDodSystemDisplayEnable;
     initialData->DxgkDdiSystemDisplayWrite = VioGpuDodSystemDisplayWrite;
 }
-} // namespace
+
+NTSTATUS VioGpuWddmInitializeMiniportCompileOnly(_In_ DRIVER_OBJECT *driverObject, _In_ UNICODE_STRING *registryPath)
+{
+    PAGED_CODE();
+
+    DRIVER_INITIALIZATION_DATA initialData;
+    VioGpuWddmBuildInitializationData(&initialData);
+
+    WPP_INIT_TRACING(driverObject, registryPath);
+    NTSTATUS status = DxgkInitialize(driverObject, registryPath, &initialData);
+    if (!NT_SUCCESS(status))
+    {
+        WPP_CLEANUP(NULL);
+    }
+
+    return status;
+}
 
 extern "C" NTSTATUS DriverEntry(_In_ DRIVER_OBJECT *driverObject, _In_ UNICODE_STRING *registryPath)
 {
-    DRIVER_INITIALIZATION_DATA initialData;
-    InitializeFullWddmCallbacks(&initialData);
+    PAGED_CODE();
 
     UNREFERENCED_PARAMETER(driverObject);
     UNREFERENCED_PARAMETER(registryPath);
-    UNREFERENCED_PARAMETER(initialData);
 
-    // This target is only a WDK contract check until submission completion,
+    // Keep the registration helper unreachable until submission completion,
     // preemption, and TDR recovery are connected to VirtIO fences.
     return STATUS_NOT_SUPPORTED;
 }
+
+#pragma code_seg(pop)

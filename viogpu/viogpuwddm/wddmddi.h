@@ -10,6 +10,8 @@
 
 class VioGpuDod;
 
+VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData);
+
 enum VIOGPU_WDDM_ABI : UINT
 {
     VioGpuWddmAllocationPrivateVersion = 1,

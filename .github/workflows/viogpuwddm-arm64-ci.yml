@@ -39,6 +39,10 @@ jobs:
         shell: cmd
         run: viogpu\tests\native-context-wire\run-msvc.cmd
 
+      - name: Check full WDDM compile-only safety contract
+        shell: pwsh
+        run: python viogpu/viogpuwddm/check-contract.py
+
       - name: Build VirtIO dependency
         shell: pwsh
         run: |
