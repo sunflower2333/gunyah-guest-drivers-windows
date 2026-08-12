@@ -11,6 +11,7 @@ PROJECT_DIR = Path(__file__).resolve().parent
 DRIVER_SOURCE_PATH = (PROJECT_DIR / "driver_entry.cpp").resolve()
 DRIVER_SOURCE = DRIVER_SOURCE_PATH.read_text(encoding="utf-8")
 PROJECT = PROJECT_DIR / "viogpuwddm.vcxproj"
+WPP_NON_OWNER_TEMPLATE = PROJECT_DIR / "wpp-non-owner.tpl"
 NAMESPACE = {"msbuild": "http://schemas.microsoft.com/developer/msbuild/2003"}
 REGISTRATION_HELPER = "VioGpuWddmInitializeMiniportCompileOnly"
 
@@ -318,6 +319,38 @@ def check_project_safety(root: ET.Element) -> None:
     ]
     if optimize_references != ["false"]:
         fail("compile-only project must disable reference optimization so the unreachable helper is linked")
+
+    driver_items = [
+        element
+        for element in root.findall(".//msbuild:ClCompile[@Include]", NAMESPACE)
+        if element.attrib["Include"].replace("\\", "/").endswith("/viogpudo/driver.cpp")
+    ]
+    if len(driver_items) != 1:
+        fail("compile-only project must contain exactly one inherited viogpudo driver.cpp input")
+
+    non_owner_templates = driver_items[0].findall(
+        "msbuild:WppGenerateUsingTemplateFile", NAMESPACE
+    )
+    expected_template = r"{$(MSBuildProjectDirectory)\wpp-non-owner.tpl}*.tmh"
+    if [element.text for element in non_owner_templates] != [expected_template]:
+        fail("inherited driver.cpp must use the project-local WPP non-owner template")
+
+    if not WPP_NON_OWNER_TEMPLATE.is_file():
+        fail("project-local WPP non-owner template is missing")
+    expected_template_source = (
+        "`INCLUDE km-header.tpl`\n"
+        "`INCLUDE control.tpl`\n"
+        "`INCLUDE tracemacro.tpl`\n"
+    )
+    if WPP_NON_OWNER_TEMPLATE.read_text(encoding="utf-8") != expected_template_source:
+        fail("WPP non-owner template must contain only declarations, control data, and trace macros")
+
+    template_inputs = [
+        element.attrib.get("Include", "").replace("\\", "/")
+        for element in root.findall(".//msbuild:None[@Include]", NAMESPACE)
+    ]
+    if template_inputs.count("wpp-non-owner.tpl") != 1:
+        fail("compile-only project must track the WPP non-owner template exactly once")
 
     inputs = [element.attrib.get("Include", "").lower() for element in root.iter()]
     if any(path.endswith((".inf", ".inx")) for path in inputs):

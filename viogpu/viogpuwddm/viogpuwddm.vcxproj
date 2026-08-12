@@ -71,10 +71,15 @@
     <ClCompile Include="..\common\viogpu_pci.cpp" />
     <ClCompile Include="..\common\viogpu_queue.cpp" />
     <ClCompile Include="..\common\viogpu_rdma.cpp" />
-    <ClCompile Include="..\viogpudo\driver.cpp" />
+    <ClCompile Include="..\viogpudo\driver.cpp">
+      <WppGenerateUsingTemplateFile>{$(MSBuildProjectDirectory)\wpp-non-owner.tpl}*.tmh</WppGenerateUsingTemplateFile>
+    </ClCompile>
     <ClCompile Include="..\viogpudo\viogpudo.cpp" />
     <ClCompile Include="driver_entry.cpp" />
     <ClCompile Include="wddmddi.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="wpp-non-owner.tpl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="$(MSBuildProjectDirectory)\..\..\build\Driver.Common.targets" />
