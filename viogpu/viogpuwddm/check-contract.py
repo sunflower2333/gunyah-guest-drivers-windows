@@ -4,6 +4,7 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Optional
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -76,28 +77,31 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-def function_body_span(name: str) -> tuple[str, int, int]:
-    matches = list(re.finditer(rf"\b{re.escape(name)}\s*\([^;{{}}]*?\)\s*\{{", DRIVER_CODE, re.DOTALL))
+def function_body_span(name: str, source: Optional[str] = None) -> tuple[str, int, int]:
+    if source is None:
+        source = DRIVER_CODE
+
+    matches = list(re.finditer(rf"\b{re.escape(name)}\s*\([^;{{}}]*?\)\s*\{{", source, re.DOTALL))
     if len(matches) != 1:
         fail(f"expected one definition of {name}, found {len(matches)}")
 
     match = matches[0]
     start = match.end() - 1
     depth = 0
-    for offset, character in enumerate(DRIVER_CODE[start:], start=start):
+    for offset, character in enumerate(source[start:], start=start):
         if character == "{":
             depth += 1
         elif character == "}":
             depth -= 1
             if depth == 0:
-                return DRIVER_CODE[start + 1 : offset], start + 1, offset
+                return source[start + 1 : offset], start + 1, offset
 
     fail(f"unterminated function {name}")
     return "", 0, 0
 
 
-def function_body(name: str) -> str:
-    return function_body_span(name)[0]
+def function_body(name: str, source: Optional[str] = None) -> str:
+    return function_body_span(name, source)[0]
 
 
 def require_fragment(body: str, fragment: str, owner: str) -> None:
@@ -144,14 +148,18 @@ def check_driver_entry_gate() -> None:
 
 def check_registration_helper(sources: dict[Path, str]) -> None:
     body, helper_start, helper_end = function_body_span(REGISTRATION_HELPER)
-    for required in (
-        "PAGED_CODE();",
-        "VioGpuWddmBuildInitializationData(&initialData);",
-        "WPP_INIT_TRACING(driverObject, registryPath);",
-        "DxgkInitialize(driverObject, registryPath, &initialData);",
-        "WPP_CLEANUP(NULL);",
-    ):
-        require_fragment(body, required, "compile-only registration helper")
+    normalized = re.sub(r"\s+", " ", body).strip()
+    expected = (
+        "PAGED_CODE(); "
+        "DRIVER_INITIALIZATION_DATA initialData; "
+        "VioGpuWddmBuildInitializationData(&initialData); "
+        "WPP_INIT_TRACING(driverObject, registryPath); "
+        "NTSTATUS status = DxgkInitialize(driverObject, registryPath, &initialData); "
+        "if (!NT_SUCCESS(status)) { WPP_CLEANUP(NULL); } "
+        "return status;"
+    )
+    if normalized != expected:
+        fail("compile-only registration helper must contain only the exact initialization and cleanup sequence")
 
     helper_occurrences = source_occurrences(sources, rf"\b{REGISTRATION_HELPER}\b")
     if len(helper_occurrences) != 1 or helper_occurrences[0][0] != DRIVER_SOURCE_PATH:
@@ -166,6 +174,17 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
     call_path, call_offset = initialize_calls[0]
     if call_path != DRIVER_SOURCE_PATH or not helper_start <= call_offset < helper_end:
         fail("the target's only DxgkInitialize call must be inside the compile-only registration helper")
+
+    unload_definitions = [
+        (path, source)
+        for path, source in sources.items()
+        if re.search(r"\bVioGpuDodUnload\s*\([^;{}]*\)\s*\{", source, re.DOTALL)
+    ]
+    if len(unload_definitions) != 1:
+        fail(f"target must contain exactly one VioGpuDodUnload definition; found {len(unload_definitions)}")
+    unload_body = function_body("VioGpuDodUnload", unload_definitions[0][1])
+    if len(re.findall(r"\bWPP_CLEANUP\s*\(\s*NULL\s*\)\s*;", unload_body)) != 1:
+        fail("registered unload callback must clean up WPP exactly once after successful initialization")
 
 
 def check_callback_table() -> None:
@@ -246,6 +265,14 @@ def check_callback_table() -> None:
     if sorted(assignment_members) != sorted(expected_members):
         fail("callback table contains an unexpected, missing, or duplicate initialData assignment")
 
+    expected_statements = [
+        "RtlZeroMemory(initialData, sizeof(*initialData));",
+        "initialData->Version = DXGKDDI_INTERFACE_VERSION;",
+        *(f"initialData->{member} = {callback};" for member, callback in callbacks.items()),
+    ]
+    if re.sub(r"\s+", " ", body).strip() != " ".join(expected_statements):
+        fail("callback table must contain only the exact expected initialization statement sequence")
+
     if re.search(r"\bDxgkDdiPresentDisplayOnly\b", body):
         fail("full miniport must not register the KMDOD-only PresentDisplayOnly callback")
 
@@ -284,6 +311,13 @@ def check_project_safety(root: ET.Element) -> None:
     ]
     if not sign_modes or any(sign_mode != "Off" for sign_mode in sign_modes):
         fail(f"compile-only project must set every SignMode to Off; found: {sign_modes or ['none']}")
+
+    optimize_references = [
+        (element.text or "").strip()
+        for element in root.findall(".//msbuild:Link/msbuild:OptimizeReferences", NAMESPACE)
+    ]
+    if optimize_references != ["false"]:
+        fail("compile-only project must disable reference optimization so the unreachable helper is linked")
 
     inputs = [element.attrib.get("Include", "").lower() for element in root.iter()]
     if any(path.endswith((".inf", ".inx")) for path in inputs):

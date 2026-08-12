@@ -46,6 +46,7 @@
       <WppMinimalRebuildFromTracking>false</WppMinimalRebuildFromTracking>
     </ClCompile>
     <Link>
+      <OptimizeReferences>false</OptimizeReferences>
       <AdditionalDependencies>%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;$(DDK_LIB_PATH)\displib.lib;virtiolib.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\..\VirtIO\objfre_win11_arm64\arm64\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>

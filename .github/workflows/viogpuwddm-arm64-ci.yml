@@ -60,6 +60,17 @@ jobs:
             /p:SpectreMitigation=false /p:SignMode=Off
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Check compile-only registration helper linkage
+        shell: pwsh
+        run: |
+          $driver = "viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.sys"
+          $imports = & dumpbin /nologo /imports $driver
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (($imports -join "`n") -notmatch "\bDxgkInitialize\b") {
+            Write-Error "DxgkInitialize import was discarded from the compile-only target"
+            exit 1
+          }
+
       - name: Upload compile-only artifact
         uses: actions/upload-artifact@v4
         with:

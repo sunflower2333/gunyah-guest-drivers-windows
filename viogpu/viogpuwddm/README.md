@@ -14,7 +14,11 @@ interrupt, power, cursor, EDID, and VidPN lifecycle into a full-miniport
 `DRIVER_INITIALIZATION_DATA` table. The separate
 `VioGpuWddmInitializeMiniportCompileOnly` helper compiles and links the future
 `DxgkInitialize` call, including trace initialization and failure cleanup, but
-is deliberately unreachable from `DriverEntry`.
+is deliberately unreachable from `DriverEntry`. The compile-only project sets
+`OptimizeReferences=false` so the linker cannot discard that helper before
+resolving its WDK contract. On a future successful registration, the registered
+`VioGpuDodUnload` callback owns trace cleanup. CI also checks that the linked
+`.sys` still imports `DxgkInitialize`.
 
 The callback table intentionally leaves these DDI slots unset:
 
