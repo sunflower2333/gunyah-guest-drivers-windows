@@ -74,19 +74,24 @@ jobs:
           }
 
           $mapLines = Get-Content -LiteralPath $map
-          $mapText = $mapLines -join "`n"
-          if ($mapText -notmatch "\bVioGpuWddmInitializeMiniportCompileOnly\b") {
-            Write-Error "linker map does not retain the compile-only registration helper"
-            exit 1
-          }
-          if ($mapText -notmatch "\bDxgkInitialize\b") {
-            Write-Error "linker map does not contain the statically resolved DxgkInitialize symbol"
+          $helperLines = @($mapLines | Where-Object {
+            $_ -match "^\s*[0-9A-F]+:[0-9A-F]+\s+VioGpuWddmInitializeMiniportCompileOnly\s+[0-9A-F]+\s+f\s+.*\bdriver_entry\.obj\s*$"
+          })
+          if ($helperLines.Count -ne 1) {
+            Write-Error "linker map must retain exactly one registration helper from driver_entry.obj"
             exit 1
           }
 
-          $mapLines | Where-Object {
-            $_ -match "\b(VioGpuWddmInitializeMiniportCompileOnly|DxgkInitialize)\b"
+          $initializeLines = @($mapLines | Where-Object {
+            $_ -match "^\s*[0-9A-F]+:[0-9A-F]+\s+DxgkInitialize\s+[0-9A-F]+\s+f\s+.*\bdisplib:displib\.obj\s*$"
+          })
+          if ($initializeLines.Count -ne 1) {
+            Write-Error "linker map must resolve exactly one DxgkInitialize from displib:displib.obj"
+            exit 1
           }
+
+          $initializeLines
+          $helperLines
 
       - name: Upload compile-only artifact
         uses: actions/upload-artifact@v4
