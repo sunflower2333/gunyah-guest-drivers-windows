@@ -68,7 +68,8 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiSystemDisplayWrite = VioGpuDodSystemDisplayWrite;
 }
 
-NTSTATUS VioGpuWddmInitializeMiniportCompileOnly(_In_ DRIVER_OBJECT *driverObject, _In_ UNICODE_STRING *registryPath)
+extern "C" NTSTATUS VioGpuWddmInitializeMiniportCompileOnly(_In_ DRIVER_OBJECT *driverObject,
+                                                            _In_ UNICODE_STRING *registryPath)
 {
     PAGED_CODE();
 

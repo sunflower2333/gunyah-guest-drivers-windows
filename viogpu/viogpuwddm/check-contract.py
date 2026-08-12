@@ -61,7 +61,8 @@ def strip_cpp_comments_and_literals(source: str) -> str:
                     end += 1
                     break
                 end += 1
-            blank(offset, end)
+            if source[offset:end] != '"C"':
+                blank(offset, end)
             offset = end
             continue
 
@@ -148,6 +149,14 @@ def check_driver_entry_gate() -> None:
 
 
 def check_registration_helper(sources: dict[Path, str]) -> None:
+    helper_definitions = list(
+        re.finditer(
+            rf'\bextern\s+"C"\s+NTSTATUS\s+{REGISTRATION_HELPER}\s*\(', DRIVER_CODE
+        )
+    )
+    if len(helper_definitions) != 1:
+        fail("compile-only registration helper must have exactly one C-linkage definition")
+
     body, helper_start, helper_end = function_body_span(REGISTRATION_HELPER)
     normalized = re.sub(r"\s+", " ", body).strip()
     expected = (
@@ -319,6 +328,13 @@ def check_project_safety(root: ET.Element) -> None:
     ]
     if optimize_references != ["false"]:
         fail("compile-only project must disable reference optimization so the unreachable helper is linked")
+
+    forced_symbols = [
+        (element.text or "").strip()
+        for element in root.findall(".//msbuild:Link/msbuild:ForceSymbolReferences", NAMESPACE)
+    ]
+    if forced_symbols != [REGISTRATION_HELPER]:
+        fail("compile-only project must force-link only the unreachable registration helper")
 
     driver_items = [
         element

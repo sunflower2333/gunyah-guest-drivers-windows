@@ -16,9 +16,11 @@ interrupt, power, cursor, EDID, and VidPN lifecycle into a full-miniport
 `DxgkInitialize` call, including trace initialization and failure cleanup, but
 is deliberately unreachable from `DriverEntry`. The compile-only project sets
 `OptimizeReferences=false` so the linker cannot discard that helper before
-resolving its WDK contract. On a future successful registration, the registered
-`VioGpuDodUnload` callback owns trace cleanup. CI also checks that the linked
-`.sys` still imports `DxgkInitialize`.
+resolving its WDK contract. The helper has C linkage and is the project's sole
+`ForceSymbolReferences` input, which keeps the unreachable function through
+LTCG without adding a call site. On a future successful registration, the
+registered `VioGpuDodUnload` callback owns trace cleanup. CI also checks that
+the linked `.sys` still imports `DxgkInitialize`.
 
 The inherited display callback implementation and the full-miniport entry point
 share one WPP provider. `driver_entry.cpp` is the sole WPP initialization owner;
