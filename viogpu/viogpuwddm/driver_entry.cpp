@@ -2,7 +2,7 @@
 
 namespace
 {
-VOID InitializeFullWddmCallbacks(DRIVER_INITIALIZATION_DATA* initialData)
+VOID InitializeFullWddmCallbacks(DRIVER_INITIALIZATION_DATA *initialData)
 {
     RtlZeroMemory(initialData, sizeof(*initialData));
     initialData->Version = DXGKDDI_INTERFACE_VERSION;
@@ -28,8 +28,7 @@ VOID InitializeFullWddmCallbacks(DRIVER_INITIALIZATION_DATA* initialData)
     initialData->DxgkDdiCreateAllocation = VioGpuWddmCreateAllocation;
     initialData->DxgkDdiDestroyAllocation = VioGpuWddmDestroyAllocation;
     initialData->DxgkDdiDescribeAllocation = VioGpuWddmDescribeAllocation;
-    initialData->DxgkDdiGetStandardAllocationDriverData =
-        VioGpuWddmGetStandardAllocationDriverData;
+    initialData->DxgkDdiGetStandardAllocationDriverData = VioGpuWddmGetStandardAllocationDriverData;
     initialData->DxgkDdiOpenAllocation = VioGpuWddmOpenAllocation;
     initialData->DxgkDdiCloseAllocation = VioGpuWddmCloseAllocation;
     initialData->DxgkDdiCreateContext = VioGpuWddmCreateContext;
@@ -48,30 +47,21 @@ VOID InitializeFullWddmCallbacks(DRIVER_INITIALIZATION_DATA* initialData)
     initialData->DxgkDdiSetPointerShape = VioGpuDodSetPointerShape;
     initialData->DxgkDdiEscape = VioGpuDodEscape;
     initialData->DxgkDdiIsSupportedVidPn = VioGpuDodIsSupportedVidPn;
-    initialData->DxgkDdiRecommendFunctionalVidPn =
-        VioGpuDodRecommendFunctionalVidPn;
-    initialData->DxgkDdiEnumVidPnCofuncModality =
-        VioGpuDodEnumVidPnCofuncModality;
-    initialData->DxgkDdiSetVidPnSourceAddress =
-        VioGpuWddmSetVidPnSourceAddress;
-    initialData->DxgkDdiSetVidPnSourceVisibility =
-        VioGpuDodSetVidPnSourceVisibility;
+    initialData->DxgkDdiRecommendFunctionalVidPn = VioGpuDodRecommendFunctionalVidPn;
+    initialData->DxgkDdiEnumVidPnCofuncModality = VioGpuDodEnumVidPnCofuncModality;
+    initialData->DxgkDdiSetVidPnSourceAddress = VioGpuWddmSetVidPnSourceAddress;
+    initialData->DxgkDdiSetVidPnSourceVisibility = VioGpuDodSetVidPnSourceVisibility;
     initialData->DxgkDdiCommitVidPn = VioGpuDodCommitVidPn;
-    initialData->DxgkDdiUpdateActiveVidPnPresentPath =
-        VioGpuDodUpdateActiveVidPnPresentPath;
+    initialData->DxgkDdiUpdateActiveVidPnPresentPath = VioGpuDodUpdateActiveVidPnPresentPath;
     initialData->DxgkDdiRecommendMonitorModes = VioGpuDodRecommendMonitorModes;
-    initialData->DxgkDdiQueryVidPnHWCapability =
-        VioGpuDodQueryVidPnHWCapability;
-    initialData->DxgkDdiStopDeviceAndReleasePostDisplayOwnership =
-        VioGpuDodStopDeviceAndReleasePostDisplayOwnership;
+    initialData->DxgkDdiQueryVidPnHWCapability = VioGpuDodQueryVidPnHWCapability;
+    initialData->DxgkDdiStopDeviceAndReleasePostDisplayOwnership = VioGpuDodStopDeviceAndReleasePostDisplayOwnership;
     initialData->DxgkDdiSystemDisplayEnable = VioGpuDodSystemDisplayEnable;
     initialData->DxgkDdiSystemDisplayWrite = VioGpuDodSystemDisplayWrite;
 }
-}
+} // namespace
 
-extern "C" NTSTATUS DriverEntry(
-    _In_ DRIVER_OBJECT* driverObject,
-    _In_ UNICODE_STRING* registryPath)
+extern "C" NTSTATUS DriverEntry(_In_ DRIVER_OBJECT *driverObject, _In_ UNICODE_STRING *registryPath)
 {
     DRIVER_INITIALIZATION_DATA initialData;
     InitializeFullWddmCallbacks(&initialData);

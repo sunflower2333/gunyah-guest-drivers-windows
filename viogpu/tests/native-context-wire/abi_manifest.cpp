@@ -22,7 +22,8 @@
 #include <linux/virtio_gpu.h>
 
 #if defined(__cplusplus)
-extern "C" {
+extern "C"
+{
 #endif
 #include "drm_hw.h"
 #include "msm_proto.h"
@@ -52,12 +53,11 @@ int main()
 #else
 #define ABI_STATIC_ASSERT _Static_assert
 #endif
-#define ABI_VALUE(label, expression, expected)                                             \
-    ABI_STATIC_ASSERT((unsigned long long)(expression) == (unsigned long long)(expected),   \
-                      #label " value");                                                    \
+#define ABI_VALUE(label, expression, expected)                                                                         \
+    ABI_STATIC_ASSERT((unsigned long long)(expression) == (unsigned long long)(expected), #label " value");            \
     Emit("value." #label, (unsigned long long)(expression))
-#define ABI_EXPR(label, expression, expected) ABI_VALUE(label, expression, expected)
-#define ABI_SIZE(label, type, expected) ABI_VALUE(label, sizeof(type), expected)
+#define ABI_EXPR(label, expression, expected)    ABI_VALUE(label, expression, expected)
+#define ABI_SIZE(label, type, expected)          ABI_VALUE(label, sizeof(type), expected)
 #define ABI_OFFSET(label, type, field, expected) ABI_VALUE(label, offsetof(type, field), expected)
 
 #include "abi_manifest_entries.h"

@@ -341,12 +341,10 @@ PHYSICAL_ADDRESS VioGpuRdmaPool::GetPhysicalAddress(PVOID address) const
     return physicalAddress;
 }
 
-BOOLEAN VioGpuRdmaPool::QueryVidMmSegment(PVOID *baseAddress,
-                                          PPHYSICAL_ADDRESS physicalAddress,
-                                          SIZE_T *size) const
+BOOLEAN VioGpuRdmaPool::QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
 {
-    if (!m_Active || m_VidMmBaseVA == NULL || m_VidMmSize == 0 || baseAddress == NULL ||
-        physicalAddress == NULL || size == NULL)
+    if (!m_Active || m_VidMmBaseVA == NULL || m_VidMmSize == 0 || baseAddress == NULL || physicalAddress == NULL ||
+        size == NULL)
     {
         return FALSE;
     }

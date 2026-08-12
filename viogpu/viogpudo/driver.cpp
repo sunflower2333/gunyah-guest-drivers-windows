@@ -75,8 +75,7 @@ extern "C" NTSTATUS DriverEntry(_In_ DRIVER_OBJECT *pDriverObject, _In_ UNICODE_
     WPP_INIT_TRACING(pDriverObject, pRegistryPath);
 
     //    VioGpuDbgBreak();
-    DbgPrint(TRACE_LEVEL_FATAL,
-             ("---> KMDOD build on %s %s\n", __DATE__, __TIME__));
+    DbgPrint(TRACE_LEVEL_FATAL, ("---> KMDOD build on %s %s\n", __DATE__, __TIME__));
 
     KMDDOD_INITIALIZATION_DATA InitialData = {0};
 
@@ -381,6 +380,18 @@ VioGpuDodEscape(_In_ CONST HANDLE hAdapter, _In_ CONST DXGKARG_ESCAPE *pEscape)
         return STATUS_UNSUCCESSFUL;
     }
     return pVioGpuDod->Escape(pEscape);
+}
+
+NTSTATUS
+VioGpuDodQueryInterface(_In_ CONST PVOID pDeviceContext, _In_ CONST PQUERY_INTERFACE pQueryInterface)
+{
+    PAGED_CODE();
+    VIOGPU_ASSERT_CHK(pDeviceContext != NULL);
+    VIOGPU_ASSERT_CHK(pQueryInterface != NULL);
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("<---> %s\n", __FUNCTION__));
+
+    VioGpuDod *pVioGpuDod = reinterpret_cast<VioGpuDod *>(pDeviceContext);
+    return pVioGpuDod->QueryInterface(pQueryInterface);
 }
 
 NTSTATUS

@@ -70,34 +70,34 @@ enum virtio_gpu_ctrl_type
     VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER,
 };
 
-#define VIRTIO_GPU_F_VIRGL              0
-#define VIRTIO_GPU_F_EDID                1
-#define VIRTIO_GPU_F_RESOURCE_UUID       2
-#define VIRTIO_GPU_F_RESOURCE_BLOB       3
-#define VIRTIO_GPU_F_CONTEXT_INIT        4
-#define VIRTIO_GPU_F_CREATE_GUEST_HANDLE 6
+#define VIRTIO_GPU_F_VIRGL                       0
+#define VIRTIO_GPU_F_EDID                        1
+#define VIRTIO_GPU_F_RESOURCE_UUID               2
+#define VIRTIO_GPU_F_RESOURCE_BLOB               3
+#define VIRTIO_GPU_F_CONTEXT_INIT                4
+#define VIRTIO_GPU_F_CREATE_GUEST_HANDLE         6
 
-#define VIRTIO_GPU_FLAG_FENCE         (1U << 0)
-#define VIRTIO_GPU_FLAG_INFO_RING_IDX (1U << 1)
+#define VIRTIO_GPU_FLAG_FENCE                    (1U << 0)
+#define VIRTIO_GPU_FLAG_INFO_RING_IDX            (1U << 1)
 
-#define VIRTIO_GPU_BLOB_MEM_GUEST        0x0001U
-#define VIRTIO_GPU_BLOB_MEM_HOST3D       0x0002U
-#define VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST 0x0003U
+#define VIRTIO_GPU_BLOB_MEM_GUEST                0x0001U
+#define VIRTIO_GPU_BLOB_MEM_HOST3D               0x0002U
+#define VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST         0x0003U
 
 #define VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE        0x0001U
 #define VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE       0x0002U
 #define VIRTIO_GPU_BLOB_FLAG_USE_CROSS_DEVICE    0x0004U
 #define VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE 0x0008U
 
-#define VIRTGPU_DRM_CAPSET_DRM              6
-#define VIRTGPU_DRM_CONTEXT_MSM              1
-#define VIRTGPU_DRM_WIRE_FORMAT_VERSION      2
-#define VIRTIO_GPU_CAPSET_DRM                VIRTGPU_DRM_CAPSET_DRM
-#define VIRTIO_GPU_DRM_CONTEXT_MSM           VIRTGPU_DRM_CONTEXT_MSM
-#define VIRTIO_GPU_DRM_WIRE_FORMAT_VERSION   VIRTGPU_DRM_WIRE_FORMAT_VERSION
-#define VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK 0x00ffU
+#define VIRTGPU_DRM_CAPSET_DRM                   6
+#define VIRTGPU_DRM_CONTEXT_MSM                  1
+#define VIRTGPU_DRM_WIRE_FORMAT_VERSION          2
+#define VIRTIO_GPU_CAPSET_DRM                    VIRTGPU_DRM_CAPSET_DRM
+#define VIRTIO_GPU_DRM_CONTEXT_MSM               VIRTGPU_DRM_CONTEXT_MSM
+#define VIRTIO_GPU_DRM_WIRE_FORMAT_VERSION       VIRTGPU_DRM_WIRE_FORMAT_VERSION
+#define VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK   0x00ffU
 
-#define MSM_BO_GUEST_ALLOC 0x80000000U
+#define MSM_BO_GUEST_ALLOC                       0x80000000U
 
 #if defined(_MSC_VER)
 #pragma warning(push)
@@ -308,15 +308,12 @@ typedef struct msm_ccmd_set_debuginfo_req
 
 #pragma pack(pop)
 
-#define VIOGPU_WIRE_ASSERT_SIZE(tag, expected)                                             \
+#define VIOGPU_WIRE_ASSERT_SIZE(tag, expected)                                                                         \
     VIOGPU_WIRE_STATIC_ASSERT(sizeof(struct tag) == (expected), #tag " wire size")
-#define VIOGPU_WIRE_ASSERT_OFFSET(tag, field, expected)                                    \
-    VIOGPU_WIRE_STATIC_ASSERT(offsetof(struct tag, field) == (expected),                    \
-                              #tag "." #field " wire offset")
-#define VIOGPU_WIRE_ASSERT_VALUE(name, expected)                                            \
-    VIOGPU_WIRE_STATIC_ASSERT((unsigned long long)(name) ==                                \
-                                  (unsigned long long)(expected),                           \
-                              #name " wire value")
+#define VIOGPU_WIRE_ASSERT_OFFSET(tag, field, expected)                                                                \
+    VIOGPU_WIRE_STATIC_ASSERT(offsetof(struct tag, field) == (expected), #tag "." #field " wire offset")
+#define VIOGPU_WIRE_ASSERT_VALUE(name, expected)                                                                       \
+    VIOGPU_WIRE_STATIC_ASSERT((unsigned long long)(name) == (unsigned long long)(expected), #name " wire value")
 
 VIOGPU_WIRE_ASSERT_VALUE(VIRTIO_GPU_CMD_GET_CAPSET_INFO, 0x108);
 VIOGPU_WIRE_ASSERT_VALUE(VIRTIO_GPU_CMD_GET_CAPSET, 0x109);

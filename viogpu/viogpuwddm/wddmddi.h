@@ -79,14 +79,14 @@ struct VIOGPU_WDDM_ALLOCATION
 struct VIOGPU_WDDM_DEVICE
 {
     ULONG Signature;
-    VioGpuDod* Adapter;
+    VioGpuDod *Adapter;
     HANDLE RuntimeDevice;
 };
 
 struct VIOGPU_WDDM_CONTEXT
 {
     ULONG Signature;
-    VIOGPU_WDDM_DEVICE* Device;
+    VIOGPU_WDDM_DEVICE *Device;
     HANDLE RuntimeContext;
     UINT NodeOrdinal;
     UINT EngineAffinity;
@@ -95,7 +95,7 @@ struct VIOGPU_WDDM_CONTEXT
 struct VIOGPU_WDDM_OPEN_ALLOCATION
 {
     ULONG Signature;
-    VIOGPU_WDDM_ALLOCATION* Allocation;
+    VIOGPU_WDDM_ALLOCATION *Allocation;
 };
 
 DXGKDDI_QUERYADAPTERINFO VioGpuWddmQueryAdapterInfo;

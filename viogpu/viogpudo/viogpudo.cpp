@@ -4311,9 +4311,7 @@ BOOLEAN VioGpuAdapter::IsRestrictedDmaActive(void)
     return m_RdmaPool.IsActive();
 }
 
-BOOLEAN VioGpuAdapter::QueryVidMmSegment(PVOID *baseAddress,
-                                         PPHYSICAL_ADDRESS physicalAddress,
-                                         SIZE_T *size) const
+BOOLEAN VioGpuAdapter::QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
 {
     return m_RdmaPool.QueryVidMmSegment(baseAddress, physicalAddress, size);
 }

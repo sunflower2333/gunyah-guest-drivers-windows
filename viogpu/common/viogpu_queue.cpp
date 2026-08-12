@@ -448,19 +448,17 @@ BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO caps
         return FALSE;
     }
 
-    PGPU_RESP_CAPSET_INFO response = static_cast<PGPU_RESP_CAPSET_INFO>(
-        m_pBuf->AllocateMemory(sizeof(GPU_RESP_CAPSET_INFO)));
+    PGPU_RESP_CAPSET_INFO response = static_cast<PGPU_RESP_CAPSET_INFO>(m_pBuf->AllocateMemory(sizeof(GPU_RESP_CAPSET_INFO)));
     if (response == NULL)
     {
         return FALSE;
     }
 
     PGPU_VBUFFER vbuf = NULL;
-    PGPU_CMD_GET_CAPSET_INFO command = static_cast<PGPU_CMD_GET_CAPSET_INFO>(
-        AllocCmdResp(&vbuf,
-                     sizeof(GPU_CMD_GET_CAPSET_INFO),
-                     response,
-                     sizeof(GPU_RESP_CAPSET_INFO)));
+    PGPU_CMD_GET_CAPSET_INFO command = static_cast<PGPU_CMD_GET_CAPSET_INFO>(AllocCmdResp(&vbuf,
+                                                                                          sizeof(GPU_CMD_GET_CAPSET_INFO),
+                                                                                          response,
+                                                                                          sizeof(GPU_RESP_CAPSET_INFO)));
     if (command == NULL)
     {
         m_pBuf->FreeMemory(response);
@@ -471,8 +469,7 @@ BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO caps
     command->hdr.type = VIRTIO_GPU_CMD_GET_CAPSET_INFO;
     command->capset_index = capset_index;
 
-    BOOLEAN success = SubmitSynchronous(vbuf) &&
-                      response->hdr.type == VIRTIO_GPU_RESP_OK_CAPSET_INFO;
+    BOOLEAN success = SubmitSynchronous(vbuf) && response->hdr.type == VIRTIO_GPU_RESP_OK_CAPSET_INFO;
     if (success)
     {
         *capset_info = *response;
@@ -481,35 +478,28 @@ BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO caps
     return success;
 }
 
-BOOLEAN CtrlQueue::QueryCapset(UINT capset_id,
-                               UINT capset_version,
-                               UINT capset_size,
-                               PGPU_CAPSET_DRM capset)
+BOOLEAN CtrlQueue::QueryCapset(UINT capset_id, UINT capset_version, UINT capset_size, PGPU_CAPSET_DRM capset)
 {
     PAGED_CODE();
 
-    const UINT requiredSize = FIELD_OFFSET(GPU_CAPSET_DRM, msm.va_size) +
-                              sizeof(capset->msm.va_size);
-    if (capset == NULL || capset_size < requiredSize ||
-        capset_size > PAGE_SIZE - sizeof(GPU_CTRL_HDR))
+    const UINT requiredSize = FIELD_OFFSET(GPU_CAPSET_DRM, msm.va_size) + sizeof(capset->msm.va_size);
+    if (capset == NULL || capset_size < requiredSize || capset_size > PAGE_SIZE - sizeof(GPU_CTRL_HDR))
     {
         return FALSE;
     }
 
     UINT responseSize = sizeof(GPU_CTRL_HDR) + capset_size;
-    PGPU_CTRL_HDR response = static_cast<PGPU_CTRL_HDR>(
-        m_pBuf->AllocateMemory(responseSize));
+    PGPU_CTRL_HDR response = static_cast<PGPU_CTRL_HDR>(m_pBuf->AllocateMemory(responseSize));
     if (response == NULL)
     {
         return FALSE;
     }
 
     PGPU_VBUFFER vbuf = NULL;
-    PGPU_CMD_GET_CAPSET command = static_cast<PGPU_CMD_GET_CAPSET>(
-        AllocCmdResp(&vbuf,
-                     sizeof(GPU_CMD_GET_CAPSET),
-                     response,
-                     responseSize));
+    PGPU_CMD_GET_CAPSET command = static_cast<PGPU_CMD_GET_CAPSET>(AllocCmdResp(&vbuf,
+                                                                                sizeof(GPU_CMD_GET_CAPSET),
+                                                                                response,
+                                                                                responseSize));
     if (command == NULL)
     {
         m_pBuf->FreeMemory(response);
@@ -521,8 +511,7 @@ BOOLEAN CtrlQueue::QueryCapset(UINT capset_id,
     command->capset_id = capset_id;
     command->capset_version = capset_version;
 
-    BOOLEAN success = SubmitSynchronous(vbuf) &&
-                      response->type == VIRTIO_GPU_RESP_OK_CAPSET;
+    BOOLEAN success = SubmitSynchronous(vbuf) && response->type == VIRTIO_GPU_RESP_OK_CAPSET;
     if (success)
     {
         RtlZeroMemory(capset, sizeof(*capset));
@@ -544,8 +533,7 @@ BOOLEAN CtrlQueue::CreateNativeContext(UINT context_id)
     }
 
     PGPU_VBUFFER vbuf = NULL;
-    PGPU_CMD_CTX_CREATE command = static_cast<PGPU_CMD_CTX_CREATE>(
-        AllocCmd(&vbuf, sizeof(GPU_CMD_CTX_CREATE)));
+    PGPU_CMD_CTX_CREATE command = static_cast<PGPU_CMD_CTX_CREATE>(AllocCmd(&vbuf, sizeof(GPU_CMD_CTX_CREATE)));
     if (command == NULL)
     {
         return FALSE;
@@ -556,13 +544,11 @@ BOOLEAN CtrlQueue::CreateNativeContext(UINT context_id)
     command->hdr.type = VIRTIO_GPU_CMD_CTX_CREATE;
     command->hdr.ctx_id = context_id;
     command->nlen = sizeof(contextName) - 1;
-    command->context_init = VIRTIO_GPU_CAPSET_DRM &
-                            VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK;
+    command->context_init = VIRTIO_GPU_CAPSET_DRM & VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK;
     RtlCopyMemory(command->debug_name, contextName, sizeof(contextName) - 1);
 
     BOOLEAN success = SubmitSynchronous(vbuf) &&
-                      reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf)->type ==
-                          VIRTIO_GPU_RESP_OK_NODATA;
+                      reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf)->type == VIRTIO_GPU_RESP_OK_NODATA;
     ReleaseBuffer(vbuf);
     return success;
 }
@@ -577,8 +563,7 @@ BOOLEAN CtrlQueue::DestroyNativeContext(UINT context_id)
     }
 
     PGPU_VBUFFER vbuf = NULL;
-    PGPU_CMD_CTX_DESTROY command = static_cast<PGPU_CMD_CTX_DESTROY>(
-        AllocCmd(&vbuf, sizeof(GPU_CMD_CTX_DESTROY)));
+    PGPU_CMD_CTX_DESTROY command = static_cast<PGPU_CMD_CTX_DESTROY>(AllocCmd(&vbuf, sizeof(GPU_CMD_CTX_DESTROY)));
     if (command == NULL)
     {
         return FALSE;
@@ -589,8 +574,7 @@ BOOLEAN CtrlQueue::DestroyNativeContext(UINT context_id)
     command->hdr.ctx_id = context_id;
 
     BOOLEAN success = SubmitSynchronous(vbuf) &&
-                      reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf)->type ==
-                          VIRTIO_GPU_RESP_OK_NODATA;
+                      reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf)->type == VIRTIO_GPU_RESP_OK_NODATA;
     ReleaseBuffer(vbuf);
     return success;
 }
@@ -665,15 +649,13 @@ PVOID CtrlQueue::AllocCmd(PGPU_VBUFFER *buf, int sz)
 
 PGPU_VBUFFER CtrlQueue::PrepareNativeSubmit(UINT context_id, const void *command, UINT command_size)
 {
-    if (context_id == 0 || command == NULL || command_size == 0 ||
-        (command_size & (sizeof(ULONG) - 1)) != 0)
+    if (context_id == 0 || command == NULL || command_size == 0 || (command_size & (sizeof(ULONG) - 1)) != 0)
     {
         return NULL;
     }
 
     PGPU_VBUFFER vbuf = NULL;
-    PGPU_CMD_SUBMIT_3D submit = static_cast<PGPU_CMD_SUBMIT_3D>(
-        AllocCmd(&vbuf, sizeof(GPU_CMD_SUBMIT_3D)));
+    PGPU_CMD_SUBMIT_3D submit = static_cast<PGPU_CMD_SUBMIT_3D>(AllocCmd(&vbuf, sizeof(GPU_CMD_SUBMIT_3D)));
     if (submit == NULL)
     {
         return NULL;
@@ -698,8 +680,7 @@ PGPU_VBUFFER CtrlQueue::PrepareNativeSubmit(UINT context_id, const void *command
 
 BOOLEAN CtrlQueue::RefreshNativeSubmit(PGPU_VBUFFER buf, const void *command, UINT command_size)
 {
-    if (buf == NULL || command == NULL || command_size == 0 ||
-        buf->size != sizeof(GPU_CMD_SUBMIT_3D) ||
+    if (buf == NULL || command == NULL || command_size == 0 || buf->size != sizeof(GPU_CMD_SUBMIT_3D) ||
         buf->data_buf == NULL || buf->data_size != command_size)
     {
         return FALSE;
@@ -723,8 +704,8 @@ int CtrlQueue::QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id)
     }
 
     PGPU_CMD_SUBMIT_3D submit = reinterpret_cast<PGPU_CMD_SUBMIT_3D>(buf->buf);
-    if (submit->hdr.type != VIRTIO_GPU_CMD_SUBMIT_3D || submit->hdr.ctx_id == 0 ||
-        submit->size == 0 || submit->size != buf->data_size)
+    if (submit->hdr.type != VIRTIO_GPU_CMD_SUBMIT_3D || submit->hdr.ctx_id == 0 || submit->size == 0 ||
+        submit->size != buf->data_size)
     {
         return -1;
     }
