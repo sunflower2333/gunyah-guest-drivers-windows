@@ -336,6 +336,20 @@ def check_project_safety(root: ET.Element) -> None:
     if forced_symbols != [REGISTRATION_HELPER]:
         fail("compile-only project must force-link only the unreachable registration helper")
 
+    generate_map_files = [
+        (element.text or "").strip()
+        for element in root.findall(".//msbuild:Link/msbuild:GenerateMapFile", NAMESPACE)
+    ]
+    if generate_map_files != ["true"]:
+        fail("compile-only project must generate one linker map for retention evidence")
+
+    map_file_names = [
+        (element.text or "").strip()
+        for element in root.findall(".//msbuild:Link/msbuild:MapFileName", NAMESPACE)
+    ]
+    if map_file_names != [r"$(OutDir)$(TargetName).map"]:
+        fail("compile-only project must emit its linker map beside the compile-only driver")
+
     driver_items = [
         element
         for element in root.findall(".//msbuild:ClCompile[@Include]", NAMESPACE)

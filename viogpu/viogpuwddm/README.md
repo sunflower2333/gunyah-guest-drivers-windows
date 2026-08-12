@@ -20,7 +20,11 @@ resolving its WDK contract. The helper has C linkage and is the project's sole
 `ForceSymbolReferences` input, which keeps the unreachable function through
 LTCG without adding a call site. On a future successful registration, the
 registered `VioGpuDodUnload` callback owns trace cleanup. CI also checks that
-the linked `.sys` still imports `DxgkInitialize`.
+`driver_entry.obj` contains an unresolved `DxgkInitialize` reference and that
+the final linker map retains the helper. A successful final link then proves
+that `displib.lib` resolves the reference. `DxgkInitialize` is not expected to
+remain in the linked driver's PE import table because `displib.lib` supplies a
+static implementation; the stable display-only driver has the same behavior.
 
 The inherited display callback implementation and the full-miniport entry point
 share one WPP provider. `driver_entry.cpp` is the sole WPP initialization owner;
