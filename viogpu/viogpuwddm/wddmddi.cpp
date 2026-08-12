@@ -814,7 +814,9 @@ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
     VIOGPU_WDDM_COMMAND_HEADER header = {};
     __try
     {
-        ProbeForRead(render->pCommand, render->CommandLength, 1);
+        ProbeForRead(const_cast<PVOID>(render->pCommand),
+                     render->CommandLength,
+                     1);
         RtlCopyMemory(&header, render->pCommand, sizeof(header));
         status = ValidateCommandHeader(&header, render->CommandLength);
         if (!NT_SUCCESS(status))

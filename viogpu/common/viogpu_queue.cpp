@@ -759,6 +759,8 @@ void CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, U
 }
 
 #define SGLIST_SIZE 256
+static const int VIOGPU_QUEUE_ERROR = -1;
+
 int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
@@ -772,13 +774,13 @@ int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
     if (buf->size > PAGE_SIZE)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s size is too big %d\n", __FUNCTION__, buf->size));
-        return -ENOSPC;
+        return VIOGPU_QUEUE_ERROR;
     }
 
     if (!BuildSGElement(m_pPci, &sg[outcnt + incnt], (PVOID)buf->buf, buf->size))
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid command DMA address %p\n", __FUNCTION__, buf->buf));
-        return -ENOSPC;
+        return VIOGPU_QUEUE_ERROR;
     }
     else
     {
@@ -802,13 +804,13 @@ int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
                 if (sgleft == 0)
                 {
                     DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s no more sgelenamt spots left %d\n", __FUNCTION__, outcnt));
-                    return -ENOSPC;
+                    return VIOGPU_QUEUE_ERROR;
                 }
             }
             else
             {
                 DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid data DMA address %p\n", __FUNCTION__, data_buf));
-                return -ENOSPC;
+                return VIOGPU_QUEUE_ERROR;
             }
         }
     }
@@ -816,7 +818,7 @@ int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
     if (buf->resp_size > PAGE_SIZE)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s resp_size is too big %d\n", __FUNCTION__, buf->resp_size));
-        return -ENOSPC;
+        return VIOGPU_QUEUE_ERROR;
     }
 
     if (buf->resp_size && (sgleft > 0))
@@ -824,7 +826,7 @@ int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
         if (!BuildSGElement(m_pPci, &sg[outcnt + incnt], (PVOID)buf->resp_buf, buf->resp_size))
         {
             DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid response DMA address %p\n", __FUNCTION__, buf->resp_buf));
-            return -ENOSPC;
+            return VIOGPU_QUEUE_ERROR;
         }
         else
         {

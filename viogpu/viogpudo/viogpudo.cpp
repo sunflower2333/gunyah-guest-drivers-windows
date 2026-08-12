@@ -499,6 +499,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
     switch (pQueryAdapterInfo->Type)
     {
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_6)
         case DXGKQAITYPE_WDDMDEVICECAPS:
             {
                 if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_WDDMDEVICECAPS))
@@ -517,7 +518,9 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                 status = STATUS_SUCCESS;
                 break;
             }
+#endif
 
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_9)
         case DXGKQAITYPE_PHYSICAL_MEMORY_CAPS:
             {
                 if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_PHYSICAL_MEMORY_CAPS))
@@ -546,6 +549,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                 status = STATUS_SUCCESS;
                 break;
             }
+#endif
 
         case DXGKQAITYPE_DRIVERCAPS:
             {
