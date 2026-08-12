@@ -2,6 +2,11 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#if defined(_MSC_VER)
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 #if defined(ABI_ENDPOINT_WINDOWS)
 #define VIOGPU_WIRE_U8  uint8_t
 #define VIOGPU_WIRE_I8  int8_t
@@ -39,6 +44,9 @@ static void Emit(const char *name, unsigned long long value)
 
 int main()
 {
+#if defined(_MSC_VER)
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
 #if defined(__cplusplus)
 #define ABI_STATIC_ASSERT static_assert
 #else
