@@ -487,6 +487,19 @@ REWRITES = (
                                            *PsThreadType,""",
     ),
     Rewrite(
+        "R43_adapter_destructor_hide_failure_in_assert",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        if (!NT_SUCCESS(status))
+        {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu adapter destructor: StopNativeContextTransport failed, status=0x%08X\\n",
+                       status);
+        }
+        NT_ASSERT(NT_SUCCESS(status));""",
+        """        NT_ASSERT(NT_SUCCESS(status));""",
+    ),
+    Rewrite(
         "S01_pending_comparison_reversed",
         "viogpu/common/viogpu_rdma.cpp",
         "if (status == STATUS_PENDING)",

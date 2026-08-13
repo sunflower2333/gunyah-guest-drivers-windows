@@ -2541,6 +2541,13 @@ VioGpuAdapter::~VioGpuAdapter(void)
         m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0)
     {
         NTSTATUS status = StopNativeContextTransport();
+        if (!NT_SUCCESS(status))
+        {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu adapter destructor: StopNativeContextTransport failed, status=0x%08X\n",
+                       status);
+        }
         NT_ASSERT(NT_SUCCESS(status));
     }
     NT_ASSERT(InterlockedCompareExchange(&m_NativeContextState,

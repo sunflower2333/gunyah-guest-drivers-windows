@@ -1936,6 +1936,16 @@ def check_adapter_lifecycle() -> None:
         fail("HWClose must close PCI resources only after transport teardown succeeds")
     if len(variable_write_offsets(hw_close_body, "status")) != 2:
         fail("HWClose must preserve transport failure until its success-gated PCI close")
+
+    destructor = canonical_code(function_body("VioGpuAdapter::~VioGpuAdapter", VIOGPU_CODE))
+    destructor_stop = destructor.find("NTSTATUSstatus=StopNativeContextTransport();")
+    destructor_failure = destructor.find("if(!NT_SUCCESS(status)){DbgPrintEx(", destructor_stop)
+    destructor_assert = destructor.find("NT_ASSERT(NT_SUCCESS(status));", destructor_failure)
+    if min(destructor_stop, destructor_failure, destructor_assert) < 0 or not (
+        destructor_stop < destructor_failure < destructor_assert
+    ):
+        fail("adapter destructor must execute transport teardown and consume failures in release builds")
+
     transport_close = function_body("VioGpuAdapter::StopNativeContextTransportLocked", VIOGPU_CODE)
     if method_call_offsets(transport_close, aliases_of(transport_close, "m_PciResources"), "Close"):
         fail("restartable D-state transport teardown must preserve PCI resources")
