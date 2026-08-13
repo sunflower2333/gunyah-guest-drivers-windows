@@ -18,6 +18,7 @@ on:
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
       - "rdmapool/**"
+      - "droidvmpool/**"
       - "NetKVM/Common/**"
       - "NetKVM/wlh/**"
       - "NetKVM/NetKVM-VS2015.vcxproj"
@@ -35,6 +36,7 @@ on:
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
       - "rdmapool/**"
+      - "droidvmpool/**"
       - "NetKVM/Common/**"
       - "NetKVM/wlh/**"
       - "NetKVM/NetKVM-VS2015.vcxproj"
@@ -69,6 +71,10 @@ jobs:
         shell: pwsh
         run: python viogpu/viogpuwddm/check-contract.py
 
+      - name: Check DroidVM pool provider contract
+        shell: pwsh
+        run: python droidvmpool/check-contract.py
+
       - name: Attack restricted-DMA safety contract
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_mutation }}
         shell: pwsh
@@ -91,6 +97,7 @@ jobs:
             @{ Path = 'NetKVM/CoInstaller/netkvmco-vs2015.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'NetKVM/ProtocolService/ProtocolService.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'rdmapool/rdmapool.vcxproj'; Configuration = 'Release'; Platform = 'ARM64' },
+            @{ Path = 'droidvmpool/droidvmpool.vcxproj'; Configuration = 'Release'; Platform = 'ARM64' },
             @{ Path = 'viostor/viostor.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'vioscsi/vioscsi.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'NetKVM/NetKVM-VS2015.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' }

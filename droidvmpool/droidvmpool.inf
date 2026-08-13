@@ -1,0 +1,57 @@
+;
+; droidvmpool.inf - DroidVM pre-shared pool provider
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ManufacturerName%
+CatalogFile = droidvmpool.cat
+DriverVer   =
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+droidvmpool.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName% = Standard,NT$ARCH$.10.0...16299
+
+[Standard.NT$ARCH$.10.0...16299]
+%droidvmpool.DeviceDesc% = droidvmpool_Device, ACPI\DRVM0001
+
+[droidvmpool_Device.NT]
+CopyFiles = File_Copy
+
+[File_Copy]
+droidvmpool.sys
+
+[droidvmpool_Device.NT.Services]
+AddService = droidvmpool,%SPSVCINST_ASSOCSERVICE%, droidvmpool_Service_Inst
+
+[droidvmpool_Service_Inst]
+DisplayName    = %droidvmpool.SVCDESC%
+ServiceType    = 1
+StartType      = 0
+ErrorControl   = 1
+ServiceBinary  = %12%\droidvmpool.sys
+LoadOrderGroup = System Bus Extender
+
+[droidvmpool_Device.NT.Wdf]
+KmdfService = droidvmpool, droidvmpool_wdfsect
+
+[droidvmpool_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+SPSVCINST_ASSOCSERVICE = 0x00000002
+ManufacturerName = "DroidVM"
+DiskName = "DroidVM Pre-Shared Pool Provider Installation Disk"
+droidvmpool.DeviceDesc = "DroidVM Pre-Shared Pool"
+droidvmpool.SVCDESC = "DroidVM Pre-Shared Pool Provider"
