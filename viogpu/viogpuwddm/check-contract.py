@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -1912,7 +1913,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     local_runner_path = WDDM_ABI_FIXTURE_DIR / "run-local.sh"
     local_runner = local_runner_path.read_text(encoding="utf-8")
     msvc_runner = (WDDM_ABI_FIXTURE_DIR / "run-msvc.cmd").read_text(encoding="utf-8")
-    if local_runner_path.stat().st_mode & 0o111 == 0:
+    if os.name != "nt" and local_runner_path.stat().st_mode & 0o111 == 0:
         fail("local WDDM private ABI runner must be executable")
     if msvc_runner.count(r'fc /b "%SCRIPT_DIR%\expected-pre-v1.txt" "%OUT_DIR%\%%E.txt" >nul') != 1 or (
         r'fc "%SCRIPT_DIR%\expected-pre-v1.txt" "%OUT_DIR%\%%E.txt"' not in msvc_runner
