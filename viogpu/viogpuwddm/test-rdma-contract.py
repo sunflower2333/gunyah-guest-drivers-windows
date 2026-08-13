@@ -670,10 +670,10 @@ REWRITES = (
         status = SynchronizeInterruptMessages();""",
     ),
     Rewrite(
-        "R53b_partial_init_skips_config_barrier",
+        "R53b_partial_init_skips_retained_barrier",
         "viogpu/viogpudo/viogpudo.cpp",
-        "m_PciResources.IsMSIEnabled() && m_bQueuesInitialized ? 3U : 1U",
-        "m_PciResources.IsMSIEnabled() && m_bQueuesInitialized ? 3U : 0U",
+        "ULONG messageCount = m_PciResources.GetInterruptMessageCount();",
+        "ULONG messageCount = m_bQueuesInitialized ? m_PciResources.GetInterruptMessageCount() : 0U;",
     ),
     Rewrite(
         "R54_retire_owners_before_reset_status_proof",
@@ -823,10 +823,18 @@ REWRITES = (
     Rewrite(
         "R66_publish_hardware_open_before_reinitialize",
         "viogpu/viogpudo/viogpudo.cpp",
-        """        ExReInitializeRundownProtection(&m_HardwareOperations);
-        m_HardwareRundownCompleted = FALSE;""",
-        """        m_HardwareRundownCompleted = FALSE;
-        ExReInitializeRundownProtection(&m_HardwareOperations);""",
+        """    if (NT_SUCCESS(status))
+    {
+        ExReInitializeRundownProtection(&m_HardwareOperations);
+        m_HardwareRundownCompleted = FALSE;
+    }
+    return status;""",
+        """    if (NT_SUCCESS(status))
+    {
+        m_HardwareRundownCompleted = FALSE;
+        ExReInitializeRundownProtection(&m_HardwareOperations);
+    }
+    return status;""",
     ),
     Rewrite(
         "R67_skip_context_rundown_state_init",
@@ -973,13 +981,262 @@ REWRITES = (
         "R80_system_display_gate_after_early_return",
         "viogpu/viogpudo/viogpudo.cpp",
         """    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\\n", __FUNCTION__));
-    InterlockedExchange(&m_HardwareResetRequested, TRUE);""",
+    InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);""",
         """    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\\n", __FUNCTION__));
     if (!IsVgaDevice())
     {
         return STATUS_UNSUCCESSFUL;
     }
-    InterlockedExchange(&m_HardwareResetRequested, TRUE);""",
+    InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);""",
+    ),
+    Rewrite(
+        "R81_start_overwrites_pending_reset",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    LONG startResetState = InterlockedCompareExchange(&m_HardwareResetState,
+                                                      VioGpuHardwareRecovering,
+                                                      VioGpuHardwareActive);
+    if (startResetState == VioGpuHardwareResetRequested)
+    {
+        startResetState = InterlockedCompareExchange(&m_HardwareResetState,
+                                                     VioGpuHardwareRecovering,
+                                                     VioGpuHardwareResetRequested);
+    }
+    if (startResetState != VioGpuHardwareActive && startResetState != VioGpuHardwareResetRequested)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }""",
+        """    InterlockedExchange(&m_HardwareResetState, VioGpuHardwareRecovering);""",
+    ),
+    Rewrite(
+        "R82_get_device_info_skips_recovery_rollback",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        VIOGPU_LOG_ASSERTION1("DxgkCbGetDeviceInformation failed with status 0x%X\\n", Status);
+        InterlockedCompareExchange(&m_HardwareResetState, startResetState, VioGpuHardwareRecovering);
+        return Status;""",
+        """        VIOGPU_LOG_ASSERTION1("DxgkCbGetDeviceInformation failed with status 0x%X\\n", Status);
+        return Status;""",
+    ),
+    Rewrite(
+        "R83_check_hardware_skips_recovery_rollback",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu StartDevice: CheckHardware failed\\n");
+        InterlockedCompareExchange(&m_HardwareResetState, startResetState, VioGpuHardwareRecovering);
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;""",
+        """        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu StartDevice: CheckHardware failed\\n");
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;""",
+    ),
+    Rewrite(
+        "R84_allocation_skips_recovery_rollback",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        DbgPrint(TRACE_LEVEL_ERROR, ("StartDevice failed to allocate memory\\n"));
+        InterlockedCompareExchange(&m_HardwareResetState, startResetState, VioGpuHardwareRecovering);
+        return Status;""",
+        """        DbgPrint(TRACE_LEVEL_ERROR, ("StartDevice failed to allocate memory\\n"));
+        return Status;""",
+    ),
+    Rewrite(
+        "R85_destructor_deletes_retained_adapter",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "    NT_ASSERT(m_pHWDevice == NULL);",
+        """    delete m_pHWDevice;
+    m_pHWDevice = NULL;""",
+    ),
+    Rewrite(
+        "R86_assume_single_descriptor_msi_count",
+        "viogpu/common/viogpu_pci.cpp",
+        "(IsMSIEnabled() && m_InterruptMessageCount >= 2U));",
+        "(IsMSIEnabled() && m_InterruptMessageCount >= 1U));",
+    ),
+    Rewrite(
+        "R87_allow_two_message_start_layout",
+        "viogpu/common/viogpu_pci.cpp",
+        """                                     (!IsMSIEnabled() ||
+                                      (m_InterruptMessageCount >= 3U && m_InterruptMessageCount <= 4U));""",
+        """                                     (!IsMSIEnabled() ||
+                                      (m_InterruptMessageCount >= 2U && m_InterruptMessageCount <= 4U));""",
+    ),
+    Rewrite(
+        "R88_barrier_ignores_unknown_message_count",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "    if (!m_PciResources.HasKnownInterruptMessageCount())",
+        "    if (FALSE && !m_PciResources.HasKnownInterruptMessageCount())",
+    ),
+    Rewrite(
+        "R89_hwclose_skips_transport_stop",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    NTSTATUS status = StopNativeContextTransport();
+    if (NT_SUCCESS(status))
+    {
+        InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);""",
+        """    NTSTATUS status = STATUS_SUCCESS;
+    if (NT_SUCCESS(status))
+    {
+        InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);""",
+    ),
+    Rewrite(
+        "R90_hwclose_skips_isr_gate",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    if (NT_SUCCESS(status))
+    {
+        InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
+        status = SynchronizeInterruptMessages();
+    }
+    if (NT_SUCCESS(status))
+    {
+        KeFlushQueuedDpcs();""",
+        """    if (NT_SUCCESS(status))
+    {
+        status = SynchronizeInterruptMessages();
+    }
+    if (NT_SUCCESS(status))
+    {
+        KeFlushQueuedDpcs();""",
+    ),
+    Rewrite(
+        "R91_hwclose_skips_final_barrier",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
+        status = SynchronizeInterruptMessages();
+    }
+    if (NT_SUCCESS(status))""",
+        """        InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
+    }
+    if (NT_SUCCESS(status))""",
+    ),
+    Rewrite(
+        "R92_hwclose_skips_dpc_drain",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    if (NT_SUCCESS(status))
+    {
+        KeFlushQueuedDpcs();
+        status = m_PciResources.Close();
+    }
+    DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s status=0x%08X\\n", __FUNCTION__, status));""",
+        """    if (NT_SUCCESS(status))
+    {
+        status = m_PciResources.Close();
+    }
+    DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s status=0x%08X\\n", __FUNCTION__, status));""",
+    ),
+    Rewrite(
+        "R93_hwclose_skips_pci_close",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        KeFlushQueuedDpcs();
+        status = m_PciResources.Close();
+    }
+    DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s status=0x%08X\\n", __FUNCTION__, status));""",
+        """        KeFlushQueuedDpcs();
+    }
+    DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s status=0x%08X\\n", __FUNCTION__, status));""",
+    ),
+    Rewrite(
+        "R94_clear_interrupt_count_before_bar_unmap",
+        "viogpu/common/viogpu_pci.cpp",
+        """    NTSTATUS firstFailure = STATUS_SUCCESS;
+    for (UINT bar = 0; bar < PCI_TYPE0_ADDRESSES; ++bar)""",
+        """    NTSTATUS firstFailure = STATUS_SUCCESS;
+    m_InterruptMessageCountKnown = FALSE;
+    for (UINT bar = 0; bar < PCI_TYPE0_ADDRESSES; ++bar)""",
+    ),
+    Rewrite(
+        "R95_d0_failure_discards_concurrent_reset",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "            InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareResetRequested, VioGpuHardwareRecovering);",
+        "            InterlockedExchange(&m_HardwareResetState, VioGpuHardwareActive);",
+    ),
+    Rewrite(
+        "R96_d0_publish_overwrites_concurrent_reset",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """                if (InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareRecovering) !=
+                    VioGpuHardwareRecovering)
+                {
+                    return STATUS_DEVICE_NOT_READY;
+                }""",
+        """                InterlockedExchange(&m_HardwareResetState, VioGpuHardwareActive);""",
+    ),
+    Rewrite(
+        "R97_failed_start_skips_outer_rundown",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    if (!m_HardwareRundownCompleted)
+    {
+        ExWaitForRundownProtectionRelease(&m_HardwareOperations);
+        ExRundownCompleted(&m_HardwareOperations);
+        m_HardwareRundownCompleted = TRUE;
+    }
+
+    NTSTATUS closeStatus = m_pHWDevice->HWClose();""",
+        """    NTSTATUS closeStatus = m_pHWDevice->HWClose();""",
+    ),
+    Rewrite(
+        "R98_failed_start_reopens_before_close",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        delete m_pHWDevice;
+        m_pHWDevice = NULL;
+        ExReInitializeRundownProtection(&m_HardwareOperations);""",
+        """        ExReInitializeRundownProtection(&m_HardwareOperations);
+        delete m_pHWDevice;
+        m_pHWDevice = NULL;""",
+    ),
+    Rewrite(
+        "R99_failed_start_reopens_after_close_failure",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    }
+    return NT_SUCCESS(closeStatus) ? failureStatus : closeStatus;
+}""",
+        """    }
+    else
+    {
+        ExReInitializeRundownProtection(&m_HardwareOperations);
+        m_HardwareRundownCompleted = FALSE;
+    }
+    return NT_SUCCESS(closeStatus) ? failureStatus : closeStatus;
+}""",
+    ),
+    Rewrite(
+        "R100_failed_start_bypasses_shared_unwind",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        DbgPrint(TRACE_LEVEL_ERROR, ("HWInit failed with status 0x%X\\n", Status));
+        return UnwindFailedStart(Status);""",
+        """        DbgPrint(TRACE_LEVEL_ERROR, ("HWInit failed with status 0x%X\\n", Status));
+        delete m_pHWDevice;
+        m_pHWDevice = NULL;
+        return Status;""",
+    ),
+    Rewrite(
+        "R101_start_rejects_stopped_restart",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    if (startResetState == VioGpuHardwareResetRequested)
+    {
+        startResetState = InterlockedCompareExchange(&m_HardwareResetState,
+                                                     VioGpuHardwareRecovering,
+                                                     VioGpuHardwareResetRequested);
+    }""",
+        """    if (startResetState == VioGpuHardwareResetRequested)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }""",
+    ),
+    Rewrite(
+        "R102_reset_callback_skips_final_publication",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """            adapter->ResetDevice();
+            InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);""",
+        """            adapter->ResetDevice();""",
+    ),
+    Rewrite(
+        "R103_system_display_skips_final_publication",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    BOOLEAN reset = adapter != NULL && adapter->ResetToVgaMode();
+    InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
+    ExReleaseRundownProtection(&m_HardwareOperations);""",
+        """    BOOLEAN reset = adapter != NULL && adapter->ResetToVgaMode();
+    ExReleaseRundownProtection(&m_HardwareOperations);""",
+    ),
+    Rewrite(
+        "R104_line_interrupt_programs_msix_config",
+        "viogpu/common/viogpu_pci.cpp",
+        "    if (pdev->IsMSIEnabled())",
+        "    if (TRUE)",
     ),
     Rewrite(
         "S01_pending_comparison_reversed",

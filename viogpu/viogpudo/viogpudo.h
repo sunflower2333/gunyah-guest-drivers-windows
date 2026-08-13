@@ -128,6 +128,13 @@ enum VIOGPU_NATIVE_CONTEXT_STATE : LONG
     VioGpuNativeContextFailed,
 };
 
+enum VIOGPU_HARDWARE_RESET_STATE : LONG
+{
+    VioGpuHardwareActive = 0,
+    VioGpuHardwareResetRequested,
+    VioGpuHardwareRecovering,
+};
+
 struct VIOGPU_NATIVE_CONTEXT_READINESS
 {
     BOOLEAN Ready;
@@ -344,7 +351,7 @@ class VioGpuDod
     VioGpuAdapter *m_pHWDevice;
     mutable EX_RUNDOWN_REF m_HardwareOperations;
     BOOLEAN m_HardwareRundownCompleted;
-    volatile LONG m_HardwareResetRequested;
+    mutable volatile LONG m_HardwareResetState;
 
     USHORT m_PersistentDispMode0Width;
     USHORT m_PersistentDispMode0Height;
@@ -493,13 +500,20 @@ class VioGpuDod
                                         _Out_opt_ UINT *capsetSize);
     NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
     NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released);
-    BOOLEAN IsHardwareResetRequested(void)
+    BOOLEAN IsHardwareResetRequested(void) const
     {
-        return InterlockedCompareExchange(&m_HardwareResetRequested, FALSE, FALSE) != FALSE;
+        return InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareActive) !=
+               VioGpuHardwareActive;
+    }
+    BOOLEAN IsHardwareInterruptDispatchAllowed(void) const
+    {
+        LONG state = InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareActive);
+        return state == VioGpuHardwareActive || state == VioGpuHardwareRecovering;
     }
 
   private:
     BOOLEAN CheckHardware();
+    NTSTATUS UnwindFailedStart(_In_ NTSTATUS failureStatus);
     NTSTATUS WriteRegistryString(_In_ HANDLE DevInstRegKeyHandle, _In_ PCWSTR pszwValueName, _In_ PCSTR pszValue);
     NTSTATUS WriteRegistryDWORD(_In_ HANDLE DevInstRegKeyHandle, _In_ PCWSTR pszwValueName, _In_ PDWORD pdwValue);
     NTSTATUS ReadRegistryDWORD(_In_ HANDLE DevInstRegKeyHandle, _In_ PCWSTR pszwValueName, _Inout_ PDWORD pdwValue);

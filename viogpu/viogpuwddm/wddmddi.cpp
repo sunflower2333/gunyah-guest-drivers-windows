@@ -52,6 +52,7 @@ void DereferenceDevice(VIOGPU_WDDM_DEVICE *device)
 {
     LONG state = InterlockedDecrement(&device->ReferenceState);
     NT_ASSERT((state & VIOGPU_WDDM_DEVICE_REFERENCE_MASK) != VIOGPU_WDDM_DEVICE_REFERENCE_MASK);
+    UNREFERENCED_PARAMETER(state);
 }
 
 BOOLEAN IsSupportedSurfaceFormat(D3DDDIFORMAT format)

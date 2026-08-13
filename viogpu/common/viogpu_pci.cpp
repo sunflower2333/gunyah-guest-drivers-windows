@@ -242,17 +242,17 @@ u16 vdev_get_msix_vector(void *context, int queue)
     IVioGpuPCI *pdev = static_cast<IVioGpuPCI *>(context);
     u16 vector = VIRTIO_MSI_NO_VECTOR;
 
-    if (queue >= 0)
+    if (pdev->IsMSIEnabled())
     {
-        /* queue interrupt */
-        if (pdev->IsMSIEnabled())
+        if (queue >= 0)
         {
+            /* queue interrupt */
             vector = (u16)(queue + 1);
         }
-    }
-    else
-    {
-        vector = VIRTIO_GPU_MSIX_CONFIG_VECTOR;
+        else
+        {
+            vector = VIRTIO_GPU_MSIX_CONFIG_VECTOR;
+        }
     }
     return vector;
 }
@@ -401,6 +401,8 @@ NTSTATUS CPciResources::Close(void)
         m_Bars[bar] = CPciBar();
     }
     m_InterruptFlags = 0;
+    m_InterruptMessageCount = 0;
+    m_InterruptMessageCountKnown = FALSE;
     m_pDxgkInterface = nullptr;
     return STATUS_SUCCESS;
 }
@@ -411,6 +413,7 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
     ULONG BytesRead = 0;
     NTSTATUS Status = STATUS_SUCCESS;
     bool interrupt_found = false;
+    bool interrupt_resources_valid = true;
     int bar = -1;
 
     if (pDxgkInterface == nullptr || pResList == nullptr || m_pDxgkInterface != nullptr)
@@ -418,6 +421,48 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
         return false;
     }
     m_pDxgkInterface = pDxgkInterface;
+
+    // The translated list contains one descriptor per MSI-X message, but
+    // ordinary MSI has one descriptor regardless of its raw MessageCount.
+    // With no raw list available, one message descriptor has an unknown count.
+    // Two or more message descriptors prove MSI-X and therefore expose the
+    // complete count. Retain both the observed count and whether it is known
+    // before any PCI operation can fail.
+    for (ULONG i = 0; i < pResList->Count; ++i)
+    {
+        PCM_FULL_RESOURCE_DESCRIPTOR pFullResDescriptor = &pResList->List[i];
+        for (ULONG j = 0; j < pFullResDescriptor->PartialResourceList.Count; ++j)
+        {
+            PCM_PARTIAL_RESOURCE_DESCRIPTOR pResDescriptor = &pFullResDescriptor->PartialResourceList.PartialDescriptors[j];
+            if (pResDescriptor->Type != CmResourceTypeInterrupt)
+            {
+                continue;
+            }
+
+            BOOLEAN messageSignaled = (pResDescriptor->Flags & CM_RESOURCE_INTERRUPT_MESSAGE) != 0;
+            if (!interrupt_found)
+            {
+                m_InterruptFlags = pResDescriptor->Flags;
+                interrupt_found = true;
+            }
+            else if (messageSignaled != IsMSIEnabled())
+            {
+                interrupt_resources_valid = false;
+            }
+
+            ++m_InterruptMessageCount;
+            if (!messageSignaled && m_InterruptMessageCount != 1)
+            {
+                interrupt_resources_valid = false;
+            }
+        }
+    }
+    m_InterruptMessageCountKnown = interrupt_found && interrupt_resources_valid &&
+                                   ((!IsMSIEnabled() && m_InterruptMessageCount == 1U) ||
+                                    (IsMSIEnabled() && m_InterruptMessageCount >= 2U));
+    bool interrupt_layout_accepted = m_InterruptMessageCountKnown &&
+                                     (!IsMSIEnabled() ||
+                                      (m_InterruptMessageCount >= 3U && m_InterruptMessageCount <= 4U));
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     Status = m_pDxgkInterface->DxgkCbReadDeviceSpace(m_pDxgkInterface->DeviceHandle,
@@ -431,16 +476,12 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
     if (!NT_SUCCESS(Status))
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("DxgkCbReadDeviceSpace failed with status 0x%X\n", Status));
-        Status = Close();
-        NT_ASSERT(NT_SUCCESS(Status));
         return false;
     }
 
     if (BytesRead != sizeof(pci_config))
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("[%s] could not read PCI config space\n", __FUNCTION__));
-        Status = Close();
-        NT_ASSERT(NT_SUCCESS(Status));
         return false;
     }
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s ListCount = %d\n", __FUNCTION__, pResList->Count));
@@ -462,8 +503,7 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
                     break;
                 case CmResourceTypeInterrupt:
                     {
-                        m_InterruptFlags = pResDescriptor->Flags;
-                        if (IsMSIEnabled())
+                        if ((pResDescriptor->Flags & CM_RESOURCE_INTERRUPT_MESSAGE) != 0)
                         {
                             DbgPrint(TRACE_LEVEL_FATAL,
                                      ("Found MSI Interrupt vector %d, level %d, affinity 0x%X, flags %X\n",
@@ -481,7 +521,6 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
                                       (ULONG)pResDescriptor->u.Interrupt.Affinity,
                                       pResDescriptor->Flags));
                         }
-                        interrupt_found = true;
                     }
                     break;
                 case CmResourceTypeMemory:
@@ -513,11 +552,9 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
             }
         }
     }
-    if (bar < 0 || !interrupt_found)
+    if (bar < 0 || !interrupt_layout_accepted)
     {
         DbgPrint(TRACE_LEVEL_FATAL, ("[%s] resource enumeration failed\n", __FUNCTION__));
-        Status = Close();
-        NT_ASSERT(NT_SUCCESS(Status));
         return false;
     }
     return true;

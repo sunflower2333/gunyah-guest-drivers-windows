@@ -56,7 +56,7 @@ static BOOLEAN VioGpuInterruptBarrier(_In_opt_ PVOID context)
 PAGED_CODE_SEG_BEGIN
 VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     : m_pPhysicalDevice(pPhysicalDeviceObject), m_MonitorPowerState(PowerDeviceD0), m_AdapterPowerState(PowerDeviceD0),
-      m_pHWDevice(NULL), m_HardwareRundownCompleted(FALSE), m_HardwareResetRequested(FALSE)
+      m_pHWDevice(NULL), m_HardwareRundownCompleted(FALSE), m_HardwareResetState(VioGpuHardwareActive)
 {
     PAGED_CODE();
 
@@ -89,8 +89,9 @@ VioGpuDod::~VioGpuDod(void)
                IsDriverActive(),
                IsHardwareInit());
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s 0x%p\n", __FUNCTION__, m_pHWDevice));
-    delete m_pHWDevice;
-    m_pHWDevice = NULL;
+    // Every path that owns a hardware adapter must complete HWClose before
+    // deleting this outer object. Do not bypass its final interrupt barrier.
+    NT_ASSERT(m_pHWDevice == NULL);
 }
 
 BOOLEAN VioGpuDod::CheckHardware()
@@ -127,6 +128,29 @@ BOOLEAN VioGpuDod::CheckHardware()
     return FALSE;
 }
 
+NTSTATUS VioGpuDod::UnwindFailedStart(_In_ NTSTATUS failureStatus)
+{
+    PAGED_CODE();
+
+    InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
+    if (!m_HardwareRundownCompleted)
+    {
+        ExWaitForRundownProtectionRelease(&m_HardwareOperations);
+        ExRundownCompleted(&m_HardwareOperations);
+        m_HardwareRundownCompleted = TRUE;
+    }
+
+    NTSTATUS closeStatus = m_pHWDevice->HWClose();
+    if (NT_SUCCESS(closeStatus))
+    {
+        delete m_pHWDevice;
+        m_pHWDevice = NULL;
+        ExReInitializeRundownProtection(&m_HardwareOperations);
+        m_HardwareRundownCompleted = FALSE;
+    }
+    return NT_SUCCESS(closeStatus) ? failureStatus : closeStatus;
+}
+
 NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                                 _In_ DXGKRNL_INTERFACE *pDxgkInterface,
                                 _Out_ ULONG *pNumberOfViews,
@@ -151,7 +175,19 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     {
         return STATUS_DEVICE_NOT_READY;
     }
-    InterlockedExchange(&m_HardwareResetRequested, FALSE);
+    LONG startResetState = InterlockedCompareExchange(&m_HardwareResetState,
+                                                      VioGpuHardwareRecovering,
+                                                      VioGpuHardwareActive);
+    if (startResetState == VioGpuHardwareResetRequested)
+    {
+        startResetState = InterlockedCompareExchange(&m_HardwareResetState,
+                                                     VioGpuHardwareRecovering,
+                                                     VioGpuHardwareResetRequested);
+    }
+    if (startResetState != VioGpuHardwareActive && startResetState != VioGpuHardwareResetRequested)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
 
     if (pDxgkInterface->Size > sizeof(m_DxgkInterface))
     {
@@ -182,12 +218,14 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                    "viogpu StartDevice: DxgkCbGetDeviceInformation failed, status=0x%08X\n",
                    Status);
         VIOGPU_LOG_ASSERTION1("DxgkCbGetDeviceInformation failed with status 0x%X\n", Status);
+        InterlockedCompareExchange(&m_HardwareResetState, startResetState, VioGpuHardwareRecovering);
         return Status;
     }
 
     if (!CheckHardware())
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu StartDevice: CheckHardware failed\n");
+        InterlockedCompareExchange(&m_HardwareResetState, startResetState, VioGpuHardwareRecovering);
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
     m_pHWDevice = new (NonPagedPoolNx) VioGpuAdapter(this);
@@ -199,6 +237,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                    "viogpu StartDevice: adapter allocation failed, status=0x%08X\n",
                    Status);
         DbgPrint(TRACE_LEVEL_ERROR, ("StartDevice failed to allocate memory\n"));
+        InterlockedCompareExchange(&m_HardwareResetState, startResetState, VioGpuHardwareRecovering);
         return Status;
     }
 
@@ -217,14 +256,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu StartDevice: HWInit failed, status=0x%08X\n", Status);
         DbgPrint(TRACE_LEVEL_ERROR, ("HWInit failed with status 0x%X\n", Status));
-        InterlockedExchange(&m_HardwareResetRequested, TRUE);
-        NTSTATUS closeStatus = m_pHWDevice->HWClose();
-        if (NT_SUCCESS(closeStatus))
-        {
-            delete m_pHWDevice;
-            m_pHWDevice = NULL;
-        }
-        return NT_SUCCESS(closeStatus) ? Status : closeStatus;
+        return UnwindFailedStart(Status);
     }
 
     m_CurrentMode.RamFrameBuffer = m_pHWDevice->GetPciResources()[0].GetMappedAddress(0, 0);
@@ -241,14 +273,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                    "viogpu StartDevice: SetRegisterInfo failed, status=0x%08X\n",
                    Status);
         VIOGPU_LOG_ASSERTION1("RegisterHWInfo failed with status 0x%X\n", Status);
-        InterlockedExchange(&m_HardwareResetRequested, TRUE);
-        NTSTATUS closeStatus = m_pHWDevice->HWClose();
-        if (NT_SUCCESS(closeStatus))
-        {
-            delete m_pHWDevice;
-            m_pHWDevice = NULL;
-        }
-        return NT_SUCCESS(closeStatus) ? Status : closeStatus;
+        return UnwindFailedStart(Status);
     }
 
     if (IsVgaDevice() && m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership)
@@ -267,14 +292,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                   Status,
                   m_SystemDisplayInfo.Width));
         VioGpuDbgBreak();
-        InterlockedExchange(&m_HardwareResetRequested, TRUE);
-        NTSTATUS closeStatus = m_pHWDevice->HWClose();
-        if (NT_SUCCESS(closeStatus))
-        {
-            delete m_pHWDevice;
-            m_pHWDevice = NULL;
-        }
-        return NT_SUCCESS(closeStatus) ? STATUS_UNSUCCESSFUL : closeStatus;
+        return UnwindFailedStart(STATUS_UNSUCCESSFUL);
     }
     DbgPrint(TRACE_LEVEL_FATAL,
              ("DxgkCbAcquirePostDisplayOwnership Width = %d Height = %d Pitch = %d ColorFormat = %d\n",
@@ -312,6 +330,11 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
 
     *pNumberOfViews = MAX_VIEWS;
     *pNumberOfChildren = MAX_CHILDREN;
+    if (InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareRecovering) !=
+        VioGpuHardwareRecovering)
+    {
+        return UnwindFailedStart(STATUS_DEVICE_NOT_READY);
+    }
     m_Flags.DriverStarted = TRUE;
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,
@@ -328,7 +351,7 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
 {
     PAGED_CODE();
 
-    InterlockedExchange(&m_HardwareResetRequested, TRUE);
+    InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
     if (!m_HardwareRundownCompleted)
     {
         ExWaitForRundownProtectionRelease(&m_HardwareOperations);
@@ -502,6 +525,7 @@ NTSTATUS VioGpuDod::SetPowerState(_In_ ULONG HardwareUid,
 
     if (HardwareUid == DISPLAY_ADAPTER_HW_ID)
     {
+        BOOLEAN resetRecovery = FALSE;
         if (DevicePowerState == PowerDeviceD0)
         {
             if (m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership)
@@ -527,9 +551,45 @@ NTSTATUS VioGpuDod::SetPowerState(_In_ ULONG HardwareUid,
                 Visibility.Visible = FALSE;
                 SetVidPnSourceVisibility(&Visibility);
             }
+
+            LONG resetState = InterlockedCompareExchange(&m_HardwareResetState,
+                                                         VioGpuHardwareRecovering,
+                                                         VioGpuHardwareResetRequested);
+            if (resetState == VioGpuHardwareResetRequested)
+            {
+                resetRecovery = TRUE;
+                // Consume the any-IRQL reset notification after owning the
+                // recovery state. A concurrent reset changes it back to
+                // ResetRequested and prevents the final publish below.
+                m_pHWDevice->ResetDevice();
+            }
+            else if (resetState != VioGpuHardwareActive)
+            {
+                return STATUS_DEVICE_NOT_READY;
+            }
         }
 
         Status = m_pHWDevice->SetPowerState(&m_DeviceInfo, DevicePowerState, &m_CurrentMode);
+        if (!NT_SUCCESS(Status) && resetRecovery)
+        {
+            InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareResetRequested, VioGpuHardwareRecovering);
+        }
+        if (NT_SUCCESS(Status) && DevicePowerState == PowerDeviceD0)
+        {
+            if (resetRecovery)
+            {
+                if (InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareRecovering) !=
+                    VioGpuHardwareRecovering)
+                {
+                    return STATUS_DEVICE_NOT_READY;
+                }
+            }
+            else if (InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareActive) !=
+                     VioGpuHardwareActive)
+            {
+                return STATUS_DEVICE_NOT_READY;
+            }
+        }
         if (NT_SUCCESS(Status))
         {
             m_AdapterPowerState = DevicePowerState;
@@ -2197,7 +2257,7 @@ VOID VioGpuDod::DpcRoutine(VOID)
     if (ExAcquireRundownProtection(&m_HardwareOperations))
     {
         VioGpuAdapter *adapter = m_pHWDevice;
-        if (!IsHardwareResetRequested() && adapter != NULL)
+        if (IsHardwareInterruptDispatchAllowed() && adapter != NULL)
         {
             adapter->DpcRoutine(&m_DxgkInterface);
         }
@@ -2211,20 +2271,22 @@ BOOLEAN VioGpuDod::InterruptRoutine(_In_ ULONG MessageNumber)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--> %s\n", __FUNCTION__));
     VioGpuAdapter *adapter = m_pHWDevice;
-    return !IsHardwareResetRequested() && adapter != NULL ? adapter->InterruptRoutine(&m_DxgkInterface, MessageNumber)
-                                                          : FALSE;
+    return IsHardwareInterruptDispatchAllowed() && adapter != NULL ? adapter->InterruptRoutine(&m_DxgkInterface,
+                                                                                               MessageNumber)
+                                                                   : FALSE;
 }
 
 VOID VioGpuDod::ResetDevice(VOID)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<---> %s\n", __FUNCTION__));
-    InterlockedExchange(&m_HardwareResetRequested, TRUE);
+    InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
     if (KeGetCurrentIrql() <= DISPATCH_LEVEL && ExAcquireRundownProtection(&m_HardwareOperations))
     {
         VioGpuAdapter *adapter = m_pHWDevice;
         if (adapter != NULL)
         {
             adapter->ResetDevice();
+            InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
         }
         ExReleaseRundownProtection(&m_HardwareOperations);
     }
@@ -2239,7 +2301,7 @@ NTSTATUS VioGpuDod::SystemDisplayEnable(_In_ D3DDDI_VIDEO_PRESENT_TARGET_ID Targ
     UNREFERENCED_PARAMETER(Flags);
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
-    InterlockedExchange(&m_HardwareResetRequested, TRUE);
+    InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
 
     VIOGPU_ASSERT((TargetId < MAX_CHILDREN) || (TargetId == D3DDDI_ID_UNINITIALIZED));
 
@@ -2258,6 +2320,7 @@ NTSTATUS VioGpuDod::SystemDisplayEnable(_In_ D3DDDI_VIDEO_PRESENT_TARGET_ID Targ
     }
     VioGpuAdapter *adapter = m_pHWDevice;
     BOOLEAN reset = adapter != NULL && adapter->ResetToVgaMode();
+    InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
     ExReleaseRundownProtection(&m_HardwareOperations);
     if (!reset)
     {
@@ -3972,6 +4035,12 @@ NTSTATUS VioGpuAdapter::HWClose(void)
     NTSTATUS status = StopNativeContextTransport();
     if (NT_SUCCESS(status))
     {
+        InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
+        status = SynchronizeInterruptMessages();
+    }
+    if (NT_SUCCESS(status))
+    {
+        KeFlushQueuedDpcs();
         status = m_PciResources.Close();
     }
     DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s status=0x%08X\n", __FUNCTION__, status));
@@ -4892,15 +4961,21 @@ NTSTATUS VioGpuAdapter::SynchronizeInterruptMessages(void)
 {
     PAGED_CODE();
 
+    ULONG messageCount = m_PciResources.GetInterruptMessageCount();
+    if (messageCount == 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    if (!m_PciResources.HasKnownInterruptMessageCount())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
     PDXGKRNL_INTERFACE dxgkInterface = GetDxgkInterface();
     if (dxgkInterface == NULL || dxgkInterface->DxgkCbSynchronizeExecution == NULL)
     {
         return STATUS_DEVICE_NOT_READY;
     }
 
-    // Config uses message 0. Queue messages 1 and 2 are valid only after both
-    // queues were established successfully.
-    ULONG messageCount = m_PciResources.IsMSIEnabled() && m_bQueuesInitialized ? 3U : 1U;
     for (ULONG messageNumber = 0; messageNumber < messageCount; ++messageNumber)
     {
         BOOLEAN barrierResult = FALSE;

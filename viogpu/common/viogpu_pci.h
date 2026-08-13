@@ -55,7 +55,9 @@ class CPciBar
 class CPciResources
 {
   public:
-    CPciResources() : m_pDxgkInterface(nullptr), m_InterruptFlags(0)
+    CPciResources()
+        : m_pDxgkInterface(nullptr), m_InterruptFlags(0), m_InterruptMessageCount(0),
+          m_InterruptMessageCountKnown(FALSE)
     {
     }
 
@@ -91,6 +93,16 @@ class CPciResources
         return (m_InterruptFlags & CM_RESOURCE_INTERRUPT_MESSAGE);
     }
 
+    ULONG GetInterruptMessageCount()
+    {
+        return m_InterruptMessageCount;
+    }
+
+    BOOLEAN HasKnownInterruptMessageCount()
+    {
+        return m_InterruptMessageCountKnown;
+    }
+
     CPciBar *GetPciBar(UINT bar)
     {
         ASSERT(bar < PCI_TYPE0_ADDRESSES);
@@ -106,6 +118,8 @@ class CPciResources
   private:
     PDXGKRNL_INTERFACE m_pDxgkInterface;
     USHORT m_InterruptFlags;
+    ULONG m_InterruptMessageCount;
+    BOOLEAN m_InterruptMessageCountKnown;
     CPciBar m_Bars[PCI_TYPE0_ADDRESSES];
 };
 

@@ -33,6 +33,7 @@ WDF_DMA_PATH = WDF_DIR / "Dma.c"
 WDF_SOURCE_PATH = WDF_DIR / "VirtIOWdf.c"
 WDF_HEADER_PATH = WDF_DIR / "VirtIOWdf.h"
 PCI_SOURCE_PATH = (PROJECT_DIR.parent / "common" / "viogpu_pci.cpp").resolve()
+PCI_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_pci.h").resolve()
 VIRTIO_DIR = (PROJECT_DIR.parent.parent / "VirtIO").resolve()
 VIRTIO_HEADER_PATH = VIRTIO_DIR / "virtio_pci.h"
 VIRTIO_COMMON_PATH = VIRTIO_DIR / "VirtIOPCICommon.c"
@@ -146,6 +147,7 @@ WDF_DMA_SOURCE = WDF_DMA_PATH.read_text(encoding="utf-8")
 WDF_SOURCE = WDF_SOURCE_PATH.read_text(encoding="utf-8")
 WDF_HEADER_SOURCE = WDF_HEADER_PATH.read_text(encoding="utf-8")
 PCI_SOURCE = PCI_SOURCE_PATH.read_text(encoding="utf-8")
+PCI_HEADER_SOURCE = PCI_HEADER_PATH.read_text(encoding="utf-8")
 VIRTIO_HEADER_SOURCE = VIRTIO_HEADER_PATH.read_text(encoding="utf-8")
 VIRTIO_COMMON_SOURCE = VIRTIO_COMMON_PATH.read_text(encoding="utf-8")
 VIRTIO_MODERN_SOURCE = VIRTIO_MODERN_PATH.read_text(encoding="utf-8")
@@ -172,6 +174,7 @@ WDF_DMA_CODE = strip_cpp_comments_and_literals(WDF_DMA_SOURCE)
 WDF_CODE = strip_cpp_comments_and_literals(WDF_SOURCE)
 WDF_HEADER_CODE = strip_cpp_comments_and_literals(WDF_HEADER_SOURCE)
 PCI_CODE = strip_cpp_comments_and_literals(PCI_SOURCE)
+PCI_HEADER_CODE = strip_cpp_comments_and_literals(PCI_HEADER_SOURCE)
 VIRTIO_HEADER_CODE = strip_cpp_comments_and_literals(VIRTIO_HEADER_SOURCE)
 VIRTIO_COMMON_CODE = strip_cpp_comments_and_literals(VIRTIO_COMMON_SOURCE)
 VIRTIO_MODERN_CODE = strip_cpp_comments_and_literals(VIRTIO_MODERN_SOURCE)
@@ -463,6 +466,14 @@ def check_virtio_queue_allocation_cleanup() -> None:
 
 def check_dod_reset_entrypoints() -> None:
     """Check reset callbacks before they dereference the replaceable adapter."""
+    reset_state = canonical_code(VIOGPU_HEADER_CODE)
+    reset_state_contract = (
+        "enumVIOGPU_HARDWARE_RESET_STATE:LONG{"
+        "VioGpuHardwareActive=0,VioGpuHardwareResetRequested,VioGpuHardwareRecovering,};"
+    )
+    if reset_state.count(reset_state_contract) != 1:
+        fail("DOD reset state must expose exactly Active, ResetRequested, and Recovering")
+
     dpc = canonical_code(function_body("VioGpuDod::DpcRoutine", VIOGPU_CODE))
     dpc_acquire = dpc.find("if(ExAcquireRundownProtection(&m_HardwareOperations))")
     dpc_adapter = dpc.find("VioGpuAdapter*adapter=m_pHWDevice;", dpc_acquire)
@@ -478,20 +489,31 @@ def check_dod_reset_entrypoints() -> None:
         or dpc.count("ExReleaseRundownProtection(&m_HardwareOperations);") != 1
         or dpc.count("adapter->DpcRoutine(&m_DxgkInterface);") != 1
         or "m_pHWDevice->DpcRoutine" in dpc
+        or dpc.count("IsHardwareInterruptDispatchAllowed()") != 1
     ):
-        fail("DpcRoutine must use one balanced protected hardware snapshot")
+        fail("DpcRoutine must use one balanced protected hardware snapshot during active or recovery dispatch")
+
+    interrupt = canonical_code(function_body("VioGpuDod::InterruptRoutine", VIOGPU_CODE))
+    expected_interrupt_tail = (
+        "VioGpuAdapter*adapter=m_pHWDevice;"
+        "returnIsHardwareInterruptDispatchAllowed()&&adapter!=NULL?"
+        "adapter->InterruptRoutine(&m_DxgkInterface,MessageNumber):FALSE;"
+    )
+    if not interrupt.endswith(expected_interrupt_tail) or interrupt.count("m_pHWDevice") != 1:
+        fail("ISR wrapper must use one raw adapter snapshot only while active or recovering")
 
     reset = canonical_code(function_body("VioGpuDod::ResetDevice", VIOGPU_CODE))
-    reset_gate = "InterlockedExchange(&m_HardwareResetRequested,TRUE);"
+    reset_gate = "InterlockedExchange(&m_HardwareResetState,VioGpuHardwareResetRequested);"
     reset_acquire = "ExAcquireRundownProtection(&m_HardwareOperations)"
     reset_release = "ExReleaseRundownProtection(&m_HardwareOperations);"
     reset_adapter = "VioGpuAdapter*adapter=m_pHWDevice;"
+    reset_gate_offsets = [match.start() for match in re.finditer(re.escape(reset_gate), reset)]
     if (
-        reset.count(reset_gate) != 1
+        len(reset_gate_offsets) != 2
         or reset.count(reset_acquire) != 1
         or reset.count(reset_release) != 1
     ):
-        fail("ResetDevice must publish its reset gate and balance hardware rundown protection")
+        fail("ResetDevice must publish before and after reset work and balance hardware rundown protection")
     reset_acquire_gate = (
         "if(KeGetCurrentIrql()<=DISPATCH_LEVEL&&"
         "ExAcquireRundownProtection(&m_HardwareOperations)){"
@@ -499,11 +521,12 @@ def check_dod_reset_entrypoints() -> None:
     if reset.count(reset_acquire_gate) != 1:
         fail("ResetDevice must acquire nonpaged hardware rundown only at or below DISPATCH_LEVEL")
     reset_stages = (
-        (reset.find(reset_gate), "reset gate publication"),
+        (reset_gate_offsets[0], "initial reset gate publication"),
         (reset.find(reset_acquire_gate), "IRQL and rundown gate"),
         (reset.find(reset_acquire), "hardware rundown acquire"),
         (reset.find(reset_adapter), "adapter snapshot"),
         (reset.find("adapter->ResetDevice();"), "adapter reset"),
+        (reset_gate_offsets[1], "post-reset gate publication"),
         (reset.find(reset_release), "hardware rundown release"),
     )
     for (offset, description), (next_offset, next_description) in zip(reset_stages, reset_stages[1:]):
@@ -511,27 +534,29 @@ def check_dod_reset_entrypoints() -> None:
             fail(f"ResetDevice must perform {description} before {next_description}")
 
     display = canonical_code(function_body("VioGpuDod::SystemDisplayEnable", VIOGPU_CODE))
-    display_gate = "InterlockedExchange(&m_HardwareResetRequested,TRUE);"
+    display_gate = "InterlockedExchange(&m_HardwareResetState,VioGpuHardwareResetRequested);"
     display_acquire = "ExAcquireRundownProtection(&m_HardwareOperations)"
     display_release = "ExReleaseRundownProtection(&m_HardwareOperations);"
     display_adapter = "VioGpuAdapter*adapter=m_pHWDevice;"
+    display_gate_offsets = [match.start() for match in re.finditer(re.escape(display_gate), display)]
     if (
-        display.count(display_gate) != 1
+        len(display_gate_offsets) != 2
         or display.count(display_acquire) != 1
         or display.count(display_release) != 1
     ):
-        fail("SystemDisplayEnable must publish its reset gate and balance hardware rundown protection")
+        fail("SystemDisplayEnable must publish before and after reset work and balance hardware rundown protection")
     if "KeGetCurrentIrql()!=PASSIVE_LEVEL" not in display:
         fail("SystemDisplayEnable must require PASSIVE_LEVEL before its hardware rundown acquire")
     first_return = display.find("return")
     if first_return >= 0 and display.find(display_gate) > first_return:
         fail("SystemDisplayEnable must publish its reset gate before every early return")
     display_stages = (
-        (display.find(display_gate), "reset gate publication"),
+        (display_gate_offsets[0], "initial reset gate publication"),
         (display.find("if(KeGetCurrentIrql()!=PASSIVE_LEVEL)"), "IRQL gate"),
         (display.find(display_acquire), "hardware rundown acquire"),
         (display.find(display_adapter), "adapter snapshot"),
         (display.find("adapter->ResetToVgaMode()"), "VGA reset"),
+        (display_gate_offsets[1], "post-reset gate publication"),
         (display.find(display_release), "hardware rundown release"),
     )
     for (offset, description), (next_offset, next_description) in zip(display_stages, display_stages[1:]):
@@ -1358,20 +1383,36 @@ def check_native_context_readiness(
         fail("failed transport state must not return before transitioning to quiescing")
 
     helper = canonical_code(function_body("VioGpuAdapter::SynchronizeInterruptMessages", VIOGPU_CODE))
-    message_count = "ULONGmessageCount=m_PciResources.IsMSIEnabled()&&m_bQueuesInitialized?3:1;"
+    message_count = "ULONGmessageCount=m_PciResources.GetInterruptMessageCount();"
+    empty_success = "if(messageCount==0){returnSTATUS_SUCCESS;}"
+    trusted_count = (
+        "if(!m_PciResources.HasKnownInterruptMessageCount())"
+        "{returnSTATUS_DEVICE_NOT_READY;}"
+    )
+    interface_guard = (
+        "if(dxgkInterface==NULL||dxgkInterface->DxgkCbSynchronizeExecution==NULL)"
+        "{returnSTATUS_DEVICE_NOT_READY;}"
+    )
     barrier_loop = "for(ULONGmessageNumber=0;messageNumber<messageCount;++messageNumber)"
     barrier_failure = "if(!NT_SUCCESS(barrierStatus)||!barrierResult)"
     barrier_return = "returnNT_SUCCESS(barrierStatus)?STATUS_DEVICE_NOT_READY:barrierStatus;"
     message_offset = helper.find(message_count)
-    loop_offset = helper.find(barrier_loop, message_offset)
+    empty_offset = helper.find(empty_success, message_offset)
+    trusted_offset = helper.find(trusted_count, empty_offset)
+    interface_offset = helper.find(interface_guard, trusted_offset)
+    loop_offset = helper.find(barrier_loop, interface_offset)
     failure_offset = helper.find(barrier_failure, loop_offset)
     return_offset = helper.find(barrier_return, failure_offset)
-    if min(message_offset, loop_offset, failure_offset, return_offset) < 0 or not (
-        message_offset < loop_offset < failure_offset < return_offset
+    if min(message_offset, empty_offset, trusted_offset, interface_offset, loop_offset, failure_offset, return_offset) < 0 or not (
+        message_offset < empty_offset < trusted_offset < interface_offset < loop_offset < failure_offset < return_offset
     ):
-        fail("ISR barrier helper must synchronize every configured message and fail closed")
+        fail("ISR barrier helper must require a complete count, synchronize every retained message, and fail closed")
     if (
-        helper.count("barrierStatus=") != 1
+        helper.count("GetInterruptMessageCount()") != 1
+        or helper.count("HasKnownInterruptMessageCount()") != 1
+        or "IsMSIEnabled()" in helper
+        or "m_bQueuesInitialized" in helper
+        or helper.count("barrierStatus=") != 1
         or helper.count("barrierResult=") != 1
         or "&barrierResult);if(!NT_SUCCESS(barrierStatus)||!barrierResult)" not in helper
     ):
@@ -1711,6 +1752,7 @@ def check_wddm_context_lifetime() -> None:
     expected_dereference = (
         "LONGstate=InterlockedDecrement(&device->ReferenceState);"
         "NT_ASSERT((state&VIOGPU_WDDM_DEVICE_REFERENCE_MASK)!=VIOGPU_WDDM_DEVICE_REFERENCE_MASK);"
+        "UNREFERENCED_PARAMETER(state);"
     )
     if dereference != expected_dereference:
         fail("device dereference must preserve the closing bit while decrementing one low-bit reference")
@@ -1975,6 +2017,27 @@ def check_segment_failure_semantics() -> None:
 
 
 def check_pci_resource_lifetime() -> None:
+    pci_header = canonical_code(PCI_HEADER_CODE)
+    for member in (
+        "USHORTm_InterruptFlags;",
+        "ULONGm_InterruptMessageCount;",
+        "BOOLEANm_InterruptMessageCountKnown;",
+    ):
+        if pci_header.count(member) != 1:
+            fail(f"PCI resources must retain exactly one interrupt ownership field: {member}")
+    constructor = (
+        "CPciResources():m_pDxgkInterface(NULL),m_InterruptFlags(0),"
+        "m_InterruptMessageCount(0),m_InterruptMessageCountKnown(FALSE){}"
+    )
+    getter = "ULONGGetInterruptMessageCount(){returnm_InterruptMessageCount;}"
+    known_getter = "BOOLEANHasKnownInterruptMessageCount(){returnm_InterruptMessageCountKnown;}"
+    if (
+        pci_header.count(constructor) != 1
+        or pci_header.count(getter) != 1
+        or pci_header.count(known_getter) != 1
+    ):
+        fail("PCI resources must initialize and expose retained interrupt count knowledge exactly once")
+
     unmap_body = function_body("CPciBar::Unmap", PCI_CODE)
     unmap = canonical_code(unmap_body)
     require_single_final_return(unmap_body, "return STATUS_SUCCESS;", "PCI BAR unmap")
@@ -2008,6 +2071,9 @@ def check_pci_resource_lifetime() -> None:
     record_failure = "if(!NT_SUCCESS(status)&&NT_SUCCESS(firstFailure)){firstFailure=status;}"
     failure_return = "if(!NT_SUCCESS(firstFailure)){returnfirstFailure;}"
     reset_bar = "m_Bars[bar]=CPciBar();"
+    clear_flags = "m_InterruptFlags=0;"
+    clear_messages = "m_InterruptMessageCount=0;"
+    clear_message_trust = "m_InterruptMessageCountKnown=FALSE;"
     clear_owner = "m_pDxgkInterface=NULL;"
     loops = list(re.finditer(r"for\(UINTbar=0;bar<PCI_TYPE0_ADDRESSES;(?:\+\+bar|bar\+\+)\)", close))
     loop_offset = loops[0].start() if len(loops) == 2 else -1
@@ -2015,28 +2081,132 @@ def check_pci_resource_lifetime() -> None:
     record_offset = close.find(record_failure, unmap_offset)
     failure_offset = close.find(failure_return, record_offset)
     reset_offset = close.find(reset_bar, failure_offset)
-    owner_offset = close.find(clear_owner, reset_offset)
-    if min(loop_offset, unmap_offset, record_offset, failure_offset, reset_offset, owner_offset) < 0 or not (
-        loop_offset < unmap_offset < record_offset < failure_offset < reset_offset < owner_offset
+    flags_offset = close.find(clear_flags, reset_offset)
+    messages_offset = close.find(clear_messages, flags_offset)
+    message_trust_offset = close.find(clear_message_trust, messages_offset)
+    owner_offset = close.find(clear_owner, message_trust_offset)
+    if min(
+        loop_offset,
+        unmap_offset,
+        record_offset,
+        failure_offset,
+        reset_offset,
+        flags_offset,
+        messages_offset,
+        message_trust_offset,
+        owner_offset,
+    ) < 0 or not (
+        loop_offset
+        < unmap_offset
+        < record_offset
+        < failure_offset
+        < reset_offset
+        < flags_offset
+        < messages_offset
+        < message_trust_offset
+        < owner_offset
     ):
-        fail("PCI close must try every BAR and publish clean metadata only after all unmaps succeed")
-    if close.count(unmap_bar) != 1 or len(loops) != 2 or close.count(clear_owner) != 1:
+        fail("PCI close must retain interrupt ownership until every BAR unmap succeeds")
+    if (
+        close.count(unmap_bar) != 1
+        or len(loops) != 2
+        or close.count(clear_flags) != 1
+        or close.count(clear_messages) != 1
+        or close.count(clear_message_trust) != 1
+        or close.count(clear_owner) != 1
+    ):
         fail("PCI close must use one full unmap pass followed by one metadata reset pass")
     if len(variable_write_offsets(close_body, "firstFailure")) != 2:
         fail("PCI close must preserve the first BAR unmap failure until it is returned")
 
     init = function_body("CPciResources::Init", PCI_CODE)
-    init_compact = compact_code(init)
+    init_compact = canonical_code(init)
     owner_assign = init_compact.find("m_pDxgkInterface=pDxgkInterface;")
+    interrupt_loop = init_compact.find("for(ULONGi=0;i<pResList->Count;++i)", owner_assign)
+    interrupt_filter = init_compact.find("if(pResDescriptor->Type!=CmResourceTypeInterrupt)", interrupt_loop)
+    first_flags = init_compact.find("m_InterruptFlags=pResDescriptor->Flags;", interrupt_filter)
+    mixed_guard = (
+        "elseif(messageSignaled!=IsMSIEnabled())"
+        "{interrupt_resources_valid=FALSE;}"
+    )
+    line_guard = (
+        "if(!messageSignaled&&m_InterruptMessageCount!=1)"
+        "{interrupt_resources_valid=FALSE;}"
+    )
+    mixed_guard_offset = init_compact.find(mixed_guard, first_flags)
+    count_increment = init_compact.find("++m_InterruptMessageCount;", mixed_guard_offset)
+    line_guard_offset = init_compact.find(line_guard, count_increment)
+    publish_trust = (
+        "m_InterruptMessageCountKnown=interrupt_found&&interrupt_resources_valid&&"
+        "((!IsMSIEnabled()&&m_InterruptMessageCount==1)||"
+        "(IsMSIEnabled()&&m_InterruptMessageCount>=2));"
+    )
+    known_offset = init_compact.find(publish_trust, line_guard_offset)
+    config_read = init_compact.find("Status=m_pDxgkInterface->DxgkCbReadDeviceSpace", known_offset)
     success_return = init_compact.rfind("returntrue;")
-    if owner_assign < 0 or success_return < owner_assign:
-        fail("PCI initialization must acquire its DXGK owner before enumeration")
+    if min(
+        owner_assign,
+        interrupt_loop,
+        interrupt_filter,
+        first_flags,
+        mixed_guard_offset,
+        count_increment,
+        line_guard_offset,
+        known_offset,
+        config_read,
+    ) < 0 or not (
+        owner_assign
+        < interrupt_loop
+        < interrupt_filter
+        < first_flags
+        < mixed_guard_offset
+        < count_increment
+        < line_guard_offset
+        < known_offset
+        < config_read
+        < success_return
+    ):
+        fail("PCI initialization must validate and retain interrupt count knowledge before PCI operations can fail")
     failure_tail = init_compact[owner_assign:success_return]
-    rollback_sequence = "Status=Close();NT_ASSERT(NT_SUCCESS(Status));returnfalse;"
-    if failure_tail.count(rollback_sequence) != 3:
-        fail("PCI initialization must transactionally roll back every post-ownership failure")
+    if failure_tail.count("returnfalse;") != 3 or "Close()" in failure_tail:
+        fail("PCI initialization failures must retain interrupt and DXGK ownership for final HWClose")
     if len(variable_write_offsets(init, "m_pDxgkInterface")) != 1:
-        fail("PCI initialization must not overwrite its owner around rollback")
+        fail("PCI initialization must acquire its DXGK owner exactly once")
+    if (
+        len(variable_write_offsets(init, "m_InterruptFlags")) != 1
+        or len(variable_write_offsets(init, "m_InterruptMessageCount")) != 1
+        or len(variable_write_offsets(init, "m_InterruptMessageCountKnown")) != 1
+        or len(variable_write_offsets(PCI_SOURCE, "m_InterruptFlags")) != 2
+        or len(variable_write_offsets(PCI_SOURCE, "m_InterruptMessageCount")) != 2
+        or len(variable_write_offsets(PCI_SOURCE, "m_InterruptMessageCountKnown")) != 2
+    ):
+        fail("interrupt ownership metadata may only be acquired in Init and cleared by successful Close")
+
+    accepted_layout = (
+        "boolinterrupt_layout_accepted=m_InterruptMessageCountKnown&&"
+        "(!IsMSIEnabled()||(m_InterruptMessageCount>=3&&m_InterruptMessageCount<=4));"
+    )
+    resource_guard = "if(bar<0||!interrupt_layout_accepted)"
+    if (
+        init_compact.count(mixed_guard) != 1
+        or init_compact.count(line_guard) != 1
+        or len(variable_write_offsets(init, "interrupt_resources_valid")) != 3
+        or init_compact.count(accepted_layout) != 1
+        or init_compact.count(resource_guard) != 1
+    ):
+        fail("PCI initialization must reject mixed, multi-line, ordinary-MSI, or unaccepted MSI-X resource shapes")
+
+    vector_helper = canonical_code(function_body("vdev_get_msix_vector", PCI_CODE))
+    vector_contract = (
+        "IVioGpuPCI*pdev=static_cast<IVioGpuPCI*>(context);"
+        "u16vector=VIRTIO_MSI_NO_VECTOR;"
+        "if(pdev->IsMSIEnabled()){"
+        "if(queue>=0){vector=(u16)(queue+1);}"
+        "else{vector=VIRTIO_GPU_MSIX_CONFIG_VECTOR;}}"
+        "returnvector;"
+    )
+    if vector_helper != vector_contract:
+        fail("VirtIO vector selection must leave config and queue vectors unprogrammed for line interrupts")
 
 
 def check_rdma_ioctl_lifetime() -> None:
@@ -2592,6 +2762,7 @@ def check_adapter_lifecycle() -> None:
     for required in (
         "mutableEX_RUNDOWN_REFm_HardwareOperations;",
         "BOOLEANm_HardwareRundownCompleted;",
+        "mutablevolatileLONGm_HardwareResetState;",
     ):
         if adapter_header.count(required) != 1:
             fail(f"DOD adapter must expose one retry-safe hardware rundown field: {required}")
@@ -2625,23 +2796,112 @@ def check_adapter_lifecycle() -> None:
     ):
         fail("StartDevice must reject retained ownership before replacing DXGK or mode state")
 
+    begin_recovery = (
+        "LONGstartResetState=InterlockedCompareExchange(&m_HardwareResetState,"
+        "VioGpuHardwareRecovering,VioGpuHardwareActive);"
+        "if(startResetState==VioGpuHardwareResetRequested){"
+        "startResetState=InterlockedCompareExchange(&m_HardwareResetState,"
+        "VioGpuHardwareRecovering,VioGpuHardwareResetRequested);}"
+        "if(startResetState!=VioGpuHardwareActive&&startResetState!=VioGpuHardwareResetRequested)"
+        "{returnSTATUS_DEVICE_NOT_READY;}"
+    )
+    rollback_recovery = (
+        "InterlockedCompareExchange(&m_HardwareResetState,startResetState,"
+        "VioGpuHardwareRecovering);"
+    )
+    final_publish = (
+        "InterlockedCompareExchange(&m_HardwareResetState,VioGpuHardwareActive,"
+        "VioGpuHardwareRecovering)!=VioGpuHardwareRecovering"
+    )
+    final_publish_offset = start_compact.find(final_publish, allocation_offset)
+    started_offset = start_compact.find("m_Flags.DriverStarted=TRUE;", final_publish_offset)
+    if (
+        start_compact.count(begin_recovery) != 1
+        or start_compact.count(rollback_recovery) != 3
+        or start_compact.count(final_publish) != 1
+        or not retained_offset < start_compact.find(begin_recovery) < interface_copy
+        or final_publish_offset < allocation_offset
+        or started_offset < final_publish_offset
+    ):
+        fail("StartDevice must claim initial or stopped recovery, roll back to its source state, and publish only a complete adapter")
 
-    failed_start_cleanup = re.findall(
-        r"\bInterlockedExchange\s*\(\s*&m_HardwareResetRequested\s*,\s*TRUE\s*\)\s*;\s*"
-        r"\bNTSTATUS\s+closeStatus\s*=\s*m_pHWDevice\s*->\s*HWClose\s*\(\s*\)\s*;"
-        r"\s*if\s*\(\s*NT_SUCCESS\s*\(\s*closeStatus\s*\)\s*\)\s*\{"
-        r"\s*delete\s+m_pHWDevice\s*;\s*m_pHWDevice\s*=\s*NULL\s*;\s*\}"
-        r"\s*return\s+NT_SUCCESS\s*\(\s*closeStatus\s*\)\s*\?\s*"
-        r"(?:Status|STATUS_UNSUCCESSFUL)\s*:\s*closeStatus\s*;",
-        start,
+    allocation_failure_end = start.find("Status = GetRegisterInfo()")
+    pre_adapter_failures = start[:allocation_failure_end]
+    rollback_returns = re.findall(
+        r"\bInterlockedCompareExchange\s*\(\s*&m_HardwareResetState\s*,\s*startResetState\s*,\s*"
+        r"VioGpuHardwareRecovering\s*\)\s*;\s*return\s+(?:Status|STATUS_GRAPHICS_DRIVER_MISMATCH)\s*;",
+        pre_adapter_failures,
         re.DOTALL,
     )
-    if len(failed_start_cleanup) != 3 or len(re.findall(r"\bm_pHWDevice\s*->\s*HWClose\s*\(", start)) != 3:
-        fail("every failed StartDevice unwind must gate ISR/DPC access and retain the adapter unless HWClose succeeds")
-    if len(variable_write_offsets(start, "m_pHWDevice")) != 4 or len(
-        re.findall(r"\bdelete\s+m_pHWDevice\s*;", start)
-    ) != 3:
-        fail("StartDevice must replace or delete its hardware adapter only in the checked ownership paths")
+    if len(rollback_returns) != 3:
+        fail("every pre-adapter StartDevice failure must roll back only its own Recovering claim")
+
+    failed_start_cleanup = re.findall(
+        r"\breturn\s+UnwindFailedStart\s*\(\s*"
+        r"(?:Status|STATUS_UNSUCCESSFUL|STATUS_DEVICE_NOT_READY)\s*\)\s*;",
+        start,
+    )
+    if len(failed_start_cleanup) != 4 or start_compact.count("UnwindFailedStart(") != 4:
+        fail("every post-allocation StartDevice failure must use the shared ownership-safe unwind")
+    if len(variable_write_offsets(start, "m_pHWDevice")) != 1 or re.search(r"\bdelete\s+m_pHWDevice\s*;", start):
+        fail("StartDevice must only allocate its adapter and delegate every deletion to the checked unwind")
+
+    unwind_body = function_body("VioGpuDod::UnwindFailedStart", VIOGPU_CODE)
+    unwind = canonical_code(unwind_body)
+    gate = unwind.find("InterlockedExchange(&m_HardwareResetState,VioGpuHardwareResetRequested);")
+    wait = unwind.find("ExWaitForRundownProtectionRelease(&m_HardwareOperations);", gate)
+    complete = unwind.find("ExRundownCompleted(&m_HardwareOperations);", wait)
+    mark_completed = unwind.find("m_HardwareRundownCompleted=TRUE;", complete)
+    close_adapter = unwind.find("NTSTATUScloseStatus=m_pHWDevice->HWClose();", mark_completed)
+    delete_adapter = unwind.find("deletem_pHWDevice;", close_adapter)
+    clear_adapter = unwind.find("m_pHWDevice=NULL;", delete_adapter)
+    reopen = unwind.find("ExReInitializeRundownProtection(&m_HardwareOperations);", clear_adapter)
+    mark_open = unwind.find("m_HardwareRundownCompleted=FALSE;", reopen)
+    return_failure = unwind.find("returnNT_SUCCESS(closeStatus)?failureStatus:closeStatus;", mark_open)
+    unwind_stages = (
+        gate,
+        wait,
+        complete,
+        mark_completed,
+        close_adapter,
+        delete_adapter,
+        clear_adapter,
+        reopen,
+        mark_open,
+        return_failure,
+    )
+    if min(unwind_stages) < 0 or tuple(sorted(unwind_stages)) != unwind_stages:
+        fail("failed StartDevice unwind must gate, close rundown, close and delete the adapter, then reopen")
+    close_rundown_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(unwind_body)
+        if canonical_code(condition) == "!m_HardwareRundownCompleted"
+    ]
+    expected_close_rundown = (
+        "ExWaitForRundownProtectionRelease(&m_HardwareOperations);"
+        "ExRundownCompleted(&m_HardwareOperations);"
+        "m_HardwareRundownCompleted=TRUE;"
+    )
+    success_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(unwind_body)
+        if is_success_condition(condition, "closeStatus")
+    ]
+    expected_success = (
+        "deletem_pHWDevice;m_pHWDevice=NULL;"
+        "ExReInitializeRundownProtection(&m_HardwareOperations);"
+        "m_HardwareRundownCompleted=FALSE;"
+    )
+    if close_rundown_blocks != [expected_close_rundown] or success_blocks != [expected_success]:
+        fail("failed StartDevice unwind must retain a completed rundown and adapter after HWClose failure")
+    if (
+        unwind.count("ExWaitForRundownProtectionRelease(&m_HardwareOperations);") != 1
+        or unwind.count("ExRundownCompleted(&m_HardwareOperations);") != 1
+        or unwind.count("ExReInitializeRundownProtection(&m_HardwareOperations);") != 1
+        or len(variable_write_offsets(unwind_body, "m_HardwareRundownCompleted")) != 2
+        or len(variable_write_offsets(unwind_body, "m_pHWDevice")) != 1
+    ):
+        fail("failed StartDevice unwind must have one balanced ownership epoch")
 
     constructor = canonical_code(function_body("VioGpuDod::VioGpuDod", VIOGPU_CODE))
     constructor_definition = re.findall(
@@ -2668,14 +2928,16 @@ def check_adapter_lifecycle() -> None:
         for condition, body, _, _ in if_blocks(destructor_body)
         if canonical_code(condition) == "!m_HardwareRundownCompleted"
     ]
-    delete_hardware = destructor.find("deletem_pHWDevice;")
+    adapter_assert = destructor.find("NT_ASSERT(m_pHWDevice==NULL);", destructor.find(hardware_close))
     if (
         destructor_close_blocks != [hardware_close]
         or destructor.count("ExWaitForRundownProtectionRelease(&m_HardwareOperations)") != 1
         or destructor.count("ExRundownCompleted(&m_HardwareOperations)") != 1
-        or delete_hardware < destructor.find(hardware_close)
+        or adapter_assert < destructor.find(hardware_close)
+        or re.search(r"\bdelete\s+m_pHWDevice\s*;", destructor_body)
+        or len(variable_write_offsets(destructor_body, "m_pHWDevice")) != 0
     ):
-        fail("DOD destructor must close an open hardware rundown exactly once before deletion")
+        fail("DOD destructor must close rundown, require a cleared adapter, and never bypass HWClose")
 
     stop_body = function_body("VioGpuDod::StopDevice", VIOGPU_CODE)
     stop = canonical_code(stop_body)
@@ -2791,14 +3053,31 @@ def check_adapter_lifecycle() -> None:
         fail("DestroyNativeContext must initialize release state and hold hardware rundown across adapter use")
 
     hw_close_body = function_body("VioGpuAdapter::HWClose", VIOGPU_CODE)
-    hw_close = compact_code(hw_close_body)
+    hw_close = canonical_code(hw_close_body)
     transport_stop = hw_close.find("NTSTATUSstatus=StopNativeContextTransport();")
-    pci_close = hw_close.find("if(NT_SUCCESS(status)){status=m_PciResources.Close();}", transport_stop)
+    final_gate = hw_close.find("InterlockedExchange(&m_InterruptDispatchEnabled,FALSE);", transport_stop)
+    final_barrier = hw_close.find("status=SynchronizeInterruptMessages();", final_gate)
+    final_drain = hw_close.find("KeFlushQueuedDpcs();", final_barrier)
+    pci_close = hw_close.find("status=m_PciResources.Close();", final_drain)
     close_return = hw_close.find("returnstatus;", pci_close)
-    if min(transport_stop, pci_close, close_return) < 0 or not transport_stop < pci_close < close_return:
-        fail("HWClose must close PCI resources only after transport teardown succeeds")
-    if len(variable_write_offsets(hw_close_body, "status")) != 2:
-        fail("HWClose must preserve transport failure until its success-gated PCI close")
+    if min(transport_stop, final_gate, final_barrier, final_drain, pci_close, close_return) < 0 or not (
+        transport_stop < final_gate < final_barrier < final_drain < pci_close < close_return
+    ):
+        fail("HWClose must stop transport, gate ISR work, synchronize all messages, drain DPCs, then close PCI")
+    success_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(hw_close_body)
+        if is_success_condition(condition, "status")
+    ]
+    if success_blocks != [
+        "InterlockedExchange(&m_InterruptDispatchEnabled,FALSE);status=SynchronizeInterruptMessages();",
+        "KeFlushQueuedDpcs();status=m_PciResources.Close();",
+    ]:
+        fail("HWClose final interrupt barrier and PCI close must be success-gated without transport-state shortcuts")
+    if any(fragment in hw_close for fragment in ("m_NativeContextState", "m_bVirtioInitialized", "m_bQueuesInitialized")):
+        fail("HWClose final interrupt barrier must also cover Offline and partial-init transport state")
+    if len(variable_write_offsets(hw_close_body, "status")) != 3:
+        fail("HWClose must preserve the first teardown, barrier, or PCI-close failure")
 
     destructor = canonical_code(function_body("VioGpuAdapter::~VioGpuAdapter", VIOGPU_CODE))
     destructor_stop = destructor.find("NTSTATUSstatus=StopNativeContextTransport();")
@@ -2816,6 +3095,58 @@ def check_adapter_lifecycle() -> None:
     power = function_body("VioGpuDod::SetPowerState", VIOGPU_CODE)
     power_compact = canonical_code(power)
     transition = "Status=m_pHWDevice->SetPowerState(&m_DeviceInfo,DevicePowerState,&m_CurrentMode);"
+    reset_claim = (
+        "LONGresetState=InterlockedCompareExchange(&m_HardwareResetState,"
+        "VioGpuHardwareRecovering,VioGpuHardwareResetRequested);"
+    )
+    reset_consume = (
+        "if(resetState==VioGpuHardwareResetRequested){"
+        "resetRecovery=TRUE;m_pHWDevice->ResetDevice();}"
+        "elseif(resetState!=VioGpuHardwareActive){returnSTATUS_DEVICE_NOT_READY;}"
+    )
+    reset_failure = (
+        "if(!NT_SUCCESS(Status)&&resetRecovery){"
+        "InterlockedCompareExchange(&m_HardwareResetState,VioGpuHardwareResetRequested,"
+        "VioGpuHardwareRecovering);}"
+    )
+    reset_publish = (
+        "if(InterlockedCompareExchange(&m_HardwareResetState,VioGpuHardwareActive,"
+        "VioGpuHardwareRecovering)!=VioGpuHardwareRecovering){returnSTATUS_DEVICE_NOT_READY;}"
+    )
+    active_recheck = (
+        "elseif(InterlockedCompareExchange(&m_HardwareResetState,VioGpuHardwareActive,"
+        "VioGpuHardwareActive)!=VioGpuHardwareActive){returnSTATUS_DEVICE_NOT_READY;}"
+    )
+    reset_claim_offset = power_compact.find(reset_claim)
+    reset_consume_offset = power_compact.find(reset_consume, reset_claim_offset)
+    transition_offset = power_compact.find(transition, reset_consume_offset)
+    reset_failure_offset = power_compact.find(reset_failure, transition_offset)
+    reset_publish_offset = power_compact.find(reset_publish, reset_failure_offset)
+    active_recheck_offset = power_compact.find(active_recheck, reset_publish_offset)
+    if min(
+        reset_claim_offset,
+        reset_consume_offset,
+        transition_offset,
+        reset_failure_offset,
+        reset_publish_offset,
+        active_recheck_offset,
+    ) < 0 or not (
+        reset_claim_offset
+        < reset_consume_offset
+        < transition_offset
+        < reset_failure_offset
+        < reset_publish_offset
+        < active_recheck_offset
+    ):
+        fail("D0 must own reset recovery, rebuild transport, and reject a concurrent reset before publishing Active")
+    if (
+        power_compact.count("BOOLEANresetRecovery=FALSE;") != 1
+        or power_compact.count("InterlockedCompareExchange(&m_HardwareResetState") != 4
+        or power_compact.count("m_pHWDevice->ResetDevice();") != 1
+        or "InterlockedExchange(&m_HardwareResetState" in power_compact
+    ):
+        fail("D0 reset recovery must use only the four checked three-state CAS operations")
+
     publish_blocks = [
         (body, start_offset, end_offset)
         for condition, body, start_offset, end_offset in if_blocks(power)
