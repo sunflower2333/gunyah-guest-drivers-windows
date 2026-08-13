@@ -257,7 +257,6 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuMemSegment m_FrameSegment;
     volatile ULONG m_PendingWorks;
     KEVENT m_ConfigUpdateEvent;
-    KEVENT m_WorkThreadExited;
     PETHREAD m_pWorkThread;
     BOOLEAN m_bStopWorkThread;
     PKEVENT m_ResolutionEvent;

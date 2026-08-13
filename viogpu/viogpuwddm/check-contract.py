@@ -1879,7 +1879,7 @@ def check_adapter_lifecycle() -> None:
 
     start = function_body("VioGpuDod::StartDevice", VIOGPU_CODE)
     start_compact = canonical_code(start)
-    active_guard = "if(IsDriverActive()){returnSTATUS_DEVICE_ALREADY_INITIALIZED;}"
+    active_guard = "if(IsDriverActive()){returnSTATUS_ALREADY_INITIALIZED;}"
     allocation = "m_pHWDevice=new(NonPagedPoolNx)VioGpuAdapter(this);"
     retained_blocks = [
         start_offset
@@ -1899,6 +1899,7 @@ def check_adapter_lifecycle() -> None:
         start_compact.find(active_guard) < retained_offset < interface_copy < mode_reset < allocation_offset
     ):
         fail("StartDevice must reject retained ownership before replacing DXGK or mode state")
+
 
     failed_start_cleanup = re.findall(
         r"\bNTSTATUS\s+closeStatus\s*=\s*m_pHWDevice\s*->\s*HWClose\s*\(\s*\)\s*;"
@@ -1982,6 +1983,51 @@ def check_adapter_lifecycle() -> None:
         fail("RemoveDevice failure path must not delete the retained adapter through any alias")
     if re.search(r"\bExFreePool(?:WithTag)?\s*\(", remove):
         fail("RemoveDevice must not bypass adapter destructors with pool deallocation")
+
+
+def check_worker_thread_lifetime() -> None:
+    start = canonical_code(function_body("VioGpuAdapter::StartWorkThread", VIOGPU_CODE))
+    stop = canonical_code(function_body("VioGpuAdapter::StopWorkThread", VIOGPU_CODE))
+
+    retained_handle = "m_WorkThreadHandle=threadHandle;"
+    typed_start_reference = (
+        "status=ObReferenceObjectByHandle(threadHandle,SYNCHRONIZE,*PsThreadType,KernelMode,"
+        "reinterpret_cast<PVOID*>(&workThread),NULL);"
+    )
+    reference_failure = (
+        "if(!NT_SUCCESS(status)){m_bStopWorkThread=TRUE;"
+        "KeSetEvent(&m_ConfigUpdateEvent,IO_NO_INCREMENT,FALSE);"
+    )
+    retained_offset = start.find(retained_handle)
+    reference_offset = start.find(typed_start_reference, retained_offset)
+    failure_offset = start.find(reference_failure, reference_offset)
+    if start.count(retained_handle) != 1 or min(retained_offset, reference_offset, failure_offset) < 0:
+        fail("worker start must retain its handle and acquire a typed thread-object reference")
+
+    typed_fallback_reference = (
+        "if(m_pWorkThread==NULL){PETHREADworkThread=NULL;"
+        "status=ObReferenceObjectByHandle(m_WorkThreadHandle,SYNCHRONIZE,*PsThreadType,KernelMode,"
+        "reinterpret_cast<PVOID*>(&workThread),NULL);"
+    )
+    publish_reference = "m_pWorkThread=workThread;"
+    object_wait = (
+        "status=KeWaitForSingleObject(m_pWorkThread,Executive,KernelMode,FALSE,&timeout);"
+    )
+    failure_return = "if(status!=STATUS_SUCCESS){"
+    dereference = "ObDereferenceObject(m_pWorkThread);"
+    handle_close = "ZwClose(m_WorkThreadHandle);"
+    fallback_offset = stop.find(typed_fallback_reference)
+    publish_offset = stop.find(publish_reference, fallback_offset)
+    object_wait_offset = stop.find(object_wait, publish_offset)
+    failure_offset = stop.find(failure_return, object_wait_offset)
+    dereference_offset = stop.find(dereference, failure_offset)
+    close_offset = stop.find(handle_close, dereference_offset)
+    if min(fallback_offset, publish_offset, object_wait_offset, failure_offset, dereference_offset, close_offset) < 0 or not (
+        fallback_offset < publish_offset < object_wait_offset < failure_offset < dereference_offset < close_offset
+    ):
+        fail("worker stop must retain a typed thread reference through termination before releasing owners")
+    if "ZwWaitForSingleObject" in VIOGPU_CODE or "m_WorkThreadExited" in VIOGPU_SOURCE + VIOGPU_HEADER_SOURCE:
+        fail("worker teardown must wait on the thread dispatcher object, not a handle or pre-termination event")
 
 
 def check_project_safety(root: ET.Element) -> None:
@@ -2101,6 +2147,7 @@ def main() -> None:
     check_netkvm_terminal_cleanup()
     check_storport_restricted_dma_policy()
     check_adapter_lifecycle()
+    check_worker_thread_lifetime()
     check_project_safety(root)
     print("viogpuwddm compile-only safety contract: PASS")
 

@@ -466,6 +466,27 @@ REWRITES = (
     }""",
     ),
     Rewrite(
+        "R41_worker_use_untyped_initial_reference",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    status = ObReferenceObjectByHandle(threadHandle,
+                                       SYNCHRONIZE,
+                                       *PsThreadType,""",
+        """    status = ObReferenceObjectByHandle(threadHandle,
+                                       SYNCHRONIZE,
+                                       NULL,""",
+    ),
+    Rewrite(
+        "R42_worker_skip_handle_fallback_reference",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        status = ObReferenceObjectByHandle(m_WorkThreadHandle,
+                                           SYNCHRONIZE,
+                                           *PsThreadType,""",
+        """        status = STATUS_UNSUCCESSFUL;
+        if (FALSE) status = ObReferenceObjectByHandle(m_WorkThreadHandle,
+                                           SYNCHRONIZE,
+                                           *PsThreadType,""",
+    ),
+    Rewrite(
         "S01_pending_comparison_reversed",
         "viogpu/common/viogpu_rdma.cpp",
         "if (status == STATUS_PENDING)",

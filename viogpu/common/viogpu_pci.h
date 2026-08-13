@@ -62,6 +62,13 @@ class CPciResources
     ~CPciResources()
     {
         NTSTATUS status = Close();
+        if (!NT_SUCCESS(status))
+        {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu PCI resource destructor: Close failed, status=0x%08X\n",
+                       status);
+        }
         NT_ASSERT(NT_SUCCESS(status));
     }
 

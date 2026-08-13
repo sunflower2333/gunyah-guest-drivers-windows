@@ -95,6 +95,13 @@ VioGpuRdmaPool::VioGpuRdmaPool()
 VioGpuRdmaPool::~VioGpuRdmaPool()
 {
     NTSTATUS status = Disconnect();
+    if (!NT_SUCCESS(status))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu rdmapool destructor: Disconnect failed, status=0x%08X\n",
+                   status);
+    }
     NT_ASSERT(NT_SUCCESS(status));
 }
 

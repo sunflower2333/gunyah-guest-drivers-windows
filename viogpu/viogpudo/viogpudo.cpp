@@ -136,7 +136,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
 
     if (IsDriverActive())
     {
-        return STATUS_DEVICE_ALREADY_INITIALIZED;
+        return STATUS_ALREADY_INITIALIZED;
     }
     // A non-active retained adapter means a previous unwind could not prove
     // teardown.  Preserve the DXGK interface and mode state that own it.
@@ -2527,7 +2527,6 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_WorkThreadHandle = NULL;
 
     KeInitializeEvent(&m_ConfigUpdateEvent, SynchronizationEvent, FALSE);
-    KeInitializeEvent(&m_WorkThreadExited, NotificationEvent, FALSE);
 }
 
 VioGpuAdapter::~VioGpuAdapter(void)
@@ -2602,7 +2601,7 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
     {
         DbgPrint(TRACE_LEVEL_FATAL, ("Already Initialized\n"));
         VioGpuDbgBreak();
-        return STATUS_DEVICE_ALREADY_INITIALIZED;
+        return STATUS_ALREADY_INITIALIZED;
     }
     if (InterlockedCompareExchange(&m_NativeContextState,
                                    VioGpuNativeContextStarting,
@@ -3346,7 +3345,6 @@ NTSTATUS VioGpuAdapter::StartWorkThread(void)
 
     m_bStopWorkThread = FALSE;
     KeClearEvent(&m_ConfigUpdateEvent);
-    KeClearEvent(&m_WorkThreadExited);
 
     HANDLE threadHandle = NULL;
     NTSTATUS status = PsCreateSystemThread(&threadHandle,
@@ -3369,7 +3367,7 @@ NTSTATUS VioGpuAdapter::StartWorkThread(void)
     PETHREAD workThread = NULL;
     status = ObReferenceObjectByHandle(threadHandle,
                                        SYNCHRONIZE,
-                                       NULL,
+                                       *PsThreadType,
                                        KernelMode,
                                        reinterpret_cast<PVOID *>(&workThread),
                                        NULL);
@@ -3404,12 +3402,27 @@ NTSTATUS VioGpuAdapter::StopWorkThread(void)
     KeSetEvent(&m_ConfigUpdateEvent, IO_NO_INCREMENT, FALSE);
     LARGE_INTEGER timeout;
     timeout.QuadPart = -10LL * 10 * 1000 * 1000;
-    NTSTATUS status = m_pWorkThread != NULL ? KeWaitForSingleObject(m_pWorkThread,
-                                                                    Executive,
-                                                                    KernelMode,
-                                                                    FALSE,
-                                                                    &timeout)
-                                            : ZwWaitForSingleObject(m_WorkThreadHandle, FALSE, &timeout);
+    NTSTATUS status;
+    if (m_pWorkThread == NULL)
+    {
+        PETHREAD workThread = NULL;
+        status = ObReferenceObjectByHandle(m_WorkThreadHandle,
+                                           SYNCHRONIZE,
+                                           *PsThreadType,
+                                           KernelMode,
+                                           reinterpret_cast<PVOID *>(&workThread),
+                                           NULL);
+        if (!NT_SUCCESS(status))
+        {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu StopWorkThread: thread reference failed, status=0x%08X\n",
+                       status);
+            return status;
+        }
+        m_pWorkThread = workThread;
+    }
+    status = KeWaitForSingleObject(m_pWorkThread, Executive, KernelMode, FALSE, &timeout);
     if (status != STATUS_SUCCESS)
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
@@ -4614,7 +4627,6 @@ void VioGpuAdapter::ThreadWorkRoutine(void)
 
         if (m_bStopWorkThread)
         {
-            KeSetEvent(&m_WorkThreadExited, IO_NO_INCREMENT, FALSE);
             PsTerminateSystemThread(STATUS_SUCCESS);
             break;
         }
