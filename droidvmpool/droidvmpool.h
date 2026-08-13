@@ -19,7 +19,9 @@ typedef struct _DROIDVMPOOL_DEVICE_CONTEXT
     PVOID PoolVirtualBase;
     ULONG PoolNameLength;
     CHAR PoolName[DROIDVMPOOL_NAME_CAPACITY];
-    BOOLEAN PoolReady;
+    EX_RUNDOWN_REF MappingReferences;
+    BOOLEAN MappingRundownCompleted;
+    volatile LONG PoolReady;
 } DROIDVMPOOL_DEVICE_CONTEXT, *PDROIDVMPOOL_DEVICE_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DROIDVMPOOL_DEVICE_CONTEXT, DroidVmPoolGetDeviceContext)
@@ -29,3 +31,8 @@ EVT_WDF_DRIVER_DEVICE_ADD DroidVmPoolEvtDeviceAdd;
 EVT_WDF_DEVICE_PREPARE_HARDWARE DroidVmPoolEvtDevicePrepareHardware;
 EVT_WDF_DEVICE_RELEASE_HARDWARE DroidVmPoolEvtDeviceReleaseHardware;
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL DroidVmPoolEvtIoDeviceControl;
+
+VOID DroidVmPoolInterfaceReference(_In_ PVOID context);
+VOID DroidVmPoolInterfaceDereference(_In_ PVOID context);
+BOOLEAN DroidVmPoolAcquireMapping(_In_ PVOID context, _Out_ PDROIDVMPOOL_MAPPING mapping);
+VOID DroidVmPoolReleaseMapping(_In_ PVOID context);

@@ -3,9 +3,15 @@
 `droidvmpool.sys` binds every `ACPI\DRVM0001` pool device emitted by DroidVM
 firmware. Each WDF device evaluates its own ACPI `_UID`, maps its single `_CRS`
 memory resource, and publishes a kernel-only query interface containing the
-pool name, GPA, kernel VA, and size.
+pool name, GPA, and size.
 
 The provider does not allocate, free, or clear pool storage. Pool ownership is
 defined by the name contract: `drm2kgsl_host` is host-owned, while `gpu_guest`
 is guest-owned. A client must enumerate all provider interfaces and select the
 exact name it owns rather than choosing the first `DRVM0001` instance.
+
+The query IOCTL is discovery only. Cross-stack kernel clients obtain the
+versioned direct-call interface and must acquire a mapping lease around every
+kernel-VA access. `ReleaseHardware` first blocks new leases, waits for all
+active leases to finish, and only then unmaps the provider-owned VA. Keeping a
+file or direct-interface reference open is not itself a mapping lease.

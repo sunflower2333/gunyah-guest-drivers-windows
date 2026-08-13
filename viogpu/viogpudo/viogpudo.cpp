@@ -41,8 +41,12 @@
 
 static UINT g_InstanceId = 0;
 
-#define VIOGPU_RDMAPOOL_RETRY_COUNT      100
-#define VIOGPU_RDMAPOOL_RETRY_MS         100
+#define VIOGPU_RDMAPOOL_RETRY_COUNT 100
+#define VIOGPU_RDMAPOOL_RETRY_MS    100
+#if defined(VIOGPU_WDDM_CI_ONLY)
+#define VIOGPU_DROIDVMPOOL_RETRY_COUNT 100
+#define VIOGPU_DROIDVMPOOL_RETRY_MS    100
+#endif
 
 #define VIOGPU_MAX_CAPSETS               64U
 #define VIOGPU_MINIMUM_MSM_VERSION_MINOR 9U
@@ -2737,7 +2741,11 @@ VioGpuAdapter::~VioGpuAdapter(void)
                                             VioGpuNativeContextOffline);
     if (state != VioGpuNativeContextOffline || !IsListEmpty(&m_NativeContextRegistry) || m_bVirtioInitialized ||
         m_bQueuesInitialized || m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() ||
-        m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0)
+        m_RdmaPool.HasArenaOwner() ||
+#if defined(VIOGPU_WDDM_CI_ONLY)
+        m_DrmHostPool.HasConnectionOwner() ||
+#endif
+        m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0)
     {
         NTSTATUS status = StopNativeContextTransport();
         if (!NT_SUCCESS(status))
@@ -2756,6 +2764,9 @@ VioGpuAdapter::~VioGpuAdapter(void)
     NT_ASSERT(!m_bVirtioInitialized && !m_bQueuesInitialized);
     NT_ASSERT(m_pWorkThread == NULL && m_WorkThreadHandle == NULL);
     NT_ASSERT(!m_GpuBuf.HasAllocationOwner() && !m_RdmaPool.HasArenaOwner());
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    NT_ASSERT(!m_DrmHostPool.HasConnectionOwner());
+#endif
     NT_ASSERT(m_FrameSegment.GetSize() == 0 && m_CursorSegment.GetSize() == 0);
     ExWaitForRundownProtectionRelease(&m_NativeContextReferences);
     CloseResolutionEvent();
@@ -3044,7 +3055,11 @@ BOOLEAN VioGpuAdapter::BeginNativeContextInitialization(void)
 
     if (!IsListEmpty(&m_NativeContextRegistry) || m_bVirtioInitialized || m_bQueuesInitialized ||
         m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() ||
-        m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0 ||
+        m_RdmaPool.HasArenaOwner() ||
+#if defined(VIOGPU_WDDM_CI_ONLY)
+        m_DrmHostPool.HasConnectionOwner() ||
+#endif
+        m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0 ||
         InterlockedCompareExchange(&m_NativeContextState,
                                    VioGpuNativeContextStarting,
                                    VioGpuNativeContextOffline) != VioGpuNativeContextOffline)
@@ -3069,6 +3084,9 @@ BOOLEAN VioGpuAdapter::CompleteNativeContextInitialization(void)
     LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
     ULONGLONG resetGeneration = (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0);
     BOOLEAN ready = m_bVirtioInitialized && m_bQueuesInitialized && m_pVioGpuDod->IsHardwareInit() &&
+#if defined(VIOGPU_WDDM_CI_ONLY)
+                    m_DrmHostPool.IsActive() &&
+#endif
                     InterlockedCompareExchange(&m_InterruptDispatchEnabled, FALSE, FALSE) != FALSE &&
                     m_pWorkThread != NULL && m_WorkThreadHandle == NULL && m_NativeContextReadiness.Ready &&
                     m_NativeContextReadiness.Generation == generation &&
@@ -3722,6 +3740,28 @@ NTSTATUS VioGpuAdapter::ConnectRestrictedDma(void)
     return NT_SUCCESS(status) ? status : STATUS_DEVICE_NOT_READY;
 }
 
+#if defined(VIOGPU_WDDM_CI_ONLY)
+NTSTATUS VioGpuAdapter::ConnectDrmHostPool(void)
+{
+    PAGED_CODE();
+
+    NTSTATUS status;
+    for (ULONG retry = 0;; ++retry)
+    {
+        status = m_DrmHostPool.Connect();
+        if (status != STATUS_NOT_FOUND || retry + 1 >= VIOGPU_DROIDVMPOOL_RETRY_COUNT)
+        {
+            break;
+        }
+
+        LARGE_INTEGER delay;
+        delay.QuadPart = -(LONGLONG)VIOGPU_DROIDVMPOOL_RETRY_MS * 10 * 1000;
+        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+    }
+    return NT_SUCCESS(status) ? status : STATUS_DEVICE_NOT_READY;
+}
+#endif
+
 NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pDispInfo)
 {
     PAGED_CODE();
@@ -3736,6 +3776,14 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
     {
         return status;
     }
+
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    status = ConnectDrmHostPool();
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+#endif
 
     status = VioGpuAdapterInit(pDispInfo);
     if (!NT_SUCCESS(status))
@@ -5065,7 +5113,11 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     {
         if (!IsListEmpty(&m_NativeContextRegistry) || m_pWorkThread != NULL || m_WorkThreadHandle != NULL ||
             m_bVirtioInitialized || m_bQueuesInitialized || m_GpuBuf.HasAllocationOwner() ||
-            m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0)
+            m_RdmaPool.HasArenaOwner() ||
+#if defined(VIOGPU_WDDM_CI_ONLY)
+            m_DrmHostPool.HasConnectionOwner() ||
+#endif
+            m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0)
         {
             state = InterlockedCompareExchange(&m_NativeContextState,
                                                VioGpuNativeContextFailed,
@@ -5204,6 +5256,9 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     m_FrameSegment.Close();
     m_CursorSegment.Close();
     m_GpuBuf.Close();
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    m_DrmHostPool.Disconnect();
+#endif
     status = m_RdmaPool.Disconnect();
     if (!NT_SUCCESS(status))
     {
@@ -5651,3 +5706,10 @@ BOOLEAN VioGpuAdapter::QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS p
 {
     return m_RdmaPool.QueryVidMmSegment(baseAddress, physicalAddress, size);
 }
+
+#if defined(VIOGPU_WDDM_CI_ONLY)
+BOOLEAN VioGpuAdapter::AcquireDrmHostPoolMapping(_Out_ VioGpuDrmHostPoolMapping *mapping) const
+{
+    return m_DrmHostPool.AcquireMapping(mapping);
+}
+#endif

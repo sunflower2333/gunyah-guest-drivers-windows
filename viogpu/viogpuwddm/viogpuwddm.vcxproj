@@ -59,8 +59,10 @@
     <ClInclude Include="..\common\bitops.h" />
     <ClInclude Include="..\common\edid.h" />
     <ClInclude Include="..\common\helper.h" />
+    <ClInclude Include="..\common\viogpu_named_pool.h" />
     <ClInclude Include="..\common\viogpu_rdma.h" />
     <ClInclude Include="..\common\viogpu_3d_wire.h" />
+    <ClInclude Include="..\..\droidvmpool\droidvmpool_interface.h" />
     <ClInclude Include="..\shared\viogpu_wddm_abi.h" />
     <ClInclude Include="..\viogpudo\driver.h" />
     <ClInclude Include="..\viogpudo\trace.h" />
@@ -72,6 +74,7 @@
     <ClCompile Include="..\common\bitops.cpp" />
     <ClCompile Include="..\common\edid.cpp" />
     <ClCompile Include="..\common\viogpu_idr.cpp" />
+    <ClCompile Include="..\common\viogpu_named_pool.cpp" />
     <ClCompile Include="..\common\viogpu_pci.cpp" />
     <ClCompile Include="..\common\viogpu_queue.cpp" />
     <ClCompile Include="..\common\viogpu_rdma.cpp" />

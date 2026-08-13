@@ -67,6 +67,10 @@ jobs:
         shell: cmd
         run: viogpu\tests\wddm-private-abi\run-msvc.cmd
 
+      - name: Check DroidVM pool provider ABI
+        shell: cmd
+        run: droidvmpool\tests\interface-abi\run-msvc.cmd
+
       - name: Check full WDDM compile-only safety contract
         shell: pwsh
         run: python viogpu/viogpuwddm/check-contract.py
@@ -74,6 +78,10 @@ jobs:
       - name: Check DroidVM pool provider contract
         shell: pwsh
         run: python droidvmpool/check-contract.py
+
+      - name: Check viogpu named-pool client contract
+        shell: pwsh
+        run: python viogpu/viogpuwddm/check-named-pool.py
 
       - name: Attack restricted-DMA safety contract
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_mutation }}

@@ -13,6 +13,7 @@ HEADER_PATH = DRIVER_DIR / "droidvmpool.h"
 INTERFACE_PATH = DRIVER_DIR / "droidvmpool_interface.h"
 INF_PATH = DRIVER_DIR / "droidvmpool.inf"
 PROJECT_PATH = DRIVER_DIR / "droidvmpool.vcxproj"
+ABI_TEST_DIR = DRIVER_DIR / "tests" / "interface-abi"
 WORKFLOW_PATH = REPO_DIR / ".github" / "workflows" / "viogpuwddm-arm64-ci.yml"
 NAMESPACE = {"msbuild": "http://schemas.microsoft.com/developer/msbuild/2003"}
 
@@ -113,10 +114,46 @@ def check_provider(source: str) -> None:
         "provider must publish exactly one isolated pool interface per device",
     )
     for assertion in (
-        "C_ASSERT(sizeof(DROIDVMPOOL_QUERY_OUTPUT)==104);",
-        "C_ASSERT(FIELD_OFFSET(DROIDVMPOOL_QUERY_OUTPUT,PoolName)==40);",
+        "C_ASSERT(sizeof(DROIDVMPOOL_QUERY_OUTPUT)==96);",
+        "C_ASSERT(FIELD_OFFSET(DROIDVMPOOL_QUERY_OUTPUT,PoolName)==32);",
+        "C_ASSERT(sizeof(DROIDVMPOOL_MAPPING)==24);",
+        "C_ASSERT(sizeof(DROIDVMPOOL_DIRECT_INTERFACE)==48);",
+        "C_ASSERT(FIELD_OFFSET(DROIDVMPOOL_DIRECT_INTERFACE,AcquireMapping)==32);",
+        "C_ASSERT(FIELD_OFFSET(DROIDVMPOOL_DIRECT_INTERFACE,ReleaseMapping)==40);",
     ):
         require_once(code, assertion, f"provider must retain ABI assertion: {assertion}")
+
+    device_add = compact(function_body("DroidVmPoolEvtDeviceAdd", source))
+    interface_steps = (
+        "ExInitializeRundownProtection(&deviceContext->MappingReferences);",
+        "directInterface.InterfaceHeader.Size=sizeof(directInterface);",
+        "directInterface.InterfaceHeader.Version=DROIDVMPOOL_DIRECT_VERSION_V1;",
+        "directInterface.InterfaceHeader.Context=device;",
+        "directInterface.InterfaceHeader.InterfaceReference=DroidVmPoolInterfaceReference;",
+        "directInterface.InterfaceHeader.InterfaceDereference=DroidVmPoolInterfaceDereference;",
+        "directInterface.AcquireMapping=DroidVmPoolAcquireMapping;",
+        "directInterface.ReleaseMapping=DroidVmPoolReleaseMapping;",
+        "WDF_QUERY_INTERFACE_CONFIG_INIT(&queryInterfaceConfig,(PINTERFACE)&directInterface,"
+        "&GUID_DROIDVMPOOL_DIRECT_INTERFACE,NULL);",
+        "status=WdfDeviceAddQueryInterface(device,&queryInterfaceConfig);",
+        "status=WdfDeviceCreateDeviceInterface(device,&GUID_DEVINTERFACE_DROIDVMPOOL,NULL);",
+    )
+    interface_offsets = [device_add.find(step) for step in interface_steps]
+    if min(interface_offsets) < 0 or interface_offsets != sorted(interface_offsets):
+        fail("provider must initialize and register the complete version-1 direct interface before discovery")
+
+    interface_reference = compact(function_body("DroidVmPoolInterfaceReference", source))
+    interface_dereference = compact(function_body("DroidVmPoolInterfaceDereference", source))
+    require_once(
+        interface_reference,
+        "WdfObjectReference((WDFDEVICE)context);",
+        "direct interface reference callback must retain the provider device",
+    )
+    require_once(
+        interface_dereference,
+        "WdfObjectDereference((WDFDEVICE)context);",
+        "direct interface dereference callback must release the provider device",
+    )
 
     read_uid = compact(function_body("DroidVmPoolReadUid", source))
     for token in (
@@ -138,7 +175,7 @@ def check_provider(source: str) -> None:
     uid_read = prepare.find("status=DroidVmPoolReadUid(")
     resource_walk = prepare.find("WdfCmResourceListGetCount(resourcesTranslated)")
     map_pool = prepare.find("MmMapIoSpaceEx(")
-    publish_ready = prepare.find("deviceContext->PoolReady=TRUE;")
+    publish_ready = prepare.find("InterlockedExchange(&deviceContext->PoolReady,TRUE);")
     if min(uid_read, resource_walk, map_pool, publish_ready) < 0 or not (
         uid_read < resource_walk < map_pool < publish_ready
     ):
@@ -153,26 +190,52 @@ def check_provider(source: str) -> None:
         require_once(prepare, token, f"PrepareHardware must retain resource bound: {token}")
 
     release = compact(function_body("DroidVmPoolEvtDeviceReleaseHardware", source))
-    offline = release.find("deviceContext->PoolReady=FALSE;")
+    offline = release.find("InterlockedExchange(&deviceContext->PoolReady,FALSE);")
+    rundown = release.find("ExWaitForRundownProtectionRelease(&deviceContext->MappingReferences);")
     unmap = release.find("MmUnmapIoSpace(deviceContext->PoolVirtualBase,deviceContext->PoolSize);")
     clear = release.find("deviceContext->PoolVirtualBase=NULL;")
-    if min(offline, unmap, clear) < 0 or not offline < unmap < clear:
-        fail("ReleaseHardware must withdraw readiness before unmapping the provider mapping")
+    if min(offline, rundown, unmap, clear) < 0 or not offline < rundown < unmap < clear:
+        fail("ReleaseHardware must withdraw readiness and drain mapping leases before unmapping")
 
     query = compact(function_body("DroidVmPoolEvtIoDeviceControl", source))
+    acquire_query = query.find("ExAcquireRundownProtection(&deviceContext->MappingReferences)")
+    ready_query = query.find("InterlockedCompareExchange(&deviceContext->PoolReady,FALSE,FALSE)==FALSE")
+    release_query = query.rfind("ExReleaseRundownProtection(&deviceContext->MappingReferences);")
+    complete_query = query.find("WdfRequestCompleteWithInformation(request,status,bytesReturned);")
+    if min(acquire_query, ready_query, release_query, complete_query) < 0 or not (
+        acquire_query < ready_query < release_query < complete_query
+    ):
+        fail("query endpoint must snapshot discovery metadata under provider rundown")
     for token in (
         "WdfRequestGetRequestorMode(request)!=KernelMode",
-        "if(!deviceContext->PoolReady)",
+        "InterlockedCompareExchange(&deviceContext->PoolReady,FALSE,FALSE)==FALSE",
         "if(ioControlCode==IOCTL_DROIDVMPOOL_QUERY)",
         "inputBufferLength!=0||outputBufferLength!=sizeof(*output)",
         "outputValue.InterfaceVersion=DROIDVMPOOL_INTERFACE_VERSION_V1;",
         "outputValue.StructureSize=sizeof(outputValue);",
         "outputValue.PoolNameLength=deviceContext->PoolNameLength;",
-        "outputValue.BaseVirtualAddress=deviceContext->PoolVirtualBase;",
         "outputValue.BasePhysicalAddress=deviceContext->PoolPhysicalBase;",
         "outputValue.TotalSize=deviceContext->PoolSize;",
     ):
         require_once(query, token, f"query endpoint must retain kernel-only exact metadata contract: {token}")
+
+    acquire = compact(function_body("DroidVmPoolAcquireMapping", source))
+    release_mapping = compact(function_body("DroidVmPoolReleaseMapping", source))
+    for token in (
+        "KeGetCurrentIrql()>DISPATCH_LEVEL",
+        "DroidVmPoolGetDeviceContext((WDFDEVICE)context)",
+        "ExAcquireRundownProtection(&deviceContext->MappingReferences)",
+        "InterlockedCompareExchange(&deviceContext->PoolReady,FALSE,FALSE)==FALSE",
+        "mappingValue.BaseVirtualAddress=deviceContext->PoolVirtualBase;",
+        "mappingValue.BasePhysicalAddress=deviceContext->PoolPhysicalBase;",
+        "mappingValue.TotalSize=deviceContext->PoolSize;",
+    ):
+        require_once(acquire, token, f"direct mapping acquire must retain lease step: {token}")
+    require_once(
+        release_mapping,
+        "ExReleaseRundownProtection(&deviceContext->MappingReferences);",
+        "direct mapping release must drop exactly one provider lease",
+    )
 
 
 def check_interface(interface: str, header: str) -> None:
@@ -185,14 +248,20 @@ def check_interface(interface: str, header: str) -> None:
     for token in (
         "DROIDVMPOOL_INTERFACE_VERSION_V1",
         "DROIDVMPOOL_NAME_CAPACITY",
-        "BaseVirtualAddress",
         "BasePhysicalAddress",
         "TotalSize",
         "PoolName",
+        "DROIDVMPOOL_DIRECT_INTERFACE",
+        "AcquireMapping",
+        "ReleaseMapping",
     ):
         if token not in interface:
             fail(f"public query ABI is missing {token}")
-    if header.count("DROIDVMPOOL_DEVICE_CONTEXT") != 4:
+    query_struct = compact(interface)
+    query_match = re.search(r"typedefstruct_DROIDVMPOOL_QUERY_OUTPUT\{(?P<body>.*?)\}DROIDVMPOOL_QUERY_OUTPUT", query_struct)
+    if query_match is None or "BaseVirtualAddress" in query_match.group("body"):
+        fail("discovery query must not expose the provider-owned kernel VA")
+    if header.count("DROIDVMPOOL_DEVICE_CONTEXT") < 4:
         fail("internal header must declare one per-device context type")
 
 
@@ -228,6 +297,17 @@ def check_project() -> None:
         fail("provider project must retain Debug and Release ARM64 configurations")
 
 
+def check_abi_fixture(workflow: str) -> None:
+    for name in ("abi_manifest.cpp", "expected-v1.txt", "run-local.sh", "run-msvc.cmd"):
+        if not (ABI_TEST_DIR / name).is_file():
+            fail(f"provider ABI fixture is missing {name}")
+    require_once(
+        workflow,
+        r"droidvmpool\tests\interface-abi\run-msvc.cmd",
+        "ARM64 workflow must run the provider ABI fixture exactly once",
+    )
+
+
 def check_workflow(workflow: str) -> None:
     if workflow.count('"droidvmpool/**"') != 2:
         fail("ARM64 contract workflow must trigger on every provider change")
@@ -257,6 +337,7 @@ def main() -> None:
     check_interface(interface, header)
     check_inf(inf)
     check_project()
+    check_abi_fixture(workflow)
     check_workflow(workflow)
     print("droidvmpool provider contract: PASS")
 

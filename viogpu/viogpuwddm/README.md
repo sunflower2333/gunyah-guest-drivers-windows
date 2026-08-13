@@ -78,6 +78,17 @@ runtime SHARE, pool-outside GPA backing, or a second offset allocator. Real
 Windows CreateBlob/allocation, map/unmap, and teardown transport remains a P2
 implementation item; compile/link success here does not provide that behavior.
 
+The compile-only target now discovers the exact `drm2kgsl_host` provider and
+uses its versioned direct interface. The discovery IOCTL exposes only name,
+GPA, and size. Provider and client rundown protection make the kernel VA valid
+only inside a successful `AcquireMapping`/`ReleaseMapping` interval, and
+provider `ReleaseHardware` waits for those intervals before unmapping. This is
+not yet a complete cross-stack PnP contract: viogpu must register for target
+device change notification, release the remote interface on query-remove or
+surprise-remove, and reconnect after remove-cancelled before any blob data path
+can be enabled. A retained file or direct-interface reference is not a mapping
+lease and must not be treated as removal coordination.
+
 The current initialization transport tears down fail-closed. It releases every
 tracked control/display suballocation before issuing the RDMA arena FREE, clears
 the connection only after the provider confirms success, and retains the

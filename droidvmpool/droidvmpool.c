@@ -22,8 +22,12 @@
 #define DROIDVMPOOL_ACPI_UID_NAME    0x4449555FUL /* "_UID" in little-endian byte order. */
 #define DROIDVMPOOL_ACPI_OUTPUT_SIZE 256U
 
-C_ASSERT(sizeof(DROIDVMPOOL_QUERY_OUTPUT) == 104);
-C_ASSERT(FIELD_OFFSET(DROIDVMPOOL_QUERY_OUTPUT, PoolName) == 40);
+C_ASSERT(sizeof(DROIDVMPOOL_QUERY_OUTPUT) == 96);
+C_ASSERT(FIELD_OFFSET(DROIDVMPOOL_QUERY_OUTPUT, PoolName) == 32);
+C_ASSERT(sizeof(DROIDVMPOOL_MAPPING) == 24);
+C_ASSERT(sizeof(DROIDVMPOOL_DIRECT_INTERFACE) == 48);
+C_ASSERT(FIELD_OFFSET(DROIDVMPOOL_DIRECT_INTERFACE, AcquireMapping) == 32);
+C_ASSERT(FIELD_OFFSET(DROIDVMPOOL_DIRECT_INTERFACE, ReleaseMapping) == 40);
 
 static BOOLEAN DroidVmPoolNameCharacterIsValid(UCHAR character)
 {
@@ -111,6 +115,9 @@ NTSTATUS DroidVmPoolEvtDeviceAdd(_In_ WDFDRIVER driver, _Inout_ PWDFDEVICE_INIT 
     WDF_PNPPOWER_EVENT_CALLBACKS pnpCallbacks;
     WDF_OBJECT_ATTRIBUTES deviceAttributes;
     WDF_IO_QUEUE_CONFIG queueConfig;
+    WDF_QUERY_INTERFACE_CONFIG queryInterfaceConfig;
+    DROIDVMPOOL_DIRECT_INTERFACE directInterface = {0};
+    PDROIDVMPOOL_DEVICE_CONTEXT deviceContext;
     WDFDEVICE device;
     WDFQUEUE queue;
     NTSTATUS status;
@@ -125,6 +132,26 @@ NTSTATUS DroidVmPoolEvtDeviceAdd(_In_ WDFDRIVER driver, _Inout_ PWDFDEVICE_INIT 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&deviceAttributes, DROIDVMPOOL_DEVICE_CONTEXT);
     deviceAttributes.ExecutionLevel = WdfExecutionLevelPassive;
     status = WdfDeviceCreate(&deviceInit, &deviceAttributes, &device);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
+    deviceContext = DroidVmPoolGetDeviceContext(device);
+    ExInitializeRundownProtection(&deviceContext->MappingReferences);
+
+    directInterface.InterfaceHeader.Size = sizeof(directInterface);
+    directInterface.InterfaceHeader.Version = DROIDVMPOOL_DIRECT_VERSION_V1;
+    directInterface.InterfaceHeader.Context = device;
+    directInterface.InterfaceHeader.InterfaceReference = DroidVmPoolInterfaceReference;
+    directInterface.InterfaceHeader.InterfaceDereference = DroidVmPoolInterfaceDereference;
+    directInterface.AcquireMapping = DroidVmPoolAcquireMapping;
+    directInterface.ReleaseMapping = DroidVmPoolReleaseMapping;
+    WDF_QUERY_INTERFACE_CONFIG_INIT(&queryInterfaceConfig,
+                                    (PINTERFACE)&directInterface,
+                                    &GUID_DROIDVMPOOL_DIRECT_INTERFACE,
+                                    NULL);
+    status = WdfDeviceAddQueryInterface(device, &queryInterfaceConfig);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -161,7 +188,12 @@ NTSTATUS DroidVmPoolEvtDevicePrepareHardware(_In_ WDFDEVICE device,
     {
         return STATUS_INVALID_DEVICE_STATE;
     }
-    deviceContext->PoolReady = FALSE;
+    if (deviceContext->MappingRundownCompleted)
+    {
+        ExReInitializeRundownProtection(&deviceContext->MappingReferences);
+        deviceContext->MappingRundownCompleted = FALSE;
+    }
+    InterlockedExchange(&deviceContext->PoolReady, FALSE);
     status = DroidVmPoolReadUid(device, deviceContext->PoolName, &deviceContext->PoolNameLength);
     if (!NT_SUCCESS(status))
     {
@@ -209,7 +241,7 @@ NTSTATUS DroidVmPoolEvtDevicePrepareHardware(_In_ WDFDEVICE device,
     deviceContext->PoolPhysicalBase = poolPhysicalBase;
     deviceContext->PoolSize = poolSize;
     deviceContext->PoolVirtualBase = poolVirtualBase;
-    deviceContext->PoolReady = TRUE;
+    InterlockedExchange(&deviceContext->PoolReady, TRUE);
 
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,
@@ -227,7 +259,12 @@ NTSTATUS DroidVmPoolEvtDeviceReleaseHardware(_In_ WDFDEVICE device, _In_ WDFCMRE
 
     UNREFERENCED_PARAMETER(resourcesTranslated);
 
-    deviceContext->PoolReady = FALSE;
+    InterlockedExchange(&deviceContext->PoolReady, FALSE);
+    if (!deviceContext->MappingRundownCompleted)
+    {
+        ExWaitForRundownProtectionRelease(&deviceContext->MappingReferences);
+        deviceContext->MappingRundownCompleted = TRUE;
+    }
     if (deviceContext->PoolVirtualBase != NULL)
     {
         MmUnmapIoSpace(deviceContext->PoolVirtualBase, deviceContext->PoolSize);
@@ -236,6 +273,49 @@ NTSTATUS DroidVmPoolEvtDeviceReleaseHardware(_In_ WDFDEVICE device, _In_ WDFCMRE
     deviceContext->PoolPhysicalBase.QuadPart = 0;
     deviceContext->PoolSize = 0;
     return STATUS_SUCCESS;
+}
+
+VOID DroidVmPoolInterfaceReference(_In_ PVOID context)
+{
+    WdfObjectReference((WDFDEVICE)context);
+}
+
+VOID DroidVmPoolInterfaceDereference(_In_ PVOID context)
+{
+    WdfObjectDereference((WDFDEVICE)context);
+}
+
+BOOLEAN DroidVmPoolAcquireMapping(_In_ PVOID context, _Out_ PDROIDVMPOOL_MAPPING mapping)
+{
+    PDROIDVMPOOL_DEVICE_CONTEXT deviceContext = DroidVmPoolGetDeviceContext((WDFDEVICE)context);
+    DROIDVMPOOL_MAPPING mappingValue = {0};
+
+    if (mapping == NULL || KeGetCurrentIrql() > DISPATCH_LEVEL ||
+        !ExAcquireRundownProtection(&deviceContext->MappingReferences))
+    {
+        return FALSE;
+    }
+
+    if (InterlockedCompareExchange(&deviceContext->PoolReady, FALSE, FALSE) == FALSE ||
+        deviceContext->PoolVirtualBase == NULL || deviceContext->PoolSize == 0)
+    {
+        ExReleaseRundownProtection(&deviceContext->MappingReferences);
+        return FALSE;
+    }
+
+    mappingValue.BaseVirtualAddress = deviceContext->PoolVirtualBase;
+    mappingValue.BasePhysicalAddress = deviceContext->PoolPhysicalBase;
+    mappingValue.TotalSize = deviceContext->PoolSize;
+    *mapping = mappingValue;
+    return TRUE;
+}
+
+VOID DroidVmPoolReleaseMapping(_In_ PVOID context)
+{
+    PDROIDVMPOOL_DEVICE_CONTEXT deviceContext = DroidVmPoolGetDeviceContext((WDFDEVICE)context);
+
+    NT_ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+    ExReleaseRundownProtection(&deviceContext->MappingReferences);
 }
 
 VOID DroidVmPoolEvtIoDeviceControl(_In_ WDFQUEUE queue,
@@ -254,8 +334,14 @@ VOID DroidVmPoolEvtIoDeviceControl(_In_ WDFQUEUE queue,
         WdfRequestComplete(request, STATUS_ACCESS_DENIED);
         return;
     }
-    if (!deviceContext->PoolReady)
+    if (!ExAcquireRundownProtection(&deviceContext->MappingReferences))
     {
+        WdfRequestComplete(request, STATUS_DEVICE_NOT_READY);
+        return;
+    }
+    if (InterlockedCompareExchange(&deviceContext->PoolReady, FALSE, FALSE) == FALSE)
+    {
+        ExReleaseRundownProtection(&deviceContext->MappingReferences);
         WdfRequestComplete(request, STATUS_DEVICE_NOT_READY);
         return;
     }
@@ -278,7 +364,6 @@ VOID DroidVmPoolEvtIoDeviceControl(_In_ WDFQUEUE queue,
                 outputValue.StructureSize = sizeof(outputValue);
                 outputValue.PoolNameLength = deviceContext->PoolNameLength;
                 outputValue.PageSize = PAGE_SIZE;
-                outputValue.BaseVirtualAddress = deviceContext->PoolVirtualBase;
                 outputValue.BasePhysicalAddress = deviceContext->PoolPhysicalBase;
                 outputValue.TotalSize = deviceContext->PoolSize;
                 RtlCopyMemory(outputValue.PoolName, deviceContext->PoolName, deviceContext->PoolNameLength + 1);
@@ -288,5 +373,6 @@ VOID DroidVmPoolEvtIoDeviceControl(_In_ WDFQUEUE queue,
         }
     }
 
+    ExReleaseRundownProtection(&deviceContext->MappingReferences);
     WdfRequestCompleteWithInformation(request, status, bytesReturned);
 }

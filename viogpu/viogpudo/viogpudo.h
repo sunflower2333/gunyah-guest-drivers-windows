@@ -32,6 +32,9 @@
 #include "viogpu.h"
 #include "viogpu_queue.h"
 #include "viogpu_rdma.h"
+#if defined(VIOGPU_WDDM_CI_ONLY)
+#include "viogpu_named_pool.h"
+#endif
 
 #pragma pack(push)
 #pragma pack(1)
@@ -205,6 +208,9 @@ class VioGpuAdapter : IVioGpuPCI
     PHYSICAL_ADDRESS GetDmaPhysicalAddress(PVOID address);
     BOOLEAN IsRestrictedDmaActive(void);
     BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    BOOLEAN AcquireDrmHostPoolMapping(_Out_ VioGpuDrmHostPoolMapping *mapping) const;
+#endif
     BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                         _Out_opt_ UINT *capsetVersion,
                                         _Out_opt_ UINT *capsetSize,
@@ -264,6 +270,9 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS NegotiateNativeContextFeatures(void);
     NTSTATUS ProbeNativeContextReadiness(void);
     NTSTATUS ConnectRestrictedDma(void);
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    NTSTATUS ConnectDrmHostPool(void);
+#endif
     NTSTATUS StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pDispInfo);
     NTSTATUS FailNativeContextInitialization(NTSTATUS status);
     NTSTATUS StartWorkThread(void);
@@ -306,6 +315,9 @@ class VioGpuAdapter : IVioGpuPCI
     VirtIODevice m_VioDev;
     CPciResources m_PciResources;
     VioGpuRdmaPool m_RdmaPool;
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    VioGpuDrmHostPool m_DrmHostPool;
+#endif
     UINT64 m_u64HostFeatures;
     UINT64 m_u64GuestFeatures;
     UINT32 m_u32NumCapsets;

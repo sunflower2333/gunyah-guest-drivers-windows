@@ -1243,18 +1243,31 @@ def check_native_context_readiness(
     transport_start = function_body("VioGpuAdapter::StartNativeContextTransport", viogpu_code)
     require_call_count(transport_start, "ProbeNativeContextReadiness", 1, "transport start")
     require_call_count(transport_start, "ConnectRestrictedDma", 1, "transport start")
+    require_call_count(transport_start, "ConnectDrmHostPool", 1, "transport start")
     transport_start_compact = compact_code(transport_start)
-    connect_sequence = (
-        "NTSTATUSstatus=ConnectRestrictedDma();"
-        "if(!NT_SUCCESS(status)){returnstatus;}"
-        "status=VioGpuAdapterInit(pDispInfo);"
+    rdma_connect_offset = transport_start_compact.find("NTSTATUSstatus=ConnectRestrictedDma();")
+    rdma_failure_offset = transport_start_compact.find(
+        "if(!NT_SUCCESS(status)){returnstatus;}", rdma_connect_offset
     )
-    if connect_sequence not in transport_start_compact:
-        fail("transport start must directly connect restricted DMA and propagate failure before VirtIO initialization")
-    if transport_start_compact.find("ConnectRestrictedDma()") > transport_start_compact.find(
-        "VioGpuAdapterInit(pDispInfo)"
+    named_connect_offset = transport_start_compact.find("status=ConnectDrmHostPool();")
+    named_failure_offset = transport_start_compact.find(
+        "if(!NT_SUCCESS(status)){returnstatus;}", named_connect_offset
+    )
+    virtio_init_offset = transport_start_compact.find("status=VioGpuAdapterInit(pDispInfo);")
+    if min(
+        rdma_connect_offset,
+        rdma_failure_offset,
+        named_connect_offset,
+        named_failure_offset,
+        virtio_init_offset,
+    ) < 0 or not (
+        rdma_connect_offset
+        < rdma_failure_offset
+        < named_connect_offset
+        < named_failure_offset
+        < virtio_init_offset
     ):
-        fail("transport start must connect restricted DMA before initializing VirtIO")
+        fail("transport start must connect restricted DMA, then drm2kgsl_host, before initializing VirtIO")
     if len(re.findall(r"\bm_RdmaPool\s*\.\s*Connect\s*\(", viogpu_code)) != 1 or len(
         re.findall(r"\bm_RdmaPool\s*\.\s*Connect\s*\(", rdma_connect)
     ) != 1:
@@ -1332,6 +1345,7 @@ def check_native_context_readiness(
         ("m_FrameSegment.Close()", "frame segment teardown"),
         ("m_CursorSegment.Close()", "cursor segment teardown"),
         ("m_GpuBuf.Close()", "control-buffer allocator teardown"),
+        ("m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
         ("status=m_RdmaPool.Disconnect()", "restricted-DMA arena disconnect"),
         ("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)", "offline publication"),
     ):
@@ -1432,6 +1446,7 @@ def check_native_context_readiness(
         ("m_FrameSegment.Close()", "frame segment teardown"),
         ("m_CursorSegment.Close()", "cursor segment teardown"),
         ("m_GpuBuf.Close()", "control-buffer allocator teardown"),
+        ("m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
         ("status=m_RdmaPool.Disconnect()", "restricted-DMA arena disconnect"),
         ("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)", "offline publication"),
     )
