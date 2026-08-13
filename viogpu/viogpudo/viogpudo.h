@@ -89,6 +89,7 @@ struct VIOGPU_NATIVE_CONTEXT_OWNER
     VIOGPU_NATIVE_CONTEXT_REGISTRATION *Registration;
     VIOGPU_NATIVE_CONTEXT_OWNER_STATE State;
     LONG Generation;
+    ULONGLONG ResetGeneration;
     UINT ContextId;
 };
 
@@ -108,6 +109,7 @@ struct VIOGPU_NATIVE_CONTEXT_REGISTRATION
     VIOGPU_NATIVE_CONTEXT_OWNER *Owner;
     volatile LONG State;
     LONG Generation;
+    ULONGLONG ResetGeneration;
     UINT ContextId;
     BOOLEAN Registered;
 };
@@ -116,6 +118,7 @@ struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT
 {
     VioGpuAdapter *Adapter;
     LONG Generation;
+    ULONGLONG ResetGeneration;
     UINT ContextId;
 };
 
@@ -139,6 +142,7 @@ struct VIOGPU_NATIVE_CONTEXT_READINESS
 {
     BOOLEAN Ready;
     LONG Generation;
+    ULONGLONG ResetGeneration;
     UINT CapsetVersion;
     UINT CapsetSize;
     GPU_CAPSET_DRM Capset;
@@ -203,8 +207,10 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
     BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                         _Out_opt_ UINT *capsetVersion,
-                                        _Out_opt_ UINT *capsetSize);
-    NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
+                                        _Out_opt_ UINT *capsetSize,
+                                        _Out_opt_ ULONGLONG *resetGeneration);
+    NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                 _In_ ULONGLONG expectedResetGeneration);
     NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released);
     static BOOLEAN AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
                                                 _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
@@ -212,7 +218,7 @@ class VioGpuAdapter : IVioGpuPCI
     static VioGpuAdapter *ReferenceNativeContextAdapter(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
     static void DereferenceNativeContextAdapter(_In_ VioGpuAdapter *adapter);
     static BOOLEAN IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
-    BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation);
+    BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration);
 
     PVIDEO_MODE_INFORMATION GetModeInfo(UINT idx)
     {
@@ -312,6 +318,7 @@ class VioGpuAdapter : IVioGpuPCI
     UINT m_NextNativeContextId;
     volatile LONG m_NativeContextState;
     volatile LONG m_NativeContextGeneration;
+    DECLSPEC_ALIGN(8) volatile LONG64 m_NativeContextResetGeneration;
     volatile LONG m_InterruptDispatchEnabled;
     BOOLEAN m_bVirtioInitialized;
     BOOLEAN m_bQueuesInitialized;
@@ -497,8 +504,10 @@ class VioGpuDod
     BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
     BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                         _Out_opt_ UINT *capsetVersion,
-                                        _Out_opt_ UINT *capsetSize);
-    NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
+                                        _Out_opt_ UINT *capsetSize,
+                                        _Out_opt_ ULONGLONG *resetGeneration);
+    NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                 _In_ ULONGLONG expectedResetGeneration);
     NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released);
     BOOLEAN IsHardwareResetRequested(void) const
     {

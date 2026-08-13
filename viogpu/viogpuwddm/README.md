@@ -11,11 +11,52 @@ implementation, and is intentionally not installable:
 
 ## Native Context scope
 
-The current P1 artifact is a compile-only transport-readiness slice. Its
-unreachable source path negotiates the required VirtIO-GPU features and validates
-the Native Context capset, but it does not implement the product's guest-backed
-allocation data path. `DriverEntry` remains fail-closed and returns
-`STATUS_NOT_SUPPORTED`; no artifact from this project may be installed or loaded.
+The current artifact extends the P1 compile-only transport-readiness slice with
+a P2 pre-v1 private-ABI validation scaffold. Its unreachable source path
+negotiates the required VirtIO-GPU features, validates the Native Context
+capset, exposes an exact-revision WDK-independent UMD/KMD snapshot, and
+validates allocation, context, and Render identities against a stable reset
+generation. This still does not implement the product's guest-backed allocation
+or submit data path.
+`DriverEntry` remains fail-closed and returns `STATUS_NOT_SUPPORTED`; no
+artifact from this project may be installed or loaded.
+
+The fixture in `viogpu/tests/wddm-private-abi/` locks only the current pre-v1
+snapshot for independent KMD and UMD endpoint regression checks. It does not
+freeze a version-1 ABI. Before version 1 can be published, the contract must add
+a low-frequency, context-scoped `D3DKMTEscape(DRIVERPRIVATE)`
+`GET_CONTEXT_INFO` request that returns the real Host-created `VaStart`,
+`VaSize`, and `ResetGeneration` under context rundown protection. The UMD must
+query and cache that response before selecting any BO IOVA or submitting, then
+discard it when the generation changes. Escape is not a submit path. The ABI
+must also define requested-IOVA bind/unbind/query behavior for an allocation and
+the real guest-backed allocation and teardown lifecycle. Create-time private
+data is UMD-to-KMD input and must not be treated as an output channel. D3DKMT
+allocation and context handles remain the UMD's opaque identities; KMD or
+transport object IDs are not exposed.
+
+The current snapshot contains no Windows pointers or handles, physical or IOVA
+addresses, or VirtIO/KGSL object identifiers. `CreateAllocation` retains the
+validated private data and `OpenAllocation` requires an exact byte-for-byte
+match. Every open wrapper holds its owning device through `CloseAllocation`,
+records read-only access, and is rejected if a Render context from another
+device references it. Render ranges are bounded by the logical UMD-declared
+allocation size, not page-aligned VidMm backing padding. Open/close and destroy
+also reject unsupported flags, resource-private data, and duplicate handle
+arrays before releasing objects. `CreateContext` accepts only the single-engine
+affinity mask `1` and a current nonzero reset-generation token. `Render` bounds
+command input to 64 KiB, copies command and patch inputs to nonpaged snapshots,
+validates their shared allocation identity, rejects writes through read-only
+opens and overlapping 8-byte patch slots, rechecks the reset generation, and
+only then publishes its DMA output. UMD-selected patch slot IDs may be nonzero;
+reserved patch bits must be zero.
+
+`Patch` deliberately returns `STATUS_NOT_SUPPORTED`. A VidMm segment physical
+address is not a Turnip per-context IOVA, and the KMD has no context-info/BO
+transport that could provide the real address yet. `SubmitCommand` likewise
+remains fail-closed until Host GPU retirement and WDDM fence completion are
+implemented. The validation slice must not be described as a working Render,
+Patch, or submit pipeline.
 
 The product baseline is `udmabuf=true` with independent `drm-host` and
 `gpu-guest` boot pools. The product transport must fail closed unless
@@ -82,15 +123,17 @@ The callback table intentionally leaves these DDI slots unset:
 
 It also does not register the KMDOD-only `DxgkDdiPresentDisplayOnly` callback.
 
-Several callbacks that are registered are still skeletons. Present, submit,
-preempt, current-fence query, timeout reset/restart, and VidPN source-address
-programming return `STATUS_NOT_SUPPORTED`; paging implements only discard. No
-real Host-retirement completion is implemented. Mandatory full-graphics WDDM
+Several callbacks that are registered are still skeletons. Patch, Present,
+submit, preempt, current-fence query, timeout reset/restart, and VidPN
+source-address programming return `STATUS_NOT_SUPPORTED`; paging implements
+only discard. No real Host-retirement completion is implemented. Mandatory full-graphics WDDM
 1.2 semantics that are absent or unproven include video-memory offer/reclaim,
 GPU preemption and FlipOnVSyncMmIo, per-engine TDR, optimized rotation, direct
 flip, GDI hardware acceleration, seamless state transitions/PnP, and display
-container ID behavior. Because the inherited query path still reports WDDM
-1.2 while these semantics are incomplete, registration must remain
+container ID behavior. The current `CreateContext` flag check also rejects
+system and GDI contexts; it is a narrow UMD-context scaffold rather than a
+general WDDM 1.2 context contract. Because the inherited query path still
+reports WDDM 1.2 while these semantics are incomplete, registration must remain
 unreachable. Successful compilation does not establish that the driver can
 register, start, render, recover, or satisfy the mandatory WDDM 1.2 feature
 contract.

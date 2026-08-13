@@ -61,6 +61,7 @@
     <ClInclude Include="..\common\helper.h" />
     <ClInclude Include="..\common\viogpu_rdma.h" />
     <ClInclude Include="..\common\viogpu_3d_wire.h" />
+    <ClInclude Include="..\shared\viogpu_wddm_abi.h" />
     <ClInclude Include="..\viogpudo\driver.h" />
     <ClInclude Include="..\viogpudo\trace.h" />
     <ClInclude Include="..\viogpudo\viogpudo.h" />

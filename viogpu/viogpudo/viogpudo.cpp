@@ -396,7 +396,8 @@ BOOLEAN VioGpuDod::QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physi
 
 BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                                _Out_opt_ UINT *capsetVersion,
-                                               _Out_opt_ UINT *capsetSize)
+                                               _Out_opt_ UINT *capsetSize,
+                                               _Out_opt_ ULONGLONG *resetGeneration)
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))
     {
@@ -405,12 +406,13 @@ BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
 
     VioGpuAdapter *adapter = m_pHWDevice;
     BOOLEAN ready = !IsHardwareResetRequested() && adapter != NULL &&
-                    adapter->QueryNativeContextReadiness(capset, capsetVersion, capsetSize);
+                    adapter->QueryNativeContextReadiness(capset, capsetVersion, capsetSize, resetGeneration);
     ExReleaseRundownProtection(&m_HardwareOperations);
     return ready;
 }
 
-NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context)
+NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                        _In_ ULONGLONG expectedResetGeneration)
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))
     {
@@ -418,7 +420,8 @@ NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATI
     }
 
     VioGpuAdapter *adapter = m_pHWDevice;
-    NTSTATUS status = !IsHardwareResetRequested() && adapter != NULL ? adapter->CreateNativeContext(context)
+    NTSTATUS status = !IsHardwareResetRequested() && adapter != NULL ? adapter->CreateNativeContext(context,
+                                                                                                    expectedResetGeneration)
                                                                      : STATUS_DEVICE_NOT_READY;
     ExReleaseRundownProtection(&m_HardwareOperations);
     return status;
@@ -2231,6 +2234,7 @@ PAGED_CODE_SEG_END
 void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
 {
     InterlockedIncrement(&m_NativeContextGeneration);
+    InterlockedIncrement64(&m_NativeContextResetGeneration);
     InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
     LONG state = InterlockedCompareExchange(&m_NativeContextState,
                                             VioGpuNativeContextOffline,
@@ -2715,6 +2719,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_NextNativeContextId = 1;
     m_NativeContextState = VioGpuNativeContextOffline;
     m_NativeContextGeneration = 0;
+    m_NativeContextResetGeneration = 0;
     m_InterruptDispatchEnabled = FALSE;
     m_bVirtioInitialized = FALSE;
     m_bQueuesInitialized = FALSE;
@@ -2952,7 +2957,7 @@ NTSTATUS VioGpuAdapter::SetPowerState(DXGK_DEVICE_INFO *pDeviceInfo,
                 if (state == VioGpuNativeContextReady)
                 {
                     GPU_CAPSET_DRM capset = {};
-                    if (!QueryNativeContextReadiness(&capset, NULL, NULL))
+                    if (!QueryNativeContextReadiness(&capset, NULL, NULL, NULL))
                     {
                         FailNativeContextAtAnyIrql();
                         NTSTATUS closeStatus = StopNativeContextTransport();
@@ -3050,6 +3055,7 @@ BOOLEAN VioGpuAdapter::BeginNativeContextInitialization(void)
 
     ClearNativeContextReadiness();
     InterlockedIncrement(&m_NativeContextGeneration);
+    InterlockedIncrement64(&m_NativeContextResetGeneration);
     InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
     return TRUE;
 }
@@ -3061,10 +3067,13 @@ BOOLEAN VioGpuAdapter::CompleteNativeContextInitialization(void)
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeContextReadinessLock, &oldIrql);
     LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
+    ULONGLONG resetGeneration = (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0);
     BOOLEAN ready = m_bVirtioInitialized && m_bQueuesInitialized && m_pVioGpuDod->IsHardwareInit() &&
                     InterlockedCompareExchange(&m_InterruptDispatchEnabled, FALSE, FALSE) != FALSE &&
                     m_pWorkThread != NULL && m_WorkThreadHandle == NULL && m_NativeContextReadiness.Ready &&
-                    m_NativeContextReadiness.Generation == generation && m_CtrlQueue.IsSynchronousRequestsHealthy() &&
+                    m_NativeContextReadiness.Generation == generation &&
+                    m_NativeContextReadiness.ResetGeneration == resetGeneration && resetGeneration != 0 &&
+                    m_CtrlQueue.IsSynchronousRequestsHealthy() &&
                     InterlockedCompareExchange(&m_NativeContextState,
                                                VioGpuNativeContextReady,
                                                VioGpuNativeContextStarting) == VioGpuNativeContextStarting;
@@ -3103,7 +3112,8 @@ NTSTATUS VioGpuAdapter::FailNativeContextInitialization(NTSTATUS status)
 
 BOOLEAN VioGpuAdapter::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                                    _Out_opt_ UINT *capsetVersion,
-                                                   _Out_opt_ UINT *capsetSize)
+                                                   _Out_opt_ UINT *capsetSize,
+                                                   _Out_opt_ ULONGLONG *resetGeneration)
 {
     if (capset == NULL)
     {
@@ -3119,15 +3129,21 @@ BOOLEAN VioGpuAdapter::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
     {
         *capsetSize = 0;
     }
+    if (resetGeneration != NULL)
+    {
+        *resetGeneration = 0;
+    }
 
     BOOLEAN ready = FALSE;
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeContextReadinessLock, &oldIrql);
     LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
+    ULONGLONG currentResetGeneration = (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0);
     ready = InterlockedCompareExchange(&m_NativeContextState,
                                        VioGpuNativeContextOffline,
                                        VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
             m_NativeContextReadiness.Ready && m_NativeContextReadiness.Generation == generation &&
+            m_NativeContextReadiness.ResetGeneration == currentResetGeneration && currentResetGeneration != 0 &&
             m_CtrlQueue.IsSynchronousRequestsHealthy();
     if (ready)
     {
@@ -3140,10 +3156,17 @@ BOOLEAN VioGpuAdapter::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
         {
             *capsetSize = m_NativeContextReadiness.CapsetSize;
         }
+        if (resetGeneration != NULL)
+        {
+            *resetGeneration = m_NativeContextReadiness.ResetGeneration;
+        }
         ready = InterlockedCompareExchange(&m_NativeContextState,
                                            VioGpuNativeContextOffline,
                                            VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
                 InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) == generation &&
+                (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration,
+                                                        0,
+                                                        0) == currentResetGeneration &&
                 m_CtrlQueue.IsSynchronousRequestsHealthy();
         if (!ready)
         {
@@ -3155,6 +3178,10 @@ BOOLEAN VioGpuAdapter::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
             if (capsetSize != NULL)
             {
                 *capsetSize = 0;
+            }
+            if (resetGeneration != NULL)
+            {
+                *resetGeneration = 0;
             }
         }
     }
@@ -3175,7 +3202,8 @@ UINT VioGpuAdapter::AllocateNativeContextIdLocked(void)
     return contextId;
 }
 
-NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context)
+NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                            _In_ ULONGLONG expectedResetGeneration)
 {
     PAGED_CODE();
 
@@ -3198,11 +3226,13 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     }
 
     LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
+    ULONGLONG resetGeneration = 0;
     GPU_CAPSET_DRM capset = {};
     if (InterlockedCompareExchange(&m_NativeContextState,
                                    VioGpuNativeContextOffline,
                                    VioGpuNativeContextOffline) != VioGpuNativeContextReady ||
-        !QueryNativeContextReadiness(&capset, NULL, NULL))
+        expectedResetGeneration == 0 || !QueryNativeContextReadiness(&capset, NULL, NULL, &resetGeneration) ||
+        resetGeneration != expectedResetGeneration)
     {
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
         return STATUS_DEVICE_NOT_READY;
@@ -3225,6 +3255,7 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     owner->Registration = context;
     owner->State = VioGpuNativeContextOwnerCreating;
     owner->Generation = generation;
+    owner->ResetGeneration = resetGeneration;
     owner->ContextId = contextId;
     InsertTailList(&m_NativeContextRegistry, &owner->AdapterLink);
 
@@ -3233,6 +3264,7 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     context->Adapter = this;
     context->Owner = owner;
     context->Generation = generation;
+    context->ResetGeneration = resetGeneration;
     context->ContextId = contextId;
     InterlockedExchange(&context->State, VioGpuNativeContextCreating);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
@@ -3242,7 +3274,10 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
                            InterlockedCompareExchange(&m_NativeContextState,
                                                       VioGpuNativeContextOffline,
                                                       VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
-                           InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) == generation;
+                           InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) == generation &&
+                           (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration,
+                                                                   0,
+                                                                   0) == resetGeneration;
     if (!stillCurrent)
     {
         if (createResult == VioGpuHostContextUnknown || !m_CtrlQueue.IsSynchronousRequestsHealthy() ||
@@ -3262,6 +3297,7 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
         context->Adapter = NULL;
         context->Owner = NULL;
         context->Generation = 0;
+        context->ResetGeneration = 0;
         context->ContextId = 0;
         InterlockedExchange(&context->State, VioGpuNativeContextDead);
         KeReleaseSpinLock(&context->BindingLock, oldIrql);
@@ -3311,7 +3347,8 @@ NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIS
     VIOGPU_NATIVE_CONTEXT_OWNER *owner = context->Owner;
     if (objectState != VioGpuNativeContextLive || context->Adapter != this || !context->Registered || owner == NULL ||
         owner->Registration != context || owner->State != VioGpuNativeContextOwnerLive ||
-        owner->Generation != context->Generation || owner->ContextId != context->ContextId)
+        owner->Generation != context->Generation || owner->ResetGeneration != context->ResetGeneration ||
+        owner->ContextId != context->ContextId)
     {
         KeReleaseSpinLock(&context->BindingLock, oldIrql);
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
@@ -3319,6 +3356,7 @@ NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIS
     }
 
     LONG contextGeneration = context->Generation;
+    ULONGLONG contextResetGeneration = context->ResetGeneration;
     UINT contextId = context->ContextId;
     InterlockedExchange(&context->State, VioGpuNativeContextDestroying);
     context->Registered = FALSE;
@@ -3326,7 +3364,10 @@ NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIS
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
 
     LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
-    BOOLEAN current = contextGeneration == generation &&
+    BOOLEAN current = contextGeneration == generation && contextResetGeneration != 0 &&
+                      contextResetGeneration == (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration,
+                                                                                        0,
+                                                                                        0) &&
                       InterlockedCompareExchange(&m_NativeContextState,
                                                  VioGpuNativeContextOffline,
                                                  VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
@@ -3346,6 +3387,7 @@ NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIS
     context->Adapter = NULL;
     context->Owner = NULL;
     context->Generation = 0;
+    context->ResetGeneration = 0;
     context->ContextId = 0;
     InterlockedExchange(&context->State, VioGpuNativeContextDead);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
@@ -3395,7 +3437,7 @@ BOOLEAN VioGpuAdapter::AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEX
     KIRQL oldIrql;
     KeAcquireSpinLock(&context->BindingLock, &oldIrql);
     BOOLEAN acquired = context->Adapter == adapter && context->Owner != NULL && context->Registered &&
-                       context->Generation != 0 && context->ContextId != 0 &&
+                       context->Generation != 0 && context->ResetGeneration != 0 && context->ContextId != 0 &&
                        InterlockedCompareExchange(&context->State,
                                                   VioGpuNativeContextDead,
                                                   VioGpuNativeContextDead) == VioGpuNativeContextLive;
@@ -3403,11 +3445,12 @@ BOOLEAN VioGpuAdapter::AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEX
     {
         snapshot->Adapter = adapter;
         snapshot->Generation = context->Generation;
+        snapshot->ResetGeneration = context->ResetGeneration;
         snapshot->ContextId = context->ContextId;
     }
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
 
-    if (acquired && !adapter->IsNativeContextGenerationCurrent(snapshot->Generation))
+    if (acquired && !adapter->IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration))
     {
         RtlZeroMemory(snapshot, sizeof(*snapshot));
         acquired = FALSE;
@@ -3443,7 +3486,7 @@ VioGpuAdapter *VioGpuAdapter::ReferenceNativeContextAdapter(_Inout_ VIOGPU_NATIV
     KeAcquireSpinLock(&context->BindingLock, &oldIrql);
     VioGpuAdapter *adapter = context->Adapter;
     if (adapter == NULL || context->Owner == NULL || !context->Registered || context->Generation == 0 ||
-        context->ContextId == 0 ||
+        context->ResetGeneration == 0 || context->ContextId == 0 ||
         InterlockedCompareExchange(&context->State,
                                    VioGpuNativeContextDead,
                                    VioGpuNativeContextDead) != VioGpuNativeContextLive ||
@@ -3470,7 +3513,7 @@ BOOLEAN VioGpuAdapter::IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REG
     KIRQL oldIrql;
     KeAcquireSpinLock(&context->BindingLock, &oldIrql);
     BOOLEAN released = context->Adapter == NULL && context->Owner == NULL && !context->Registered &&
-                       context->Generation == 0 && context->ContextId == 0 &&
+                       context->Generation == 0 && context->ResetGeneration == 0 && context->ContextId == 0 &&
                        InterlockedCompareExchange(&context->State,
                                                   VioGpuNativeContextDead,
                                                   VioGpuNativeContextDead) == VioGpuNativeContextDead;
@@ -3478,10 +3521,11 @@ BOOLEAN VioGpuAdapter::IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REG
     return released;
 }
 
-BOOLEAN VioGpuAdapter::IsNativeContextGenerationCurrent(_In_ LONG generation)
+BOOLEAN VioGpuAdapter::IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration)
 {
     return !m_pVioGpuDod->IsHardwareResetRequested() &&
-           generation == InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) &&
+           generation == InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) && resetGeneration != 0 &&
+           resetGeneration == (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0) &&
            InterlockedCompareExchange(&m_NativeContextState,
                                       VioGpuNativeContextOffline,
                                       VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
@@ -3510,6 +3554,7 @@ void VioGpuAdapter::InvalidateNativeContextRegistrationsLocked(void)
             context->Adapter = NULL;
             context->Owner = NULL;
             context->Generation = 0;
+            context->ResetGeneration = 0;
             context->ContextId = 0;
             InterlockedExchange(&context->State, VioGpuNativeContextDead);
         }
@@ -3547,6 +3592,7 @@ NTSTATUS VioGpuAdapter::ProbeNativeContextReadiness(void)
 
     ClearNativeContextReadiness();
     LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
+    ULONGLONG resetGeneration = (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0);
 
     if (!virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_VIRGL) ||
         !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_RESOURCE_BLOB) ||
@@ -3611,6 +3657,8 @@ NTSTATUS VioGpuAdapter::ProbeNativeContextReadiness(void)
     KeAcquireSpinLock(&m_NativeContextReadinessLock, &oldIrql);
     if (!m_CtrlQueue.IsSynchronousRequestsHealthy() ||
         InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) != generation ||
+        (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0) != resetGeneration ||
+        resetGeneration == 0 ||
         InterlockedCompareExchange(&m_NativeContextState,
                                    VioGpuNativeContextStarting,
                                    VioGpuNativeContextStarting) != VioGpuNativeContextStarting)
@@ -3619,6 +3667,7 @@ NTSTATUS VioGpuAdapter::ProbeNativeContextReadiness(void)
         return STATUS_DEVICE_NOT_READY;
     }
     m_NativeContextReadiness.Generation = generation;
+    m_NativeContextReadiness.ResetGeneration = resetGeneration;
     m_NativeContextReadiness.CapsetVersion = selectedInfo.capset_max_version;
     m_NativeContextReadiness.CapsetSize = selectedInfo.capset_max_size;
     m_NativeContextReadiness.Capset = capset;
@@ -5040,6 +5089,7 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
         if (observed == VioGpuNativeContextFailed)
         {
             InterlockedIncrement(&m_NativeContextGeneration);
+            InterlockedIncrement64(&m_NativeContextResetGeneration);
             state = VioGpuNativeContextQuiescing;
         }
         else
@@ -5064,6 +5114,7 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
         {
             state = VioGpuNativeContextQuiescing;
             InterlockedIncrement(&m_NativeContextGeneration);
+            InterlockedIncrement64(&m_NativeContextResetGeneration);
             break;
         }
         state = observed;

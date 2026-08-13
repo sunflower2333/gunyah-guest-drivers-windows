@@ -11,7 +11,9 @@ on:
   pull_request:
     paths:
       - "viogpu/common/**"
+      - "viogpu/shared/viogpu_wddm_abi.h"
       - "viogpu/tests/native-context-wire/**"
+      - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
@@ -26,7 +28,9 @@ on:
     branches: [ master, viogpu-wddm3.1 ]
     paths:
       - "viogpu/common/**"
+      - "viogpu/shared/viogpu_wddm_abi.h"
       - "viogpu/tests/native-context-wire/**"
+      - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
@@ -56,6 +60,10 @@ jobs:
       - name: Check native-context wire ABI manifest
         shell: cmd
         run: viogpu\tests\native-context-wire\run-msvc.cmd
+
+      - name: Check DroidVM WDDM private ABI endpoints
+        shell: cmd
+        run: viogpu\tests\wddm-private-abi\run-msvc.cmd
 
       - name: Check full WDDM compile-only safety contract
         shell: pwsh

@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKER = "viogpu/viogpuwddm/check-contract.py"
-CHECKED_SUBTREES = ("viogpu", "rdmapool", "VirtIO", "NetKVM", "viostor", "vioscsi")
+CHECKED_SUBTREES = (".github", "viogpu", "rdmapool", "VirtIO", "NetKVM", "viostor", "vioscsi")
 
 
 @dataclass(frozen=True)
@@ -568,6 +568,7 @@ REWRITES = (
     context->Adapter = this;
     context->Owner = owner;
     context->Generation = generation;
+    context->ResetGeneration = resetGeneration;
     context->ContextId = contextId;
     InterlockedExchange(&context->State, VioGpuNativeContextCreating);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
@@ -581,6 +582,7 @@ REWRITES = (
     context->Adapter = this;
     context->Owner = owner;
     context->Generation = generation;
+    context->ResetGeneration = resetGeneration;
     context->ContextId = contextId;
     InterlockedExchange(&context->State, VioGpuNativeContextCreating);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);""",
@@ -723,8 +725,18 @@ REWRITES = (
     Rewrite(
         "R56_bypass_context_device_reservation",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        """    if (!ReferenceDevice(device))""",
-        """    if (FALSE && !ReferenceDevice(device))""",
+        """    if (!ReferenceDevice(device))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    VIOGPU_WDDM_CONTEXT *context = new (NonPagedPoolNx) VIOGPU_WDDM_CONTEXT;""",
+        """    if (FALSE && !ReferenceDevice(device))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    VIOGPU_WDDM_CONTEXT *context = new (NonPagedPoolNx) VIOGPU_WDDM_CONTEXT;""",
     ),
     Rewrite(
         "R57_destroy_device_without_closing_bit",
@@ -735,11 +747,8 @@ REWRITES = (
     Rewrite(
         "R58_leak_render_snapshot_on_short_buffer",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        """        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
-        ExReleaseRundownProtection(&context->Operations);
-        return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;""",
-        """        ExReleaseRundownProtection(&context->Operations);
-        return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;""",
+        """        status = STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;""",
+        """        return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;""",
     ),
     Rewrite(
         "R59_reopen_hardware_rundown_after_failed_stop",
@@ -932,22 +941,26 @@ REWRITES = (
         "viogpu/viogpudo/viogpudo.cpp",
         """BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                                _Out_opt_ UINT *capsetVersion,
-                                               _Out_opt_ UINT *capsetSize)
+                                               _Out_opt_ UINT *capsetSize,
+                                               _Out_opt_ ULONGLONG *resetGeneration)
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))""",
         """BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                                _Out_opt_ UINT *capsetVersion,
-                                               _Out_opt_ UINT *capsetSize)
+                                               _Out_opt_ UINT *capsetSize,
+                                               _Out_opt_ ULONGLONG *resetGeneration)
 {
     if (FALSE && !ExAcquireRundownProtection(&m_HardwareOperations))""",
     ),
     Rewrite(
         "R76_bypass_create_context_hardware_rundown",
         "viogpu/viogpudo/viogpudo.cpp",
-        """NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context)
+        """NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                        _In_ ULONGLONG expectedResetGeneration)
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))""",
-        """NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context)
+        """NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                        _In_ ULONGLONG expectedResetGeneration)
 {
     if (FALSE && !ExAcquireRundownProtection(&m_HardwareOperations))""",
     ),
@@ -963,12 +976,14 @@ REWRITES = (
         "R78_release_hardware_rundown_before_adapter_use",
         "viogpu/viogpudo/viogpudo.cpp",
         """    VioGpuAdapter *adapter = m_pHWDevice;
-    NTSTATUS status = !IsHardwareResetRequested() && adapter != NULL ? adapter->CreateNativeContext(context)
+    NTSTATUS status = !IsHardwareResetRequested() && adapter != NULL ? adapter->CreateNativeContext(context,
+                                                                                                    expectedResetGeneration)
                                                                      : STATUS_DEVICE_NOT_READY;
     ExReleaseRundownProtection(&m_HardwareOperations);""",
         """    VioGpuAdapter *adapter = m_pHWDevice;
     ExReleaseRundownProtection(&m_HardwareOperations);
-    NTSTATUS status = !IsHardwareResetRequested() && adapter != NULL ? adapter->CreateNativeContext(context)
+    NTSTATUS status = !IsHardwareResetRequested() && adapter != NULL ? adapter->CreateNativeContext(context,
+                                                                                                    expectedResetGeneration)
                                                                      : STATUS_DEVICE_NOT_READY;""",
     ),
     Rewrite(
@@ -1291,6 +1306,227 @@ REWRITES = (
         "VirtIO/virtio_pci.h",
         "#define VIRTIO_PCI_ISR_CONFIG     0x2",
         "#define VIRTIO_PCI_ISR_CONFIG     0x4",
+    ),
+    Rewrite(
+        "R113_wddm_abi_adds_forward_version_macro",
+        "viogpu/shared/viogpu_wddm_abi.h",
+        "#define VIOGPU_WDDM_ABI_VERSION            0U",
+        "#define VIOGPU_WDDM_ABI_VERSION            0U\n#define VIOGPU_WDDM_MIN_VERSION            0U",
+    ),
+    Rewrite(
+        "R114_wddm_abi_advertises_unknown_capability",
+        "viogpu/shared/viogpu_wddm_abi.h",
+        "#define VIOGPU_WDDM_CAPABILITIES_NONE      0ULL",
+        "#define VIOGPU_WDDM_CAPABILITIES_NONE      1ULL",
+    ),
+    Rewrite(
+        "R115_reset_generation_stops_advancing",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    ClearNativeContextReadiness();
+    InterlockedIncrement(&m_NativeContextGeneration);
+    InterlockedIncrement64(&m_NativeContextResetGeneration);
+    InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);""",
+        """    ClearNativeContextReadiness();
+    InterlockedIncrement(&m_NativeContextGeneration);
+    InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);""",
+    ),
+    Rewrite(
+        "R116_umd_private_accepts_input",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (adapter == NULL || queryAdapterInfo->pInputData != NULL || queryAdapterInfo->InputDataSize != 0 ||
+        queryAdapterInfo->pOutputData == NULL || queryAdapterInfo->OutputDataSize != sizeof(VIOGPU_WDDM_ADAPTER_INFO))""",
+        """    if (adapter == NULL ||
+        queryAdapterInfo->pOutputData == NULL || queryAdapterInfo->OutputDataSize != sizeof(VIOGPU_WDDM_ADAPTER_INFO))""",
+    ),
+    Rewrite(
+        "R117_context_accepts_zero_reset_generation",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (!IsCurrentAbiHeader(&privateData.Header, sizeof(privateData)) || privateData.ExpectedResetGeneration == 0 ||
+        privateData.Flags != VIOGPU_WDDM_CONTEXT_FLAGS_NONE || privateData.Reserved != 0)""",
+        """    if (!IsCurrentAbiHeader(&privateData.Header, sizeof(privateData)) ||
+        privateData.Flags != VIOGPU_WDDM_CONTEXT_FLAGS_NONE || privateData.Reserved != 0)""",
+    ),
+    Rewrite(
+        "R118_render_allows_short_patch_stream",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "header->CommandStreamOffset != referencesEnd || header->CommandStreamSize < sizeof(ULONGLONG) ||",
+        "header->CommandStreamOffset != referencesEnd ||",
+    ),
+    Rewrite(
+        "R119_render_skips_allocation_extent",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """            reference->AllocationOffset > deviceAllocation->Allocation->PrivateData.Size ||
+            reference->Length > deviceAllocation->Allocation->PrivateData.Size - reference->AllocationOffset ||""",
+        """            reference->AllocationOffset > deviceAllocation->Allocation->PrivateData.Size ||""",
+    ),
+    Rewrite(
+        "R120_render_decouples_patch_identity",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "reference->PatchOffset != patch->PatchOffset - header->CommandStreamOffset ||",
+        "reference->PatchOffset == patch->PatchOffset - header->CommandStreamOffset ||",
+    ),
+    Rewrite(
+        "R121_render_accepts_reserved_patch_bits",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "reference->PatchOffset > header->CommandStreamSize - sizeof(ULONGLONG) || patch->Reserved != 0 ||",
+        "reference->PatchOffset > header->CommandStreamSize - sizeof(ULONGLONG) ||",
+    ),
+    Rewrite(
+        "R122_context_reads_output_handle",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "context->RuntimeContext = NULL;",
+        "context->RuntimeContext = createContext->hContext;",
+    ),
+    Rewrite(
+        "R123_render_drops_command_bound",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "        render->CommandLength > VIOGPU_WDDM_DMA_BUFFER_SIZE || render->pDmaBuffer == NULL ||",
+        "        render->pDmaBuffer == NULL ||",
+    ),
+    Rewrite(
+        "R124_render_validates_mutable_command",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "status = ValidateCommandHeader(command,",
+        "status = ValidateCommandHeader(reinterpret_cast<const VIOGPU_WDDM_RENDER_COMMAND *>(render->pCommand),",
+    ),
+    Rewrite(
+        "R125_render_publishes_before_generation_check",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (NT_SUCCESS(status) &&
+        !snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation, snapshot.ResetGeneration))""",
+        """    render->MultipassOffset = render->CommandLength;
+    if (NT_SUCCESS(status) &&
+        !snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation, snapshot.ResetGeneration))""",
+    ),
+    Rewrite(
+        "R126_render_skips_generation_check",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (NT_SUCCESS(status) &&
+        !snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation, snapshot.ResetGeneration))""",
+        """    if (FALSE &&
+        !snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation, snapshot.ResetGeneration))""",
+    ),
+    Rewrite(
+        "R127_allocation_drops_private_snapshot",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "        allocation->PrivateData = privateData;",
+        "        RtlZeroMemory(&allocation->PrivateData, sizeof(allocation->PrivateData));",
+    ),
+    Rewrite(
+        "R128_open_allocation_skips_private_identity",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "        if (RtlCompareMemory(&privateData, &allocation->PrivateData, sizeof(privateData)) != sizeof(privateData))",
+        "        if (FALSE)",
+    ),
+    Rewrite(
+        "R129_context_treats_affinity_as_ordinal",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "        createContext->NodeOrdinal != 0 || createContext->EngineAffinity != 1 || createContext->Flags.Value != 0 ||",
+        "        createContext->NodeOrdinal != 0 || createContext->EngineAffinity != 0 || createContext->Flags.Value != 0 ||",
+    ),
+    Rewrite(
+        "R130_render_leaks_patch_snapshot",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "    delete[] patchSnapshot;",
+        "    patchSnapshot = NULL;",
+    ),
+    Rewrite(
+        "R131_render_leaks_command_snapshot",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "    delete[] commandSnapshot;",
+        "    commandSnapshot = NULL;",
+    ),
+    Rewrite(
+        "R132_patch_fakes_vidmm_iova",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    UNREFERENCED_PARAMETER(patchArguments);
+    return STATUS_NOT_SUPPORTED;""",
+        """    if (patchArguments != NULL && patchArguments->pAllocationList != NULL)
+    {
+        ULONGLONG gpuAddress = patchArguments->pAllocationList[0].PhysicalAddress.QuadPart;
+        UNREFERENCED_PARAMETER(gpuAddress);
+    }
+    return STATUS_SUCCESS;""",
+    ),
+    Rewrite(
+        "R133_render_copies_mutable_command_to_output",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "            RtlCopyMemory(commandSnapshot, render->pCommand, render->CommandLength);",
+        "            RtlCopyMemory(render->pDmaBuffer, render->pCommand, render->CommandLength);",
+    ),
+    Rewrite(
+        "R134_render_copies_mutable_patch_to_output",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "            RtlCopyMemory(patchSnapshot, render->pPatchLocationListIn, patchBytes);",
+        "            RtlCopyMemory(render->pPatchLocationListOut, render->pPatchLocationListIn, patchBytes);",
+    ),
+    Rewrite(
+        "R135_render_accepts_overlapping_patch_slots",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """            if (patch->PatchOffset < previousPatch->PatchOffset + sizeof(ULONGLONG) &&
+                previousPatch->PatchOffset < patch->PatchOffset + sizeof(ULONGLONG))""",
+        """            if (FALSE && patch->PatchOffset < previousPatch->PatchOffset + sizeof(ULONGLONG) &&
+                previousPatch->PatchOffset < patch->PatchOffset + sizeof(ULONGLONG))""",
+    ),
+    Rewrite(
+        "R136_open_allocation_publishes_inapplicable_outputs",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
+        """    DXGKARG_OPENALLOCATION *mutableOpenAllocation = const_cast<DXGKARG_OPENALLOCATION *>(openAllocation);
+    mutableOpenAllocation->SubresourceOffset = 0;
+    mutableOpenAllocation->Pitch = 0;
+    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
+    ),
+    Rewrite(
+        "R137_umd_private_skips_full_output_initialization",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "    InitializeAbiHeader(&adapterInfo->Header, sizeof(*adapterInfo));",
+        "    InitializeAbiHeader(&adapterInfo->Header, sizeof(adapterInfo->Header));",
+    ),
+    Rewrite(
+        "R138_context_probes_dxgkrnl_private_data_as_user_address",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "        RtlCopyMemory(&privateData, createContext->pPrivateDriverData, sizeof(privateData));",
+        """        ProbeForRead(createContext->pPrivateDriverData, sizeof(privateData), __alignof(VIOGPU_WDDM_CONTEXT_CREATE));
+        RtlCopyMemory(&privateData, createContext->pPrivateDriverData, sizeof(privateData));""",
+    ),
+    Rewrite(
+        "R139_render_accepts_cross_device_open",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """            deviceAllocation->Device != device || deviceAllocation->Allocation == NULL ||""",
+        """            deviceAllocation->Allocation == NULL ||""",
+    ),
+    Rewrite(
+        "R140_render_writes_read_only_open",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """            (deviceAllocation->ReadOnly && (reference->Flags & VIOGPU_WDDM_REFERENCE_WRITE) != 0))""",
+        """            FALSE)""",
+    ),
+    Rewrite(
+        "R141_render_uses_page_aligned_backing_extent",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """            reference->AllocationOffset > deviceAllocation->Allocation->PrivateData.Size ||
+            reference->Length > deviceAllocation->Allocation->PrivateData.Size - reference->AllocationOffset ||""",
+        """            reference->AllocationOffset > deviceAllocation->Allocation->BackingSize ||
+            reference->Length > deviceAllocation->Allocation->BackingSize - (SIZE_T)reference->AllocationOffset ||""",
+    ),
+    Rewrite(
+        "R142_close_accepts_duplicate_handles",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """            if (closeAllocation->pOpenHandleList[previousIndex] == closeAllocation->pOpenHandleList[index])""",
+        """            if (FALSE)""",
+    ),
+    Rewrite(
+        "R143_destroy_accepts_duplicate_handles",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """            if (destroyAllocation->pAllocationList[previousIndex] == destroyAllocation->pAllocationList[index])""",
+        """            if (FALSE)""",
     ),
     Rewrite(
         "S01_pending_comparison_reversed",

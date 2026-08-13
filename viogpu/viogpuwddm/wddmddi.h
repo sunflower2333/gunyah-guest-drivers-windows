@@ -2,6 +2,7 @@
 
 #include "../viogpudo/driver.h"
 #include "../viogpudo/viogpudo.h"
+#include "../shared/viogpu_wddm_abi.h"
 
 // This target is compile-only until VirtIO fence completion and TDR recovery
 // are connected to the WDDM scheduler callbacks.
@@ -13,27 +14,7 @@ class VioGpuDod;
 
 VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData);
 
-enum VIOGPU_WDDM_ABI : UINT
-{
-    VioGpuWddmAllocationPrivateVersion = 1,
-    VioGpuWddmCommandMagic = 0x55475056,
-    VioGpuWddmCommandVersion = 1,
-};
-
-enum VIOGPU_WDDM_COMMAND_OPCODE : UINT
-{
-    VioGpuWddmCommandNativeSubmit = 1,
-};
-
-struct VIOGPU_WDDM_COMMAND_HEADER
-{
-    UINT Magic;
-    UINT Version;
-    UINT Size;
-    UINT Opcode;
-};
-
-struct VIOGPU_WDDM_DMA_PRIVATE
+struct VIOGPU_WDDM_KMD_DMA_PRIVATE
 {
     ULONG Signature;
     PVOID DmaBuffer;
@@ -41,26 +22,8 @@ struct VIOGPU_WDDM_DMA_PRIVATE
     UINT CommandLength;
     UINT ContextId;
     LONG Generation;
+    ULONGLONG ResetGeneration;
     UINT Flags;
-};
-
-enum VIOGPU_WDDM_ALLOCATION_FLAGS : UINT
-{
-    VioGpuWddmAllocationPrimary = 0x1,
-    VioGpuWddmAllocationCpuVisible = 0x2,
-};
-
-struct VIOGPU_WDDM_ALLOCATION_PRIVATE
-{
-    UINT Version;
-    UINT Flags;
-    ULONGLONG Size;
-    UINT Pitch;
-    UINT Width;
-    UINT Height;
-    D3DDDIFORMAT Format;
-    UINT RefreshRateNumerator;
-    UINT RefreshRateDenominator;
 };
 
 struct VIOGPU_WDDM_RESOURCE
@@ -71,7 +34,8 @@ struct VIOGPU_WDDM_RESOURCE
 struct VIOGPU_WDDM_ALLOCATION
 {
     ULONG Signature;
-    SIZE_T Size;
+    VIOGPU_WDDM_ALLOCATION_INFO PrivateData;
+    SIZE_T BackingSize;
     UINT Pitch;
     UINT Width;
     UINT Height;
@@ -105,6 +69,8 @@ struct VIOGPU_WDDM_OPEN_ALLOCATION
 {
     ULONG Signature;
     VIOGPU_WDDM_ALLOCATION *Allocation;
+    VIOGPU_WDDM_DEVICE *Device;
+    BOOLEAN ReadOnly;
 };
 
 DXGKDDI_QUERYADAPTERINFO VioGpuWddmQueryAdapterInfo;

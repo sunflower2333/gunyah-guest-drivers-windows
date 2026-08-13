@@ -16,8 +16,6 @@ const UINT VIOGPU_WDDM_SEGMENT_ID = 1;
 const UINT VIOGPU_WDDM_DMA_BUFFER_SIZE = 64 * 1024;
 const UINT VIOGPU_WDDM_ALLOCATION_LIST_SIZE = 64;
 const UINT VIOGPU_WDDM_PATCH_LIST_SIZE = 128;
-const UINT VIOGPU_WDDM_GDI_ALLOCATION_LIST_SIZE = 256;
-const UINT VIOGPU_WDDM_GDI_PATCH_LIST_SIZE = 256;
 const LONG VIOGPU_WDDM_DEVICE_CLOSING = static_cast<LONG>(0x80000000UL);
 const LONG VIOGPU_WDDM_DEVICE_REFERENCE_MASK = 0x7FFFFFFF;
 
@@ -60,6 +58,46 @@ BOOLEAN IsSupportedSurfaceFormat(D3DDDIFORMAT format)
     return format == D3DDDIFMT_A8R8G8B8 || format == D3DDDIFMT_X8R8G8B8;
 }
 
+uint32_t ToPrivateFormat(D3DDDIFORMAT format)
+{
+    switch (format)
+    {
+        case D3DDDIFMT_A8R8G8B8:
+            return VIOGPU_WDDM_FORMAT_B8G8R8A8_UNORM;
+        case D3DDDIFMT_X8R8G8B8:
+            return VIOGPU_WDDM_FORMAT_B8G8R8X8_UNORM;
+        default:
+            return VIOGPU_WDDM_FORMAT_NONE;
+    }
+}
+
+D3DDDIFORMAT FromPrivateFormat(uint32_t format)
+{
+    switch (format)
+    {
+        case VIOGPU_WDDM_FORMAT_B8G8R8A8_UNORM:
+            return D3DDDIFMT_A8R8G8B8;
+        case VIOGPU_WDDM_FORMAT_B8G8R8X8_UNORM:
+            return D3DDDIFMT_X8R8G8B8;
+        default:
+            return D3DDDIFMT_UNKNOWN;
+    }
+}
+
+VOID InitializeAbiHeader(VIOGPU_WDDM_ABI_HEADER *header, uint32_t size)
+{
+    RtlZeroMemory(header, size);
+    header->Magic = VIOGPU_WDDM_ABI_MAGIC;
+    header->Version = VIOGPU_WDDM_ABI_VERSION;
+    header->Size = size;
+}
+
+BOOLEAN IsCurrentAbiHeader(const VIOGPU_WDDM_ABI_HEADER *header, uint32_t size)
+{
+    return header != NULL && header->Magic == VIOGPU_WDDM_ABI_MAGIC && header->Version == VIOGPU_WDDM_ABI_VERSION &&
+           header->Size == size && header->Reserved == 0;
+}
+
 NTSTATUS CalculateSurfaceLayout(UINT width, UINT height, D3DDDIFORMAT format, UINT *pitch, ULONGLONG *size)
 {
     if (width == 0 || height == 0 || pitch == NULL || size == NULL || !IsSupportedSurfaceFormat(format) ||
@@ -80,23 +118,25 @@ NTSTATUS CalculateSurfaceLayout(UINT width, UINT height, D3DDDIFORMAT format, UI
     return STATUS_SUCCESS;
 }
 
-NTSTATUS ValidateAllocationPrivate(const VIOGPU_WDDM_ALLOCATION_PRIVATE *privateData, SIZE_T *alignedSize)
+NTSTATUS ValidateAllocationPrivate(const VIOGPU_WDDM_ALLOCATION_INFO *privateData, SIZE_T *alignedSize)
 {
-    const UINT validFlags = VioGpuWddmAllocationPrimary | VioGpuWddmAllocationCpuVisible;
+    const uint32_t validFlags = VIOGPU_WDDM_ALLOCATION_PRIMARY | VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE;
+    D3DDDIFORMAT format = privateData == NULL ? D3DDDIFMT_UNKNOWN : FromPrivateFormat(privateData->Format);
 
-    if (privateData == NULL || alignedSize == NULL || privateData->Version != VioGpuWddmAllocationPrivateVersion ||
+    if (privateData == NULL || alignedSize == NULL || !IsCurrentAbiHeader(&privateData->Header, sizeof(*privateData)) ||
         (privateData->Flags & ~validFlags) != 0 || privateData->Size == 0 ||
-        privateData->Size > (ULONGLONG)(MAXULONG_PTR - (PAGE_SIZE - 1)))
+        privateData->Size > (ULONGLONG)(MAXULONG_PTR - (PAGE_SIZE - 1)) || privateData->Alignment != PAGE_SIZE ||
+        privateData->Reserved != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
 
     BOOLEAN hasSurfaceLayout = privateData->Width != 0 || privateData->Height != 0 || privateData->Pitch != 0 ||
-                               privateData->Format != D3DDDIFMT_UNKNOWN;
+                               privateData->Format != VIOGPU_WDDM_FORMAT_NONE;
     if (hasSurfaceLayout)
     {
         if (privateData->Width == 0 || privateData->Height == 0 || privateData->Pitch == 0 ||
-            !IsSupportedSurfaceFormat(privateData->Format) || privateData->Width > (MAXUINT / 4) ||
+            !IsSupportedSurfaceFormat(format) || privateData->Width > (MAXUINT / 4) ||
             privateData->Pitch < privateData->Width * 4)
         {
             return STATUS_INVALID_PARAMETER;
@@ -108,9 +148,19 @@ NTSTATUS ValidateAllocationPrivate(const VIOGPU_WDDM_ALLOCATION_PRIVATE *private
             return STATUS_INVALID_PARAMETER;
         }
     }
+    else if (privateData->RefreshRateNumerator != 0 || privateData->RefreshRateDenominator != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
 
-    if ((privateData->Flags & VioGpuWddmAllocationPrimary) != 0 &&
-        (!hasSurfaceLayout || (privateData->Flags & VioGpuWddmAllocationCpuVisible) != 0))
+    if ((privateData->Flags & VIOGPU_WDDM_ALLOCATION_PRIMARY) != 0 &&
+        (!hasSurfaceLayout || (privateData->Flags & VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE) != 0 ||
+         privateData->RefreshRateNumerator == 0 || privateData->RefreshRateDenominator == 0))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if ((privateData->Flags & VIOGPU_WDDM_ALLOCATION_PRIMARY) == 0 &&
+        (privateData->RefreshRateNumerator != 0 || privateData->RefreshRateDenominator != 0))
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -135,7 +185,7 @@ VOID InitializeAllocationInfo(DXGK_ALLOCATIONINFO *allocationInfo,
     allocationInfo->EvictionSegmentSet = 0;
     allocationInfo->MaximumRenamingListLength = 0;
     allocationInfo->Flags.Value = 0;
-    allocationInfo->Flags.CpuVisible = (allocation->Flags & VioGpuWddmAllocationCpuVisible) != 0;
+    allocationInfo->Flags.CpuVisible = (allocation->Flags & VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE) != 0;
     allocationInfo->Flags.Cached = allocationInfo->Flags.CpuVisible;
     allocationInfo->pAllocationUsageHint = NULL;
     allocationInfo->AllocationPriority = D3DDDI_ALLOCATIONPRIORITY_NORMAL;
@@ -177,7 +227,7 @@ NTSTATUS QuerySegment(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryA
     segmentInfo->NbSegment = 1;
     segmentInfo->PagingBufferSegmentId = 0;
     segmentInfo->PagingBufferSize = PAGE_SIZE;
-    segmentInfo->PagingBufferPrivateDataSize = sizeof(VIOGPU_WDDM_DMA_PRIVATE);
+    segmentInfo->PagingBufferPrivateDataSize = sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE);
 
     if (segmentInfo->pSegmentDescriptor != NULL)
     {
@@ -193,12 +243,119 @@ NTSTATUS QuerySegment(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryA
     return STATUS_SUCCESS;
 }
 
-NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_COMMAND_HEADER *header, UINT commandLength)
+NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
 {
-    if (header->Magic != VioGpuWddmCommandMagic || header->Version != VioGpuWddmCommandVersion ||
-        header->Size != commandLength || header->Opcode != VioGpuWddmCommandNativeSubmit)
+    if (adapter == NULL || queryAdapterInfo->pInputData != NULL || queryAdapterInfo->InputDataSize != 0 ||
+        queryAdapterInfo->pOutputData == NULL || queryAdapterInfo->OutputDataSize != sizeof(VIOGPU_WDDM_ADAPTER_INFO))
+    {
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;
+    }
+
+    GPU_CAPSET_DRM capset = {};
+    ULONGLONG resetGeneration = 0;
+    if (!adapter->QueryNativeContextReadiness(&capset, NULL, NULL, &resetGeneration) || resetGeneration == 0)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    VIOGPU_WDDM_ADAPTER_INFO *adapterInfo = static_cast<VIOGPU_WDDM_ADAPTER_INFO *>(queryAdapterInfo->pOutputData);
+    InitializeAbiHeader(&adapterInfo->Header, sizeof(*adapterInfo));
+    adapterInfo->Capabilities = VIOGPU_WDDM_CAPABILITIES_NONE;
+    adapterInfo->ResetGeneration = resetGeneration;
+    adapterInfo->MsmMajorVersion = capset.version_major;
+    adapterInfo->MsmMinorVersion = capset.version_minor;
+    adapterInfo->MsmPatchVersion = capset.version_patchlevel;
+    adapterInfo->GpuId = capset.msm.gpu_id;
+    adapterInfo->ChipId = capset.msm.chip_id;
+    adapterInfo->GmemSize = capset.msm.gmem_size;
+    adapterInfo->PriorityCount = capset.msm.priorities;
+    adapterInfo->GmemBase = capset.msm.gmem_base;
+    adapterInfo->HighestBankBit = capset.msm.highest_bank_bit;
+    adapterInfo->HasCachedCoherentMemory = capset.msm.has_cached_coherent;
+    adapterInfo->UbwcSwizzle = capset.msm.ubwc_swizzle;
+    adapterInfo->MacrotileMode = capset.msm.macrotile_mode;
+    adapterInfo->UcheTrapBase = capset.msm.uche_trap_base;
+    adapterInfo->HasRayTracing = capset.msm.has_raytracing;
+    adapterInfo->MaxFrequency = capset.msm.max_freq;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_RENDER_COMMAND *header,
+                               UINT commandLength,
+                               VIOGPU_WDDM_DEVICE *device,
+                               const DXGK_ALLOCATIONLIST *allocationList,
+                               UINT allocationListSize,
+                               const D3DDDI_PATCHLOCATIONLIST *patchList,
+                               UINT patchListSize,
+                               ULONGLONG resetGeneration)
+{
+    const uint32_t validReferenceFlags = VIOGPU_WDDM_REFERENCE_READ | VIOGPU_WDDM_REFERENCE_WRITE;
+    ULONGLONG referencesSize = (ULONGLONG)header->AllocationReferenceCount * sizeof(VIOGPU_WDDM_ALLOCATION_REFERENCE);
+    ULONGLONG referencesEnd = (ULONGLONG)header->AllocationReferencesOffset + referencesSize;
+    ULONGLONG commandEnd = (ULONGLONG)header->CommandStreamOffset + header->CommandStreamSize;
+
+    if (!IsCurrentAbiHeader(&header->Header, commandLength) || header->Opcode != VIOGPU_WDDM_RENDER_NATIVE_SUBMIT ||
+        header->Flags != VIOGPU_WDDM_RENDER_FLAGS_NONE || header->ExpectedResetGeneration != resetGeneration ||
+        resetGeneration == 0 || header->AllocationReferenceCount == 0 ||
+        header->AllocationReferenceCount != patchListSize ||
+        (header->AllocationReferenceCount != 0 && (allocationList == NULL || patchList == NULL)) ||
+        header->AllocationReferencesOffset != sizeof(*header) || referencesEnd > commandLength ||
+        header->CommandStreamOffset != referencesEnd || header->CommandStreamSize < sizeof(ULONGLONG) ||
+        commandEnd != commandLength)
     {
         return STATUS_ILLEGAL_INSTRUCTION;
+    }
+
+    for (UINT index = 0; index < ARRAYSIZE(header->Reserved); ++index)
+    {
+        if (header->Reserved[index] != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+
+    const VIOGPU_WDDM_ALLOCATION_REFERENCE *references = reinterpret_cast<const VIOGPU_WDDM_ALLOCATION_REFERENCE *>(
+                                                                                                        reinterpret_cast<const BYTE *>(header) +
+                                                                                                        header->AllocationReferencesOffset);
+    for (UINT index = 0; index < header->AllocationReferenceCount; ++index)
+    {
+        const VIOGPU_WDDM_ALLOCATION_REFERENCE *reference = &references[index];
+        const D3DDDI_PATCHLOCATIONLIST *patch = &patchList[index];
+        if (reference->AllocationIndex >= allocationListSize || reference->AllocationIndex != patch->AllocationIndex ||
+            reference->Flags == 0 || (reference->Flags & ~validReferenceFlags) != 0 || reference->Length == 0 ||
+            reference->Reserved != 0 || reference->AllocationOffset + reference->Length < reference->AllocationOffset ||
+            patch->PatchOffset < header->CommandStreamOffset ||
+            reference->AllocationOffset != patch->AllocationOffset ||
+            reference->PatchOffset != patch->PatchOffset - header->CommandStreamOffset ||
+            reference->PatchOffset > header->CommandStreamSize - sizeof(ULONGLONG) || patch->Reserved != 0 ||
+            patch->DriverId != 0 || patch->SplitOffset != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+
+        const DXGK_ALLOCATIONLIST *allocationEntry = &allocationList[reference->AllocationIndex];
+        VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(allocationEntry->hDeviceSpecificAllocation);
+        if (deviceAllocation == NULL || deviceAllocation->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE ||
+            deviceAllocation->Device != device || deviceAllocation->Allocation == NULL ||
+            deviceAllocation->Allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
+            reference->AllocationOffset > deviceAllocation->Allocation->PrivateData.Size ||
+            reference->Length > deviceAllocation->Allocation->PrivateData.Size - reference->AllocationOffset ||
+            allocationEntry->Reserved != 0 ||
+            ((reference->Flags & VIOGPU_WDDM_REFERENCE_WRITE) != 0) != (allocationEntry->WriteOperation != 0) ||
+            (deviceAllocation->ReadOnly && (reference->Flags & VIOGPU_WDDM_REFERENCE_WRITE) != 0))
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+
+        for (UINT previousIndex = 0; previousIndex < index; ++previousIndex)
+        {
+            const D3DDDI_PATCHLOCATIONLIST *previousPatch = &patchList[previousIndex];
+            if (patch->PatchOffset < previousPatch->PatchOffset + sizeof(ULONGLONG) &&
+                previousPatch->PatchOffset < patch->PatchOffset + sizeof(ULONGLONG))
+            {
+                return STATUS_INVALID_PARAMETER;
+            }
+        }
     }
 
     return STATUS_SUCCESS;
@@ -214,6 +371,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     }
 
     VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    if (pQueryAdapterInfo->Type == DXGKQAITYPE_UMDRIVERPRIVATE)
+    {
+        return QueryUmdPrivateInfo(adapter, pQueryAdapterInfo);
+    }
     if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT)
     {
         return QuerySegment(adapter, pQueryAdapterInfo);
@@ -244,21 +405,21 @@ VioGpuWddmGetStandardAllocationDriverData(CONST HANDLE hAdapter, DXGKARG_GETSTAN
 
     const UINT allocationPrivateDriverDataSize = data->AllocationPrivateDriverDataSize;
     data->ResourcePrivateDriverDataSize = 0;
-    data->AllocationPrivateDriverDataSize = sizeof(VIOGPU_WDDM_ALLOCATION_PRIVATE);
+    data->AllocationPrivateDriverDataSize = sizeof(VIOGPU_WDDM_ALLOCATION_INFO);
 
     if (data->pAllocationPrivateDriverData == NULL)
     {
         return STATUS_SUCCESS;
     }
 
-    if (allocationPrivateDriverDataSize < sizeof(VIOGPU_WDDM_ALLOCATION_PRIVATE))
+    if (allocationPrivateDriverDataSize < sizeof(VIOGPU_WDDM_ALLOCATION_INFO))
     {
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    VIOGPU_WDDM_ALLOCATION_PRIVATE *privateData = static_cast<VIOGPU_WDDM_ALLOCATION_PRIVATE *>(data->pAllocationPrivateDriverData);
-    RtlZeroMemory(privateData, sizeof(*privateData));
-    privateData->Version = VioGpuWddmAllocationPrivateVersion;
+    VIOGPU_WDDM_ALLOCATION_INFO *privateData = static_cast<VIOGPU_WDDM_ALLOCATION_INFO *>(data->pAllocationPrivateDriverData);
+    InitializeAbiHeader(&privateData->Header, sizeof(*privateData));
+    privateData->Alignment = PAGE_SIZE;
 
     NTSTATUS status;
     switch (data->StandardAllocationType)
@@ -281,10 +442,10 @@ VioGpuWddmGetStandardAllocationDriverData(CONST HANDLE hAdapter, DXGKARG_GETSTAN
                     return status;
                 }
 
-                privateData->Flags = VioGpuWddmAllocationPrimary;
+                privateData->Flags = VIOGPU_WDDM_ALLOCATION_PRIMARY;
                 privateData->Width = surface->Width;
                 privateData->Height = surface->Height;
-                privateData->Format = surface->Format;
+                privateData->Format = ToPrivateFormat(surface->Format);
                 privateData->RefreshRateNumerator = surface->RefreshRate.Numerator;
                 privateData->RefreshRateDenominator = surface->RefreshRate.Denominator;
                 return STATUS_SUCCESS;
@@ -309,10 +470,10 @@ VioGpuWddmGetStandardAllocationDriverData(CONST HANDLE hAdapter, DXGKARG_GETSTAN
                 }
 
                 surface->Pitch = privateData->Pitch;
-                privateData->Flags = VioGpuWddmAllocationCpuVisible;
+                privateData->Flags = VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE;
                 privateData->Width = surface->Width;
                 privateData->Height = surface->Height;
-                privateData->Format = surface->Format;
+                privateData->Format = ToPrivateFormat(surface->Format);
                 return STATUS_SUCCESS;
             }
 
@@ -335,10 +496,10 @@ VioGpuWddmGetStandardAllocationDriverData(CONST HANDLE hAdapter, DXGKARG_GETSTAN
                 }
 
                 surface->Pitch = privateData->Pitch;
-                privateData->Flags = VioGpuWddmAllocationCpuVisible;
+                privateData->Flags = VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE;
                 privateData->Width = surface->Width;
                 privateData->Height = surface->Height;
-                privateData->Format = D3DDDIFMT_X8R8G8B8;
+                privateData->Format = VIOGPU_WDDM_FORMAT_B8G8R8X8_UNORM;
                 return STATUS_SUCCESS;
             }
 
@@ -354,7 +515,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
 
     if (createAllocation == NULL || createAllocation->NumAllocations == 0 ||
         createAllocation->pAllocationInfo == NULL || (createAllocation->Flags.Value & ~1U) != 0 ||
-        createAllocation->PrivateDriverDataSize != 0)
+        createAllocation->pPrivateDriverData != NULL || createAllocation->PrivateDriverDataSize != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -386,15 +547,16 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
     {
         DXGK_ALLOCATIONINFO *allocationInfo = &createAllocation->pAllocationInfo[createdCount];
         if (allocationInfo->pPrivateDriverData == NULL ||
-            allocationInfo->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_ALLOCATION_PRIVATE))
+            allocationInfo->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_ALLOCATION_INFO))
         {
             status = STATUS_GRAPHICS_DRIVER_MISMATCH;
             break;
         }
 
-        VIOGPU_WDDM_ALLOCATION_PRIVATE *privateData = static_cast<VIOGPU_WDDM_ALLOCATION_PRIVATE *>(allocationInfo->pPrivateDriverData);
+        VIOGPU_WDDM_ALLOCATION_INFO privateData = {};
+        RtlCopyMemory(&privateData, allocationInfo->pPrivateDriverData, sizeof(privateData));
         SIZE_T alignedSize = 0;
-        status = ValidateAllocationPrivate(privateData, &alignedSize);
+        status = ValidateAllocationPrivate(&privateData, &alignedSize);
         if (!NT_SUCCESS(status))
         {
             break;
@@ -409,14 +571,15 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
 
         RtlZeroMemory(allocation, sizeof(*allocation));
         allocation->Signature = VIOGPU_WDDM_ALLOCATION_SIGNATURE;
-        allocation->Size = alignedSize;
-        allocation->Pitch = privateData->Pitch;
-        allocation->Width = privateData->Width;
-        allocation->Height = privateData->Height;
-        allocation->Format = privateData->Format;
-        allocation->Flags = privateData->Flags;
-        allocation->RefreshRateNumerator = privateData->RefreshRateNumerator;
-        allocation->RefreshRateDenominator = privateData->RefreshRateDenominator;
+        allocation->PrivateData = privateData;
+        allocation->BackingSize = alignedSize;
+        allocation->Pitch = privateData.Pitch;
+        allocation->Width = privateData.Width;
+        allocation->Height = privateData.Height;
+        allocation->Format = FromPrivateFormat(privateData.Format);
+        allocation->Flags = privateData.Flags;
+        allocation->RefreshRateNumerator = privateData.RefreshRateNumerator;
+        allocation->RefreshRateDenominator = privateData.RefreshRateDenominator;
         InitializeAllocationInfo(allocationInfo, allocation, alignedSize);
     }
 
@@ -456,6 +619,13 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
         if (allocation == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE)
         {
             return STATUS_INVALID_HANDLE;
+        }
+        for (UINT previousIndex = 0; previousIndex < index; ++previousIndex)
+        {
+            if (destroyAllocation->pAllocationList[previousIndex] == destroyAllocation->pAllocationList[index])
+            {
+                return STATUS_INVALID_PARAMETER;
+            }
         }
     }
 
@@ -516,7 +686,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
     VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(hDevice);
     if (device == NULL || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || openAllocation == NULL ||
         openAllocation->NumAllocations == 0 || openAllocation->pOpenAllocation == NULL ||
-        openAllocation->SubresourceIndex != 0)
+        openAllocation->SubresourceIndex != 0 || (openAllocation->Flags.Value & ~3U) != 0 ||
+        openAllocation->pPrivateDriverData != NULL || openAllocation->PrivateDriverSize != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -527,6 +698,15 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
     for (; openedCount < openAllocation->NumAllocations; ++openedCount)
     {
         DXGK_OPENALLOCATIONINFO *openInfo = &openAllocation->pOpenAllocation[openedCount];
+        if (openInfo->pPrivateDriverData == NULL ||
+            openInfo->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_ALLOCATION_INFO))
+        {
+            status = STATUS_GRAPHICS_DRIVER_MISMATCH;
+            break;
+        }
+
+        VIOGPU_WDDM_ALLOCATION_INFO privateData = {};
+        RtlCopyMemory(&privateData, openInfo->pPrivateDriverData, sizeof(privateData));
         DXGKARGCB_GETHANDLEDATA getHandleData = {};
         getHandleData.hObject = openInfo->hAllocation;
         getHandleData.Type = DXGK_HANDLE_ALLOCATION;
@@ -539,6 +719,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
             status = STATUS_INVALID_HANDLE;
             break;
         }
+        if (RtlCompareMemory(&privateData, &allocation->PrivateData, sizeof(privateData)) != sizeof(privateData))
+        {
+            status = STATUS_GRAPHICS_DRIVER_MISMATCH;
+            break;
+        }
 
         VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = new (NonPagedPoolNx) VIOGPU_WDDM_OPEN_ALLOCATION;
         if (deviceAllocation == NULL)
@@ -546,9 +731,17 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
             status = STATUS_NO_MEMORY;
             break;
         }
+        if (!ReferenceDevice(device))
+        {
+            delete deviceAllocation;
+            status = STATUS_DEVICE_NOT_READY;
+            break;
+        }
 
         deviceAllocation->Signature = VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE;
         deviceAllocation->Allocation = allocation;
+        deviceAllocation->Device = device;
+        deviceAllocation->ReadOnly = openAllocation->Flags.ReadOnly;
         openInfo->hDeviceSpecificAllocation = deviceAllocation;
     }
 
@@ -558,17 +751,13 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
         {
             VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(openAllocation->pOpenAllocation[index].hDeviceSpecificAllocation);
             deviceAllocation->Signature = 0;
+            DereferenceDevice(deviceAllocation->Device);
             delete deviceAllocation;
             openAllocation->pOpenAllocation[index].hDeviceSpecificAllocation = NULL;
         }
         return status;
     }
 
-    DXGKARG_OPENALLOCATION *mutableOpenAllocation = const_cast<DXGKARG_OPENALLOCATION *>(openAllocation);
-    mutableOpenAllocation->SubresourceOffset = 0;
-    mutableOpenAllocation->Pitch = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(openAllocation->pOpenAllocation[0].hDeviceSpecificAllocation)
-                                                                                                                                       ->Allocation
-                                                                                                                                       ->Pitch;
     return STATUS_SUCCESS;
 }
 
@@ -585,9 +774,17 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation(CONST HANDLE 
     for (UINT index = 0; index < closeAllocation->NumAllocations; ++index)
     {
         VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(closeAllocation->pOpenHandleList[index]);
-        if (deviceAllocation == NULL || deviceAllocation->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE)
+        if (deviceAllocation == NULL || deviceAllocation->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE ||
+            deviceAllocation->Device != device)
         {
             return STATUS_INVALID_HANDLE;
+        }
+        for (UINT previousIndex = 0; previousIndex < index; ++previousIndex)
+        {
+            if (closeAllocation->pOpenHandleList[previousIndex] == closeAllocation->pOpenHandleList[index])
+            {
+                return STATUS_INVALID_PARAMETER;
+            }
         }
     }
 
@@ -595,6 +792,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation(CONST HANDLE 
     {
         VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(closeAllocation->pOpenHandleList[index]);
         deviceAllocation->Signature = 0;
+        DereferenceDevice(deviceAllocation->Device);
         delete deviceAllocation;
     }
     return STATUS_SUCCESS;
@@ -659,9 +857,27 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
                                                                  DXGKARG_CREATECONTEXT *createContext)
 {
     VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(hDevice);
-    if (device == NULL || createContext == NULL || createContext->NodeOrdinal != 0 || createContext->EngineAffinity > 1)
+    if (device == NULL || createContext == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        createContext->NodeOrdinal != 0 || createContext->EngineAffinity != 1 || createContext->Flags.Value != 0 ||
+        createContext->pPrivateDriverData == NULL ||
+        createContext->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_CONTEXT_CREATE))
     {
         return STATUS_INVALID_PARAMETER;
+    }
+
+    VIOGPU_WDDM_CONTEXT_CREATE privateData = {};
+    __try
+    {
+        RtlCopyMemory(&privateData, createContext->pPrivateDriverData, sizeof(privateData));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return STATUS_INVALID_USER_BUFFER;
+    }
+    if (!IsCurrentAbiHeader(&privateData.Header, sizeof(privateData)) || privateData.ExpectedResetGeneration == 0 ||
+        privateData.Flags != VIOGPU_WDDM_CONTEXT_FLAGS_NONE || privateData.Reserved != 0)
+    {
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
 
     if (!ReferenceDevice(device))
@@ -687,7 +903,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
     KeInitializeSpinLock(&context->NativeContext.BindingLock);
     context->NativeContext.State = VioGpuNativeContextAllocated;
 
-    NTSTATUS status = device->Adapter->CreateNativeContext(&context->NativeContext);
+    NTSTATUS status = device->Adapter->CreateNativeContext(&context->NativeContext,
+                                                           privateData.ExpectedResetGeneration);
     if (!NT_SUCCESS(status))
     {
         context->Signature = 0;
@@ -699,11 +916,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
     RtlZeroMemory(&createContext->ContextInfo, sizeof(createContext->ContextInfo));
     createContext->ContextInfo.DmaBufferSize = VIOGPU_WDDM_DMA_BUFFER_SIZE;
     createContext->ContextInfo.DmaBufferSegmentSet = 0;
-    createContext->ContextInfo.DmaBufferPrivateDataSize = sizeof(VIOGPU_WDDM_DMA_PRIVATE);
-    createContext->ContextInfo.AllocationListSize = createContext->Flags.GdiContext ? VIOGPU_WDDM_GDI_ALLOCATION_LIST_SIZE
-                                                                                    : VIOGPU_WDDM_ALLOCATION_LIST_SIZE;
-    createContext->ContextInfo.PatchLocationListSize = createContext->Flags.GdiContext ? VIOGPU_WDDM_GDI_PATCH_LIST_SIZE
-                                                                                       : VIOGPU_WDDM_PATCH_LIST_SIZE;
+    createContext->ContextInfo.DmaBufferPrivateDataSize = sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE);
+    createContext->ContextInfo.AllocationListSize = VIOGPU_WDDM_ALLOCATION_LIST_SIZE;
+    createContext->ContextInfo.PatchLocationListSize = VIOGPU_WDDM_PATCH_LIST_SIZE;
     createContext->hContext = context;
     return STATUS_SUCCESS;
 }
@@ -767,9 +982,13 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
 {
     VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(hContext);
     if (context == NULL || render == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || render->pCommand == NULL ||
-        render->CommandLength < sizeof(VIOGPU_WDDM_COMMAND_HEADER) || render->pDmaBuffer == NULL ||
-        render->pDmaBufferPrivateData == NULL || render->DmaBufferPrivateDataSize < sizeof(VIOGPU_WDDM_DMA_PRIVATE) ||
-        render->MultipassOffset != 0 ||
+        render->CommandLength < sizeof(VIOGPU_WDDM_RENDER_COMMAND) ||
+        render->CommandLength > VIOGPU_WDDM_DMA_BUFFER_SIZE || render->pDmaBuffer == NULL ||
+        render->pDmaBufferPrivateData == NULL ||
+        render->DmaBufferPrivateDataSize < sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) || render->MultipassOffset != 0 ||
+        render->AllocationListSize == 0 || render->AllocationListSize > VIOGPU_WDDM_ALLOCATION_LIST_SIZE ||
+        render->pAllocationList == NULL || render->PatchLocationListInSize == 0 ||
+        render->PatchLocationListInSize > VIOGPU_WDDM_PATCH_LIST_SIZE ||
         (render->PatchLocationListInSize != 0 && render->pPatchLocationListIn == NULL) ||
         (render->PatchLocationListInSize != 0 && render->pPatchLocationListOut == NULL))
     {
@@ -791,138 +1010,89 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
         return STATUS_DEVICE_NOT_READY;
     }
 
+    NTSTATUS status = STATUS_SUCCESS;
+    BYTE *commandSnapshot = NULL;
+    D3DDI_PATCHLOCATIONLIST *patchSnapshot = NULL;
+    SIZE_T patchBytes = (SIZE_T)render->PatchLocationListInSize * sizeof(*patchSnapshot);
+
     if (render->DmaSize < render->CommandLength || render->PatchLocationListOutSize < render->PatchLocationListInSize)
     {
-        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
-        ExReleaseRundownProtection(&context->Operations);
-        return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;
+        status = STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;
     }
-
-    NTSTATUS status = STATUS_SUCCESS;
-    VIOGPU_WDDM_COMMAND_HEADER header = {};
-    __try
+    if (NT_SUCCESS(status))
     {
-        ProbeForRead(const_cast<PVOID>(render->pCommand), render->CommandLength, 1);
-        RtlCopyMemory(&header, render->pCommand, sizeof(header));
-        status = ValidateCommandHeader(&header, render->CommandLength);
-        if (!NT_SUCCESS(status))
+        commandSnapshot = new (NonPagedPoolNx) BYTE[render->CommandLength];
+        patchSnapshot = new (NonPagedPoolNx) D3DDI_PATCHLOCATIONLIST[render->PatchLocationListInSize];
+        if (commandSnapshot == NULL || patchSnapshot == NULL)
         {
-            __leave;
+            status = STATUS_NO_MEMORY;
         }
-
-        if (render->PatchLocationListInSize != 0)
+    }
+    if (NT_SUCCESS(status))
+    {
+        __try
         {
-            SIZE_T patchBytes = (SIZE_T)render->PatchLocationListInSize * sizeof(D3DDDI_PATCHLOCATIONLIST);
+            ProbeForRead(const_cast<PVOID>(render->pCommand), render->CommandLength, 1);
+            RtlCopyMemory(commandSnapshot, render->pCommand, render->CommandLength);
             ProbeForRead(render->pPatchLocationListIn, patchBytes, __alignof(D3DDDI_PATCHLOCATIONLIST));
-            for (UINT index = 0; index < render->PatchLocationListInSize; ++index)
-            {
-                const D3DDDI_PATCHLOCATIONLIST *patch = &render->pPatchLocationListIn[index];
-                if (patch->AllocationIndex >= render->AllocationListSize ||
-                    patch->PatchOffset > render->CommandLength - sizeof(ULONGLONG))
-                {
-                    status = STATUS_INVALID_USER_BUFFER;
-                    __leave;
-                }
-            }
-        }
+            RtlCopyMemory(patchSnapshot, render->pPatchLocationListIn, patchBytes);
 
-        RtlCopyMemory(render->pDmaBuffer, render->pCommand, render->CommandLength);
-        if (render->PatchLocationListInSize != 0)
+            const VIOGPU_WDDM_RENDER_COMMAND *command = reinterpret_cast<const VIOGPU_WDDM_RENDER_COMMAND *>(commandSnapshot);
+            status = ValidateCommandHeader(command,
+                                           render->CommandLength,
+                                           context->Device,
+                                           render->pAllocationList,
+                                           render->AllocationListSize,
+                                           patchSnapshot,
+                                           render->PatchLocationListInSize,
+                                           snapshot.ResetGeneration);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            RtlCopyMemory(render->pPatchLocationListOut,
-                          render->pPatchLocationListIn,
-                          (SIZE_T)render->PatchLocationListInSize * sizeof(D3DDDI_PATCHLOCATIONLIST));
+            status = STATUS_INVALID_USER_BUFFER;
         }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER)
+
+    if (NT_SUCCESS(status) &&
+        !snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation, snapshot.ResetGeneration))
     {
-        status = STATUS_INVALID_USER_BUFFER;
+        status = STATUS_DEVICE_NOT_READY;
     }
 
-    if (!NT_SUCCESS(status))
+    if (NT_SUCCESS(status))
     {
-        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
-        ExReleaseRundownProtection(&context->Operations);
-        return status;
+        PVOID dmaBuffer = render->pDmaBuffer;
+        D3DDI_PATCHLOCATIONLIST *patchOutput = render->pPatchLocationListOut;
+        RtlCopyMemory(dmaBuffer, commandSnapshot, render->CommandLength);
+        RtlCopyMemory(patchOutput, patchSnapshot, patchBytes);
+
+        VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData = static_cast<VIOGPU_WDDM_KMD_DMA_PRIVATE *>(render->pDmaBufferPrivateData);
+        RtlZeroMemory(privateData, sizeof(*privateData));
+        privateData->Signature = VIOGPU_WDDM_DMA_SIGNATURE;
+        privateData->DmaBuffer = dmaBuffer;
+        privateData->DmaBufferSize = render->DmaSize;
+        privateData->CommandLength = render->CommandLength;
+        privateData->ContextId = snapshot.ContextId;
+        privateData->Generation = snapshot.Generation;
+        privateData->ResetGeneration = snapshot.ResetGeneration;
+
+        render->pDmaBuffer = static_cast<BYTE *>(dmaBuffer) + render->CommandLength;
+        render->pPatchLocationListOut = patchOutput + render->PatchLocationListInSize;
+        render->MultipassOffset = render->CommandLength;
     }
 
-    if (!snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation))
-    {
-        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
-        ExReleaseRundownProtection(&context->Operations);
-        return STATUS_DEVICE_NOT_READY;
-    }
-
-    VIOGPU_WDDM_DMA_PRIVATE *privateData = static_cast<VIOGPU_WDDM_DMA_PRIVATE *>(render->pDmaBufferPrivateData);
-    RtlZeroMemory(privateData, sizeof(*privateData));
-    privateData->Signature = VIOGPU_WDDM_DMA_SIGNATURE;
-    privateData->DmaBuffer = render->pDmaBuffer;
-    privateData->DmaBufferSize = render->DmaSize;
-    privateData->CommandLength = render->CommandLength;
-    privateData->ContextId = snapshot.ContextId;
-    privateData->Generation = snapshot.Generation;
-
-    render->pDmaBuffer = static_cast<BYTE *>(render->pDmaBuffer) + render->CommandLength;
-    render->pPatchLocationListOut += render->PatchLocationListInSize;
-    render->MultipassOffset = render->CommandLength;
+    delete[] patchSnapshot;
+    delete[] commandSnapshot;
     VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
     ExReleaseRundownProtection(&context->Operations);
-    return STATUS_SUCCESS;
+    return status;
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, CONST DXGKARG_PATCH *patchArguments)
 {
     UNREFERENCED_PARAMETER(hAdapter);
-
-    if (patchArguments == NULL || patchArguments->pDmaBuffer == NULL ||
-        patchArguments->DmaBufferSubmissionStartOffset > patchArguments->DmaBufferSubmissionEndOffset ||
-        patchArguments->DmaBufferSubmissionEndOffset > patchArguments->DmaBufferSize ||
-        patchArguments->PatchLocationListSubmissionStart > patchArguments->PatchLocationListSize ||
-        patchArguments->PatchLocationListSubmissionLength > patchArguments->PatchLocationListSize - patchArguments->PatchLocationListSubmissionStart ||
-        (patchArguments->PatchLocationListSubmissionLength != 0 &&
-         (patchArguments->pPatchLocationList == NULL || patchArguments->pAllocationList == NULL)))
-    {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    if (patchArguments->PatchLocationListSubmissionLength != 0 &&
-        patchArguments->DmaBufferSubmissionEndOffset - patchArguments->DmaBufferSubmissionStartOffset < sizeof(ULONGLONG))
-    {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    const D3DDDI_PATCHLOCATIONLIST *patchList = patchArguments->PatchLocationListSubmissionLength == 0 ? NULL
-                                                                                                       : patchArguments->pPatchLocationList + patchArguments->PatchLocationListSubmissionStart;
-    for (UINT index = 0; index < patchArguments->PatchLocationListSubmissionLength; ++index)
-    {
-        const D3DDDI_PATCHLOCATIONLIST *patch = &patchList[index];
-        if (patch->AllocationIndex >= patchArguments->AllocationListSize ||
-            patch->PatchOffset < patchArguments->DmaBufferSubmissionStartOffset ||
-            patch->PatchOffset > patchArguments->DmaBufferSubmissionEndOffset - sizeof(ULONGLONG))
-        {
-            return STATUS_INVALID_PARAMETER;
-        }
-
-        const DXGK_ALLOCATIONLIST *allocationEntry = &patchArguments->pAllocationList[patch->AllocationIndex];
-        VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(allocationEntry->hDeviceSpecificAllocation);
-        if (deviceAllocation == NULL || deviceAllocation->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE ||
-            deviceAllocation->Allocation == NULL || patch->AllocationOffset >= deviceAllocation->Allocation->Size ||
-            allocationEntry->SegmentId > VIOGPU_WDDM_SEGMENT_ID)
-        {
-            return STATUS_INVALID_HANDLE;
-        }
-
-        ULONGLONG gpuAddress = 0;
-        if (allocationEntry->SegmentId == VIOGPU_WDDM_SEGMENT_ID)
-        {
-            gpuAddress = allocationEntry->PhysicalAddress.QuadPart + patch->AllocationOffset;
-        }
-        RtlCopyMemory(static_cast<BYTE *>(patchArguments->pDmaBuffer) + patch->PatchOffset,
-                      &gpuAddress,
-                      sizeof(gpuAddress));
-    }
-
-    return STATUS_SUCCESS;
+    UNREFERENCED_PARAMETER(patchArguments);
+    return STATUS_NOT_SUPPORTED;
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext, DXGKARG_PRESENT *present)

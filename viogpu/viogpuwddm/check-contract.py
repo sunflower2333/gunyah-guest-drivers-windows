@@ -19,6 +19,8 @@ VIOGPU_HEADER_PATH = (PROJECT_DIR.parent / "viogpudo" / "viogpudo.h").resolve()
 DOD_DRIVER_SOURCE_PATH = (PROJECT_DIR.parent / "viogpudo" / "driver.cpp").resolve()
 QUEUE_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_queue.h").resolve()
 WIRE_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_3d_wire.h").resolve()
+WDDM_ABI_HEADER_PATH = (PROJECT_DIR.parent / "shared" / "viogpu_wddm_abi.h").resolve()
+WDDM_ABI_FIXTURE_DIR = (PROJECT_DIR.parent / "tests" / "wddm-private-abi").resolve()
 QUEUE_SOURCE_PATH = (PROJECT_DIR.parent / "common" / "viogpu_queue.cpp").resolve()
 RDMA_SOURCE_PATH = (PROJECT_DIR.parent / "common" / "viogpu_rdma.cpp").resolve()
 RDMA_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_rdma.h").resolve()
@@ -50,6 +52,7 @@ PROJECT = PROJECT_DIR / "viogpuwddm.vcxproj"
 WPP_NON_OWNER_TEMPLATE = PROJECT_DIR / "wpp-non-owner.tpl"
 NAMESPACE = {"msbuild": "http://schemas.microsoft.com/developer/msbuild/2003"}
 REGISTRATION_HELPER = "VioGpuWddmInitializeMiniportCompileOnly"
+WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "viogpuwddm-arm64-ci.yml").resolve()
 STORAGE_PROJECTS = (
     (
         "viostor",
@@ -162,6 +165,8 @@ VIOGPU_CODE = strip_cpp_comments_and_literals(VIOGPU_SOURCE)
 VIOGPU_HEADER_CODE = strip_cpp_comments_and_literals(VIOGPU_HEADER_SOURCE)
 DOD_DRIVER_CODE = strip_cpp_comments_and_literals(DOD_DRIVER_SOURCE)
 WIRE_HEADER_CODE = strip_cpp_comments_and_literals(WIRE_HEADER_PATH.read_text(encoding="utf-8"))
+WDDM_ABI_HEADER_SOURCE = WDDM_ABI_HEADER_PATH.read_text(encoding="utf-8")
+WDDM_ABI_HEADER_CODE = strip_cpp_comments_and_literals(WDDM_ABI_HEADER_SOURCE)
 QUEUE_CODE = strip_cpp_comments_and_literals(QUEUE_SOURCE_PATH.read_text(encoding="utf-8"))
 RDMA_CODE = strip_cpp_comments_and_literals(RDMA_SOURCE)
 RDMA_HEADER_CODE = strip_cpp_comments_and_literals(RDMA_HEADER_SOURCE)
@@ -1167,6 +1172,7 @@ def check_native_context_readiness(
         fail("readiness probe must not publish readiness before final validation")
     publish_sequence = (
         "m_NativeContextReadiness.Generation=generation;"
+        "m_NativeContextReadiness.ResetGeneration=resetGeneration;"
         "m_NativeContextReadiness.CapsetVersion=selectedInfo.capset_max_version;"
         "m_NativeContextReadiness.CapsetSize=selectedInfo.capset_max_size;"
         "m_NativeContextReadiness.Capset=capset;"
@@ -1185,6 +1191,8 @@ def check_native_context_readiness(
 
     readiness_members = (
         "BOOLEAN Ready;",
+        "LONG Generation;",
+        "ULONGLONG ResetGeneration;",
         "UINT CapsetVersion;",
         "UINT CapsetSize;",
         "GPU_CAPSET_DRM Capset;",
@@ -1192,6 +1200,23 @@ def check_native_context_readiness(
     for member in readiness_members:
         if compact_code(member) not in compact_code(viogpu_header_code):
             fail(f"readiness state is missing {member}")
+
+    paired_generation_advance = (
+        "InterlockedIncrement(&m_NativeContextGeneration);"
+        "InterlockedIncrement64(&m_NativeContextResetGeneration);"
+    )
+    if (
+        canonical_code(viogpu_code).count(paired_generation_advance) != 4
+        or len(re.findall(r"\bInterlockedIncrement\s*\(\s*&m_NativeContextGeneration\s*\)", viogpu_code)) != 4
+        or len(re.findall(r"\bInterlockedIncrement64\s*\(\s*&m_NativeContextResetGeneration\s*\)", viogpu_code)) != 4
+    ):
+        fail("every internal generation advance must immediately advance the 64-bit reset generation")
+    if canonical_code(viogpu_code).count("m_NativeContextResetGeneration=0;") != 1:
+        fail("the adapter must initialize its 64-bit reset generation exactly once")
+    if compact_code("DECLSPEC_ALIGN(8) volatile LONG64 m_NativeContextResetGeneration;") not in compact_code(
+        viogpu_header_code
+    ):
+        fail("the interlocked 64-bit reset generation must have explicit 8-byte alignment")
 
     hw_init = function_body("VioGpuAdapter::HWInit", viogpu_code)
     adapter_init = function_body("VioGpuAdapter::VioGpuAdapterInit", viogpu_code)
@@ -1327,13 +1352,21 @@ def check_native_context_readiness(
             stop_compact,
         )
     ]
+    reset_generation_advances = [
+        match.start()
+        for match in re.finditer(
+            re.escape("InterlockedIncrement64(&m_NativeContextResetGeneration)"),
+            stop_compact,
+        )
+    ]
     invalidate_offset = stop_compact.find("InvalidateNativeContextRegistrationsLocked()")
     if (
         min(quiescing_publications) < 0
         or len(generation_advances) != 2
-        or max(*quiescing_publications, *generation_advances) > invalidate_offset
+        or len(reset_generation_advances) != 2
+        or max(*quiescing_publications, *generation_advances, *reset_generation_advances) > invalidate_offset
     ):
-        fail("every teardown path must publish Quiescing and advance generation before invalidating registrations")
+        fail("every teardown path must publish Quiescing and advance both generations before invalidating registrations")
     quiesce_offset = stop_compact.find("m_CtrlQueue.QuiesceSynchronousRequests()")
     worker_offset = stop_compact.find("StopWorkThread()")
     gate_offset = stop_compact.find("InterlockedExchange(&m_InterruptDispatchEnabled,FALSE)", worker_offset)
@@ -1732,6 +1765,475 @@ def check_native_context_ownership() -> None:
     if submit != expected_submit:
         fail("SubmitCommand must remain an exact fail-closed stub until GPU retirement exists")
 
+    patch = canonical_code(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))
+    expected_patch = (
+        "UNREFERENCED_PARAMETER(hAdapter);"
+        "UNREFERENCED_PARAMETER(patchArguments);"
+        "returnSTATUS_NOT_SUPPORTED;"
+    )
+    if patch != expected_patch:
+        fail("Patch must remain an exact fail-closed stub until real per-context IOVA transport exists")
+
+
+def check_wddm_private_abi(root: ET.Element) -> None:
+    abi = canonical_code(WDDM_ABI_HEADER_CODE)
+    require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_ABI_MAGIC", 0x504D5644, "WDDM private ABI")
+    require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_ABI_VERSION", 0, "WDDM private ABI")
+    require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_CAPABILITIES_NONE", 0, "WDDM private ABI")
+
+    if "Experimental pre-v1 snapshot" not in WDDM_ABI_HEADER_SOURCE or (
+        "Version 1 must not be published until the" not in WDDM_ABI_HEADER_SOURCE
+    ):
+        fail("WDDM private ABI must remain explicitly experimental pre-v1")
+
+    if WDDM_ABI_HEADER_SOURCE.count("#pragma pack(push, 4)") != 1 or WDDM_ABI_HEADER_SOURCE.count(
+        "#pragma pack(pop)"
+    ) != 1:
+        fail("WDDM private ABI must use one balanced pack(4) region")
+    if re.search(r"\b[A-Z0-9_]*(?:MIN|MAX|FULL|FORWARD|COMPAT)[A-Z0-9_]*VERSION\b", WDDM_ABI_HEADER_CODE):
+        fail("WDDM private ABI must use exact current-version matching without compatibility macros")
+
+    expected_structs = {
+        "VIOGPU_WDDM_ABI_HEADER": """
+            uint32_t Magic;
+            uint32_t Version;
+            uint32_t Size;
+            uint32_t Reserved;
+        """,
+        "VIOGPU_WDDM_ADAPTER_INFO": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            uint64_t Capabilities;
+            uint64_t ResetGeneration;
+            uint32_t MsmMajorVersion;
+            uint32_t MsmMinorVersion;
+            uint32_t MsmPatchVersion;
+            uint32_t GpuId;
+            uint64_t ChipId;
+            uint32_t GmemSize;
+            uint32_t PriorityCount;
+            uint64_t GmemBase;
+            uint32_t HighestBankBit;
+            uint32_t HasCachedCoherentMemory;
+            uint64_t UbwcSwizzle;
+            uint64_t MacrotileMode;
+            uint64_t UcheTrapBase;
+            uint32_t HasRayTracing;
+            uint32_t MaxFrequency;
+            uint64_t Reserved[2];
+        """,
+        "VIOGPU_WDDM_ALLOCATION_INFO": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            uint64_t Size;
+            uint64_t Alignment;
+            uint32_t Flags;
+            uint32_t Format;
+            uint32_t Width;
+            uint32_t Height;
+            uint32_t Pitch;
+            uint32_t RefreshRateNumerator;
+            uint32_t RefreshRateDenominator;
+            uint32_t Reserved;
+        """,
+        "VIOGPU_WDDM_CONTEXT_CREATE": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            uint64_t ExpectedResetGeneration;
+            uint32_t Flags;
+            uint32_t Reserved;
+        """,
+        "VIOGPU_WDDM_RENDER_COMMAND": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            uint32_t Opcode;
+            uint32_t Flags;
+            uint64_t ExpectedResetGeneration;
+            uint32_t AllocationReferencesOffset;
+            uint32_t AllocationReferenceCount;
+            uint32_t CommandStreamOffset;
+            uint32_t CommandStreamSize;
+            uint32_t Reserved[4];
+        """,
+        "VIOGPU_WDDM_ALLOCATION_REFERENCE": """
+            uint32_t AllocationIndex;
+            uint32_t Flags;
+            uint64_t AllocationOffset;
+            uint64_t Length;
+            uint32_t PatchOffset;
+            uint32_t Reserved;
+        """,
+    }
+    declared_structs = re.findall(
+        r"\btypedef\s+struct\s+(VIOGPU_WDDM_[A-Z0-9_]+)\s*\{.*?\}\s*\1\s*;",
+        WDDM_ABI_HEADER_CODE,
+        re.DOTALL,
+    )
+    if sorted(declared_structs) != sorted(expected_structs):
+        fail("WDDM private ABI must match the current pre-v1 validation snapshot")
+    for name, expected_body in expected_structs.items():
+        matches = re.findall(
+            rf"\btypedef\s+struct\s+{re.escape(name)}\s*\{{(.*?)\}}\s*{re.escape(name)}\s*;",
+            WDDM_ABI_HEADER_CODE,
+            re.DOTALL,
+        )
+        if len(matches) != 1 or canonical_code(matches[0]) != canonical_code(expected_body):
+            fail(f"WDDM private ABI structure {name} must keep its current pre-v1 field contract")
+
+    forbidden_identifiers = (
+        "HANDLE",
+        "PVOID",
+        "PHYSICAL_ADDRESS",
+        "GPA",
+        "IOVA",
+        "VIRTIO",
+        "KGSL",
+        "KMD_CONTEXT",
+        "ContextId",
+        "ResourceId",
+        "BlobId",
+    )
+    if "*" in abi or any(re.search(rf"\b{re.escape(token)}\b", WDDM_ABI_HEADER_CODE) for token in forbidden_identifiers):
+        fail("WDDM private ABI must not expose pointers, Windows handles, physical addresses, or transport/KMD identities")
+
+    expected_fixture_files = {
+        "README.md",
+        "abi_manifest.cpp",
+        "abi_manifest_entries.h",
+        "expected-pre-v1.txt",
+        "run-local.sh",
+        "run-msvc.cmd",
+    }
+    if not WDDM_ABI_FIXTURE_DIR.is_dir() or {
+        path.name for path in WDDM_ABI_FIXTURE_DIR.iterdir() if path.is_file()
+    } != expected_fixture_files:
+        fail("WDDM private ABI fixture must contain the exact dual-endpoint manifest file set")
+    manifest = (WDDM_ABI_FIXTURE_DIR / "abi_manifest.cpp").read_text(encoding="utf-8")
+    local_runner_path = WDDM_ABI_FIXTURE_DIR / "run-local.sh"
+    local_runner = local_runner_path.read_text(encoding="utf-8")
+    msvc_runner = (WDDM_ABI_FIXTURE_DIR / "run-msvc.cmd").read_text(encoding="utf-8")
+    if local_runner_path.stat().st_mode & 0o111 == 0:
+        fail("local WDDM private ABI runner must be executable")
+    for endpoint in ("KMD", "UMD"):
+        if manifest.count(f"ABI_ENDPOINT_{endpoint}") != 2:
+            fail(f"WDDM private ABI manifest must enforce one {endpoint} endpoint selection")
+        if local_runner.count(f"-DABI_ENDPOINT_{endpoint}") != 2:
+            fail(f"local WDDM private ABI runner must compile the {endpoint} endpoint once with GCC and Clang")
+        if msvc_runner.count(f"/DABI_ENDPOINT_%%E") != 1:
+            fail("MSVC WDDM private ABI runner must compile each endpoint through one shared loop")
+
+    project_headers = [
+        element.attrib.get("Include", "").replace("\\", "/")
+        for element in root.findall(".//msbuild:ClInclude[@Include]", NAMESPACE)
+    ]
+    if project_headers.count("../shared/viogpu_wddm_abi.h") != 1:
+        fail("full WDDM project must track the shared private ABI header exactly once")
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    if workflow.count('"viogpu/shared/viogpu_wddm_abi.h"') != 2 or workflow.count(
+        '"viogpu/tests/wddm-private-abi/**"'
+    ) != 2:
+        fail("ARM64 workflow must trigger on the shared WDDM ABI and its fixture")
+    if workflow.count(r"viogpu\tests\wddm-private-abi\run-msvc.cmd") != 1:
+        fail("ARM64 workflow must run the WDDM private ABI MSVC endpoint gate exactly once")
+
+    query = canonical_code(function_body("QueryUmdPrivateInfo", WDDM_DDI_CODE))
+    query_guard = (
+        "adapter==NULL||queryAdapterInfo->pInputData!=NULL||queryAdapterInfo->InputDataSize!=0||"
+        "queryAdapterInfo->pOutputData==NULL||"
+        "queryAdapterInfo->OutputDataSize!=sizeof(VIOGPU_WDDM_ADAPTER_INFO)"
+    )
+    if query.count(query_guard) != 1 or query.count("adapterInfo->Capabilities=VIOGPU_WDDM_CAPABILITIES_NONE;") != 1:
+        fail("UMDRIVERPRIVATE must require zero input, exact output size, and zero capabilities")
+    if query.count("InitializeAbiHeader(&adapterInfo->Header,sizeof(*adapterInfo));") != 1:
+        fail("UMDRIVERPRIVATE must initialize and zero the complete current pre-v1 output")
+    if query.count("adapterInfo->ResetGeneration=resetGeneration;") != 1 or query.count(
+        "adapter->QueryNativeContextReadiness(&capset,NULL,NULL,&resetGeneration)"
+    ) != 1:
+        fail("UMDRIVERPRIVATE must publish the stable 64-bit readiness reset generation")
+    if any(token in query for token in ("va_start", "va_size", "ContextId", "ResourceId", "PhysicalAddress")):
+        fail("UMDRIVERPRIVATE must not expose VA ranges or KMD/transport identities")
+    query_dispatch = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
+    if query_dispatch.count("if(pQueryAdapterInfo->Type==DXGKQAITYPE_UMDRIVERPRIVATE)") != 1 or query_dispatch.count(
+        "returnQueryUmdPrivateInfo(adapter,pQueryAdapterInfo);"
+    ) != 1:
+        fail("QueryAdapterInfo must dispatch UMDRIVERPRIVATE through the current pre-v1 endpoint")
+
+    create = canonical_code(function_body("VioGpuWddmCreateContext", WDDM_DDI_CODE))
+    create_requirements = (
+        "KeGetCurrentIrql()!=PASSIVE_LEVEL",
+        "createContext->EngineAffinity!=1",
+        "createContext->Flags.Value!=0",
+        "createContext->pPrivateDriverData==NULL",
+        "createContext->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_CONTEXT_CREATE)",
+        "RtlCopyMemory(&privateData,createContext->pPrivateDriverData,sizeof(privateData));",
+        "!IsCurrentAbiHeader(&privateData.Header,sizeof(privateData))",
+        "privateData.ExpectedResetGeneration==0",
+        "privateData.Flags!=VIOGPU_WDDM_CONTEXT_FLAGS_NONE",
+        "privateData.Reserved!=0",
+        "context->RuntimeContext=NULL;",
+        "device->Adapter->CreateNativeContext(&context->NativeContext,privateData.ExpectedResetGeneration)",
+    )
+    for fragment in create_requirements:
+        if create.count(fragment) != 1:
+            fail(f"CreateContext must enforce its exact input-only private ABI contract: {fragment}")
+    if "ProbeForRead(" in create:
+        fail("CreateContext must snapshot dxgkrnl-owned private data without probing it as a user address")
+    create_snapshot = create.find("RtlCopyMemory(&privateData,createContext->pPrivateDriverData,sizeof(privateData));")
+    create_validation = create.find("!IsCurrentAbiHeader(&privateData.Header,sizeof(privateData))")
+    if create_snapshot < 0 or create_validation < 0 or create_snapshot > create_validation:
+        fail("CreateContext must snapshot its private data before validating the current pre-v1 contract")
+
+    allocation_header = canonical_code(WDDM_DDI_HEADER_CODE)
+    if allocation_header.count("VIOGPU_WDDM_ALLOCATION_INFOPrivateData;") != 1:
+        fail("each KMD allocation must retain one exact private-data snapshot")
+    if allocation_header.count("SIZE_TBackingSize;") != 1 or "SIZE_TSize;" in allocation_header:
+        fail("each KMD allocation must distinguish its page-aligned backing from the logical private-data size")
+    open_wrapper_matches = re.findall(
+        r"\bstruct\s+VIOGPU_WDDM_OPEN_ALLOCATION\s*\{(.*?)\}\s*;",
+        WDDM_DDI_HEADER_CODE,
+        re.DOTALL,
+    )
+    open_wrapper = canonical_code(open_wrapper_matches[0]) if len(open_wrapper_matches) == 1 else ""
+    for required in (
+        "VIOGPU_WDDM_DEVICE*Device;",
+        "BOOLEANReadOnly;",
+    ):
+        if open_wrapper.count(required) != 1:
+            fail(f"each open allocation must retain its owning device and access contract: {required}")
+
+    create_allocation = canonical_code(function_body("VioGpuWddmCreateAllocation", WDDM_DDI_CODE))
+    create_resource_guard = (
+        "createAllocation->pPrivateDriverData!=NULL||createAllocation->PrivateDriverDataSize!=0"
+    )
+    if create_allocation.count(create_resource_guard) != 1:
+        fail("CreateAllocation must reject resource-private data in the current pre-v1 contract")
+    create_allocation_sequence = (
+        "allocationInfo->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_ALLOCATION_INFO)",
+        "VIOGPU_WDDM_ALLOCATION_INFOprivateData={};",
+        "RtlCopyMemory(&privateData,allocationInfo->pPrivateDriverData,sizeof(privateData));",
+        "status=ValidateAllocationPrivate(&privateData,&alignedSize);",
+        "allocation->PrivateData=privateData;",
+        "allocation->BackingSize=alignedSize;",
+        "InitializeAllocationInfo(allocationInfo,allocation,alignedSize);",
+    )
+    create_allocation_offsets = [create_allocation.find(fragment) for fragment in create_allocation_sequence]
+    if min(create_allocation_offsets) < 0 or create_allocation_offsets != sorted(create_allocation_offsets):
+        fail("CreateAllocation must validate and retain the exact UMD private-data snapshot before publication")
+    for fragment in create_allocation_sequence:
+        if create_allocation.count(fragment) != 1:
+            fail(f"CreateAllocation private-data identity must be unique: {fragment}")
+
+    open_allocation = canonical_code(function_body("VioGpuWddmOpenAllocation", WDDM_DDI_CODE))
+    open_guard = (
+        "openAllocation->SubresourceIndex!=0||(openAllocation->Flags.Value&~3)!=0||"
+        "openAllocation->pPrivateDriverData!=NULL||openAllocation->PrivateDriverSize!=0"
+    )
+    if open_allocation.count(open_guard) != 1:
+        fail("OpenAllocation must reject unknown flags and resource-private data in the current pre-v1 contract")
+    open_allocation_sequence = (
+        "openInfo->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_ALLOCATION_INFO)",
+        "VIOGPU_WDDM_ALLOCATION_INFOprivateData={};",
+        "RtlCopyMemory(&privateData,openInfo->pPrivateDriverData,sizeof(privateData));",
+        "allocation=static_cast<VIOGPU_WDDM_ALLOCATION*>(dxgkInterface->DxgkCbGetHandleData(&getHandleData));",
+        "RtlCompareMemory(&privateData,&allocation->PrivateData,sizeof(privateData))!=sizeof(privateData)",
+        "if(!ReferenceDevice(device))",
+        "deviceAllocation->Device=device;",
+        "deviceAllocation->ReadOnly=openAllocation->Flags.ReadOnly;",
+        "openInfo->hDeviceSpecificAllocation=deviceAllocation;",
+    )
+    open_allocation_offsets = [open_allocation.find(fragment) for fragment in open_allocation_sequence]
+    if min(open_allocation_offsets) < 0 or open_allocation_offsets != sorted(open_allocation_offsets):
+        fail("OpenAllocation must resolve the KMD object and compare its exact private-data snapshot before publication")
+    for fragment in open_allocation_sequence:
+        if open_allocation.count(fragment) != 1:
+            fail(f"OpenAllocation private-data identity must be unique: {fragment}")
+    if re.search(r"(?:openAllocation|mutableOpenAllocation)->(?:SubresourceOffset|Pitch)=", open_allocation):
+        fail("OpenAllocation must not publish conditional GDI aperture outputs for the current segment")
+    rollback_sequence = (
+        "deviceAllocation->Signature=0;",
+        "DereferenceDevice(deviceAllocation->Device);",
+        "deletedeviceAllocation;",
+        "openAllocation->pOpenAllocation[index].hDeviceSpecificAllocation=NULL;",
+    )
+    rollback_start = open_allocation.find("if(!NT_SUCCESS(status))")
+    rollback = open_allocation[rollback_start:] if rollback_start >= 0 else ""
+    rollback_offsets = [rollback.find(fragment) for fragment in rollback_sequence]
+    if min(rollback_offsets) < 0 or rollback_offsets != sorted(rollback_offsets):
+        fail("OpenAllocation rollback must release every published wrapper and its device reference symmetrically")
+    if open_allocation.count("ReferenceDevice(device)") != 1 or open_allocation.count(
+        "DereferenceDevice(deviceAllocation->Device);"
+    ) != 1:
+        fail("OpenAllocation must hold exactly one device reference per published wrapper")
+
+    close_body = function_body("VioGpuWddmCloseAllocation", WDDM_DDI_CODE)
+    close_allocation = canonical_code(close_body)
+    close_owner_guard = (
+        "deviceAllocation==NULL||deviceAllocation->Signature!=VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE||"
+        "deviceAllocation->Device!=device"
+    )
+    close_duplicate_guard = (
+        "closeAllocation->pOpenHandleList[previousIndex]==closeAllocation->pOpenHandleList[index]"
+    )
+    close_validate = close_allocation.find(close_owner_guard)
+    close_duplicate = close_allocation.find(close_duplicate_guard)
+    close_validation_loop_end = close_allocation.find(
+        "for(UINTindex=0;index<closeAllocation->NumAllocations;++index)",
+        close_duplicate + len(close_duplicate_guard),
+    )
+    close_invalidate = close_allocation.find("deviceAllocation->Signature=0;", close_validation_loop_end)
+    close_release = close_allocation.find("DereferenceDevice(deviceAllocation->Device);", close_invalidate)
+    close_delete = close_allocation.find("deletedeviceAllocation;", close_release)
+    if min(close_validate, close_duplicate, close_validation_loop_end, close_invalidate, close_release, close_delete) < 0 or not (
+        close_validate < close_duplicate < close_validation_loop_end < close_invalidate < close_release < close_delete
+    ):
+        fail("CloseAllocation must validate ownership and uniqueness before releasing wrappers and device references")
+    if close_allocation.count(close_duplicate_guard) != 1 or close_allocation.count(
+        "DereferenceDevice(deviceAllocation->Device);"
+    ) != 1:
+        fail("CloseAllocation must reject duplicate handles and release each wrapper reference exactly once")
+
+    destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
+    destroy_duplicate_guard = (
+        "destroyAllocation->pAllocationList[previousIndex]==destroyAllocation->pAllocationList[index]"
+    )
+    destroy_duplicate = destroy_allocation.find(destroy_duplicate_guard)
+    destroy_validation_loop_end = destroy_allocation.find(
+        "VIOGPU_WDDM_RESOURCE*resource=NULL;",
+        destroy_duplicate + len(destroy_duplicate_guard),
+    )
+    destroy_delete = destroy_allocation.find("deleteallocation;", destroy_validation_loop_end)
+    if (
+        destroy_allocation.count(destroy_duplicate_guard) != 1
+        or min(destroy_duplicate, destroy_validation_loop_end, destroy_delete) < 0
+        or not destroy_duplicate < destroy_validation_loop_end < destroy_delete
+    ):
+        fail("DestroyAllocation must reject duplicate handles before deleting any allocation")
+
+    validate = canonical_code(function_body("ValidateCommandHeader", WDDM_DDI_CODE))
+    validate_requirements = (
+        "header->ExpectedResetGeneration!=resetGeneration",
+        "header->AllocationReferenceCount==0",
+        "header->AllocationReferenceCount!=patchListSize",
+        "header->AllocationReferencesOffset!=sizeof(*header)",
+        "header->CommandStreamOffset!=referencesEnd",
+        "header->CommandStreamSize<sizeof(ULONGLONG)",
+        "reference->AllocationIndex>=allocationListSize",
+        "reference->AllocationIndex!=patch->AllocationIndex",
+        "reference->AllocationOffset+reference->Length<reference->AllocationOffset",
+        "reference->AllocationOffset!=patch->AllocationOffset",
+        "reference->PatchOffset!=patch->PatchOffset-header->CommandStreamOffset",
+        "patch->Reserved!=0",
+        "deviceAllocation->Device!=device",
+        "reference->AllocationOffset>deviceAllocation->Allocation->PrivateData.Size",
+        "reference->Length>deviceAllocation->Allocation->PrivateData.Size-reference->AllocationOffset",
+        "allocationEntry->Reserved!=0",
+        "deviceAllocation->ReadOnly&&(reference->Flags&VIOGPU_WDDM_REFERENCE_WRITE)!=0",
+    )
+    for fragment in validate_requirements:
+        if validate.count(fragment) != 1:
+            fail(f"Render private ABI validation is missing its bounded identity check: {fragment}")
+    if "patch->Value" in validate:
+        fail("Render must accept UMD-selected SlotId values while rejecting the reserved patch bits")
+    if validate.find("header->CommandStreamSize<sizeof(ULONGLONG)") > validate.find(
+        "header->CommandStreamSize-sizeof(ULONGLONG)"
+    ):
+        fail("Render must prove the command stream can hold a patch before subtracting patch width")
+
+    overlap_condition = (
+        "patch->PatchOffset<previousPatch->PatchOffset+sizeof(ULONGLONG)&&"
+        "previousPatch->PatchOffset<patch->PatchOffset+sizeof(ULONGLONG)"
+    )
+    overlap_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(function_body("ValidateCommandHeader", WDDM_DDI_CODE))
+        if canonical_code(condition) == overlap_condition
+    ]
+    if validate.count("for(UINTpreviousIndex=0;previousIndex<index;++previousIndex)") != 1 or overlap_blocks != [
+        "returnSTATUS_INVALID_PARAMETER;"
+    ]:
+        fail("Render must reject duplicate or overlapping 8-byte patch slots")
+
+    render_body = function_body("VioGpuWddmRender", WDDM_DDI_CODE)
+    render = canonical_code(render_body)
+    render_requirements = (
+        "render->CommandLength>VIOGPU_WDDM_DMA_BUFFER_SIZE",
+        "BYTE*commandSnapshot=NULL;",
+        "D3DDI_PATCHLOCATIONLIST*patchSnapshot=NULL;",
+        "commandSnapshot=new(NonPagedPoolNx)BYTE[render->CommandLength];",
+        "patchSnapshot=new(NonPagedPoolNx)D3DDI_PATCHLOCATIONLIST[render->PatchLocationListInSize];",
+    )
+    for fragment in render_requirements:
+        if render.count(fragment) != 1:
+            fail(f"Render must bound and allocate its nonpaged input snapshots exactly once: {fragment}")
+
+    probe_command = render.find("ProbeForRead(const_cast<PVOID>(render->pCommand),render->CommandLength,1);")
+    copy_command = render.find("RtlCopyMemory(commandSnapshot,render->pCommand,render->CommandLength);")
+    probe_patch = render.find("ProbeForRead(render->pPatchLocationListIn,patchBytes,__alignof(D3DDDI_PATCHLOCATIONLIST));")
+    copy_patch = render.find("RtlCopyMemory(patchSnapshot,render->pPatchLocationListIn,patchBytes);")
+    snapshot_command = render.find(
+        "constVIOGPU_WDDM_RENDER_COMMAND*command="
+        "reinterpret_cast<constVIOGPU_WDDM_RENDER_COMMAND*>(commandSnapshot);"
+    )
+    validate_call = render.find(
+        "status=ValidateCommandHeader(command,render->CommandLength,context->Device,render->pAllocationList,"
+        "render->AllocationListSize,patchSnapshot,render->PatchLocationListInSize,snapshot.ResetGeneration);"
+    )
+    snapshot_sequence = (probe_command, copy_command, probe_patch, copy_patch, snapshot_command, validate_call)
+    if min(snapshot_sequence) < 0 or list(snapshot_sequence) != sorted(snapshot_sequence):
+        fail("Render must snapshot command and patch inputs before validating their shared identity")
+    for fragment in (
+        "RtlCopyMemory(commandSnapshot,render->pCommand,render->CommandLength);",
+        "RtlCopyMemory(patchSnapshot,render->pPatchLocationListIn,patchBytes);",
+    ):
+        if render.count(fragment) != 1:
+            fail(f"Render input snapshot must be unique: {fragment}")
+
+    generation_check = render.find(
+        "if(NT_SUCCESS(status)&&"
+        "!snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation,snapshot.ResetGeneration))"
+    )
+    if generation_check < 0 or generation_check < validate_call:
+        fail("Render must revalidate its reset generation after private ABI validation")
+
+    publication_blocks = [
+        (canonical_code(condition), canonical_code(body), start)
+        for condition, body, start, _ in if_blocks(render_body)
+        if "RtlCopyMemory(dmaBuffer,commandSnapshot,render->CommandLength);" in canonical_code(body)
+    ]
+    if len(publication_blocks) != 1 or publication_blocks[0][0] != "NT_SUCCESS(status)":
+        fail("Render must publish all outputs through one success-only block")
+    publication, publication_start = publication_blocks[0][1:]
+    publication_sequence = (
+        "PVOIDdmaBuffer=render->pDmaBuffer;",
+        "D3DDI_PATCHLOCATIONLIST*patchOutput=render->pPatchLocationListOut;",
+        "RtlCopyMemory(dmaBuffer,commandSnapshot,render->CommandLength);",
+        "RtlCopyMemory(patchOutput,patchSnapshot,patchBytes);",
+        "RtlZeroMemory(privateData,sizeof(*privateData));",
+        "privateData->Signature=VIOGPU_WDDM_DMA_SIGNATURE;",
+        "privateData->DmaBuffer=dmaBuffer;",
+        "privateData->ResetGeneration=snapshot.ResetGeneration;",
+        "render->pDmaBuffer=static_cast<BYTE*>(dmaBuffer)+render->CommandLength;",
+        "render->pPatchLocationListOut=patchOutput+render->PatchLocationListInSize;",
+        "render->MultipassOffset=render->CommandLength;",
+    )
+    publication_offsets = [publication.find(fragment) for fragment in publication_sequence]
+    if min(publication_offsets) < 0 or publication_offsets != sorted(publication_offsets):
+        fail("Render success publication must keep DMA, patch, metadata, and cursor updates ordered")
+    for fragment in publication_sequence:
+        if render.count(fragment) != 1:
+            fail(f"Render output publication must be unique and success-only: {fragment}")
+    publication_absolute = len(canonical_code(render_body[:publication_start]))
+    if publication_absolute <= generation_check:
+        fail("Render must complete the final reset-generation check before publishing outputs")
+    if any(
+        fragment in render
+        for fragment in (
+            "RtlCopyMemory(render->pDmaBuffer,render->pCommand",
+            "RtlCopyMemory(render->pPatchLocationListOut,render->pPatchLocationListIn",
+        )
+    ):
+        fail("Render must never publish directly from mutable UMD input")
+    if render.count("snapshot.ResetGeneration") != 3 or render.count(
+        "privateData->ResetGeneration=snapshot.ResetGeneration;"
+    ) != 1:
+        fail("Render must validate and retain the exact context reset generation")
+
 
 def check_wddm_context_lifetime() -> None:
     context_header = canonical_code(WDDM_DDI_HEADER_CODE)
@@ -1835,7 +2337,9 @@ def check_wddm_context_lifetime() -> None:
     initialize_rundown = create.find("ExInitializeRundownProtection(&context->Operations);")
     publish_open = create.find("context->OperationsRundownCompleted=FALSE;")
     binding_lock = create.find("KeInitializeSpinLock(&context->NativeContext.BindingLock);")
-    host_create = create.find("device->Adapter->CreateNativeContext(&context->NativeContext)")
+    host_create = create.find(
+        "device->Adapter->CreateNativeContext(&context->NativeContext,privateData.ExpectedResetGeneration)"
+    )
     publish = create.find("createContext->hContext=context;")
     if min(reserve, allocate, initialize_rundown, publish_open, binding_lock, host_create, publish) < 0 or not (
         reserve < allocate < initialize_rundown < publish_open < binding_lock < host_create < publish
@@ -1942,34 +2446,19 @@ def check_wddm_context_lifetime() -> None:
         "ExReleaseRundownProtection(&context->Operations);returnSTATUS_INVALID_HANDLE;"
     ]:
         fail("Render must fail closed on rundown acquisition and release it after a bad signature")
-    if render.count("VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);") != 4:
-        fail("Render must release its native-context snapshot on every post-acquisition exit")
-    if render.count("ExReleaseRundownProtection(&context->Operations);") != 6:
-        fail("Render must release context operations on every post-acquisition exit")
-    post_acquire_guards = (
-        "render->DmaSize<render->CommandLength||render->PatchLocationListOutSize<render->PatchLocationListInSize",
-        "!NT_SUCCESS(status)",
-        "!snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation)",
-    )
-    for condition in post_acquire_guards:
-        blocks = [
-            canonical_code(body)
-            for candidate, body, start, _ in if_blocks(render_body)
-            if canonical_code(candidate) == condition
-            and len(canonical_code(render_body[:start])) > acquire
-            and "return" in canonical_code(body)
-        ]
-        if len(blocks) != 1 or not blocks[0].startswith(
-            "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);"
-            "ExReleaseRundownProtection(&context->Operations);return"
-        ):
-            fail("Render must release snapshot and context rundown before every failed post-acquisition return")
-    render_success = (
+    if render.count("VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);") != 1:
+        fail("Render must release its native-context snapshot exactly once through unified cleanup")
+    if render.count("ExReleaseRundownProtection(&context->Operations);") != 3:
+        fail("Render must release context operations on both acquisition failures and unified cleanup")
+    cleanup_start = render.find("NTSTATUSstatus=STATUS_SUCCESS;")
+    render_cleanup = (
+        "delete[]patchSnapshot;"
+        "delete[]commandSnapshot;"
         "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);"
-        "ExReleaseRundownProtection(&context->Operations);returnSTATUS_SUCCESS;"
+        "ExReleaseRundownProtection(&context->Operations);returnstatus;"
     )
-    if not render.endswith(render_success):
-        fail("Render must release snapshot and context rundown on its success path")
+    if cleanup_start < acquire or render[cleanup_start:].count("return") != 1 or not render.endswith(render_cleanup):
+        fail("Render must free both snapshots and release both lifetime guards through one tail path")
 
 
 def check_dpc_completion_semantics() -> None:
@@ -3061,7 +3550,7 @@ def check_adapter_lifecycle() -> None:
             "returnFALSE;",
             "VioGpuAdapter*adapter=m_pHWDevice;"
             "BOOLEANready=!IsHardwareResetRequested()&&adapter!=NULL&&"
-            "adapter->QueryNativeContextReadiness(capset,capsetVersion,capsetSize);"
+            "adapter->QueryNativeContextReadiness(capset,capsetVersion,capsetSize,resetGeneration);"
             "ExReleaseRundownProtection(&m_HardwareOperations);returnready;",
         ),
         (
@@ -3069,7 +3558,7 @@ def check_adapter_lifecycle() -> None:
             "returnSTATUS_DEVICE_NOT_READY;",
             "VioGpuAdapter*adapter=m_pHWDevice;"
             "NTSTATUSstatus=!IsHardwareResetRequested()&&adapter!=NULL?"
-            "adapter->CreateNativeContext(context):STATUS_DEVICE_NOT_READY;"
+            "adapter->CreateNativeContext(context,expectedResetGeneration):STATUS_DEVICE_NOT_READY;"
             "ExReleaseRundownProtection(&m_HardwareOperations);returnstatus;",
         ),
     )
@@ -3390,6 +3879,7 @@ def main() -> None:
     check_no_retired_variant_contract(sources)
     check_queue_failure_semantics()
     check_native_context_ownership()
+    check_wddm_private_abi(root)
     check_wddm_context_lifetime()
     check_dpc_completion_semantics()
     check_segment_failure_semantics()
