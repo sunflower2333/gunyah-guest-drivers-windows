@@ -1893,6 +1893,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         fail("WDDM private ABI must not expose pointers, Windows handles, physical addresses, or transport/KMD identities")
 
     expected_fixture_files = {
+        ".gitattributes",
         "README.md",
         "abi_manifest.cpp",
         "abi_manifest_entries.h",
@@ -1904,12 +1905,19 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         path.name for path in WDDM_ABI_FIXTURE_DIR.iterdir() if path.is_file()
     } != expected_fixture_files:
         fail("WDDM private ABI fixture must contain the exact dual-endpoint manifest file set")
+    fixture_attributes = (WDDM_ABI_FIXTURE_DIR / ".gitattributes").read_text(encoding="utf-8")
+    if fixture_attributes != "expected-pre-v1.txt -text\n":
+        fail("WDDM private ABI fixture must preserve byte-exact LF manifest data on Windows checkout")
     manifest = (WDDM_ABI_FIXTURE_DIR / "abi_manifest.cpp").read_text(encoding="utf-8")
     local_runner_path = WDDM_ABI_FIXTURE_DIR / "run-local.sh"
     local_runner = local_runner_path.read_text(encoding="utf-8")
     msvc_runner = (WDDM_ABI_FIXTURE_DIR / "run-msvc.cmd").read_text(encoding="utf-8")
     if local_runner_path.stat().st_mode & 0o111 == 0:
         fail("local WDDM private ABI runner must be executable")
+    if msvc_runner.count(r'fc /b "%SCRIPT_DIR%\expected-pre-v1.txt" "%OUT_DIR%\%%E.txt" >nul') != 1 or (
+        r'fc "%SCRIPT_DIR%\expected-pre-v1.txt" "%OUT_DIR%\%%E.txt"' not in msvc_runner
+    ):
+        fail("MSVC WDDM private ABI runner must compare and diagnose each endpoint inside its loop")
     for endpoint in ("KMD", "UMD"):
         if manifest.count(f"ABI_ENDPOINT_{endpoint}") != 2:
             fail(f"WDDM private ABI manifest must enforce one {endpoint} endpoint selection")

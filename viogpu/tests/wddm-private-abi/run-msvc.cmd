@@ -13,15 +13,15 @@ for %%E in (KMD UMD) do (
     "%OUT_DIR%\%%E.exe" >"%OUT_DIR%\%%E.txt"
     if errorlevel 1 goto :fail
     fc /b "%SCRIPT_DIR%\expected-pre-v1.txt" "%OUT_DIR%\%%E.txt" >nul
-    if errorlevel 1 goto :mismatch
+    if errorlevel 1 (
+        fc "%SCRIPT_DIR%\expected-pre-v1.txt" "%OUT_DIR%\%%E.txt"
+        goto :fail
+    )
     echo PASS %%E-msvc
 )
 
 rmdir /s /q "%OUT_DIR%"
 exit /b 0
-
-:mismatch
-fc "%SCRIPT_DIR%\expected-pre-v1.txt" "%OUT_DIR%\%%E.txt"
 
 :fail
 echo FAIL wddm-private-abi: artifacts retained in %OUT_DIR%
