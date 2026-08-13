@@ -5176,7 +5176,6 @@ BOOLEAN VioGpuAdapter::InterruptRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface, 
     {
         return FALSE;
     }
-    BOOLEAN serviced = TRUE;
     ULONG intReason = 0;
 
     if (m_PciResources.IsMSIEnabled())
@@ -5193,7 +5192,6 @@ BOOLEAN VioGpuAdapter::InterruptRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface, 
                 intReason = ISR_REASON_CURSOR;
                 break;
             default:
-                serviced = FALSE;
                 DbgPrint(TRACE_LEVEL_FATAL,
                          ("---> %s Unknown Interrupt Reason MessageNumber%d\n", __FUNCTION__, MessageNumber));
         }
@@ -5203,19 +5201,17 @@ BOOLEAN VioGpuAdapter::InterruptRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface, 
         UNREFERENCED_PARAMETER(MessageNumber);
         UCHAR isrstat = virtio_read_isr_status(&m_VioDev);
 
-        switch (isrstat)
+        if ((isrstat & 1U) != 0)
         {
-            case 1:
-                intReason = (ISR_REASON_DISPLAY | ISR_REASON_CURSOR);
-                break;
-            case 3:
-                intReason = ISR_REASON_CHANGE;
-                break;
-            default:
-                serviced = FALSE;
+            intReason |= ISR_REASON_DISPLAY | ISR_REASON_CURSOR;
+        }
+        if ((isrstat & VIRTIO_PCI_ISR_CONFIG) != 0)
+        {
+            intReason |= ISR_REASON_CHANGE;
         }
     }
 
+    BOOLEAN serviced = intReason != 0;
     if (serviced)
     {
         if (m_pVioGpuDod->IsUsePresentProgress() && (intReason & ISR_REASON_DISPLAY) == ISR_REASON_DISPLAY)

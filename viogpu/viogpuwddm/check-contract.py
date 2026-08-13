@@ -564,6 +564,48 @@ def check_dod_reset_entrypoints() -> None:
             fail(f"SystemDisplayEnable must perform {description} before {next_description}")
 
 
+def check_adapter_line_interrupt_bitmap() -> None:
+    """Require one read-and-ack and independent decoding of both line ISR bits."""
+    require_integer_define(
+        VIRTIO_HEADER_SOURCE,
+        "VIRTIO_PCI_ISR_CONFIG",
+        2,
+        "VirtIO PCI ISR bitmap",
+    )
+    interrupt = canonical_code(function_body("VioGpuAdapter::InterruptRoutine", VIOGPU_CODE))
+    reason_init = "ULONGintReason=0;"
+    line_decode = (
+        "UNREFERENCED_PARAMETER(MessageNumber);"
+        "UCHARisrstat=virtio_read_isr_status(&m_VioDev);"
+        "if((isrstat&1)!=0){intReason|=ISR_REASON_DISPLAY|ISR_REASON_CURSOR;}"
+        "if((isrstat&VIRTIO_PCI_ISR_CONFIG)!=0){intReason|=ISR_REASON_CHANGE;}}"
+    )
+    serviced = "BOOLEANserviced=intReason!=0;"
+    publish = "if(serviced){"
+    returned = "returnserviced;"
+
+    reason_offset = interrupt.find(reason_init)
+    line_offset = interrupt.find(line_decode, reason_offset)
+    serviced_offset = interrupt.find(serviced, line_offset)
+    publish_offset = interrupt.find(publish, serviced_offset)
+    return_offset = interrupt.rfind(returned)
+    if (
+        min(reason_offset, line_offset, serviced_offset, publish_offset, return_offset) < 0
+        or not (reason_offset < line_offset < serviced_offset < publish_offset < return_offset)
+        or serviced_offset != line_offset + len(line_decode)
+    ):
+        fail("line ISR must independently accumulate queue and configuration bits before deciding service")
+    if (
+        interrupt.count("virtio_read_isr_status(&m_VioDev)") != 1
+        or interrupt.count(line_decode) != 1
+        or interrupt.count(serviced) != 1
+        or interrupt.count(publish) != 1
+        or interrupt.count(returned) != 1
+        or "switch(isrstat)" in interrupt
+    ):
+        fail("line ISR must read-and-ack once, decode a bitmap, and reject zero or unknown-only status")
+
+
 def variable_write_offsets(source: str, expression: str) -> list[int]:
     """Find direct, compound, increment, and Rtl memory-helper writes."""
     target = re.escape(expression)
@@ -3343,6 +3385,7 @@ def main() -> None:
     check_virtio_reset_contract()
     check_virtio_queue_allocation_cleanup()
     check_dod_reset_entrypoints()
+    check_adapter_line_interrupt_bitmap()
     check_native_context_readiness()
     check_no_retired_variant_contract(sources)
     check_queue_failure_semantics()

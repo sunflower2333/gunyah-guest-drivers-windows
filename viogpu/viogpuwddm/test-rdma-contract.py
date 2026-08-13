@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import shutil
 import subprocess
@@ -1239,6 +1240,59 @@ REWRITES = (
         "    if (TRUE)",
     ),
     Rewrite(
+        "R105_line_interrupt_drops_config_bit",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "    if ((isrstat & VIRTIO_PCI_ISR_CONFIG) != 0)",
+        "    if (FALSE)",
+    ),
+    Rewrite(
+        "R106_line_interrupt_config_requires_combined_status",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "    if ((isrstat & VIRTIO_PCI_ISR_CONFIG) != 0)",
+        "    if (isrstat == 3)",
+    ),
+    Rewrite(
+        "R107_line_interrupt_config_overwrites_queue_reasons",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "        intReason |= ISR_REASON_CHANGE;",
+        "        intReason = ISR_REASON_CHANGE;",
+    ),
+    Rewrite(
+        "R108_line_interrupt_drops_cursor_queue_reason",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "        intReason |= ISR_REASON_DISPLAY | ISR_REASON_CURSOR;",
+        "        intReason |= ISR_REASON_DISPLAY;",
+    ),
+    Rewrite(
+        "R109_line_interrupt_claims_zero_status",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "    BOOLEAN serviced = intReason != 0;",
+        "    BOOLEAN serviced = TRUE;",
+    ),
+    Rewrite(
+        "R110_line_interrupt_reacknowledges_status",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        UCHAR isrstat = virtio_read_isr_status(&m_VioDev);
+
+        if ((isrstat & 1U) != 0)""",
+        """        UCHAR isrstat = virtio_read_isr_status(&m_VioDev);
+        isrstat |= virtio_read_isr_status(&m_VioDev);
+
+        if ((isrstat & 1U) != 0)""",
+    ),
+    Rewrite(
+        "R111_line_interrupt_queue_requires_queue_only_status",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "    if ((isrstat & 1U) != 0)",
+        "    if (isrstat == 1)",
+    ),
+    Rewrite(
+        "R112_line_interrupt_moves_config_bit",
+        "VirtIO/virtio_pci.h",
+        "#define VIRTIO_PCI_ISR_CONFIG     0x2",
+        "#define VIRTIO_PCI_ISR_CONFIG     0x4",
+    ),
+    Rewrite(
         "S01_pending_comparison_reversed",
         "viogpu/common/viogpu_rdma.cpp",
         "if (status == STATUS_PENDING)",
@@ -1299,6 +1353,23 @@ def run_checker(root: Path) -> tuple[int, str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Attack the viogpuwddm source contract")
+    parser.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="run only the named rewrite; repeat to select multiple rewrites",
+    )
+    arguments = parser.parse_args()
+    requested = set(arguments.case)
+    available = {rewrite.name for rewrite in REWRITES}
+    unknown = requested - available
+    if unknown:
+        print(f"UNKNOWN_CASES {','.join(sorted(unknown))}")
+        return 2
+    rewrites = tuple(rewrite for rewrite in REWRITES if not requested or rewrite.name in requested)
+
     source_hash = tree_hash(ROOT)
     failures = 0
     with tempfile.TemporaryDirectory(prefix="viogpu-rdma-contract.") as temporary:
@@ -1314,7 +1385,7 @@ def main() -> int:
         if code != 0:
             return 2
 
-        for rewrite in REWRITES:
+        for rewrite in rewrites:
             case = Path(temporary) / rewrite.name
             shutil.copytree(frozen, case)
             try:
@@ -1338,7 +1409,7 @@ def main() -> int:
     if tree_hash(ROOT) != source_hash:
         print("SOURCE_CHANGED")
         return 2
-    print(f"SUMMARY failures={failures} cases={len(REWRITES)}")
+    print(f"SUMMARY failures={failures} cases={len(rewrites)}")
     return 1 if failures else 0
 
 
