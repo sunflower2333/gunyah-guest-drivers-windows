@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../viogpudo/driver.h"
+#include "../viogpudo/viogpudo.h"
 
 // This target is compile-only until VirtIO fence completion and TDR recovery
 // are connected to the WDDM scheduler callbacks.
@@ -38,6 +39,8 @@ struct VIOGPU_WDDM_DMA_PRIVATE
     PVOID DmaBuffer;
     UINT DmaBufferSize;
     UINT CommandLength;
+    UINT ContextId;
+    LONG Generation;
     UINT Flags;
 };
 
@@ -83,15 +86,19 @@ struct VIOGPU_WDDM_DEVICE
     ULONG Signature;
     VioGpuDod *Adapter;
     HANDLE RuntimeDevice;
+    volatile LONG ReferenceState;
 };
 
 struct VIOGPU_WDDM_CONTEXT
 {
     ULONG Signature;
+    EX_RUNDOWN_REF Operations;
+    BOOLEAN OperationsRundownCompleted;
     VIOGPU_WDDM_DEVICE *Device;
     HANDLE RuntimeContext;
     UINT NodeOrdinal;
     UINT EngineAffinity;
+    VIOGPU_NATIVE_CONTEXT_REGISTRATION NativeContext;
 };
 
 struct VIOGPU_WDDM_OPEN_ALLOCATION

@@ -115,10 +115,14 @@ REWRITES = (
     Rewrite(
         "R12_use_ready_as_owner",
         "viogpu/viogpudo/viogpudo.cpp",
-        """m_GpuBuf.HasAllocationOwner() || m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 ||
-        m_CursorSegment.GetSize() != 0 ||""",
-        """m_GpuBuf.HasAllocationOwner() || m_RdmaPool.IsActive() || m_FrameSegment.GetSize() != 0 ||
-        m_CursorSegment.GetSize() != 0 ||""",
+        """    if (!IsListEmpty(&m_NativeContextRegistry) || m_bVirtioInitialized || m_bQueuesInitialized ||
+        m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() ||
+        m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0 ||
+        InterlockedCompareExchange(&m_NativeContextState,""",
+        """    if (!IsListEmpty(&m_NativeContextRegistry) || m_bVirtioInitialized || m_bQueuesInitialized ||
+        m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() ||
+        m_RdmaPool.IsActive() || m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0 ||
+        InterlockedCompareExchange(&m_NativeContextState,""",
     ),
     Rewrite(
         "R13_drop_information_check",
@@ -366,6 +370,32 @@ REWRITES = (
         "",
     ),
     Rewrite(
+        "R33b_viostor_keep_stale_restart_features",
+        "viostor/virtio_stor_hw_helper.c",
+        "    adaptExt->features = virtio_get_features(&adaptExt->vdev);",
+        "    (void)virtio_get_features(&adaptExt->vdev);",
+    ),
+    Rewrite(
+        "R33c_viostor_restart_gate_after_feature_ack",
+        "viostor/virtio_stor.c",
+        """    if (CHECKBIT(adaptExt->features, VIRTIO_F_ACCESS_PLATFORM))
+    {
+        RhelDbgPrint(TRACE_LEVEL_FATAL,
+                     " VIRTIO_F_ACCESS_PLATFORM requires a restricted-DMA broker; physical StorPort is unsupported\\n");
+        return FALSE;
+    }
+    RhelSetGuestFeatures(DeviceExtension);
+""",
+        """    RhelSetGuestFeatures(DeviceExtension);
+    if (CHECKBIT(adaptExt->features, VIRTIO_F_ACCESS_PLATFORM))
+    {
+        RhelDbgPrint(TRACE_LEVEL_FATAL,
+                     " VIRTIO_F_ACCESS_PLATFORM requires a restricted-DMA broker; physical StorPort is unsupported\\n");
+        return FALSE;
+    }
+""",
+    ),
+    Rewrite(
         "R34_netkvm_retry_cached_free",
         "NetKVM/Common/ParaNdis_RdmaPool.cpp",
         """    if (Allocation->FreeSubmitted)
@@ -500,6 +530,458 @@ REWRITES = (
         """        NT_ASSERT(NT_SUCCESS(status));""",
     ),
     Rewrite(
+        "R44_collapse_host_context_outcomes",
+        "viogpu/common/viogpu_queue.h",
+        """    VioGpuHostContextRejected,
+    VioGpuHostContextUnknown,""",
+        """    VioGpuHostContextRejected,
+    VioGpuHostContextUnknown = VioGpuHostContextRejected,""",
+    ),
+    Rewrite(
+        "R45_publish_submitted_before_enqueue",
+        "viogpu/common/viogpu_queue.cpp",
+        """    if (QueueBuffer(buf) < 0)
+    {
+        buf->complete_cb = NULL;
+        buf->complete_ctx = NULL;
+        buf->synchronous_epoch_state = 0;
+        return FALSE;
+    }
+    *submitted = TRUE;""",
+        """    *submitted = TRUE;
+    if (QueueBuffer(buf) < 0)
+    {
+        buf->complete_cb = NULL;
+        buf->complete_ctx = NULL;
+        buf->synchronous_epoch_state = 0;
+        return FALSE;
+    }""",
+    ),
+    Rewrite(
+        "R46_submit_create_before_owner_ledger",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    InsertTailList(&m_NativeContextRegistry, &owner->AdapterLink);
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+    context->Adapter = this;
+    context->Owner = owner;
+    context->Generation = generation;
+    context->ContextId = contextId;
+    InterlockedExchange(&context->State, VioGpuNativeContextCreating);
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);
+
+    VIOGPU_HOST_CONTEXT_RESULT createResult = m_CtrlQueue.CreateNativeContext(contextId);""",
+        """    VIOGPU_HOST_CONTEXT_RESULT createResult = m_CtrlQueue.CreateNativeContext(contextId);
+    InsertTailList(&m_NativeContextRegistry, &owner->AdapterLink);
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+    context->Adapter = this;
+    context->Owner = owner;
+    context->Generation = generation;
+    context->ContextId = contextId;
+    InterlockedExchange(&context->State, VioGpuNativeContextCreating);
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);""",
+    ),
+    Rewrite(
+        "R47_destroy_accept_every_control_error",
+        "viogpu/common/viogpu_queue.cpp",
+        """        else if (IsPlainControlErrorResponse(response) && response->type == VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID)""",
+        """        else if (IsPlainControlErrorResponse(response))""",
+    ),
+    Rewrite(
+        "R48_destroy_retire_unknown_owner",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    if (destroyResult == VioGpuHostContextConfirmed || destroyResult == VioGpuHostContextRejected)
+    {
+        RetireNativeContextOwnerLocked(owner);
+    }""",
+        """    if (destroyResult == VioGpuHostContextConfirmed || destroyResult == VioGpuHostContextRejected ||
+        destroyResult == VioGpuHostContextUnknown)
+    {
+        RetireNativeContextOwnerLocked(owner);
+    }""",
+    ),
+    Rewrite(
+        "R49_destroy_retire_not_submitted_owner",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    if (destroyResult == VioGpuHostContextConfirmed || destroyResult == VioGpuHostContextRejected)
+    {
+        RetireNativeContextOwnerLocked(owner);
+    }""",
+        """    if (destroyResult == VioGpuHostContextConfirmed || destroyResult == VioGpuHostContextRejected ||
+        destroyResult == VioGpuHostContextNotSubmitted)
+    {
+        RetireNativeContextOwnerLocked(owner);
+    }""",
+    ),
+    Rewrite(
+        "R50_create_retire_unknown_owner",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        if (createResult == VioGpuHostContextNotSubmitted || createResult == VioGpuHostContextRejected)
+        {
+            RetireNativeContextOwnerLocked(owner);
+        }""",
+        """        if (createResult == VioGpuHostContextNotSubmitted || createResult == VioGpuHostContextRejected ||
+            createResult == VioGpuHostContextUnknown)
+        {
+            RetireNativeContextOwnerLocked(owner);
+        }""",
+    ),
+    Rewrite(
+        "R51_drop_no_reset_owner_guard",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    if (!IsListEmpty(&m_NativeContextRegistry) && !m_bVirtioInitialized)
+    {
+        InterlockedCompareExchange(&m_NativeContextState, VioGpuNativeContextFailed, VioGpuNativeContextOffline);
+        FailNativeContextAtAnyIrql();
+        return STATUS_DEVICE_NOT_READY;
+    }
+""",
+        "",
+    ),
+    Rewrite(
+        "R52_invalidate_before_quiescing_publication",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    DbgPrint(TRACE_LEVEL_FATAL, ("---> %s\\n", __FUNCTION__));
+
+    LONG state = InterlockedCompareExchange(&m_NativeContextState,
+                                            VioGpuNativeContextOffline,
+                                            VioGpuNativeContextOffline);""",
+        """    DbgPrint(TRACE_LEVEL_FATAL, ("---> %s\\n", __FUNCTION__));
+
+    InvalidateNativeContextRegistrationsLocked();
+    LONG state = InterlockedCompareExchange(&m_NativeContextState,
+                                            VioGpuNativeContextOffline,
+                                            VioGpuNativeContextOffline);""",
+    ),
+    Rewrite(
+        "R53_reset_before_isr_barriers",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
+    if (m_bVirtioInitialized)
+    {
+        status = SynchronizeInterruptMessages();""",
+        """    status = virtio_device_reset_checked(&m_VioDev);
+    InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
+    if (m_bVirtioInitialized)
+    {
+        status = SynchronizeInterruptMessages();""",
+    ),
+    Rewrite(
+        "R53b_partial_init_skips_config_barrier",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "m_PciResources.IsMSIEnabled() && m_bQueuesInitialized ? 3U : 1U",
+        "m_PciResources.IsMSIEnabled() && m_bQueuesInitialized ? 3U : 0U",
+    ),
+    Rewrite(
+        "R54_retire_owners_before_reset_status_proof",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        status = virtio_device_reset_checked(&m_VioDev);
+        if (!NT_SUCCESS(status) || virtio_get_status(&m_VioDev) != 0)
+        {
+            FailNativeContextAtAnyIrql();
+            return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
+        }
+        status = SynchronizeInterruptMessages();
+        if (!NT_SUCCESS(status))
+        {
+            FailNativeContextAtAnyIrql();
+            return status;
+        }
+        RetireAllNativeContextOwnersLocked();""",
+        """        status = virtio_device_reset_checked(&m_VioDev);
+        if (virtio_get_status(&m_VioDev) != 0)
+        {
+            FailNativeContextAtAnyIrql();
+            return STATUS_DEVICE_NOT_READY;
+        }
+        status = SynchronizeInterruptMessages();
+        if (!NT_SUCCESS(status))
+        {
+            FailNativeContextAtAnyIrql();
+            return status;
+        }
+        RetireAllNativeContextOwnersLocked();""",
+    ),
+    Rewrite(
+        "R55_ignore_reset_status_failure",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        if (!NT_SUCCESS(status) || virtio_get_status(&m_VioDev) != 0)
+        {
+            FailNativeContextAtAnyIrql();
+            return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
+        }""",
+        """        if (!NT_SUCCESS(status))
+        {
+            FailNativeContextAtAnyIrql();
+            return status;
+        }""",
+    ),
+    Rewrite(
+        "R56_bypass_context_device_reservation",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (!ReferenceDevice(device))""",
+        """    if (FALSE && !ReferenceDevice(device))""",
+    ),
+    Rewrite(
+        "R57_destroy_device_without_closing_bit",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """            LONG closingState = state | VIOGPU_WDDM_DEVICE_CLOSING;""",
+        """            LONG closingState = state;""",
+    ),
+    Rewrite(
+        "R58_leak_render_snapshot_on_short_buffer",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+        ExReleaseRundownProtection(&context->Operations);
+        return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;""",
+        """        ExReleaseRundownProtection(&context->Operations);
+        return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;""",
+    ),
+    Rewrite(
+        "R59_reopen_hardware_rundown_after_failed_stop",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    if (NT_SUCCESS(status))
+    {
+        ExReInitializeRundownProtection(&m_HardwareOperations);
+        m_HardwareRundownCompleted = FALSE;
+    }
+    return status;""",
+        """    ExReInitializeRundownProtection(&m_HardwareOperations);
+    m_HardwareRundownCompleted = FALSE;
+    return status;""",
+    ),
+    Rewrite(
+        "R60_enable_compile_only_driver_entry",
+        "viogpu/viogpuwddm/driver_entry.cpp",
+        """    return STATUS_NOT_SUPPORTED;
+}""",
+        """    return VioGpuWddmInitializeMiniportCompileOnly(driverObject, registryPath);
+}""",
+    ),
+    Rewrite(
+        "R61_enable_submit_without_retirement",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    UNREFERENCED_PARAMETER(hAdapter);
+    UNREFERENCED_PARAMETER(submitCommand);
+    return STATUS_NOT_SUPPORTED;
+}""",
+        """    UNREFERENCED_PARAMETER(hAdapter);
+    UNREFERENCED_PARAMETER(submitCommand);
+    return STATUS_SUCCESS;
+}""",
+    ),
+    Rewrite(
+        "R62_skip_hardware_rundown_state_init",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """      m_pHWDevice(NULL), m_HardwareRundownCompleted(FALSE)""",
+        """      m_pHWDevice(NULL)""",
+    ),
+    Rewrite(
+        "R63_repeat_hardware_rundown_wait_on_stop_retry",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    if (!m_HardwareRundownCompleted)
+    {
+        ExWaitForRundownProtectionRelease(&m_HardwareOperations);
+        ExRundownCompleted(&m_HardwareOperations);
+        m_HardwareRundownCompleted = TRUE;
+    }
+    NTSTATUS status = STATUS_SUCCESS;""",
+        """    ExWaitForRundownProtectionRelease(&m_HardwareOperations);
+    ExRundownCompleted(&m_HardwareOperations);
+    m_HardwareRundownCompleted = TRUE;
+    NTSTATUS status = STATUS_SUCCESS;""",
+    ),
+    Rewrite(
+        "R64_skip_hardware_rundown_completed_on_stop",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        ExWaitForRundownProtectionRelease(&m_HardwareOperations);
+        ExRundownCompleted(&m_HardwareOperations);
+        m_HardwareRundownCompleted = TRUE;
+    }
+    NTSTATUS status = STATUS_SUCCESS;""",
+        """        ExWaitForRundownProtectionRelease(&m_HardwareOperations);
+        m_HardwareRundownCompleted = TRUE;
+    }
+    NTSTATUS status = STATUS_SUCCESS;""",
+    ),
+    Rewrite(
+        "R65_skip_hardware_rundown_completed_in_destructor",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        ExWaitForRundownProtectionRelease(&m_HardwareOperations);
+        ExRundownCompleted(&m_HardwareOperations);
+        m_HardwareRundownCompleted = TRUE;
+    }
+    DbgPrintEx""",
+        """        ExWaitForRundownProtectionRelease(&m_HardwareOperations);
+        m_HardwareRundownCompleted = TRUE;
+    }
+    DbgPrintEx""",
+    ),
+    Rewrite(
+        "R66_publish_hardware_open_before_reinitialize",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """        ExReInitializeRundownProtection(&m_HardwareOperations);
+        m_HardwareRundownCompleted = FALSE;""",
+        """        m_HardwareRundownCompleted = FALSE;
+        ExReInitializeRundownProtection(&m_HardwareOperations);""",
+    ),
+    Rewrite(
+        "R67_skip_context_rundown_state_init",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    ExInitializeRundownProtection(&context->Operations);
+    context->OperationsRundownCompleted = FALSE;
+    context->Device = device;""",
+        """    ExInitializeRundownProtection(&context->Operations);
+    context->Device = device;""",
+    ),
+    Rewrite(
+        "R68_repeat_context_rundown_wait_on_destroy_retry",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (!context->OperationsRundownCompleted)
+    {
+        ExWaitForRundownProtectionRelease(&context->Operations);
+        ExRundownCompleted(&context->Operations);
+        context->OperationsRundownCompleted = TRUE;
+    }
+
+    BOOLEAN released = FALSE;""",
+        """    ExWaitForRundownProtectionRelease(&context->Operations);
+    ExRundownCompleted(&context->Operations);
+    context->OperationsRundownCompleted = TRUE;
+
+    BOOLEAN released = FALSE;""",
+    ),
+    Rewrite(
+        "R69_skip_context_rundown_completed",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """        ExWaitForRundownProtectionRelease(&context->Operations);
+        ExRundownCompleted(&context->Operations);
+        context->OperationsRundownCompleted = TRUE;""",
+        """        ExWaitForRundownProtectionRelease(&context->Operations);
+        context->OperationsRundownCompleted = TRUE;""",
+    ),
+    Rewrite(
+        "R70_reopen_context_rundown_on_destroy_failure",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (!released)
+    {
+        return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
+    }""",
+        """    if (!released)
+    {
+        context->OperationsRundownCompleted = FALSE;
+        return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
+    }""",
+    ),
+    Rewrite(
+        "R71_reinitialize_terminal_context_rundown",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    VIOGPU_WDDM_DEVICE *device = context->Device;
+    context->Signature = 0;""",
+        """    VIOGPU_WDDM_DEVICE *device = context->Device;
+    ExReInitializeRundownProtection(&context->Operations);
+    context->Signature = 0;""",
+    ),
+    Rewrite(
+        "R72_bypass_render_context_rundown",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (!ExAcquireRundownProtection(&context->Operations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE)""",
+        """    if (FALSE && !ExAcquireRundownProtection(&context->Operations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE)""",
+    ),
+    Rewrite(
+        "R73_release_context_before_native_snapshot",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+    if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))""",
+        """    VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+    ExReleaseRundownProtection(&context->Operations);
+    if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))""",
+    ),
+    Rewrite(
+        "R74_bypass_vidmm_hardware_rundown",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """BOOLEAN VioGpuDod::QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
+{
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))""",
+        """BOOLEAN VioGpuDod::QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
+{
+    if (FALSE && !ExAcquireRundownProtection(&m_HardwareOperations))""",
+    ),
+    Rewrite(
+        "R75_bypass_readiness_hardware_rundown",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
+                                               _Out_opt_ UINT *capsetVersion,
+                                               _Out_opt_ UINT *capsetSize)
+{
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))""",
+        """BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
+                                               _Out_opt_ UINT *capsetVersion,
+                                               _Out_opt_ UINT *capsetSize)
+{
+    if (FALSE && !ExAcquireRundownProtection(&m_HardwareOperations))""",
+    ),
+    Rewrite(
+        "R76_bypass_create_context_hardware_rundown",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context)
+{
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))""",
+        """NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context)
+{
+    if (FALSE && !ExAcquireRundownProtection(&m_HardwareOperations))""",
+    ),
+    Rewrite(
+        "R77_bypass_destroy_context_hardware_rundown",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    *released = FALSE;
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))""",
+        """    *released = FALSE;
+    if (FALSE && !ExAcquireRundownProtection(&m_HardwareOperations))""",
+    ),
+    Rewrite(
+        "R78_release_hardware_rundown_before_adapter_use",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    VioGpuAdapter *adapter = m_pHWDevice;
+    NTSTATUS status = !IsHardwareResetRequested() && adapter != NULL ? adapter->CreateNativeContext(context)
+                                                                     : STATUS_DEVICE_NOT_READY;
+    ExReleaseRundownProtection(&m_HardwareOperations);""",
+        """    VioGpuAdapter *adapter = m_pHWDevice;
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    NTSTATUS status = !IsHardwareResetRequested() && adapter != NULL ? adapter->CreateNativeContext(context)
+                                                                     : STATUS_DEVICE_NOT_READY;""",
+    ),
+    Rewrite(
+        "R79_generation_ignores_hardware_reset_gate",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    return !m_pVioGpuDod->IsHardwareResetRequested() &&
+           generation == InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) &&""",
+        """    return generation == InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) &&""",
+    ),
+    Rewrite(
+        "R80_system_display_gate_after_early_return",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\\n", __FUNCTION__));
+    InterlockedExchange(&m_HardwareResetRequested, TRUE);""",
+        """    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\\n", __FUNCTION__));
+    if (!IsVgaDevice())
+    {
+        return STATUS_UNSUCCESSFUL;
+    }
+    InterlockedExchange(&m_HardwareResetRequested, TRUE);""",
+    ),
+    Rewrite(
         "S01_pending_comparison_reversed",
         "viogpu/common/viogpu_rdma.cpp",
         "if (status == STATUS_PENDING)",
@@ -511,6 +993,26 @@ REWRITES = (
         "viogpu/common/viogpu_rdma.cpp",
         "if (!NT_SUCCESS(m_DisconnectStatus))",
         "if (NT_SUCCESS(m_DisconnectStatus) == FALSE)",
+        accepted=True,
+    ),
+    Rewrite(
+        "S03_reference_device_overload_ignored",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """void DereferenceDevice(VIOGPU_WDDM_DEVICE *device);
+
+BOOLEAN ReferenceDevice(VIOGPU_WDDM_DEVICE *device)
+{""",
+        """void DereferenceDevice(VIOGPU_WDDM_DEVICE *device);
+
+BOOLEAN ReferenceDevice(VIOGPU_WDDM_DEVICE *device, BOOLEAN allowClosing)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(allowClosing);
+    return FALSE;
+}
+
+BOOLEAN ReferenceDevice(VIOGPU_WDDM_DEVICE *device)
+{""",
         accepted=True,
     ),
 )
@@ -558,20 +1060,23 @@ def main() -> int:
         for rewrite in REWRITES:
             case = Path(temporary) / rewrite.name
             shutil.copytree(frozen, case)
-            target = case / rewrite.path
-            source = target.read_text(encoding="utf-8")
-            count = source.count(rewrite.old)
-            if count != 1:
-                print(f"{rewrite.name} SETUP expected=1 found={count}")
-                failures += 1
-                continue
-            target.write_text(source.replace(rewrite.old, rewrite.new, 1), encoding="utf-8")
-            code, output = run_checker(case)
-            passed = code == 0
-            expected = rewrite.accepted
-            outcome = "PASS" if passed == expected else "FAIL"
-            print(f"{rewrite.name} {outcome} exit={code} {output}")
-            failures += passed != expected
+            try:
+                target = case / rewrite.path
+                source = target.read_text(encoding="utf-8")
+                count = source.count(rewrite.old)
+                if count != 1:
+                    print(f"{rewrite.name} SETUP expected=1 found={count}")
+                    failures += 1
+                    continue
+                target.write_text(source.replace(rewrite.old, rewrite.new, 1), encoding="utf-8")
+                code, output = run_checker(case)
+                passed = code == 0
+                expected = rewrite.accepted
+                outcome = "PASS" if passed == expected else "FAIL"
+                print(f"{rewrite.name} {outcome} exit={code} {output}")
+                failures += passed != expected
+            finally:
+                shutil.rmtree(case, ignore_errors=True)
 
     if tree_hash(ROOT) != source_hash:
         print("SOURCE_CHANGED")

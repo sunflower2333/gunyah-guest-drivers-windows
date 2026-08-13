@@ -56,7 +56,7 @@ static BOOLEAN VioGpuInterruptBarrier(_In_opt_ PVOID context)
 PAGED_CODE_SEG_BEGIN
 VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     : m_pPhysicalDevice(pPhysicalDeviceObject), m_MonitorPowerState(PowerDeviceD0), m_AdapterPowerState(PowerDeviceD0),
-      m_pHWDevice(NULL)
+      m_pHWDevice(NULL), m_HardwareRundownCompleted(FALSE), m_HardwareResetRequested(FALSE)
 {
     PAGED_CODE();
 
@@ -68,6 +68,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     RtlZeroMemory(&m_CurrentMode, sizeof(m_CurrentMode));
     RtlZeroMemory(&m_SystemDisplayInfo, sizeof(m_SystemDisplayInfo));
     RtlZeroMemory(&m_PointerShape, sizeof(m_PointerShape));
+    ExInitializeRundownProtection(&m_HardwareOperations);
     m_PersistentDispMode0Width = 0;
     m_PersistentDispMode0Height = 0;
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
@@ -76,6 +77,12 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
 VioGpuDod::~VioGpuDod(void)
 {
     PAGED_CODE();
+    if (!m_HardwareRundownCompleted)
+    {
+        ExWaitForRundownProtectionRelease(&m_HardwareOperations);
+        ExRundownCompleted(&m_HardwareOperations);
+        m_HardwareRundownCompleted = TRUE;
+    }
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,
                "viogpu adapter teardown: started=%u hardware=%u\n",
@@ -144,6 +151,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     {
         return STATUS_DEVICE_NOT_READY;
     }
+    InterlockedExchange(&m_HardwareResetRequested, FALSE);
 
     if (pDxgkInterface->Size > sizeof(m_DxgkInterface))
     {
@@ -209,6 +217,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu StartDevice: HWInit failed, status=0x%08X\n", Status);
         DbgPrint(TRACE_LEVEL_ERROR, ("HWInit failed with status 0x%X\n", Status));
+        InterlockedExchange(&m_HardwareResetRequested, TRUE);
         NTSTATUS closeStatus = m_pHWDevice->HWClose();
         if (NT_SUCCESS(closeStatus))
         {
@@ -232,6 +241,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                    "viogpu StartDevice: SetRegisterInfo failed, status=0x%08X\n",
                    Status);
         VIOGPU_LOG_ASSERTION1("RegisterHWInfo failed with status 0x%X\n", Status);
+        InterlockedExchange(&m_HardwareResetRequested, TRUE);
         NTSTATUS closeStatus = m_pHWDevice->HWClose();
         if (NT_SUCCESS(closeStatus))
         {
@@ -257,6 +267,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                   Status,
                   m_SystemDisplayInfo.Width));
         VioGpuDbgBreak();
+        InterlockedExchange(&m_HardwareResetRequested, TRUE);
         NTSTATUS closeStatus = m_pHWDevice->HWClose();
         if (NT_SUCCESS(closeStatus))
         {
@@ -317,6 +328,13 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
 {
     PAGED_CODE();
 
+    InterlockedExchange(&m_HardwareResetRequested, TRUE);
+    if (!m_HardwareRundownCompleted)
+    {
+        ExWaitForRundownProtectionRelease(&m_HardwareOperations);
+        ExRundownCompleted(&m_HardwareOperations);
+        m_HardwareRundownCompleted = TRUE;
+    }
     NTSTATUS status = STATUS_SUCCESS;
     if (m_pHWDevice != NULL)
     {
@@ -331,6 +349,74 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
     {
         m_Flags.DriverStarted = FALSE;
     }
+    if (NT_SUCCESS(status))
+    {
+        ExReInitializeRundownProtection(&m_HardwareOperations);
+        m_HardwareRundownCompleted = FALSE;
+    }
+    return status;
+}
+
+BOOLEAN VioGpuDod::QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
+{
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return FALSE;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    BOOLEAN available = !IsHardwareResetRequested() && adapter != NULL &&
+                        adapter->QueryVidMmSegment(baseAddress, physicalAddress, size);
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return available;
+}
+
+BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
+                                               _Out_opt_ UINT *capsetVersion,
+                                               _Out_opt_ UINT *capsetSize)
+{
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return FALSE;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    BOOLEAN ready = !IsHardwareResetRequested() && adapter != NULL &&
+                    adapter->QueryNativeContextReadiness(capset, capsetVersion, capsetSize);
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return ready;
+}
+
+NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context)
+{
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    NTSTATUS status = !IsHardwareResetRequested() && adapter != NULL ? adapter->CreateNativeContext(context)
+                                                                     : STATUS_DEVICE_NOT_READY;
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return status;
+}
+
+NTSTATUS VioGpuDod::DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released)
+{
+    if (released == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *released = FALSE;
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    NTSTATUS status = !IsHardwareResetRequested() && adapter != NULL ? adapter->DestroyNativeContext(context, released)
+                                                                     : STATUS_DEVICE_NOT_READY;
+    ExReleaseRundownProtection(&m_HardwareOperations);
     return status;
 }
 
@@ -2097,7 +2183,11 @@ void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
 VOID VioGpuDod::DpcRoutine(VOID)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
-    m_pHWDevice->DpcRoutine(&m_DxgkInterface);
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (!IsHardwareResetRequested() && adapter != NULL)
+    {
+        adapter->DpcRoutine(&m_DxgkInterface);
+    }
     m_DxgkInterface.DxgkCbNotifyDpc((HANDLE)m_DxgkInterface.DeviceHandle);
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -2105,13 +2195,24 @@ VOID VioGpuDod::DpcRoutine(VOID)
 BOOLEAN VioGpuDod::InterruptRoutine(_In_ ULONG MessageNumber)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--> %s\n", __FUNCTION__));
-    return m_pHWDevice ? m_pHWDevice->InterruptRoutine(&m_DxgkInterface, MessageNumber) : FALSE;
+    VioGpuAdapter *adapter = m_pHWDevice;
+    return !IsHardwareResetRequested() && adapter != NULL ? adapter->InterruptRoutine(&m_DxgkInterface, MessageNumber)
+                                                          : FALSE;
 }
 
 VOID VioGpuDod::ResetDevice(VOID)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<---> %s\n", __FUNCTION__));
-    m_pHWDevice->ResetDevice();
+    InterlockedExchange(&m_HardwareResetRequested, TRUE);
+    if (KeGetCurrentIrql() <= DISPATCH_LEVEL && ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        VioGpuAdapter *adapter = m_pHWDevice;
+        if (adapter != NULL)
+        {
+            adapter->ResetDevice();
+        }
+        ExReleaseRundownProtection(&m_HardwareOperations);
+    }
 }
 
 NTSTATUS VioGpuDod::SystemDisplayEnable(_In_ D3DDDI_VIDEO_PRESENT_TARGET_ID TargetId,
@@ -2123,6 +2224,7 @@ NTSTATUS VioGpuDod::SystemDisplayEnable(_In_ D3DDDI_VIDEO_PRESENT_TARGET_ID Targ
     UNREFERENCED_PARAMETER(Flags);
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
+    InterlockedExchange(&m_HardwareResetRequested, TRUE);
 
     VIOGPU_ASSERT((TargetId < MAX_CHILDREN) || (TargetId == D3DDDI_ID_UNINITIALIZED));
 
@@ -2131,7 +2233,18 @@ NTSTATUS VioGpuDod::SystemDisplayEnable(_In_ D3DDDI_VIDEO_PRESENT_TARGET_ID Targ
         return STATUS_UNSUCCESSFUL;
     }
 
-    if (KeGetCurrentIrql() != PASSIVE_LEVEL || !m_pHWDevice->ResetToVgaMode())
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    VioGpuAdapter *adapter = m_pHWDevice;
+    BOOLEAN reset = adapter != NULL && adapter->ResetToVgaMode();
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    if (!reset)
     {
         return STATUS_DEVICE_NOT_READY;
     }
@@ -2519,6 +2632,9 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     KeInitializeSpinLock(&m_NativeContextReadinessLock);
     RtlZeroMemory(&m_NativeContextReadiness, sizeof(m_NativeContextReadiness));
     KeInitializeMutex(&m_NativeContextLifecycleMutex, 0);
+    InitializeListHead(&m_NativeContextRegistry);
+    ExInitializeRundownProtection(&m_NativeContextReferences);
+    m_NextNativeContextId = 1;
     m_NativeContextState = VioGpuNativeContextOffline;
     m_NativeContextGeneration = 0;
     m_InterruptDispatchEnabled = FALSE;
@@ -2536,9 +2652,9 @@ VioGpuAdapter::~VioGpuAdapter(void)
     LONG state = InterlockedCompareExchange(&m_NativeContextState,
                                             VioGpuNativeContextOffline,
                                             VioGpuNativeContextOffline);
-    if (state != VioGpuNativeContextOffline || m_bVirtioInitialized || m_bQueuesInitialized || m_pWorkThread != NULL ||
-        m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() || m_RdmaPool.HasArenaOwner() ||
-        m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0)
+    if (state != VioGpuNativeContextOffline || !IsListEmpty(&m_NativeContextRegistry) || m_bVirtioInitialized ||
+        m_bQueuesInitialized || m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() ||
+        m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0)
     {
         NTSTATUS status = StopNativeContextTransport();
         if (!NT_SUCCESS(status))
@@ -2553,10 +2669,12 @@ VioGpuAdapter::~VioGpuAdapter(void)
     NT_ASSERT(InterlockedCompareExchange(&m_NativeContextState,
                                          VioGpuNativeContextOffline,
                                          VioGpuNativeContextOffline) == VioGpuNativeContextOffline);
+    NT_ASSERT(IsListEmpty(&m_NativeContextRegistry));
     NT_ASSERT(!m_bVirtioInitialized && !m_bQueuesInitialized);
     NT_ASSERT(m_pWorkThread == NULL && m_WorkThreadHandle == NULL);
     NT_ASSERT(!m_GpuBuf.HasAllocationOwner() && !m_RdmaPool.HasArenaOwner());
     NT_ASSERT(m_FrameSegment.GetSize() == 0 && m_CursorSegment.GetSize() == 0);
+    ExWaitForRundownProtectionRelease(&m_NativeContextReferences);
     CloseResolutionEvent();
     delete[] m_ModeInfo;
     m_ModeInfo = NULL;
@@ -2841,9 +2959,9 @@ BOOLEAN VioGpuAdapter::BeginNativeContextInitialization(void)
         return FALSE;
     }
 
-    if (m_bVirtioInitialized || m_bQueuesInitialized || m_pWorkThread != NULL || m_WorkThreadHandle != NULL ||
-        m_GpuBuf.HasAllocationOwner() || m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 ||
-        m_CursorSegment.GetSize() != 0 ||
+    if (!IsListEmpty(&m_NativeContextRegistry) || m_bVirtioInitialized || m_bQueuesInitialized ||
+        m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() ||
+        m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0 ||
         InterlockedCompareExchange(&m_NativeContextState,
                                    VioGpuNativeContextStarting,
                                    VioGpuNativeContextOffline) != VioGpuNativeContextOffline)
@@ -2964,6 +3082,385 @@ BOOLEAN VioGpuAdapter::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
     }
     KeReleaseSpinLock(&m_NativeContextReadinessLock, oldIrql);
     return ready;
+}
+
+UINT VioGpuAdapter::AllocateNativeContextIdLocked(void)
+{
+    PAGED_CODE();
+
+    UINT contextId = m_NextNativeContextId;
+    if (contextId == 0)
+    {
+        return 0;
+    }
+    ++m_NextNativeContextId;
+    return contextId;
+}
+
+NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context)
+{
+    PAGED_CODE();
+
+    if (context == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        InterlockedCompareExchange(&context->State,
+                                   VioGpuNativeContextAllocated,
+                                   VioGpuNativeContextAllocated) != VioGpuNativeContextAllocated ||
+        context->Adapter != NULL || context->Owner != NULL || context->Registered)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&m_NativeContextLifecycleMutex, Executive, KernelMode, FALSE, &timeout);
+    if (status != STATUS_SUCCESS)
+    {
+        FailNativeContextAtAnyIrql();
+        return status;
+    }
+
+    LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
+    GPU_CAPSET_DRM capset = {};
+    if (InterlockedCompareExchange(&m_NativeContextState,
+                                   VioGpuNativeContextOffline,
+                                   VioGpuNativeContextOffline) != VioGpuNativeContextReady ||
+        !QueryNativeContextReadiness(&capset, NULL, NULL))
+    {
+        KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    UINT contextId = AllocateNativeContextIdLocked();
+    if (contextId == 0)
+    {
+        KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        return STATUS_NO_MEMORY;
+    }
+
+    VIOGPU_NATIVE_CONTEXT_OWNER *owner = new (NonPagedPoolNx) VIOGPU_NATIVE_CONTEXT_OWNER;
+    if (owner == NULL)
+    {
+        KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        return STATUS_NO_MEMORY;
+    }
+    InitializeListHead(&owner->AdapterLink);
+    owner->Registration = context;
+    owner->State = VioGpuNativeContextOwnerCreating;
+    owner->Generation = generation;
+    owner->ContextId = contextId;
+    InsertTailList(&m_NativeContextRegistry, &owner->AdapterLink);
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+    context->Adapter = this;
+    context->Owner = owner;
+    context->Generation = generation;
+    context->ContextId = contextId;
+    InterlockedExchange(&context->State, VioGpuNativeContextCreating);
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);
+
+    VIOGPU_HOST_CONTEXT_RESULT createResult = m_CtrlQueue.CreateNativeContext(contextId);
+    BOOLEAN stillCurrent = createResult == VioGpuHostContextConfirmed && m_CtrlQueue.IsSynchronousRequestsHealthy() &&
+                           InterlockedCompareExchange(&m_NativeContextState,
+                                                      VioGpuNativeContextOffline,
+                                                      VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
+                           InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) == generation;
+    if (!stillCurrent)
+    {
+        if (createResult == VioGpuHostContextUnknown || !m_CtrlQueue.IsSynchronousRequestsHealthy() ||
+            InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) != generation)
+        {
+            FailNativeContextAtAnyIrql();
+        }
+        if (createResult == VioGpuHostContextNotSubmitted || createResult == VioGpuHostContextRejected)
+        {
+            RetireNativeContextOwnerLocked(owner);
+        }
+        else
+        {
+            owner->Registration = NULL;
+        }
+        KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+        context->Adapter = NULL;
+        context->Owner = NULL;
+        context->Generation = 0;
+        context->ContextId = 0;
+        InterlockedExchange(&context->State, VioGpuNativeContextDead);
+        KeReleaseSpinLock(&context->BindingLock, oldIrql);
+        KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    owner->State = VioGpuNativeContextOwnerLive;
+    KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+    context->Registered = TRUE;
+    InterlockedExchange(&context->State, VioGpuNativeContextLive);
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);
+    KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                             _Out_ BOOLEAN *released)
+{
+    PAGED_CODE();
+
+    if (context == NULL || released == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *released = FALSE;
+
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&m_NativeContextLifecycleMutex, Executive, KernelMode, FALSE, &timeout);
+    if (status != STATUS_SUCCESS)
+    {
+        FailNativeContextAtAnyIrql();
+        return status;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+    LONG objectState = InterlockedCompareExchange(&context->State, VioGpuNativeContextDead, VioGpuNativeContextDead);
+    if (objectState == VioGpuNativeContextDead && context->Adapter == NULL && !context->Registered)
+    {
+        KeReleaseSpinLock(&context->BindingLock, oldIrql);
+        *released = TRUE;
+        KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        return STATUS_SUCCESS;
+    }
+    VIOGPU_NATIVE_CONTEXT_OWNER *owner = context->Owner;
+    if (objectState != VioGpuNativeContextLive || context->Adapter != this || !context->Registered || owner == NULL ||
+        owner->Registration != context || owner->State != VioGpuNativeContextOwnerLive ||
+        owner->Generation != context->Generation || owner->ContextId != context->ContextId)
+    {
+        KeReleaseSpinLock(&context->BindingLock, oldIrql);
+        KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        return STATUS_INVALID_HANDLE;
+    }
+
+    LONG contextGeneration = context->Generation;
+    UINT contextId = context->ContextId;
+    InterlockedExchange(&context->State, VioGpuNativeContextDestroying);
+    context->Registered = FALSE;
+    owner->State = VioGpuNativeContextOwnerDestroying;
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);
+
+    LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
+    BOOLEAN current = contextGeneration == generation &&
+                      InterlockedCompareExchange(&m_NativeContextState,
+                                                 VioGpuNativeContextOffline,
+                                                 VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
+                      m_CtrlQueue.IsSynchronousRequestsHealthy();
+
+    VIOGPU_HOST_CONTEXT_RESULT destroyResult = current ? m_CtrlQueue.DestroyNativeContext(contextId)
+                                                       : VioGpuHostContextUnknown;
+    if (destroyResult == VioGpuHostContextConfirmed || destroyResult == VioGpuHostContextRejected)
+    {
+        RetireNativeContextOwnerLocked(owner);
+    }
+    else
+    {
+        owner->Registration = NULL;
+    }
+    KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+    context->Adapter = NULL;
+    context->Owner = NULL;
+    context->Generation = 0;
+    context->ContextId = 0;
+    InterlockedExchange(&context->State, VioGpuNativeContextDead);
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);
+    *released = TRUE;
+
+    if (destroyResult != VioGpuHostContextConfirmed && destroyResult != VioGpuHostContextRejected)
+    {
+        FailNativeContextAtAnyIrql();
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu context destroy: Host ownership uncertain; transport failed closed\n");
+    }
+    status = STATUS_SUCCESS;
+    KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+    return status;
+}
+
+BOOLEAN VioGpuAdapter::AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                                    _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot)
+{
+    if (context == NULL || snapshot == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return FALSE;
+    }
+
+    RtlZeroMemory(snapshot, sizeof(*snapshot));
+    VioGpuAdapter *adapter = ReferenceNativeContextAdapter(context);
+    if (adapter == NULL)
+    {
+        return FALSE;
+    }
+
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&adapter->m_NativeContextLifecycleMutex,
+                                            Executive,
+                                            KernelMode,
+                                            FALSE,
+                                            &timeout);
+    if (status != STATUS_SUCCESS)
+    {
+        adapter->FailNativeContextAtAnyIrql();
+        DereferenceNativeContextAdapter(adapter);
+        return FALSE;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+    BOOLEAN acquired = context->Adapter == adapter && context->Owner != NULL && context->Registered &&
+                       context->Generation != 0 && context->ContextId != 0 &&
+                       InterlockedCompareExchange(&context->State,
+                                                  VioGpuNativeContextDead,
+                                                  VioGpuNativeContextDead) == VioGpuNativeContextLive;
+    if (acquired)
+    {
+        snapshot->Adapter = adapter;
+        snapshot->Generation = context->Generation;
+        snapshot->ContextId = context->ContextId;
+    }
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);
+
+    if (acquired && !adapter->IsNativeContextGenerationCurrent(snapshot->Generation))
+    {
+        RtlZeroMemory(snapshot, sizeof(*snapshot));
+        acquired = FALSE;
+    }
+    if (!acquired)
+    {
+        KeReleaseMutex(&adapter->m_NativeContextLifecycleMutex, FALSE);
+        DereferenceNativeContextAdapter(adapter);
+    }
+    return acquired;
+}
+
+void VioGpuAdapter::ReleaseNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot)
+{
+    if (snapshot == NULL || snapshot->Adapter == NULL)
+    {
+        return;
+    }
+    VioGpuAdapter *adapter = snapshot->Adapter;
+    RtlZeroMemory(snapshot, sizeof(*snapshot));
+    KeReleaseMutex(&adapter->m_NativeContextLifecycleMutex, FALSE);
+    DereferenceNativeContextAdapter(adapter);
+}
+
+VioGpuAdapter *VioGpuAdapter::ReferenceNativeContextAdapter(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context)
+{
+    if (context == NULL)
+    {
+        return NULL;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+    VioGpuAdapter *adapter = context->Adapter;
+    if (adapter == NULL || context->Owner == NULL || !context->Registered || context->Generation == 0 ||
+        context->ContextId == 0 ||
+        InterlockedCompareExchange(&context->State,
+                                   VioGpuNativeContextDead,
+                                   VioGpuNativeContextDead) != VioGpuNativeContextLive ||
+        !ExAcquireRundownProtection(&adapter->m_NativeContextReferences))
+    {
+        adapter = NULL;
+    }
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);
+    return adapter;
+}
+
+void VioGpuAdapter::DereferenceNativeContextAdapter(_In_ VioGpuAdapter *adapter)
+{
+    ExReleaseRundownProtection(&adapter->m_NativeContextReferences);
+}
+
+BOOLEAN VioGpuAdapter::IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context)
+{
+    if (context == NULL)
+    {
+        return FALSE;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+    BOOLEAN released = context->Adapter == NULL && context->Owner == NULL && !context->Registered &&
+                       context->Generation == 0 && context->ContextId == 0 &&
+                       InterlockedCompareExchange(&context->State,
+                                                  VioGpuNativeContextDead,
+                                                  VioGpuNativeContextDead) == VioGpuNativeContextDead;
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);
+    return released;
+}
+
+BOOLEAN VioGpuAdapter::IsNativeContextGenerationCurrent(_In_ LONG generation)
+{
+    return !m_pVioGpuDod->IsHardwareResetRequested() &&
+           generation == InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) &&
+           InterlockedCompareExchange(&m_NativeContextState,
+                                      VioGpuNativeContextOffline,
+                                      VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
+           m_CtrlQueue.IsSynchronousRequestsHealthy();
+}
+
+void VioGpuAdapter::InvalidateNativeContextRegistrationsLocked(void)
+{
+    PAGED_CODE();
+
+    for (PLIST_ENTRY entry = m_NativeContextRegistry.Flink; entry != &m_NativeContextRegistry; entry = entry->Flink)
+    {
+        VIOGPU_NATIVE_CONTEXT_OWNER *owner = CONTAINING_RECORD(entry, VIOGPU_NATIVE_CONTEXT_OWNER, AdapterLink);
+        VIOGPU_NATIVE_CONTEXT_REGISTRATION *context = owner->Registration;
+        if (context == NULL)
+        {
+            continue;
+        }
+
+        KIRQL oldIrql;
+        KeAcquireSpinLock(&context->BindingLock, &oldIrql);
+        if (context->Adapter == this && context->Owner == owner)
+        {
+            InterlockedExchange(&context->State, VioGpuNativeContextDestroying);
+            context->Registered = FALSE;
+            context->Adapter = NULL;
+            context->Owner = NULL;
+            context->Generation = 0;
+            context->ContextId = 0;
+            InterlockedExchange(&context->State, VioGpuNativeContextDead);
+        }
+        KeReleaseSpinLock(&context->BindingLock, oldIrql);
+        owner->Registration = NULL;
+        owner->State = VioGpuNativeContextOwnerDestroying;
+    }
+}
+
+void VioGpuAdapter::RetireAllNativeContextOwnersLocked(void)
+{
+    PAGED_CODE();
+
+    while (!IsListEmpty(&m_NativeContextRegistry))
+    {
+        PLIST_ENTRY entry = RemoveHeadList(&m_NativeContextRegistry);
+        VIOGPU_NATIVE_CONTEXT_OWNER *owner = CONTAINING_RECORD(entry, VIOGPU_NATIVE_CONTEXT_OWNER, AdapterLink);
+        InitializeListHead(&owner->AdapterLink);
+        delete owner;
+    }
+}
+
+void VioGpuAdapter::RetireNativeContextOwnerLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner)
+{
+    PAGED_CODE();
+
+    RemoveEntryList(&owner->AdapterLink);
+    InitializeListHead(&owner->AdapterLink);
+    delete owner;
 }
 
 NTSTATUS VioGpuAdapter::ProbeNativeContextReadiness(void)
@@ -4376,6 +4873,41 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransport(void)
     return status;
 }
 
+NTSTATUS VioGpuAdapter::SynchronizeInterruptMessages(void)
+{
+    PAGED_CODE();
+
+    PDXGKRNL_INTERFACE dxgkInterface = GetDxgkInterface();
+    if (dxgkInterface == NULL || dxgkInterface->DxgkCbSynchronizeExecution == NULL)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    // Config uses message 0. Queue messages 1 and 2 are valid only after both
+    // queues were established successfully.
+    ULONG messageCount = m_PciResources.IsMSIEnabled() && m_bQueuesInitialized ? 3U : 1U;
+    for (ULONG messageNumber = 0; messageNumber < messageCount; ++messageNumber)
+    {
+        BOOLEAN barrierResult = FALSE;
+        NTSTATUS barrierStatus = dxgkInterface->DxgkCbSynchronizeExecution(dxgkInterface->DeviceHandle,
+                                                                           VioGpuInterruptBarrier,
+                                                                           this,
+                                                                           messageNumber,
+                                                                           &barrierResult);
+        if (!NT_SUCCESS(barrierStatus) || !barrierResult)
+        {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu close: interrupt barrier %lu failed, status=0x%08X result=%u\n",
+                       messageNumber,
+                       barrierStatus,
+                       barrierResult);
+            return NT_SUCCESS(barrierStatus) ? STATUS_DEVICE_NOT_READY : barrierStatus;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
 {
     PAGED_CODE();
@@ -4384,11 +4916,17 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     LONG state = InterlockedCompareExchange(&m_NativeContextState,
                                             VioGpuNativeContextOffline,
                                             VioGpuNativeContextOffline);
+    if (!IsListEmpty(&m_NativeContextRegistry) && !m_bVirtioInitialized)
+    {
+        InterlockedCompareExchange(&m_NativeContextState, VioGpuNativeContextFailed, VioGpuNativeContextOffline);
+        FailNativeContextAtAnyIrql();
+        return STATUS_DEVICE_NOT_READY;
+    }
     if (state == VioGpuNativeContextOffline)
     {
-        if (m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_bVirtioInitialized || m_bQueuesInitialized ||
-            m_GpuBuf.HasAllocationOwner() || m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 ||
-            m_CursorSegment.GetSize() != 0)
+        if (!IsListEmpty(&m_NativeContextRegistry) || m_pWorkThread != NULL || m_WorkThreadHandle != NULL ||
+            m_bVirtioInitialized || m_bQueuesInitialized || m_GpuBuf.HasAllocationOwner() ||
+            m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0)
         {
             state = InterlockedCompareExchange(&m_NativeContextState,
                                                VioGpuNativeContextFailed,
@@ -4412,7 +4950,6 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
         if (observed == VioGpuNativeContextFailed)
         {
             InterlockedIncrement(&m_NativeContextGeneration);
-            InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
             state = VioGpuNativeContextQuiescing;
         }
         else
@@ -4437,11 +4974,12 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
         {
             state = VioGpuNativeContextQuiescing;
             InterlockedIncrement(&m_NativeContextGeneration);
-            InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
             break;
         }
         state = observed;
     }
+
+    InvalidateNativeContextRegistrationsLocked();
 
     NTSTATUS status = m_CtrlQueue.QuiesceSynchronousRequests();
     if (!NT_SUCCESS(status))
@@ -4464,6 +5002,17 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
         FailNativeContextAtAnyIrql();
         return STATUS_DEVICE_NOT_READY;
     }
+    InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
+    if (m_bVirtioInitialized)
+    {
+        status = SynchronizeInterruptMessages();
+        if (!NT_SUCCESS(status))
+        {
+            FailNativeContextAtAnyIrql();
+            return status;
+        }
+        KeFlushQueuedDpcs();
+    }
     if (m_bQueuesInitialized)
     {
         m_CtrlQueue.DisableInterrupt();
@@ -4471,44 +5020,24 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     }
     if (m_bVirtioInitialized)
     {
-        // Reset first so no new DMA or interrupt can race the ISR barriers.
-        virtio_device_reset(&m_VioDev);
-        if (virtio_get_status(&m_VioDev) != 0)
+        // The ISR gate, per-message barriers, and DPC drain must precede any
+        // queue or device mutation. A successful reset is the Host-owner proof.
+        status = virtio_device_reset_checked(&m_VioDev);
+        if (!NT_SUCCESS(status) || virtio_get_status(&m_VioDev) != 0)
         {
             FailNativeContextAtAnyIrql();
-            return STATUS_DEVICE_NOT_READY;
+            return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
         }
+        status = SynchronizeInterruptMessages();
+        if (!NT_SUCCESS(status))
+        {
+            FailNativeContextAtAnyIrql();
+            return status;
+        }
+        RetireAllNativeContextOwnersLocked();
     }
     if (m_bQueuesInitialized)
     {
-        PDXGKRNL_INTERFACE dxgkInterface = GetDxgkInterface();
-        if (dxgkInterface == NULL || dxgkInterface->DxgkCbSynchronizeExecution == NULL)
-        {
-            FailNativeContextAtAnyIrql();
-            return STATUS_DEVICE_NOT_READY;
-        }
-        ULONG messageCount = m_PciResources.IsMSIEnabled() ? 3U : 1U;
-        for (ULONG messageNumber = 0; messageNumber < messageCount; ++messageNumber)
-        {
-            BOOLEAN barrierResult = FALSE;
-            NTSTATUS barrierStatus = dxgkInterface->DxgkCbSynchronizeExecution(dxgkInterface->DeviceHandle,
-                                                                               VioGpuInterruptBarrier,
-                                                                               this,
-                                                                               messageNumber,
-                                                                               &barrierResult);
-            if (!NT_SUCCESS(barrierStatus) || !barrierResult)
-            {
-                DbgPrintEx(DPFLTR_DEFAULT_ID,
-                           DPFLTR_ERROR_LEVEL,
-                           "viogpu close: interrupt barrier %lu failed, status=0x%08X result=%u\n",
-                           messageNumber,
-                           barrierStatus,
-                           barrierResult);
-                FailNativeContextAtAnyIrql();
-                return NT_SUCCESS(barrierStatus) ? STATUS_DEVICE_NOT_READY : barrierStatus;
-            }
-        }
-        KeFlushQueuedDpcs();
         InterlockedExchange((PLONG)&m_PendingWorks, 0);
         virtio_delete_queues(&m_VioDev);
         m_CtrlQueue.Close();

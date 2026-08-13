@@ -177,19 +177,46 @@ static void vio_modern_reset(VirtIODevice *vdev)
 {
     /* 0 status means a reset. */
     iowrite8(vdev, 0, &vdev->common->device_status);
-    /* After writing 0 to device_status, the driver MUST wait for a read of
-     * device_status to return 0 before reinitializing the device.
-     * This will flush out the status write, and flush in device writes,
-     * including MSI-X interrupts, if any.
-     */
+    /* Preserve the established API for callers that cannot consume a reset
+     * failure. Checked teardown paths use vio_modern_reset_checked below. */
     while (ioread8(vdev, &vdev->common->device_status)) {
         u16 val;
+
         if (pci_read_config_word(vdev, 0, &val) || val == 0xffff) {
             DPrintf(0, ("PCI config space is not readable, probably the device is removed\n"));
             break;
         }
         vdev_sleep(vdev, 1);
     }
+}
+
+#define VIRTIO_MODERN_RESET_TIMEOUT_MS 1000U
+
+static NTSTATUS vio_modern_reset_checked(VirtIODevice *vdev)
+{
+    unsigned elapsed;
+
+    /* 0 status means a reset. */
+    iowrite8(vdev, 0, &vdev->common->device_status);
+    /* After writing 0 to device_status, the driver MUST wait for a read of
+     * device_status to return 0 before reinitializing the device.
+     * This will flush out the status write, and flush in device writes,
+     * including MSI-X interrupts, if any.
+     */
+    for (elapsed = 0; elapsed < VIRTIO_MODERN_RESET_TIMEOUT_MS; ++elapsed) {
+        u16 val;
+
+        if (ioread8(vdev, &vdev->common->device_status) == 0) {
+            return STATUS_SUCCESS;
+        }
+        if (pci_read_config_word(vdev, 0, &val) || val == 0xffff) {
+            DPrintf(0, ("PCI config space is not readable, probably the device is removed\n"));
+            return STATUS_DEVICE_NOT_CONNECTED;
+        }
+        vdev_sleep(vdev, 1);
+    }
+    DPrintf(0, ("virtio modern reset timed out after %u ms\n", VIRTIO_MODERN_RESET_TIMEOUT_MS));
+    return STATUS_IO_TIMEOUT;
 }
 
 static u64 vio_modern_get_features(VirtIODevice *vdev)
@@ -313,6 +340,8 @@ static NTSTATUS vio_modern_setup_vq(struct virtqueue **queue, VirtIODevice *vdev
 
     vq_addr = mem_alloc_nonpaged_block(vdev, heap_size);
     if (vq_addr == NULL) {
+        mem_free_contiguous_pages(vdev, info->queue);
+        info->queue = NULL;
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -380,6 +409,7 @@ err_map_notify:
 err_new_queue:
     mem_free_nonpaged_block(vdev, vq_addr);
     mem_free_contiguous_pages(vdev, info->queue);
+    info->queue = NULL;
     return status;
 }
 
@@ -400,6 +430,7 @@ static void vio_modern_del_vq(VirtIOQueueInfo *info)
 
     mem_free_nonpaged_block(vdev, vq);
     mem_free_contiguous_pages(vdev, info->queue);
+    info->queue = NULL;
 }
 
 static const struct virtio_device_ops virtio_pci_device_ops = {
@@ -409,6 +440,7 @@ static const struct virtio_device_ops virtio_pci_device_ops = {
     .get_status = vio_modern_get_status,
     .set_status = vio_modern_set_status,
     .reset = vio_modern_reset,
+    .reset_checked = vio_modern_reset_checked,
     .get_features = vio_modern_get_features,
     .set_features = vio_modern_set_features,
     .set_config_vector = vio_modern_set_config_vector,

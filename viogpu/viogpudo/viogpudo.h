@@ -73,6 +73,51 @@ typedef struct _CURRENT_MODE
 } CURRENT_MODE;
 
 class VioGpuDod;
+class VioGpuAdapter;
+struct VIOGPU_NATIVE_CONTEXT_REGISTRATION;
+
+enum VIOGPU_NATIVE_CONTEXT_OWNER_STATE : LONG
+{
+    VioGpuNativeContextOwnerCreating = 0,
+    VioGpuNativeContextOwnerLive,
+    VioGpuNativeContextOwnerDestroying,
+};
+
+struct VIOGPU_NATIVE_CONTEXT_OWNER
+{
+    LIST_ENTRY AdapterLink;
+    VIOGPU_NATIVE_CONTEXT_REGISTRATION *Registration;
+    VIOGPU_NATIVE_CONTEXT_OWNER_STATE State;
+    LONG Generation;
+    UINT ContextId;
+};
+
+enum VIOGPU_NATIVE_CONTEXT_OBJECT_STATE : LONG
+{
+    VioGpuNativeContextAllocated = 0,
+    VioGpuNativeContextCreating,
+    VioGpuNativeContextLive,
+    VioGpuNativeContextDestroying,
+    VioGpuNativeContextDead,
+};
+
+struct VIOGPU_NATIVE_CONTEXT_REGISTRATION
+{
+    KSPIN_LOCK BindingLock;
+    VioGpuAdapter *Adapter;
+    VIOGPU_NATIVE_CONTEXT_OWNER *Owner;
+    volatile LONG State;
+    LONG Generation;
+    UINT ContextId;
+    BOOLEAN Registered;
+};
+
+struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT
+{
+    VioGpuAdapter *Adapter;
+    LONG Generation;
+    UINT ContextId;
+};
 
 enum VIOGPU_NATIVE_CONTEXT_STATE : LONG
 {
@@ -152,6 +197,15 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                         _Out_opt_ UINT *capsetVersion,
                                         _Out_opt_ UINT *capsetSize);
+    NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
+    NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released);
+    static BOOLEAN AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                                _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
+    static void ReleaseNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
+    static VioGpuAdapter *ReferenceNativeContextAdapter(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
+    static void DereferenceNativeContextAdapter(_In_ VioGpuAdapter *adapter);
+    static BOOLEAN IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
+    BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation);
 
     PVIDEO_MODE_INFORMATION GetModeInfo(UINT idx)
     {
@@ -186,6 +240,11 @@ class VioGpuAdapter : IVioGpuPCI
     void SetVideoModeInfo(UINT Idx, PVIOGPU_DISP_MODE pModeInfo);
     NTSTATUS StopNativeContextTransport(void);
     NTSTATUS StopNativeContextTransportLocked(void);
+    NTSTATUS SynchronizeInterruptMessages(void);
+    void InvalidateNativeContextRegistrationsLocked(void);
+    void RetireAllNativeContextOwnersLocked(void);
+    void RetireNativeContextOwnerLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner);
+    UINT AllocateNativeContextIdLocked(void);
     BOOLEAN BeginNativeContextInitialization(void);
     BOOLEAN CompleteNativeContextInitialization(void);
     void FailNativeContextAtAnyIrql(void);
@@ -241,6 +300,9 @@ class VioGpuAdapter : IVioGpuPCI
     KSPIN_LOCK m_NativeContextReadinessLock;
     VIOGPU_NATIVE_CONTEXT_READINESS m_NativeContextReadiness;
     KMUTEX m_NativeContextLifecycleMutex;
+    LIST_ENTRY m_NativeContextRegistry;
+    EX_RUNDOWN_REF m_NativeContextReferences;
+    UINT m_NextNativeContextId;
     volatile LONG m_NativeContextState;
     volatile LONG m_NativeContextGeneration;
     volatile LONG m_InterruptDispatchEnabled;
@@ -280,6 +342,9 @@ class VioGpuDod
 
     DXGKARG_SETPOINTERSHAPE m_PointerShape;
     VioGpuAdapter *m_pHWDevice;
+    mutable EX_RUNDOWN_REF m_HardwareOperations;
+    BOOLEAN m_HardwareRundownCompleted;
+    volatile LONG m_HardwareResetRequested;
 
     USHORT m_PersistentDispMode0Width;
     USHORT m_PersistentDispMode0Height;
@@ -422,15 +487,15 @@ class VioGpuDod
     {
         return &m_DxgkInterface;
     }
-    BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
-    {
-        return m_pHWDevice != NULL && m_pHWDevice->QueryVidMmSegment(baseAddress, physicalAddress, size);
-    }
+    BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
     BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                         _Out_opt_ UINT *capsetVersion,
-                                        _Out_opt_ UINT *capsetSize)
+                                        _Out_opt_ UINT *capsetSize);
+    NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
+    NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released);
+    BOOLEAN IsHardwareResetRequested(void)
     {
-        return m_pHWDevice != NULL && m_pHWDevice->QueryNativeContextReadiness(capset, capsetVersion, capsetSize);
+        return InterlockedCompareExchange(&m_HardwareResetRequested, FALSE, FALSE) != FALSE;
     }
 
   private:

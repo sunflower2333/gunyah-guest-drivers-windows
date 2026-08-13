@@ -72,6 +72,14 @@ enum VIOGPU_SYNCHRONOUS_STATE : LONG
     VioGpuSynchronousPoisoned,
 };
 
+enum VIOGPU_HOST_CONTEXT_RESULT : LONG
+{
+    VioGpuHostContextNotSubmitted = 0,
+    VioGpuHostContextConfirmed,
+    VioGpuHostContextRejected,
+    VioGpuHostContextUnknown,
+};
+
 #define MAX_INLINE_CMD_SIZE  96
 #define MAX_INLINE_RESP_SIZE 24
 #define VBUFFER_SIZE         (sizeof(GPU_VBUFFER) + MAX_INLINE_CMD_SIZE + MAX_INLINE_RESP_SIZE)
@@ -264,8 +272,8 @@ class CtrlQueue : public VioGpuQueue
     int QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id);
     BOOLEAN QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info);
     BOOLEAN QueryCapset(UINT capset_id, UINT capset_version, UINT capset_size, PGPU_CAPSET_DRM capset);
-    BOOLEAN CreateNativeContext(UINT context_id);
-    BOOLEAN DestroyNativeContext(UINT context_id);
+    VIOGPU_HOST_CONTEXT_RESULT CreateNativeContext(UINT context_id);
+    VIOGPU_HOST_CONTEXT_RESULT DestroyNativeContext(UINT context_id);
     BOOLEAN EnableSynchronousRequests(void);
     BOOLEAN IsSynchronousRequestsHealthy(void);
     NTSTATUS QuiesceSynchronousRequests(void);
@@ -287,6 +295,7 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN BeginSynchronousRequest(void);
     void EndSynchronousRequest(void);
     BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer);
+    BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted);
     KMUTEX m_SynchronousMutex;
     DECLSPEC_ALIGN(8) volatile LONG64 m_SynchronousEpochState;
     volatile LONG m_FenceIdr;

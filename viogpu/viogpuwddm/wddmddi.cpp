@@ -18,6 +18,41 @@ const UINT VIOGPU_WDDM_ALLOCATION_LIST_SIZE = 64;
 const UINT VIOGPU_WDDM_PATCH_LIST_SIZE = 128;
 const UINT VIOGPU_WDDM_GDI_ALLOCATION_LIST_SIZE = 256;
 const UINT VIOGPU_WDDM_GDI_PATCH_LIST_SIZE = 256;
+const LONG VIOGPU_WDDM_DEVICE_CLOSING = static_cast<LONG>(0x80000000UL);
+const LONG VIOGPU_WDDM_DEVICE_REFERENCE_MASK = 0x7FFFFFFF;
+
+void DereferenceDevice(VIOGPU_WDDM_DEVICE *device);
+
+BOOLEAN ReferenceDevice(VIOGPU_WDDM_DEVICE *device)
+{
+    if (device == NULL)
+    {
+        return FALSE;
+    }
+
+    LONG state = InterlockedCompareExchange(&device->ReferenceState, 0, 0);
+    while ((state & VIOGPU_WDDM_DEVICE_CLOSING) == 0 && state < VIOGPU_WDDM_DEVICE_REFERENCE_MASK)
+    {
+        LONG observed = InterlockedCompareExchange(&device->ReferenceState, state + 1, state);
+        if (observed == state)
+        {
+            if (device->Signature == VIOGPU_WDDM_DEVICE_SIGNATURE)
+            {
+                return TRUE;
+            }
+            DereferenceDevice(device);
+            return FALSE;
+        }
+        state = observed;
+    }
+    return FALSE;
+}
+
+void DereferenceDevice(VIOGPU_WDDM_DEVICE *device)
+{
+    LONG state = InterlockedDecrement(&device->ReferenceState);
+    NT_ASSERT((state & VIOGPU_WDDM_DEVICE_REFERENCE_MASK) != VIOGPU_WDDM_DEVICE_REFERENCE_MASK);
+}
 
 BOOLEAN IsSupportedSurfaceFormat(D3DDDIFORMAT format)
 {
@@ -581,6 +616,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateDevice(CONST HANDLE hAd
     device->Signature = VIOGPU_WDDM_DEVICE_SIGNATURE;
     device->Adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
     device->RuntimeDevice = createDevice->hDevice;
+    device->ReferenceState = 0;
     createDevice->hDevice = device;
     return STATUS_SUCCESS;
 }
@@ -592,6 +628,26 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyDevice(CONST HANDLE hD
     {
         return STATUS_INVALID_HANDLE;
     }
+    LONG state = InterlockedCompareExchange(&device->ReferenceState, 0, 0);
+    for (;;)
+    {
+        if ((state & VIOGPU_WDDM_DEVICE_CLOSING) == 0)
+        {
+            LONG closingState = state | VIOGPU_WDDM_DEVICE_CLOSING;
+            LONG observed = InterlockedCompareExchange(&device->ReferenceState, closingState, state);
+            if (observed != state)
+            {
+                state = observed;
+                continue;
+            }
+            state = closingState;
+        }
+        if ((state & VIOGPU_WDDM_DEVICE_REFERENCE_MASK) != 0)
+        {
+            return STATUS_DEVICE_BUSY;
+        }
+        break;
+    }
 
     device->Signature = 0;
     delete device;
@@ -602,23 +658,42 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
                                                                  DXGKARG_CREATECONTEXT *createContext)
 {
     VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(hDevice);
-    if (device == NULL || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || createContext == NULL ||
-        createContext->NodeOrdinal != 0 || createContext->EngineAffinity > 1)
+    if (device == NULL || createContext == NULL || createContext->NodeOrdinal != 0 || createContext->EngineAffinity > 1)
     {
         return STATUS_INVALID_PARAMETER;
+    }
+
+    if (!ReferenceDevice(device))
+    {
+        return STATUS_DEVICE_NOT_READY;
     }
 
     VIOGPU_WDDM_CONTEXT *context = new (NonPagedPoolNx) VIOGPU_WDDM_CONTEXT;
     if (context == NULL)
     {
+        DereferenceDevice(device);
         return STATUS_NO_MEMORY;
     }
 
+    RtlZeroMemory(context, sizeof(*context));
     context->Signature = VIOGPU_WDDM_CONTEXT_SIGNATURE;
+    ExInitializeRundownProtection(&context->Operations);
+    context->OperationsRundownCompleted = FALSE;
     context->Device = device;
     context->RuntimeContext = NULL;
     context->NodeOrdinal = createContext->NodeOrdinal;
     context->EngineAffinity = createContext->EngineAffinity;
+    KeInitializeSpinLock(&context->NativeContext.BindingLock);
+    context->NativeContext.State = VioGpuNativeContextAllocated;
+
+    NTSTATUS status = device->Adapter->CreateNativeContext(&context->NativeContext);
+    if (!NT_SUCCESS(status))
+    {
+        context->Signature = 0;
+        delete context;
+        DereferenceDevice(device);
+        return status;
+    }
 
     RtlZeroMemory(&createContext->ContextInfo, sizeof(createContext->ContextInfo));
     createContext->ContextInfo.DmaBufferSize = VIOGPU_WDDM_DMA_BUFFER_SIZE;
@@ -635,13 +710,37 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE hContext)
 {
     VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(hContext);
-    if (context == NULL || context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE)
+    if (context == NULL || context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         return STATUS_INVALID_HANDLE;
     }
 
+    if (!context->OperationsRundownCompleted)
+    {
+        ExWaitForRundownProtectionRelease(&context->Operations);
+        ExRundownCompleted(&context->Operations);
+        context->OperationsRundownCompleted = TRUE;
+    }
+
+    BOOLEAN released = FALSE;
+    NTSTATUS status = STATUS_SUCCESS;
+    if (context->Device != NULL && context->Device->Adapter != NULL)
+    {
+        status = context->Device->Adapter->DestroyNativeContext(&context->NativeContext, &released);
+    }
+    if (!released && VioGpuAdapter::IsNativeContextReleased(&context->NativeContext))
+    {
+        released = TRUE;
+    }
+    if (!released)
+    {
+        return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
+    }
+
+    VIOGPU_WDDM_DEVICE *device = context->Device;
     context->Signature = 0;
     delete context;
+    DereferenceDevice(device);
     return STATUS_SUCCESS;
 }
 
@@ -666,18 +765,35 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext, DXGKARG_RENDER *render)
 {
     VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(hContext);
-    if (context == NULL || context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || render == NULL ||
-        render->pCommand == NULL || render->CommandLength < sizeof(VIOGPU_WDDM_COMMAND_HEADER) ||
-        render->pDmaBuffer == NULL || render->pDmaBufferPrivateData == NULL ||
-        render->DmaBufferPrivateDataSize < sizeof(VIOGPU_WDDM_DMA_PRIVATE) || render->MultipassOffset != 0 ||
+    if (context == NULL || render == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || render->pCommand == NULL ||
+        render->CommandLength < sizeof(VIOGPU_WDDM_COMMAND_HEADER) || render->pDmaBuffer == NULL ||
+        render->pDmaBufferPrivateData == NULL || render->DmaBufferPrivateDataSize < sizeof(VIOGPU_WDDM_DMA_PRIVATE) ||
+        render->MultipassOffset != 0 ||
         (render->PatchLocationListInSize != 0 && render->pPatchLocationListIn == NULL) ||
         (render->PatchLocationListInSize != 0 && render->pPatchLocationListOut == NULL))
     {
         return STATUS_INVALID_PARAMETER;
     }
+    if (!ExAcquireRundownProtection(&context->Operations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE)
+    {
+        ExReleaseRundownProtection(&context->Operations);
+        return STATUS_INVALID_HANDLE;
+    }
+    VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+    if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+    {
+        ExReleaseRundownProtection(&context->Operations);
+        return STATUS_DEVICE_NOT_READY;
+    }
 
     if (render->DmaSize < render->CommandLength || render->PatchLocationListOutSize < render->PatchLocationListInSize)
     {
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+        ExReleaseRundownProtection(&context->Operations);
         return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;
     }
 
@@ -724,7 +840,16 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
 
     if (!NT_SUCCESS(status))
     {
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+        ExReleaseRundownProtection(&context->Operations);
         return status;
+    }
+
+    if (!snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation))
+    {
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+        ExReleaseRundownProtection(&context->Operations);
+        return STATUS_DEVICE_NOT_READY;
     }
 
     VIOGPU_WDDM_DMA_PRIVATE *privateData = static_cast<VIOGPU_WDDM_DMA_PRIVATE *>(render->pDmaBufferPrivateData);
@@ -733,10 +858,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
     privateData->DmaBuffer = render->pDmaBuffer;
     privateData->DmaBufferSize = render->DmaSize;
     privateData->CommandLength = render->CommandLength;
+    privateData->ContextId = snapshot.ContextId;
+    privateData->Generation = snapshot.Generation;
 
     render->pDmaBuffer = static_cast<BYTE *>(render->pDmaBuffer) + render->CommandLength;
     render->pPatchLocationListOut += render->PatchLocationListInSize;
     render->MultipassOffset = render->CommandLength;
+    VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+    ExReleaseRundownProtection(&context->Operations);
     return STATUS_SUCCESS;
 }
 

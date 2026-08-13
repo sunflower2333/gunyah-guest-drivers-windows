@@ -109,6 +109,30 @@ static void vio_legacy_reset(VirtIODevice *vdev)
     iowrite8(vdev, 0, vdev->addr + VIRTIO_PCI_STATUS);
 }
 
+#define VIRTIO_LEGACY_RESET_TIMEOUT_MS 1000U
+
+static NTSTATUS vio_legacy_reset_checked(VirtIODevice *vdev)
+{
+    unsigned elapsed;
+
+    /* 0 status means a reset. */
+    iowrite8(vdev, 0, vdev->addr + VIRTIO_PCI_STATUS);
+    for (elapsed = 0; elapsed < VIRTIO_LEGACY_RESET_TIMEOUT_MS; ++elapsed) {
+        u16 val;
+
+        if (ioread8(vdev, vdev->addr + VIRTIO_PCI_STATUS) == 0) {
+            return STATUS_SUCCESS;
+        }
+        if (pci_read_config_word(vdev, 0, &val) || val == 0xffff) {
+            DPrintf(0, ("PCI config space is not readable, probably the device is removed\n"));
+            return STATUS_DEVICE_NOT_CONNECTED;
+        }
+        vdev_sleep(vdev, 1);
+    }
+    DPrintf(0, ("virtio legacy reset timed out after %u ms\n", VIRTIO_LEGACY_RESET_TIMEOUT_MS));
+    return STATUS_IO_TIMEOUT;
+}
+
 static u64 vio_legacy_get_features(VirtIODevice *vdev)
 {
     return ioread32(vdev, vdev->addr + VIRTIO_PCI_HOST_FEATURES);
@@ -248,6 +272,7 @@ static const struct virtio_device_ops virtio_pci_device_ops = {
     .get_status = vio_legacy_get_status,
     .set_status = vio_legacy_set_status,
     .reset = vio_legacy_reset,
+    .reset_checked = vio_legacy_reset_checked,
     .get_features = vio_legacy_get_features,
     .set_features = vio_legacy_set_features,
     .set_config_vector = vio_legacy_set_config_vector,

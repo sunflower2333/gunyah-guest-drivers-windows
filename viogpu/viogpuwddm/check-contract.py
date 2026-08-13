@@ -10,6 +10,10 @@ from typing import Optional
 PROJECT_DIR = Path(__file__).resolve().parent
 DRIVER_SOURCE_PATH = (PROJECT_DIR / "driver_entry.cpp").resolve()
 DRIVER_SOURCE = DRIVER_SOURCE_PATH.read_text(encoding="utf-8")
+WDDM_DDI_SOURCE_PATH = (PROJECT_DIR / "wddmddi.cpp").resolve()
+WDDM_DDI_SOURCE = WDDM_DDI_SOURCE_PATH.read_text(encoding="utf-8")
+WDDM_DDI_HEADER_PATH = (PROJECT_DIR / "wddmddi.h").resolve()
+WDDM_DDI_HEADER_SOURCE = WDDM_DDI_HEADER_PATH.read_text(encoding="utf-8")
 VIOGPU_SOURCE_PATH = (PROJECT_DIR.parent / "viogpudo" / "viogpudo.cpp").resolve()
 VIOGPU_HEADER_PATH = (PROJECT_DIR.parent / "viogpudo" / "viogpudo.h").resolve()
 DOD_DRIVER_SOURCE_PATH = (PROJECT_DIR.parent / "viogpudo" / "driver.cpp").resolve()
@@ -29,6 +33,11 @@ WDF_DMA_PATH = WDF_DIR / "Dma.c"
 WDF_SOURCE_PATH = WDF_DIR / "VirtIOWdf.c"
 WDF_HEADER_PATH = WDF_DIR / "VirtIOWdf.h"
 PCI_SOURCE_PATH = (PROJECT_DIR.parent / "common" / "viogpu_pci.cpp").resolve()
+VIRTIO_DIR = (PROJECT_DIR.parent.parent / "VirtIO").resolve()
+VIRTIO_HEADER_PATH = VIRTIO_DIR / "virtio_pci.h"
+VIRTIO_COMMON_PATH = VIRTIO_DIR / "VirtIOPCICommon.c"
+VIRTIO_MODERN_PATH = VIRTIO_DIR / "VirtIOPCIModern.c"
+VIRTIO_LEGACY_PATH = VIRTIO_DIR / "VirtIOPCILegacy.c"
 NETKVM_DIR = (PROJECT_DIR.parent.parent / "NetKVM").resolve()
 NETKVM_RDMA_SOURCE_PATH = NETKVM_DIR / "Common" / "ParaNdis_RdmaPool.cpp"
 NETKVM_COMMON_SOURCE_PATH = NETKVM_DIR / "Common" / "ParaNdis_Common.cpp"
@@ -120,6 +129,8 @@ def strip_cpp_comments_and_literals(source: str) -> str:
 
 
 DRIVER_CODE = strip_cpp_comments_and_literals(DRIVER_SOURCE)
+WDDM_DDI_CODE = strip_cpp_comments_and_literals(WDDM_DDI_SOURCE)
+WDDM_DDI_HEADER_CODE = strip_cpp_comments_and_literals(WDDM_DDI_HEADER_SOURCE)
 VIOGPU_SOURCE = VIOGPU_SOURCE_PATH.read_text(encoding="utf-8")
 VIOGPU_HEADER_SOURCE = VIOGPU_HEADER_PATH.read_text(encoding="utf-8")
 DOD_DRIVER_SOURCE = DOD_DRIVER_SOURCE_PATH.read_text(encoding="utf-8")
@@ -135,6 +146,10 @@ WDF_DMA_SOURCE = WDF_DMA_PATH.read_text(encoding="utf-8")
 WDF_SOURCE = WDF_SOURCE_PATH.read_text(encoding="utf-8")
 WDF_HEADER_SOURCE = WDF_HEADER_PATH.read_text(encoding="utf-8")
 PCI_SOURCE = PCI_SOURCE_PATH.read_text(encoding="utf-8")
+VIRTIO_HEADER_SOURCE = VIRTIO_HEADER_PATH.read_text(encoding="utf-8")
+VIRTIO_COMMON_SOURCE = VIRTIO_COMMON_PATH.read_text(encoding="utf-8")
+VIRTIO_MODERN_SOURCE = VIRTIO_MODERN_PATH.read_text(encoding="utf-8")
+VIRTIO_LEGACY_SOURCE = VIRTIO_LEGACY_PATH.read_text(encoding="utf-8")
 NETKVM_RDMA_SOURCE = NETKVM_RDMA_SOURCE_PATH.read_text(encoding="utf-8")
 NETKVM_COMMON_SOURCE = NETKVM_COMMON_SOURCE_PATH.read_text(encoding="utf-8")
 NETKVM_UTIL_SOURCE = NETKVM_UTIL_SOURCE_PATH.read_text(encoding="utf-8")
@@ -157,6 +172,10 @@ WDF_DMA_CODE = strip_cpp_comments_and_literals(WDF_DMA_SOURCE)
 WDF_CODE = strip_cpp_comments_and_literals(WDF_SOURCE)
 WDF_HEADER_CODE = strip_cpp_comments_and_literals(WDF_HEADER_SOURCE)
 PCI_CODE = strip_cpp_comments_and_literals(PCI_SOURCE)
+VIRTIO_HEADER_CODE = strip_cpp_comments_and_literals(VIRTIO_HEADER_SOURCE)
+VIRTIO_COMMON_CODE = strip_cpp_comments_and_literals(VIRTIO_COMMON_SOURCE)
+VIRTIO_MODERN_CODE = strip_cpp_comments_and_literals(VIRTIO_MODERN_SOURCE)
+VIRTIO_LEGACY_CODE = strip_cpp_comments_and_literals(VIRTIO_LEGACY_SOURCE)
 NETKVM_RDMA_CODE = strip_cpp_comments_and_literals(NETKVM_RDMA_SOURCE)
 NETKVM_COMMON_CODE = strip_cpp_comments_and_literals(NETKVM_COMMON_SOURCE)
 NETKVM_UTIL_CODE = strip_cpp_comments_and_literals(NETKVM_UTIL_SOURCE)
@@ -174,7 +193,13 @@ def function_body_span(name: str, source: Optional[str] = None) -> tuple[str, in
     if source is None:
         source = DRIVER_CODE
 
-    matches = list(re.finditer(rf"\b{re.escape(name)}\s*\([^;{{}}]*?\)\s*\{{", source, re.DOTALL))
+    matches = list(
+        re.finditer(
+            rf"\b{re.escape(name)}\s*\([^;{{}}]*?\)\s*(?:const\s*)?\{{",
+            source,
+            re.DOTALL,
+        )
+    )
     if len(matches) != 1:
         fail(f"expected one definition of {name}, found {len(matches)}")
 
@@ -195,6 +220,34 @@ def function_body_span(name: str, source: Optional[str] = None) -> tuple[str, in
 
 def function_body(name: str, source: Optional[str] = None) -> str:
     return function_body_span(name, source)[0]
+
+
+def function_body_with_parameters(name: str, parameters: str, source: str) -> str:
+    expected = compact_code(parameters)
+    matches = [
+        match
+        for match in re.finditer(
+            rf"\b{re.escape(name)}\s*\((?P<parameters>[^;{{}}]*?)\)\s*(?:const\s*)?\{{",
+            source,
+            re.DOTALL,
+        )
+        if compact_code(match.group("parameters")) == expected
+    ]
+    if len(matches) != 1:
+        fail(f"expected one definition of {name}({parameters}), found {len(matches)}")
+
+    start = matches[0].end() - 1
+    depth = 0
+    for offset, character in enumerate(source[start:], start=start):
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start + 1 : offset]
+
+    fail(f"unterminated function {name}({parameters})")
+    return ""
 
 
 def compact_code(source: str) -> str:
@@ -284,6 +337,188 @@ def if_blocks(source: str) -> list[tuple[str, str, int, int]]:
                 )
             )
     return blocks
+
+
+def check_virtio_reset_contract() -> None:
+    """Require a bounded, status-returning reset path without constraining legacy callers."""
+    public_checked = set(
+        re.findall(
+            r"\bNTSTATUS\s+(virtio_[A-Za-z0-9_]*reset[A-Za-z0-9_]*)\s*\(",
+            VIRTIO_HEADER_CODE,
+        )
+    )
+    if not public_checked:
+        fail("VirtIO must expose a checked NTSTATUS reset API")
+
+    initialize = canonical_code(function_body("virtio_device_initialize", VIRTIO_COMMON_CODE))
+    init_calls = re.findall(
+        r"\b(virtio_[A-Za-z0-9_]*reset[A-Za-z0-9_]*)\s*\(\s*vdev\s*\)",
+        initialize,
+    )
+    init_calls = [name for name in init_calls if name in public_checked]
+    if len(init_calls) != 1:
+        fail("virtio_device_initialize must use exactly one checked reset API")
+    checked_name = init_calls[0]
+    reset_assignment = f"status={checked_name}(vdev);"
+    reset_failure = "if(!NT_SUCCESS(status)){returnstatus;}"
+    acknowledge = "virtio_add_status(vdev,VIRTIO_CONFIG_S_ACKNOWLEDGE);"
+    if (
+        initialize.count(reset_assignment) != 1
+        or initialize.count(reset_failure) != 1
+        or initialize.find(reset_assignment) > initialize.find(reset_failure)
+        or initialize.find(reset_failure) > initialize.find(acknowledge)
+    ):
+        fail("virtio_device_initialize must propagate checked reset failure before acknowledging the device")
+
+    checked_definition = canonical_code(function_body(checked_name, VIRTIO_COMMON_CODE))
+    if not re.search(r"\breturn(?:\s+|vdev->)", checked_definition):
+        fail("checked VirtIO reset API must return a reset status")
+    if not re.search(r"returnvdev->device->reset_checked\(vdev\);", checked_definition):
+        fail("checked VirtIO reset API must expose the transport reset result")
+
+    stop = canonical_code(function_body("VioGpuAdapter::StopNativeContextTransportLocked", VIOGPU_CODE))
+    stop_calls = re.findall(
+        r"\b(virtio_[A-Za-z0-9_]*reset[A-Za-z0-9_]*)\s*\(\s*&m_VioDev\s*\)",
+        stop,
+    )
+    stop_calls = [name for name in stop_calls if name in public_checked]
+    if len(stop_calls) != 1 or stop_calls[0] != checked_name:
+        fail("native-context teardown must consume the same checked reset API")
+    if stop.count(f"status={checked_name}(&m_VioDev);") != 1:
+        fail("native-context teardown must consume checked reset status before queue teardown")
+
+    for source, transport in (
+        (VIRTIO_MODERN_CODE, "modern"),
+        (VIRTIO_LEGACY_CODE, "legacy"),
+    ):
+        candidates = re.findall(
+            rf"\b(?:static\s+)?NTSTATUS\s+([A-Za-z_][A-Za-z0-9_]*{transport}[A-Za-z0-9_]*reset[A-Za-z0-9_]*)\s*"
+            rf"\(\s*VirtIODevice\s*\*\s*vdev\s*\)\s*\{{",
+            source,
+        )
+        if len(candidates) != 1:
+            fail(f"{transport} VirtIO transport must expose one checked bounded reset implementation")
+        name = candidates[0]
+        definition = canonical_code(function_body(name, source))
+        timeout_names = re.findall(
+            rf"#define\s+(VIRTIO_[A-Z0-9_]*{transport.upper()}[A-Z0-9_]*RESET[A-Z0-9_]*)\s+([0-9]+U?)",
+            source,
+        )
+        if len(timeout_names) != 1 or int(timeout_names[0][1].rstrip("U")) <= 0:
+            fail(f"{transport} VirtIO reset must define one finite timeout")
+        timeout_name = timeout_names[0][0]
+        loop = re.search(
+            rf"for\(elapsed=0;elapsed<{re.escape(timeout_name)};\+\+elapsed\)\{{",
+            definition,
+        )
+        if loop is None:
+            fail(f"{name} must use a bounded millisecond reset loop")
+        if definition.count("vdev_sleep(vdev,1);") != 1:
+            fail(f"{name} must sleep once per unsuccessful reset poll")
+        for result in ("STATUS_SUCCESS", "STATUS_DEVICE_NOT_CONNECTED", "STATUS_IO_TIMEOUT"):
+            if definition.count(f"return{result};") != 1:
+                fail(f"{name} must report {result} exactly once")
+        if len(re.findall(rf"\.reset_checked\s*=\s*{re.escape(name)}\s*,", source)) != 1:
+            fail(f"{transport} VirtIO ops must wire its checked reset callback")
+
+
+def check_virtio_queue_allocation_cleanup() -> None:
+    """Require modern queue setup to release every allocation on failure."""
+    setup_body = function_body("vio_modern_setup_vq", VIRTIO_MODERN_CODE)
+    setup = canonical_code(setup_body)
+    allocation = "vq_addr=mem_alloc_nonpaged_block(vdev,heap_size);"
+    allocation_offset = setup.find(allocation)
+    allocation_failures = [
+        canonical_code(body)
+        for condition, body, start, _ in if_blocks(setup_body)
+        if canonical_code(condition) == "vq_addr==NULL"
+        and len(canonical_code(setup_body[:start])) > allocation_offset
+    ]
+    expected_failure = (
+        "mem_free_contiguous_pages(vdev,info->queue);"
+        "info->queue=NULL;"
+        "returnSTATUS_INSUFFICIENT_RESOURCES;"
+    )
+    if allocation_offset < 0 or allocation_failures != [expected_failure]:
+        fail("modern queue setup must release its contiguous ring when control-block allocation fails")
+
+    shared_failure = (
+        "mem_free_nonpaged_block(vdev,vq_addr);"
+        "mem_free_contiguous_pages(vdev,info->queue);"
+        "info->queue=NULL;"
+        "returnstatus;"
+    )
+    if setup.count(shared_failure) != 1:
+        fail("modern queue setup must clear the ring owner after every later setup failure")
+
+    delete = canonical_code(function_body("vio_modern_del_vq", VIRTIO_MODERN_CODE))
+    delete_release = (
+        "mem_free_nonpaged_block(vdev,vq);"
+        "mem_free_contiguous_pages(vdev,info->queue);"
+        "info->queue=NULL;"
+    )
+    if delete.count(delete_release) != 1:
+        fail("modern queue deletion must clear the ring owner after releasing both allocations")
+
+
+def check_dod_reset_entrypoints() -> None:
+    """Check reset callbacks before they dereference the replaceable adapter."""
+    reset = canonical_code(function_body("VioGpuDod::ResetDevice", VIOGPU_CODE))
+    reset_gate = "InterlockedExchange(&m_HardwareResetRequested,TRUE);"
+    reset_acquire = "ExAcquireRundownProtection(&m_HardwareOperations)"
+    reset_release = "ExReleaseRundownProtection(&m_HardwareOperations);"
+    reset_adapter = "VioGpuAdapter*adapter=m_pHWDevice;"
+    if (
+        reset.count(reset_gate) != 1
+        or reset.count(reset_acquire) != 1
+        or reset.count(reset_release) != 1
+    ):
+        fail("ResetDevice must publish its reset gate and balance hardware rundown protection")
+    reset_acquire_gate = (
+        "if(KeGetCurrentIrql()<=DISPATCH_LEVEL&&"
+        "ExAcquireRundownProtection(&m_HardwareOperations)){"
+    )
+    if reset.count(reset_acquire_gate) != 1:
+        fail("ResetDevice must acquire nonpaged hardware rundown only at or below DISPATCH_LEVEL")
+    reset_stages = (
+        (reset.find(reset_gate), "reset gate publication"),
+        (reset.find(reset_acquire_gate), "IRQL and rundown gate"),
+        (reset.find(reset_acquire), "hardware rundown acquire"),
+        (reset.find(reset_adapter), "adapter snapshot"),
+        (reset.find("adapter->ResetDevice();"), "adapter reset"),
+        (reset.find(reset_release), "hardware rundown release"),
+    )
+    for (offset, description), (next_offset, next_description) in zip(reset_stages, reset_stages[1:]):
+        if offset < 0 or next_offset < 0 or offset > next_offset:
+            fail(f"ResetDevice must perform {description} before {next_description}")
+
+    display = canonical_code(function_body("VioGpuDod::SystemDisplayEnable", VIOGPU_CODE))
+    display_gate = "InterlockedExchange(&m_HardwareResetRequested,TRUE);"
+    display_acquire = "ExAcquireRundownProtection(&m_HardwareOperations)"
+    display_release = "ExReleaseRundownProtection(&m_HardwareOperations);"
+    display_adapter = "VioGpuAdapter*adapter=m_pHWDevice;"
+    if (
+        display.count(display_gate) != 1
+        or display.count(display_acquire) != 1
+        or display.count(display_release) != 1
+    ):
+        fail("SystemDisplayEnable must publish its reset gate and balance hardware rundown protection")
+    if "KeGetCurrentIrql()!=PASSIVE_LEVEL" not in display:
+        fail("SystemDisplayEnable must require PASSIVE_LEVEL before its hardware rundown acquire")
+    first_return = display.find("return")
+    if first_return >= 0 and display.find(display_gate) > first_return:
+        fail("SystemDisplayEnable must publish its reset gate before every early return")
+    display_stages = (
+        (display.find(display_gate), "reset gate publication"),
+        (display.find("if(KeGetCurrentIrql()!=PASSIVE_LEVEL)"), "IRQL gate"),
+        (display.find(display_acquire), "hardware rundown acquire"),
+        (display.find(display_adapter), "adapter snapshot"),
+        (display.find("adapter->ResetToVgaMode()"), "VGA reset"),
+        (display.find(display_release), "hardware rundown release"),
+    )
+    for (offset, description), (next_offset, next_description) in zip(display_stages, display_stages[1:]):
+        if offset < 0 or next_offset < 0 or offset > next_offset:
+            fail(f"SystemDisplayEnable must perform {description} before {next_description}")
 
 
 def variable_write_offsets(source: str, expression: str) -> list[int]:
@@ -443,6 +678,24 @@ def require_storport_access_platform_gate(
 
 
 def require_viostor_restart_access_platform_gate(sources: dict[Path, str]) -> None:
+    feature_reader_definitions = [
+        source
+        for source in sources.values()
+        if re.search(
+            r"\bVOID\s+RhelGetDiskGeometry\s*\([^;{}]*\)\s*\{",
+            source,
+            re.DOTALL,
+        )
+    ]
+    if len(feature_reader_definitions) != 1:
+        fail("viostor must compile exactly one RhelGetDiskGeometry definition")
+    feature_reader = canonical_code(
+        function_body("RhelGetDiskGeometry", feature_reader_definitions[0])
+    )
+    offered_feature_refresh = "adaptExt->features=virtio_get_features(&adaptExt->vdev);"
+    if feature_reader.count(offered_feature_refresh) != 1:
+        fail("viostor feature reader must refresh offered features exactly once")
+
     definitions = [
         (source, match)
         for source in sources.values()
@@ -471,6 +724,7 @@ def require_viostor_restart_access_platform_gate(sources: dict[Path, str]) -> No
         fail("viostor VirtIoHwReinitialize definition is unterminated")
     restart = source[body_start + 1 : body_end]
     compact = canonical_code(restart)
+    device_initialize = compact.find("InitVirtIODevice(DeviceExtension)")
     feature_read = compact.find("RhelGetDiskGeometry(DeviceExtension);")
     feature_acknowledge = compact.find("RhelSetGuestFeatures(DeviceExtension);")
     queue_initialization = compact.find("VirtIoHwInitialize(DeviceExtension)")
@@ -480,11 +734,24 @@ def require_viostor_restart_access_platform_gate(sources: dict[Path, str]) -> No
         if canonical_code(condition) == "CHECKBIT(adaptExt->features,VIRTIO_F_ACCESS_PLATFORM)"
         and canonical_code(body).endswith("returnFALSE;")
     ]
-    if min(feature_read, feature_acknowledge, queue_initialization) < 0 or len(gates) != 1:
+    restart_stages = (
+        "InitVirtIODevice(DeviceExtension)",
+        "RhelGetDiskGeometry(DeviceExtension);",
+        "RhelSetGuestFeatures(DeviceExtension);",
+        "VirtIoHwInitialize(DeviceExtension)",
+    )
+    if (
+        min(device_initialize, feature_read, feature_acknowledge, queue_initialization) < 0
+        or any(compact.count(stage) != 1 for stage in restart_stages)
+        or len(gates) != 1
+    ):
         fail("viostor restart must re-read and reject VIRTIO_F_ACCESS_PLATFORM exactly once")
     gate_start = len(canonical_code(restart[: gates[0][1]]))
     gate_end = len(canonical_code(restart[: gates[0][2]]))
-    if not feature_read < gate_start < gate_end <= min(feature_acknowledge, queue_initialization):
+    if not (
+        device_initialize < feature_read < gate_start < gate_end
+        <= min(feature_acknowledge, queue_initialization)
+    ):
         fail(
             "viostor restart must reject refreshed VIRTIO_F_ACCESS_PLATFORM before feature "
             "acknowledgement or queue initialization"
@@ -939,9 +1206,15 @@ def check_native_context_readiness(
         fail("HWClose must use the complete native-context transport unwind")
     stop_compact = compact_code(stop)
     for fragment, description in (
+        ("InvalidateNativeContextRegistrationsLocked()", "runtime context invalidation"),
         ("m_CtrlQueue.QuiesceSynchronousRequests()", "synchronous queue quiesce"),
         ("StopWorkThread()", "worker stop"),
-        ("virtio_device_reset(&m_VioDev)", "VirtIO reset"),
+        ("InterlockedExchange(&m_InterruptDispatchEnabled,FALSE)", "ISR publication gate"),
+        ("m_CtrlQueue.DisableInterrupt()", "control-queue interrupt disable"),
+        ("m_CursorQueue.DisableInterrupt()", "cursor-queue interrupt disable"),
+        ("virtio_device_reset_checked(&m_VioDev)", "VirtIO reset"),
+        ("virtio_get_status(&m_VioDev)", "VirtIO reset-status proof"),
+        ("RetireAllNativeContextOwnersLocked()", "Host context retirement"),
         ("KeFlushQueuedDpcs()", "DPC drain"),
         ("virtio_delete_queues(&m_VioDev)", "VirtIO queue deletion"),
         ("m_CtrlQueue.CompleteSynchronousRequestTeardown()", "synchronous queue teardown"),
@@ -953,14 +1226,87 @@ def check_native_context_readiness(
     ):
         if fragment not in stop_compact:
             fail(f"transport teardown must include {description}")
-    if stop_compact.find("m_CtrlQueue.QuiesceSynchronousRequests()") > stop_compact.find("StopWorkThread()"):
-        fail("transport teardown must quiesce synchronous requests before stopping the worker")
-    if stop_compact.find("StopWorkThread()") > stop_compact.find("virtio_device_reset(&m_VioDev)"):
-        fail("transport teardown must stop the worker before resetting VirtIO")
-    if stop_compact.find("virtio_device_reset(&m_VioDev)") > stop_compact.find("KeFlushQueuedDpcs()"):
-        fail("transport teardown must drain DPCs after resetting VirtIO")
+
+    quiescing_publications = (
+        stop_compact.find(
+            "InterlockedCompareExchange(&m_NativeContextState,VioGpuNativeContextQuiescing,VioGpuNativeContextFailed)"
+        ),
+        stop_compact.find(
+            "InterlockedCompareExchange(&m_NativeContextState,VioGpuNativeContextQuiescing,state)"
+        ),
+    )
+    generation_advances = [
+        match.start()
+        for match in re.finditer(
+            re.escape("InterlockedIncrement(&m_NativeContextGeneration)"),
+            stop_compact,
+        )
+    ]
+    invalidate_offset = stop_compact.find("InvalidateNativeContextRegistrationsLocked()")
+    if (
+        min(quiescing_publications) < 0
+        or len(generation_advances) != 2
+        or max(*quiescing_publications, *generation_advances) > invalidate_offset
+    ):
+        fail("every teardown path must publish Quiescing and advance generation before invalidating registrations")
+    quiesce_offset = stop_compact.find("m_CtrlQueue.QuiesceSynchronousRequests()")
+    worker_offset = stop_compact.find("StopWorkThread()")
+    gate_offset = stop_compact.find("InterlockedExchange(&m_InterruptDispatchEnabled,FALSE)", worker_offset)
+    reset_offset = stop_compact.find("virtio_device_reset_checked(&m_VioDev)")
+    reset_status_offset = stop_compact.find("virtio_get_status(&m_VioDev)", reset_offset)
+    retire_offset = stop_compact.find("RetireAllNativeContextOwnersLocked()", reset_status_offset)
+    delete_queue_offset = stop_compact.find("virtio_delete_queues(&m_VioDev)", retire_offset)
+    ordered_offsets = (
+        (max(quiescing_publications), "quiescing publication"),
+        (invalidate_offset, "runtime context invalidation"),
+        (quiesce_offset, "synchronous queue quiesce"),
+        (worker_offset, "worker stop"),
+        (gate_offset, "ISR publication gate"),
+        (reset_offset, "VirtIO reset"),
+        (reset_status_offset, "VirtIO reset-status proof"),
+        (retire_offset, "Host context retirement"),
+        (delete_queue_offset, "VirtIO queue deletion"),
+    )
+    for (offset, description), (next_offset, next_description) in zip(ordered_offsets, ordered_offsets[1:]):
+        if offset < 0 or next_offset < 0 or offset > next_offset:
+            fail(f"transport teardown must perform {description} before {next_description}")
+
+    no_reset_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(stop)
+        if set(canonical_code(condition).split("&&"))
+        == {"!IsListEmpty(&m_NativeContextRegistry)", "!m_bVirtioInitialized"}
+    ]
+    no_reset_failure = "FailNativeContextAtAnyIrql();returnSTATUS_DEVICE_NOT_READY;"
+    if len(no_reset_blocks) != 1 or no_reset_failure not in no_reset_blocks[0]:
+        fail("transport teardown must retain Host ownership when no VirtIO reset can prove retirement")
+
+    reset_guard_blocks = [
+        (canonical_code(condition), canonical_code(body))
+        for condition, body, _, _ in if_blocks(stop)
+        if "virtio_get_status(&m_VioDev)" in canonical_code(condition)
+    ]
+    expected_reset_guard = "!NT_SUCCESS(status)||virtio_get_status(&m_VioDev)!=0"
+    reset_failure_body = "FailNativeContextAtAnyIrql();returnNT_SUCCESS(status)?STATUS_DEVICE_NOT_READY:status;"
+    if (
+        len(reset_guard_blocks) != 1
+        or reset_guard_blocks[0][0] != expected_reset_guard
+        or reset_guard_blocks[0][1] != reset_failure_body
+    ):
+        fail("transport teardown must retire Host ownership only after successful reset and exact zero device status")
+
+    gate_offset = stop_compact.find("InterlockedExchange(&m_InterruptDispatchEnabled,FALSE)")
+    first_barrier_offset = stop_compact.find("status=SynchronizeInterruptMessages();", gate_offset)
+    flush_offset = stop_compact.find("KeFlushQueuedDpcs()", first_barrier_offset)
+    disable_control_offset = stop_compact.find("m_CtrlQueue.DisableInterrupt()", flush_offset)
+    disable_cursor_offset = stop_compact.find("m_CursorQueue.DisableInterrupt()", disable_control_offset)
+    if not (
+        0 <= gate_offset < first_barrier_offset < flush_offset < disable_control_offset < disable_cursor_offset
+    ):
+        fail("queue teardown must gate, barrier, drain DPCs, and disable both queue interrupts in order")
+
     teardown_order = (
-        ("KeFlushQueuedDpcs()", "DPC drain"),
+        ("RetireAllNativeContextOwnersLocked()", "Host context retirement"),
         ("virtio_delete_queues(&m_VioDev)", "VirtIO queue deletion"),
         ("virtio_device_shutdown(&m_VioDev)", "VirtIO shutdown"),
         ("m_CtrlQueue.CompleteSynchronousRequestTeardown()", "synchronous queue teardown"),
@@ -987,37 +1333,42 @@ def check_native_context_readiness(
     )
     if failed_path < 0 or failed_transition < failed_path:
         fail("failed transport state must transition to quiescing instead of returning early")
-    if "FailNativeContextAtAnyIrql();returnSTATUS_DEVICE_NOT_READY;" in stop_compact[:failed_path]:
-        fail("transport teardown must not reject the Failed state before reclaiming resources")
+    if stop_compact[:failed_path].count(no_reset_failure) != 1:
+        fail("only the no-reset Host-ownership guard may fail before processing retained Failed state")
     failed_block_end = stop_compact.find("if(state==VioGpuNativeContextOffline)", failed_path)
     if failed_block_end < 0 or "return" in stop_compact[failed_path:failed_transition]:
         fail("failed transport state must not return before transitioning to quiescing")
 
-    message_count = "ULONGmessageCount=m_PciResources.IsMSIEnabled()?3:1;"
+    helper = canonical_code(function_body("VioGpuAdapter::SynchronizeInterruptMessages", VIOGPU_CODE))
+    message_count = "ULONGmessageCount=m_PciResources.IsMSIEnabled()&&m_bQueuesInitialized?3:1;"
     barrier_loop = "for(ULONGmessageNumber=0;messageNumber<messageCount;++messageNumber)"
     barrier_failure = "if(!NT_SUCCESS(barrierStatus)||!barrierResult)"
     barrier_return = "returnNT_SUCCESS(barrierStatus)?STATUS_DEVICE_NOT_READY:barrierStatus;"
-    stop_canonical = canonical_code(stop)
-    message_offset = stop_canonical.find(message_count)
-    loop_offset = stop_canonical.find(barrier_loop, message_offset)
-    failure_offset = stop_canonical.find(barrier_failure, loop_offset)
-    return_offset = stop_canonical.find(barrier_return, failure_offset)
-    flush_offset = stop_canonical.find("KeFlushQueuedDpcs()", return_offset)
-    if min(message_offset, loop_offset, failure_offset, return_offset, flush_offset) < 0 or not (
-        message_offset < loop_offset < failure_offset < return_offset < flush_offset
+    message_offset = helper.find(message_count)
+    loop_offset = helper.find(barrier_loop, message_offset)
+    failure_offset = helper.find(barrier_failure, loop_offset)
+    return_offset = helper.find(barrier_return, failure_offset)
+    if min(message_offset, loop_offset, failure_offset, return_offset) < 0 or not (
+        message_offset < loop_offset < failure_offset < return_offset
     ):
-        fail("transport teardown must synchronize every nonzero ISR message and fail before DPC drain on barrier error")
-    barrier_region = stop[stop.find("ULONG messageCount") : stop.find("KeFlushQueuedDpcs")]
-    if len(re.findall(r"\bbarrierStatus\s*=(?!=)", barrier_region)) != 1 or len(
-        re.findall(r"\bbarrierResult\s*=(?!=)", barrier_region)
-    ) != 1:
-        fail("ISR barrier status and result must not be overwritten before validation")
-    barrier_call_and_guard = (
-        "&barrierResult);"
-        "if(!NT_SUCCESS(barrierStatus)||!barrierResult)"
-    )
-    if barrier_call_and_guard not in stop_canonical:
-        fail("ISR barrier result must be validated immediately after synchronization")
+        fail("ISR barrier helper must synchronize every configured message and fail closed")
+    if (
+        helper.count("barrierStatus=") != 1
+        or helper.count("barrierResult=") != 1
+        or "&barrierResult);if(!NT_SUCCESS(barrierStatus)||!barrierResult)" not in helper
+    ):
+        fail("ISR barrier status and result must be validated immediately after synchronization")
+    stop_canonical = canonical_code(stop)
+    helper_calls = [match.start() for match in re.finditer(r"\bSynchronizeInterruptMessages\s*\(\s*\)", stop_canonical)]
+    final_barrier = helper_calls[1] if len(helper_calls) == 2 else -1
+    reset_status_canonical_offset = stop_canonical.find("virtio_get_status(&m_VioDev)", reset_offset)
+    reset_guard_end = stop_canonical.find("RetireAllNativeContextOwnersLocked()", reset_status_canonical_offset)
+    if (
+        len(helper_calls) != 2
+        or final_barrier < reset_status_canonical_offset
+        or final_barrier > reset_guard_end
+    ):
+        fail("transport teardown must run a final all-message ISR barrier after reset proof and before owner retirement")
     if compact_code(reset).count("FailNativeContextAtAnyIrql()") != 1:
         fail("ResetDevice must fail closed through the nonpaged native-context failure path exactly once")
     destructor_compact = compact_code(destructor)
@@ -1127,7 +1478,11 @@ def check_queue_failure_semantics() -> None:
     ):
         fail("queue close must clear the virtqueue while holding the queue lock")
 
-    submit_body = function_body("CtrlQueue::SubmitSynchronousLocked", QUEUE_CODE)
+    submit_body = function_body_with_parameters(
+        "CtrlQueue::SubmitSynchronousLocked",
+        "PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted",
+        QUEUE_CODE,
+    )
     submit = compact_code(submit_body)
     require_single_final_return(submit_body, "return TRUE;", "synchronous submit")
     initial_epoch = "requestEpochState=VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)"
@@ -1136,7 +1491,7 @@ def check_queue_failure_semantics() -> None:
         fail("synchronous submit must capture one epoch and use one finite descriptor wait")
     timeout_blocks = [
         body
-        for condition, body, _, _ in if_blocks(function_body("CtrlQueue::SubmitSynchronousLocked", QUEUE_CODE))
+        for condition, body, _, _ in if_blocks(submit_body)
         if canonical_code(condition) in ("status!=STATUS_SUCCESS", "STATUS_SUCCESS!=status")
     ]
     if len(timeout_blocks) != 1 or not canonical_code(timeout_blocks[0]).startswith(
@@ -1150,7 +1505,7 @@ def check_queue_failure_semantics() -> None:
     }
     epoch_blocks = [
         (condition, body, start)
-        for condition, body, start, _ in if_blocks(function_body("CtrlQueue::SubmitSynchronousLocked", QUEUE_CODE))
+        for condition, body, start, _ in if_blocks(submit_body)
         if set(canonical_code(condition).split("||")) == epoch_terms
     ]
     if len(epoch_blocks) != 1:
@@ -1169,6 +1524,350 @@ def check_queue_failure_semantics() -> None:
         or len(variable_write_offsets(submit_body, "*release_buffer")) != 3
     ):
         fail("synchronous submit must publish one initial and two failure-path descriptor ownership decisions")
+
+    submitted_writes = re.findall(
+        r"\*\s*submitted\s*=(?!=)\s*(TRUE|FALSE|true|false)\s*;",
+        submit_body,
+    )
+    submitted_writes = [canonical_code(value) for value in submitted_writes]
+    queue_call = submit.find("if(QueueBuffer(buf)<0)")
+    submitted_true = submit.find("*submitted=TRUE;")
+    if (
+        submitted_writes != ["FALSE", "TRUE"]
+        or len(variable_write_offsets(submit_body, "*submitted")) != 2
+        or queue_call < 0
+        or submitted_true < queue_call
+    ):
+        fail("synchronous submit must publish Submitted only after the descriptor enters the queue")
+
+
+def check_native_context_ownership() -> None:
+    queue_header = canonical_code(strip_cpp_comments_and_literals(QUEUE_HEADER_SOURCE))
+    expected_results = (
+        "VioGpuHostContextNotSubmitted=0,"
+        "VioGpuHostContextConfirmed,"
+        "VioGpuHostContextRejected,"
+        "VioGpuHostContextUnknown,"
+    )
+    if queue_header.count(expected_results) != 1:
+        fail("Host context queue results must keep the four distinct ownership outcomes")
+
+    create_queue = canonical_code(function_body("CtrlQueue::CreateNativeContext", QUEUE_CODE))
+    destroy_queue = canonical_code(function_body("CtrlQueue::DestroyNativeContext", QUEUE_CODE))
+    for owner, body in (("create", create_queue), ("destroy", destroy_queue)):
+        required = (
+            "BOOLEANsubmitted=FALSE;",
+            "SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)",
+            "VIOGPU_HOST_CONTEXT_RESULTresult=VioGpuHostContextUnknown;",
+            "if(!submitted){result=VioGpuHostContextNotSubmitted;}",
+            "result=VioGpuHostContextConfirmed;",
+            "returnresult;",
+        )
+        if any(body.count(fragment) != 1 for fragment in required):
+            fail(f"Host context {owner} must classify NotSubmitted, Confirmed, and Unknown separately")
+        if body.find("VioGpuHostContextUnknown") > body.find("if(!submitted)"):
+            fail(f"Host context {owner} must default to Unknown before interpreting completion")
+        if body.find("if(!submitted)") > body.find("elseif(completed&&vbuf->response_size==sizeof(GPU_CTRL_HDR))"):
+            fail(f"Host context {owner} must classify non-submission before any response")
+
+    create_rejected = (
+        "elseif(IsPlainControlErrorResponse(response))"
+        "{result=VioGpuHostContextRejected;}"
+    )
+    if create_queue.count(create_rejected) != 1:
+        fail("Host create may classify Rejected only from a complete plain VirtIO error response")
+    destroy_rejected = (
+        "elseif(IsPlainControlErrorResponse(response)&&"
+        "response->type==VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID)"
+        "{result=VioGpuHostContextRejected;}"
+    )
+    if destroy_queue.count(destroy_rejected) != 1:
+        fail("Host destroy may classify Rejected only from exact INVALID_CONTEXT_ID acknowledgement")
+    if destroy_queue.count("VioGpuHostContextRejected") != 1:
+        fail("Host destroy must leave every other submitted non-success response Unknown")
+
+    create = canonical_code(function_body("VioGpuAdapter::CreateNativeContext", VIOGPU_CODE))
+    registry_insert = create.find("InsertTailList(&m_NativeContextRegistry,&owner->AdapterLink);")
+    host_create = create.find("m_CtrlQueue.CreateNativeContext(contextId)")
+    if registry_insert < 0 or host_create < 0 or registry_insert > host_create:
+        fail("adapter must record Creating Host ownership before submitting CTX_CREATE")
+    if create.count("owner->State=VioGpuNativeContextOwnerCreating;") != 1 or create.count(
+        "owner->State=VioGpuNativeContextOwnerLive;"
+    ) != 1:
+        fail("adapter create must publish one Creating-to-Live Host-owner transition")
+    create_retire = (
+        "if(createResult==VioGpuHostContextNotSubmitted||createResult==VioGpuHostContextRejected)"
+        "{RetireNativeContextOwnerLocked(owner);}"
+        "else{owner->Registration=NULL;}"
+    )
+    if create.count(create_retire) != 1:
+        fail("adapter create must retain only submitted ownership whose outcome is Unknown")
+
+    destroy = canonical_code(function_body("VioGpuAdapter::DestroyNativeContext", VIOGPU_CODE))
+    mark_destroying = destroy.find("owner->State=VioGpuNativeContextOwnerDestroying;")
+    host_destroy = destroy.find("m_CtrlQueue.DestroyNativeContext(contextId)")
+    if mark_destroying < 0 or host_destroy < 0 or mark_destroying > host_destroy:
+        fail("adapter must retain and mark Host ownership Destroying before CTX_DESTROY")
+    retire_guard = (
+        "if(destroyResult==VioGpuHostContextConfirmed||destroyResult==VioGpuHostContextRejected)"
+        "{RetireNativeContextOwnerLocked(owner);}"
+        "else{owner->Registration=NULL;}"
+    )
+    if destroy.count(retire_guard) != 1:
+        fail("adapter destroy may retire only Confirmed or exact INVALID_CONTEXT_ID ownership")
+    failure_guard = (
+        "if(destroyResult!=VioGpuHostContextConfirmed&&destroyResult!=VioGpuHostContextRejected)"
+        "{FailNativeContextAtAnyIrql();"
+    )
+    if destroy.count(failure_guard) != 1:
+        fail("adapter destroy must fail the transport while retaining NotSubmitted or Unknown ownership")
+
+    submit = canonical_code(function_body("VioGpuWddmSubmitCommand", WDDM_DDI_CODE))
+    expected_submit = (
+        "UNREFERENCED_PARAMETER(hAdapter);"
+        "UNREFERENCED_PARAMETER(submitCommand);"
+        "returnSTATUS_NOT_SUPPORTED;"
+    )
+    if submit != expected_submit:
+        fail("SubmitCommand must remain an exact fail-closed stub until GPU retirement exists")
+
+
+def check_wddm_context_lifetime() -> None:
+    context_header = canonical_code(WDDM_DDI_HEADER_CODE)
+    for required in (
+        "EX_RUNDOWN_REFOperations;",
+        "BOOLEANOperationsRundownCompleted;",
+    ):
+        if context_header.count(required) != 1:
+            fail(f"WDDM context must expose one retry-safe operations rundown field: {required}")
+
+    closing_definitions = re.findall(
+        r"\bconst\s+LONG\s+VIOGPU_WDDM_DEVICE_CLOSING\s*=\s*"
+        r"static_cast\s*<\s*LONG\s*>\s*\(\s*0x80000000UL\s*\)\s*;",
+        WDDM_DDI_CODE,
+    )
+    mask_definitions = re.findall(
+        r"\bconst\s+LONG\s+VIOGPU_WDDM_DEVICE_REFERENCE_MASK\s*=\s*0x7FFFFFFF\s*;",
+        WDDM_DDI_CODE,
+    )
+    if len(closing_definitions) != 1 or len(mask_definitions) != 1:
+        fail("device lifetime must reserve the high bit for closing and low 31 bits for references")
+
+    reference = canonical_code(
+        function_body_with_parameters(
+            "ReferenceDevice",
+            "VIOGPU_WDDM_DEVICE *device",
+            WDDM_DDI_CODE,
+        )
+    )
+    reference_stages = (
+        (reference.find("LONGstate=InterlockedCompareExchange(&device->ReferenceState,0,0);"), "state snapshot"),
+        (
+            reference.find(
+                "while((state&VIOGPU_WDDM_DEVICE_CLOSING)==0&&state<VIOGPU_WDDM_DEVICE_REFERENCE_MASK)"
+            ),
+            "closing gate",
+        ),
+        (
+            reference.find(
+                "LONGobserved=InterlockedCompareExchange(&device->ReferenceState,state+1,state);"
+            ),
+            "reference acquisition",
+        ),
+        (reference.find("if(device->Signature==VIOGPU_WDDM_DEVICE_SIGNATURE)"), "signature validation"),
+        (reference.find("DereferenceDevice(device);", 0), "failed-signature release"),
+    )
+    for (offset, description), (next_offset, next_description) in zip(reference_stages, reference_stages[1:]):
+        if offset < 0 or next_offset < 0 or offset > next_offset:
+            fail(f"device reference must perform {description} before {next_description}")
+    if reference.count("InterlockedCompareExchange(&device->ReferenceState,state+1,state)") != 1:
+        fail("device reference must use one closing-aware atomic acquisition")
+
+    dereference = canonical_code(
+        function_body_with_parameters(
+            "DereferenceDevice",
+            "VIOGPU_WDDM_DEVICE *device",
+            WDDM_DDI_CODE,
+        )
+    )
+    expected_dereference = (
+        "LONGstate=InterlockedDecrement(&device->ReferenceState);"
+        "NT_ASSERT((state&VIOGPU_WDDM_DEVICE_REFERENCE_MASK)!=VIOGPU_WDDM_DEVICE_REFERENCE_MASK);"
+    )
+    if dereference != expected_dereference:
+        fail("device dereference must preserve the closing bit while decrementing one low-bit reference")
+
+    create_device = canonical_code(function_body("VioGpuWddmCreateDevice", WDDM_DDI_CODE))
+    if create_device.count("device->ReferenceState=0;") != 1:
+        fail("CreateDevice must initialize one open zero-reference state")
+
+    destroy_device = canonical_code(function_body("VioGpuWddmDestroyDevice", WDDM_DDI_CODE))
+    destroy_stages = (
+        (destroy_device.find("LONGstate=InterlockedCompareExchange(&device->ReferenceState,0,0);"), "state snapshot"),
+        (destroy_device.find("LONGclosingState=state|VIOGPU_WDDM_DEVICE_CLOSING;"), "closing state construction"),
+        (
+            destroy_device.find(
+                "InterlockedCompareExchange(&device->ReferenceState,closingState,state)"
+            ),
+            "closing publication",
+        ),
+        (
+            destroy_device.find("if((state&VIOGPU_WDDM_DEVICE_REFERENCE_MASK)!=0)"),
+            "reference drain check",
+        ),
+        (destroy_device.find("returnSTATUS_DEVICE_BUSY;"), "busy retention"),
+        (destroy_device.find("device->Signature=0;"), "signature invalidation"),
+        (destroy_device.find("deletedevice;"), "device deletion"),
+    )
+    for (offset, description), (next_offset, next_description) in zip(destroy_stages, destroy_stages[1:]):
+        if offset < 0 or next_offset < 0 or offset > next_offset:
+            fail(f"DestroyDevice must perform {description} before {next_description}")
+    if destroy_device.count(
+        "InterlockedCompareExchange(&device->ReferenceState,closingState,state)"
+    ) != 1:
+        fail("DestroyDevice must publish closing exactly once and retain it across busy retry")
+
+    create = canonical_code(function_body("VioGpuWddmCreateContext", WDDM_DDI_CODE))
+    reserve = create.find("if(!ReferenceDevice(device))")
+    allocate = create.find("context=new(NonPagedPoolNx)VIOGPU_WDDM_CONTEXT;")
+    initialize_rundown = create.find("ExInitializeRundownProtection(&context->Operations);")
+    publish_open = create.find("context->OperationsRundownCompleted=FALSE;")
+    binding_lock = create.find("KeInitializeSpinLock(&context->NativeContext.BindingLock);")
+    host_create = create.find("device->Adapter->CreateNativeContext(&context->NativeContext)")
+    publish = create.find("createContext->hContext=context;")
+    if min(reserve, allocate, initialize_rundown, publish_open, binding_lock, host_create, publish) < 0 or not (
+        reserve < allocate < initialize_rundown < publish_open < binding_lock < host_create < publish
+    ):
+        fail("CreateContext must initialize open operations rundown before Host creation and handle publication")
+    if create.count("ExInitializeRundownProtection(&context->Operations)") != 1 or create.count(
+        "context->OperationsRundownCompleted=FALSE;"
+    ) != 1:
+        fail("CreateContext must publish exactly one initialized open operations rundown")
+    if create.count("ReferenceDevice(device)") != 1 or create.count("DereferenceDevice(device)") != 2:
+        fail("CreateContext must release its device reservation on both post-reservation failure paths")
+    for condition, required_prefix in (
+        (
+            "context==NULL",
+            "DereferenceDevice(device);returnSTATUS_NO_MEMORY;",
+        ),
+        (
+            "!NT_SUCCESS(status)",
+            "context->Signature=0;deletecontext;DereferenceDevice(device);returnstatus;",
+        ),
+    ):
+        blocks = [
+            canonical_code(body)
+            for candidate, body, _, _ in if_blocks(function_body("VioGpuWddmCreateContext", WDDM_DDI_CODE))
+            if canonical_code(candidate) == condition
+        ]
+        if len(blocks) != 1 or blocks[0] != required_prefix:
+            fail("CreateContext must release the device reservation on every failed construction")
+
+    destroy_body = function_body("VioGpuWddmDestroyContext", WDDM_DDI_CODE)
+    destroy = canonical_code(destroy_body)
+    rundown_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(destroy_body)
+        if canonical_code(condition) == "!context->OperationsRundownCompleted"
+    ]
+    expected_rundown_close = (
+        "ExWaitForRundownProtectionRelease(&context->Operations);"
+        "ExRundownCompleted(&context->Operations);"
+        "context->OperationsRundownCompleted=TRUE;"
+    )
+    if len(rundown_blocks) != 1 or rundown_blocks[0] != expected_rundown_close:
+        fail("DestroyContext must wait and complete operations rundown exactly once across retries")
+    native_destroy = destroy.find("context->Device->Adapter->DestroyNativeContext(")
+    rundown_close = destroy.find(expected_rundown_close)
+    release_guard = destroy.find("if(!released)", native_destroy)
+    if min(rundown_close, native_destroy, release_guard) < 0 or not rundown_close < native_destroy < release_guard:
+        fail("DestroyContext must close operations before native destroy and prove release before deletion")
+    if (
+        destroy.count("ExWaitForRundownProtectionRelease(&context->Operations)") != 1
+        or destroy.count("ExRundownCompleted(&context->Operations)") != 1
+        or destroy.count("context->OperationsRundownCompleted=TRUE;") != 1
+        or "ExReInitializeRundownProtection(&context->Operations)" in WDDM_DDI_CODE
+        or len(variable_write_offsets(destroy_body, "context->OperationsRundownCompleted")) != 1
+    ):
+        fail("context operations rundown must close once, stay closed on failure, and never reopen")
+    destroy_sequence = (
+        "VIOGPU_WDDM_DEVICE*device=context->Device;"
+        "context->Signature=0;deletecontext;DereferenceDevice(device);returnSTATUS_SUCCESS;"
+    )
+    if destroy.count(destroy_sequence) != 1:
+        fail("DestroyContext must release its device reservation only after context destruction is proven safe")
+
+    snapshot = function_body("VioGpuAdapter::AcquireNativeContextSnapshot", VIOGPU_CODE)
+    snapshot_compact = canonical_code(snapshot)
+    irql_guard = snapshot_compact.find("KeGetCurrentIrql()!=PASSIVE_LEVEL")
+    wait = snapshot_compact.find("KeWaitForSingleObject(&adapter->m_NativeContextLifecycleMutex")
+    if irql_guard < 0 or wait < 0 or irql_guard > wait:
+        fail("native-context snapshot acquisition must reject non-PASSIVE callers before waiting")
+
+    generation_current = canonical_code(
+        function_body("VioGpuAdapter::IsNativeContextGenerationCurrent", VIOGPU_CODE)
+    )
+    reset_gate = "!m_pVioGpuDod->IsHardwareResetRequested()"
+    if generation_current.count(reset_gate) != 1:
+        fail("native-context generation validation must fail closed while hardware reset is requested")
+    state_check = "InterlockedCompareExchange(&m_NativeContextState,VioGpuNativeContextOffline,VioGpuNativeContextOffline)"
+    if generation_current.find(reset_gate) > generation_current.find(state_check):
+        fail("native-context generation validation must check the hardware reset gate before publishing Ready state")
+
+    render_body = function_body("VioGpuWddmRender", WDDM_DDI_CODE)
+    render = canonical_code(render_body)
+    acquire_rundown = render.find("if(!ExAcquireRundownProtection(&context->Operations))")
+    signature_check = render.find("if(context->Signature!=VIOGPU_WDDM_CONTEXT_SIGNATURE)")
+    acquire = render.find("VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext,&snapshot)")
+    if min(acquire_rundown, signature_check, acquire) < 0 or not acquire_rundown < signature_check < acquire:
+        fail("Render must acquire context operations before signature validation and native snapshot use")
+    if (
+        render.count("ExAcquireRundownProtection(&context->Operations)") != 1
+        or render.count("VioGpuAdapter::AcquireNativeContextSnapshot(") != 1
+    ):
+        fail("Render must acquire exactly one context rundown and one native-context snapshot")
+    acquire_failure = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(render_body)
+        if canonical_code(condition) == "!ExAcquireRundownProtection(&context->Operations)"
+    ]
+    signature_failure = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(render_body)
+        if canonical_code(condition) == "context->Signature!=VIOGPU_WDDM_CONTEXT_SIGNATURE"
+    ]
+    if acquire_failure != ["returnSTATUS_DEVICE_NOT_READY;"] or signature_failure != [
+        "ExReleaseRundownProtection(&context->Operations);returnSTATUS_INVALID_HANDLE;"
+    ]:
+        fail("Render must fail closed on rundown acquisition and release it after a bad signature")
+    if render.count("VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);") != 4:
+        fail("Render must release its native-context snapshot on every post-acquisition exit")
+    if render.count("ExReleaseRundownProtection(&context->Operations);") != 6:
+        fail("Render must release context operations on every post-acquisition exit")
+    post_acquire_guards = (
+        "render->DmaSize<render->CommandLength||render->PatchLocationListOutSize<render->PatchLocationListInSize",
+        "!NT_SUCCESS(status)",
+        "!snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation)",
+    )
+    for condition in post_acquire_guards:
+        blocks = [
+            canonical_code(body)
+            for candidate, body, start, _ in if_blocks(render_body)
+            if canonical_code(candidate) == condition
+            and len(canonical_code(render_body[:start])) > acquire
+            and "return" in canonical_code(body)
+        ]
+        if len(blocks) != 1 or not blocks[0].startswith(
+            "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);"
+            "ExReleaseRundownProtection(&context->Operations);return"
+        ):
+            fail("Render must release snapshot and context rundown before every failed post-acquisition return")
+    render_success = (
+        "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);"
+        "ExReleaseRundownProtection(&context->Operations);returnSTATUS_SUCCESS;"
+    )
+    if not render.endswith(render_success):
+        fail("Render must release snapshot and context rundown on its success path")
 
 
 def check_dpc_completion_semantics() -> None:
@@ -1871,6 +2570,14 @@ def check_netkvm_terminal_cleanup() -> None:
 
 
 def check_adapter_lifecycle() -> None:
+    adapter_header = canonical_code(VIOGPU_HEADER_CODE)
+    for required in (
+        "mutableEX_RUNDOWN_REFm_HardwareOperations;",
+        "BOOLEANm_HardwareRundownCompleted;",
+    ):
+        if adapter_header.count(required) != 1:
+            fail(f"DOD adapter must expose one retry-safe hardware rundown field: {required}")
+
     owner_checks = re.findall(r"\bm_RdmaPool\s*\.\s*HasArenaOwner\s*\(\s*\)", VIOGPU_CODE)
     if len(owner_checks) != 4:
         fail("adapter teardown and restart gates must check retained RDMA arena ownership exactly four times")
@@ -1902,6 +2609,7 @@ def check_adapter_lifecycle() -> None:
 
 
     failed_start_cleanup = re.findall(
+        r"\bInterlockedExchange\s*\(\s*&m_HardwareResetRequested\s*,\s*TRUE\s*\)\s*;\s*"
         r"\bNTSTATUS\s+closeStatus\s*=\s*m_pHWDevice\s*->\s*HWClose\s*\(\s*\)\s*;"
         r"\s*if\s*\(\s*NT_SUCCESS\s*\(\s*closeStatus\s*\)\s*\)\s*\{"
         r"\s*delete\s+m_pHWDevice\s*;\s*m_pHWDevice\s*=\s*NULL\s*;\s*\}"
@@ -1911,21 +2619,130 @@ def check_adapter_lifecycle() -> None:
         re.DOTALL,
     )
     if len(failed_start_cleanup) != 3 or len(re.findall(r"\bm_pHWDevice\s*->\s*HWClose\s*\(", start)) != 3:
-        fail("every failed StartDevice unwind must retain the adapter unless HWClose succeeds")
+        fail("every failed StartDevice unwind must gate ISR/DPC access and retain the adapter unless HWClose succeeds")
     if len(variable_write_offsets(start, "m_pHWDevice")) != 4 or len(
         re.findall(r"\bdelete\s+m_pHWDevice\s*;", start)
     ) != 3:
         fail("StartDevice must replace or delete its hardware adapter only in the checked ownership paths")
 
-    stop = compact_code(function_body("VioGpuDod::StopDevice", VIOGPU_CODE))
-    stop_sequence = (
-        "if(m_pHWDevice!=NULL){"
-        "status=m_pHWDevice->HWClose();"
-        "if(NT_SUCCESS(status)){deletem_pHWDevice;m_pHWDevice=NULL;}"
-        "}if(NT_SUCCESS(status)){m_Flags.DriverStarted=FALSE;}returnstatus;"
+    constructor = canonical_code(function_body("VioGpuDod::VioGpuDod", VIOGPU_CODE))
+    constructor_definition = re.findall(
+        r"\bVioGpuDod\s*::\s*VioGpuDod\s*\([^{};]*\)\s*"
+        r":\s*[^{};]*\bm_HardwareRundownCompleted\s*\(\s*FALSE\s*\)[^{};]*\{",
+        VIOGPU_CODE,
+        re.DOTALL,
     )
-    if stop_sequence not in stop:
-        fail("StopDevice must propagate HWClose failure and delete the adapter only after successful teardown")
+    initialize_rundown = constructor.find("ExInitializeRundownProtection(&m_HardwareOperations);")
+    if len(constructor_definition) != 1 or constructor.count(
+        "ExInitializeRundownProtection(&m_HardwareOperations);"
+    ) != 1 or initialize_rundown < 0:
+        fail("DOD constructor must initialize one open hardware rundown epoch")
+
+    hardware_close = (
+        "ExWaitForRundownProtectionRelease(&m_HardwareOperations);"
+        "ExRundownCompleted(&m_HardwareOperations);"
+        "m_HardwareRundownCompleted=TRUE;"
+    )
+    destructor_body = function_body("VioGpuDod::~VioGpuDod", VIOGPU_CODE)
+    destructor = canonical_code(destructor_body)
+    destructor_close_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(destructor_body)
+        if canonical_code(condition) == "!m_HardwareRundownCompleted"
+    ]
+    delete_hardware = destructor.find("deletem_pHWDevice;")
+    if (
+        destructor_close_blocks != [hardware_close]
+        or destructor.count("ExWaitForRundownProtectionRelease(&m_HardwareOperations)") != 1
+        or destructor.count("ExRundownCompleted(&m_HardwareOperations)") != 1
+        or delete_hardware < destructor.find(hardware_close)
+    ):
+        fail("DOD destructor must close an open hardware rundown exactly once before deletion")
+
+    stop_body = function_body("VioGpuDod::StopDevice", VIOGPU_CODE)
+    stop = canonical_code(stop_body)
+    stop_close_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(stop_body)
+        if canonical_code(condition) == "!m_HardwareRundownCompleted"
+    ]
+    hw_close = stop.find("status=m_pHWDevice->HWClose();")
+    delete_hardware = stop.find("deletem_pHWDevice;", hw_close)
+    clear_hardware = stop.find("m_pHWDevice=NULL;", delete_hardware)
+    clear_started = stop.find("m_Flags.DriverStarted=FALSE;", clear_hardware)
+    reinitialize = stop.find("ExReInitializeRundownProtection(&m_HardwareOperations);", clear_started)
+    publish_open = stop.find("m_HardwareRundownCompleted=FALSE;", reinitialize)
+    stop_stages = (stop.find(hardware_close), hw_close, delete_hardware, clear_hardware, clear_started, reinitialize, publish_open)
+    if stop_close_blocks != [hardware_close] or min(stop_stages) < 0 or tuple(sorted(stop_stages)) != stop_stages:
+        fail("StopDevice must close hardware once and reopen only after complete adapter teardown")
+    reopen_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(stop_body)
+        if is_success_condition(condition, "status")
+        and "ExReInitializeRundownProtection(&m_HardwareOperations)" in canonical_code(body)
+    ]
+    expected_reopen = (
+        "ExReInitializeRundownProtection(&m_HardwareOperations);"
+        "m_HardwareRundownCompleted=FALSE;"
+    )
+    if reopen_blocks != [expected_reopen]:
+        fail("StopDevice may publish an open hardware rundown only on complete teardown success")
+    if (
+        stop.count("ExWaitForRundownProtectionRelease(&m_HardwareOperations)") != 1
+        or stop.count("ExRundownCompleted(&m_HardwareOperations)") != 1
+        or stop.count("ExReInitializeRundownProtection(&m_HardwareOperations)") != 1
+        or len(variable_write_offsets(stop_body, "m_HardwareRundownCompleted")) != 2
+    ):
+        fail("StopDevice must retain a completed rundown across failure and skip repeated waits")
+    if len(variable_write_offsets(stop_body, "m_pHWDevice")) != 1 or stop.count("deletem_pHWDevice;") != 1:
+        fail("StopDevice must delete and clear the hardware adapter only on the checked success path")
+
+    wrapper_contracts = (
+        (
+            "VioGpuDod::QueryVidMmSegment",
+            "returnFALSE;",
+            "VioGpuAdapter*adapter=m_pHWDevice;"
+            "BOOLEANavailable=!IsHardwareResetRequested()&&adapter!=NULL&&"
+            "adapter->QueryVidMmSegment(baseAddress,physicalAddress,size);"
+            "ExReleaseRundownProtection(&m_HardwareOperations);returnavailable;",
+        ),
+        (
+            "VioGpuDod::QueryNativeContextReadiness",
+            "returnFALSE;",
+            "VioGpuAdapter*adapter=m_pHWDevice;"
+            "BOOLEANready=!IsHardwareResetRequested()&&adapter!=NULL&&"
+            "adapter->QueryNativeContextReadiness(capset,capsetVersion,capsetSize);"
+            "ExReleaseRundownProtection(&m_HardwareOperations);returnready;",
+        ),
+        (
+            "VioGpuDod::CreateNativeContext",
+            "returnSTATUS_DEVICE_NOT_READY;",
+            "VioGpuAdapter*adapter=m_pHWDevice;"
+            "NTSTATUSstatus=!IsHardwareResetRequested()&&adapter!=NULL?"
+            "adapter->CreateNativeContext(context):STATUS_DEVICE_NOT_READY;"
+            "ExReleaseRundownProtection(&m_HardwareOperations);returnstatus;",
+        ),
+    )
+    acquire_prefix = "if(!ExAcquireRundownProtection(&m_HardwareOperations)){"
+    for wrapper_name, failure, protected_tail in wrapper_contracts:
+        wrapper = canonical_code(function_body(wrapper_name, VIOGPU_CODE))
+        expected = acquire_prefix + failure + "}" + protected_tail
+        if wrapper != expected:
+            fail(f"{wrapper_name} must hold hardware rundown across every m_pHWDevice use")
+
+    destroy_wrapper = canonical_code(function_body("VioGpuDod::DestroyNativeContext", VIOGPU_CODE))
+    expected_destroy_wrapper = (
+        "if(released==NULL){returnSTATUS_INVALID_PARAMETER;}"
+        "*released=FALSE;"
+        + acquire_prefix
+        + "returnSTATUS_DEVICE_NOT_READY;}"
+        "VioGpuAdapter*adapter=m_pHWDevice;"
+        "NTSTATUSstatus=!IsHardwareResetRequested()&&adapter!=NULL?"
+        "adapter->DestroyNativeContext(context,released):STATUS_DEVICE_NOT_READY;"
+        "ExReleaseRundownProtection(&m_HardwareOperations);returnstatus;"
+    )
+    if destroy_wrapper != expected_destroy_wrapper:
+        fail("DestroyNativeContext must initialize release state and hold hardware rundown across adapter use")
 
     hw_close_body = function_body("VioGpuAdapter::HWClose", VIOGPU_CODE)
     hw_close = compact_code(hw_close_body)
@@ -2146,9 +2963,14 @@ def main() -> None:
     check_driver_entry_gate()
     check_registration_helper(sources)
     check_callback_table()
+    check_virtio_reset_contract()
+    check_virtio_queue_allocation_cleanup()
+    check_dod_reset_entrypoints()
     check_native_context_readiness()
     check_no_retired_variant_contract(sources)
     check_queue_failure_semantics()
+    check_native_context_ownership()
+    check_wddm_context_lifetime()
     check_dpc_completion_semantics()
     check_segment_failure_semantics()
     check_pci_resource_lifetime()
