@@ -400,19 +400,19 @@ def check_virtio_reset_contract() -> None:
             fail(f"{transport} VirtIO transport must expose one checked bounded reset implementation")
         name = candidates[0]
         definition = canonical_code(function_body(name, source))
-        timeout_names = re.findall(
-            rf"#define\s+(VIRTIO_[A-Z0-9_]*{transport.upper()}[A-Z0-9_]*RESET[A-Z0-9_]*)\s+([0-9]+U?)",
+        poll_limits = re.findall(
+            rf"#define\s+(VIRTIO_[A-Z0-9_]*{transport.upper()}[A-Z0-9_]*RESET_POLL_LIMIT)\s+([0-9]+U?)",
             source,
         )
-        if len(timeout_names) != 1 or int(timeout_names[0][1].rstrip("U")) <= 0:
-            fail(f"{transport} VirtIO reset must define one finite timeout")
-        timeout_name = timeout_names[0][0]
+        if len(poll_limits) != 1 or int(poll_limits[0][1].rstrip("U")) <= 0:
+            fail(f"{transport} VirtIO reset must define one finite poll limit")
+        poll_limit = poll_limits[0][0]
         loop = re.search(
-            rf"for\(elapsed=0;elapsed<{re.escape(timeout_name)};\+\+elapsed\)\{{",
+            rf"for\(poll=0;poll<{re.escape(poll_limit)};\+\+poll\)\{{",
             definition,
         )
         if loop is None:
-            fail(f"{name} must use a bounded millisecond reset loop")
+            fail(f"{name} must use a bounded reset poll loop")
         if definition.count("vdev_sleep(vdev,1);") != 1:
             fail(f"{name} must sleep once per unsuccessful reset poll")
         for result in ("STATUS_SUCCESS", "STATUS_DEVICE_NOT_CONNECTED", "STATUS_IO_TIMEOUT"):
@@ -463,6 +463,24 @@ def check_virtio_queue_allocation_cleanup() -> None:
 
 def check_dod_reset_entrypoints() -> None:
     """Check reset callbacks before they dereference the replaceable adapter."""
+    dpc = canonical_code(function_body("VioGpuDod::DpcRoutine", VIOGPU_CODE))
+    dpc_acquire = dpc.find("if(ExAcquireRundownProtection(&m_HardwareOperations))")
+    dpc_adapter = dpc.find("VioGpuAdapter*adapter=m_pHWDevice;", dpc_acquire)
+    dpc_call = dpc.find("adapter->DpcRoutine(&m_DxgkInterface);", dpc_adapter)
+    dpc_release = dpc.find("ExReleaseRundownProtection(&m_HardwareOperations);", dpc_call)
+    dpc_notify = dpc.find("m_DxgkInterface.DxgkCbNotifyDpc((HANDLE)m_DxgkInterface.DeviceHandle);", dpc_release)
+    if min(dpc_acquire, dpc_adapter, dpc_call, dpc_release, dpc_notify) < 0 or not (
+        dpc_acquire < dpc_adapter < dpc_call < dpc_release < dpc_notify
+    ):
+        fail("DpcRoutine must hold hardware rundown across adapter access and notify DxgK after release")
+    if (
+        dpc.count("ExAcquireRundownProtection(&m_HardwareOperations)") != 1
+        or dpc.count("ExReleaseRundownProtection(&m_HardwareOperations);") != 1
+        or dpc.count("adapter->DpcRoutine(&m_DxgkInterface);") != 1
+        or "m_pHWDevice->DpcRoutine" in dpc
+    ):
+        fail("DpcRoutine must use one balanced protected hardware snapshot")
+
     reset = canonical_code(function_body("VioGpuDod::ResetDevice", VIOGPU_CODE))
     reset_gate = "InterlockedExchange(&m_HardwareResetRequested,TRUE);"
     reset_acquire = "ExAcquireRundownProtection(&m_HardwareOperations)"
@@ -2696,6 +2714,34 @@ def check_adapter_lifecycle() -> None:
         fail("StopDevice must retain a completed rundown across failure and skip repeated waits")
     if len(variable_write_offsets(stop_body, "m_pHWDevice")) != 1 or stop.count("deletem_pHWDevice;") != 1:
         fail("StopDevice must delete and clear the hardware adapter only on the checked success path")
+
+    post_display_body = function_body("VioGpuDod::StopDeviceAndReleasePostDisplayOwnership", VIOGPU_CODE)
+    post_display = canonical_code(post_display_body)
+    acquire_hardware = post_display.find("if(!ExAcquireRundownProtection(&m_HardwareOperations))")
+    snapshot_hardware = post_display.find("VioGpuAdapter*adapter=m_pHWDevice;", acquire_hardware)
+    reject_unavailable = post_display.find("if(IsHardwareResetRequested()||adapter==NULL)", snapshot_hardware)
+    blackout = post_display.find("adapter->BlackOutScreen(&m_CurrentMode);", reject_unavailable)
+    stop_device = post_display.find("returnStopDevice();", blackout)
+    if min(acquire_hardware, snapshot_hardware, reject_unavailable, blackout, stop_device) < 0 or not (
+        acquire_hardware < snapshot_hardware < reject_unavailable < blackout < stop_device
+    ):
+        fail("post-display ownership release must hold hardware rundown across screen blackout")
+    reject_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(post_display_body)
+        if canonical_code(condition) == "IsHardwareResetRequested()||adapter==NULL"
+    ]
+    if reject_blocks != [
+        "ExReleaseRundownProtection(&m_HardwareOperations);returnSTATUS_DEVICE_NOT_READY;"
+    ]:
+        fail("post-display ownership release must balance hardware rundown when the adapter is unavailable")
+    if (
+        post_display.count("ExAcquireRundownProtection(&m_HardwareOperations)") != 1
+        or post_display.count("ExReleaseRundownProtection(&m_HardwareOperations);") != 2
+        or post_display.count("adapter->BlackOutScreen(&m_CurrentMode);") != 1
+        or "m_pHWDevice->BlackOutScreen" in post_display
+    ):
+        fail("post-display ownership release must use one balanced protected hardware snapshot")
 
     wrapper_contracts = (
         (

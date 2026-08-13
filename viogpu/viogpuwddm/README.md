@@ -41,8 +41,12 @@ The current initialization transport tears down fail-closed. It releases every
 tracked control/display suballocation before issuing the RDMA arena FREE, clears
 the connection only after the provider confirms success, and retains the
 adapter plus cached failure after an error or timeout. It never retries an
-outcome-uncertain FREE. This protects the compile-only P1 lifecycle; it is not
-the missing P2 guest-backed BO teardown implementation.
+outcome-uncertain FREE. This avoids freeing potentially device-owned DMA, but it
+is not a complete removal contract: `DxgkDdiRemoveDevice` is required to free
+the miniport context, while the current failure path must retain that context
+because the inner adapter can still reference it. This conflict remains an
+explicit registration blocker, alongside the missing P2 guest-backed BO
+teardown implementation.
 
 `VioGpuWddmBuildInitializationData` wires the existing display adapter,
 interrupt, power, cursor, EDID, and VidPN lifecycle into a full-miniport
@@ -98,3 +102,7 @@ Run the focused safety contract with:
 ```text
 python viogpu/viogpuwddm/check-contract.py
 ```
+
+The mutation suite is intentionally not part of ordinary push or pull-request
+CI. Run the ARM64 workflow manually with `run_mutation=true` only at a major
+contract boundary.

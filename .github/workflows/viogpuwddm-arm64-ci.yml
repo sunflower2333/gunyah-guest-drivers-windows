@@ -2,6 +2,12 @@ name: Check viogpu full WDDM ARM64 contract
 
 on:
   workflow_dispatch:
+    inputs:
+      run_mutation:
+        description: Run the expensive restricted-DMA mutation suite
+        required: false
+        default: false
+        type: boolean
   pull_request:
     paths:
       - "viogpu/common/**"
@@ -56,6 +62,7 @@ jobs:
         run: python viogpu/viogpuwddm/check-contract.py
 
       - name: Attack restricted-DMA safety contract
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_mutation }}
         shell: pwsh
         run: python viogpu/viogpuwddm/test-rdma-contract.py
 

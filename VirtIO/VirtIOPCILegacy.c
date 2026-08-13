@@ -109,15 +109,16 @@ static void vio_legacy_reset(VirtIODevice *vdev)
     iowrite8(vdev, 0, vdev->addr + VIRTIO_PCI_STATUS);
 }
 
-#define VIRTIO_LEGACY_RESET_TIMEOUT_MS 1000U
+#define VIRTIO_LEGACY_RESET_POLL_LIMIT 1000U
 
 static NTSTATUS vio_legacy_reset_checked(VirtIODevice *vdev)
 {
-    unsigned elapsed;
+    unsigned poll;
 
     /* 0 status means a reset. */
     iowrite8(vdev, 0, vdev->addr + VIRTIO_PCI_STATUS);
-    for (elapsed = 0; elapsed < VIRTIO_LEGACY_RESET_TIMEOUT_MS; ++elapsed) {
+    /* This bounds attempts, not wall-clock time; vdev_sleep is transport-owned. */
+    for (poll = 0; poll < VIRTIO_LEGACY_RESET_POLL_LIMIT; ++poll) {
         u16 val;
 
         if (ioread8(vdev, vdev->addr + VIRTIO_PCI_STATUS) == 0) {
@@ -129,7 +130,8 @@ static NTSTATUS vio_legacy_reset_checked(VirtIODevice *vdev)
         }
         vdev_sleep(vdev, 1);
     }
-    DPrintf(0, ("virtio legacy reset timed out after %u ms\n", VIRTIO_LEGACY_RESET_TIMEOUT_MS));
+    DPrintf(0, "virtio legacy reset did not complete after %u polls\n",
+            VIRTIO_LEGACY_RESET_POLL_LIMIT);
     return STATUS_IO_TIMEOUT;
 }
 

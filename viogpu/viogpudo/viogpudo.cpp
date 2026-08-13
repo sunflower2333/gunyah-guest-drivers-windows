@@ -874,7 +874,18 @@ NTSTATUS VioGpuDod::StopDeviceAndReleasePostDisplayOwnership(_In_ D3DDDI_VIDEO_P
         SetPowerState(TargetId, PowerDeviceD0, PowerActionNone);
     }
 
-    m_pHWDevice->BlackOutScreen(&m_CurrentMode);
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (IsHardwareResetRequested() || adapter == NULL)
+    {
+        ExReleaseRundownProtection(&m_HardwareOperations);
+        return STATUS_DEVICE_NOT_READY;
+    }
+    adapter->BlackOutScreen(&m_CurrentMode);
+    ExReleaseRundownProtection(&m_HardwareOperations);
     DbgPrint(TRACE_LEVEL_FATAL,
              ("StopDeviceAndReleasePostDisplayOwnership Width = %d Height = %d Pitch = %d ColorFormat = %dn",
               m_SystemDisplayInfo.Width,
@@ -2183,10 +2194,14 @@ void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
 VOID VioGpuDod::DpcRoutine(VOID)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
-    VioGpuAdapter *adapter = m_pHWDevice;
-    if (!IsHardwareResetRequested() && adapter != NULL)
+    if (ExAcquireRundownProtection(&m_HardwareOperations))
     {
-        adapter->DpcRoutine(&m_DxgkInterface);
+        VioGpuAdapter *adapter = m_pHWDevice;
+        if (!IsHardwareResetRequested() && adapter != NULL)
+        {
+            adapter->DpcRoutine(&m_DxgkInterface);
+        }
+        ExReleaseRundownProtection(&m_HardwareOperations);
     }
     m_DxgkInterface.DxgkCbNotifyDpc((HANDLE)m_DxgkInterface.DeviceHandle);
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));

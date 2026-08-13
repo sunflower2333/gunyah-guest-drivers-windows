@@ -190,11 +190,11 @@ static void vio_modern_reset(VirtIODevice *vdev)
     }
 }
 
-#define VIRTIO_MODERN_RESET_TIMEOUT_MS 1000U
+#define VIRTIO_MODERN_RESET_POLL_LIMIT 1000U
 
 static NTSTATUS vio_modern_reset_checked(VirtIODevice *vdev)
 {
-    unsigned elapsed;
+    unsigned poll;
 
     /* 0 status means a reset. */
     iowrite8(vdev, 0, &vdev->common->device_status);
@@ -203,7 +203,8 @@ static NTSTATUS vio_modern_reset_checked(VirtIODevice *vdev)
      * This will flush out the status write, and flush in device writes,
      * including MSI-X interrupts, if any.
      */
-    for (elapsed = 0; elapsed < VIRTIO_MODERN_RESET_TIMEOUT_MS; ++elapsed) {
+    /* This bounds attempts, not wall-clock time; vdev_sleep is transport-owned. */
+    for (poll = 0; poll < VIRTIO_MODERN_RESET_POLL_LIMIT; ++poll) {
         u16 val;
 
         if (ioread8(vdev, &vdev->common->device_status) == 0) {
@@ -215,7 +216,8 @@ static NTSTATUS vio_modern_reset_checked(VirtIODevice *vdev)
         }
         vdev_sleep(vdev, 1);
     }
-    DPrintf(0, ("virtio modern reset timed out after %u ms\n", VIRTIO_MODERN_RESET_TIMEOUT_MS));
+    DPrintf(0, "virtio modern reset did not complete after %u polls\n",
+            VIRTIO_MODERN_RESET_POLL_LIMIT);
     return STATUS_IO_TIMEOUT;
 }
 
