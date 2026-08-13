@@ -261,16 +261,17 @@ NTSTATUS VioCryptDevicePrepareHardware(IN WDFDEVICE Device,
 NTSTATUS VioCryptDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTranslated)
 {
     PDEVICE_CONTEXT context = GetDeviceContext(Device);
+    NTSTATUS status;
 
     UNREFERENCED_PARAMETER(ResourcesTranslated);
 
     PAGED_CODE();
 
-    VirtIOWdfShutdown(&context->VDevice);
+    status = VirtIOWdfShutdown(&context->VDevice);
 
     Trace(TRACE_LEVEL_VERBOSE, "[%s]", __FUNCTION__);
 
-    return STATUS_SUCCESS;
+    return status;
 }
 
 NTSTATUS VioCryptDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE PreviousState)

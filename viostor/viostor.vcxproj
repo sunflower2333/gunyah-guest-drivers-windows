@@ -119,7 +119,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories);..\VirtIO;..\rdmapool</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories);..\VirtIO</AdditionalIncludeDirectories>
       <WarningLevel>Level3</WarningLevel>
       <DisableSpecificWarnings>4603;4627;4986;4987;4996;6001;6387;%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
@@ -223,8 +223,6 @@
   <ItemGroup>
     <ClInclude Include="virtio_stor.h" />
     <ClInclude Include="virtio_stor_hw_helper.h" />
-    <ClInclude Include="viostor_rdma.h" />
-    <ClInclude Include="..\rdmapool\rdmaclient.h" />
     <ClInclude Include="virtio_stor_trace.h" />
     <ClInclude Include="virtio_stor_utils.h" />
   </ItemGroup>
@@ -236,8 +234,6 @@
     <ClCompile Include="virtio_stor.c" />
     <ClCompile Include="virtio_stor_hw_helper.c" />
     <ClCompile Include="virtio_stor_utils.c" />
-    <ClCompile Include="viostor_rdma.c" />
-    <ClCompile Include="..\rdmapool\rdmaclient.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="$(MSBuildProjectDirectory)\..\build\Driver.Common.targets" />

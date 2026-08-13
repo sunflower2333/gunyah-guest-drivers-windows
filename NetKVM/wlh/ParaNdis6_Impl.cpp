@@ -145,14 +145,32 @@ Parameters:
             about the allocation (size, addresses, cacheability etc)
             filled by ParaNdis_InitialAllocatePhysicalMemory
 ***********************************************************/
-VOID ParaNdis_FreePhysicalMemory(PARANDIS_ADAPTER *pContext, tCompletePhysicalAddress *pAddresses)
+NTSTATUS ParaNdis_FreePhysicalMemory(PARANDIS_ADAPTER *pContext, tCompletePhysicalAddress *pAddresses)
 {
-    if (ParaNdis_RdmaPoolContains(pContext, pAddresses->Virtual))
+    NTSTATUS status;
+
+    if (pAddresses == NULL || pAddresses->Virtual == NULL || pAddresses->size == 0)
     {
-        ParaNdis_RdmaPoolFree(pContext, pAddresses->Virtual, pAddresses->size);
-        return;
+        return STATUS_INVALID_PARAMETER;
     }
+
+    status = ParaNdis_RdmaPoolFree(pContext, pAddresses->Virtual, pAddresses->size);
+    if (status != STATUS_NOT_FOUND)
+    {
+        if (NT_SUCCESS(status))
+        {
+            pAddresses->Virtual = NULL;
+            pAddresses->Physical.QuadPart = 0;
+            pAddresses->size = 0;
+        }
+        return status;
+    }
+
     NdisMFreeSharedMemory(pContext->MiniportHandle, pAddresses->size, TRUE, pAddresses->Virtual, pAddresses->Physical);
+    pAddresses->Virtual = NULL;
+    pAddresses->Physical.QuadPart = 0;
+    pAddresses->size = 0;
+    return STATUS_SUCCESS;
 }
 
 #if (NDIS_SUPPORT_NDIS620)

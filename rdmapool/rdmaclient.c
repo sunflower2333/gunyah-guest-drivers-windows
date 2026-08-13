@@ -25,13 +25,21 @@
 /* rdmapool connect / IOCTL                                           */
 /* ------------------------------------------------------------------ */
 
-static NTSTATUS RdmaClientIoctl(PRDMA_CLIENT c,
-                                ULONG IoControlCode,
-                                PVOID InputBuffer,
-                                ULONG InputBufferLength,
-                                PVOID OutputBuffer,
-                                ULONG OutputBufferLength)
+typedef struct _RDMA_CLIENT_IOCTL_RESULT
 {
+    NTSTATUS Status;
+    ULONG_PTR Information;
+    BOOLEAN Submitted;
+} RDMA_CLIENT_IOCTL_RESULT;
+
+static RDMA_CLIENT_IOCTL_RESULT RdmaClientIoctl(PRDMA_CLIENT c,
+                                                ULONG IoControlCode,
+                                                PVOID InputBuffer,
+                                                ULONG InputBufferLength,
+                                                PVOID OutputBuffer,
+                                                ULONG OutputBufferLength)
+{
+    RDMA_CLIENT_IOCTL_RESULT result = {STATUS_INSUFFICIENT_RESOURCES, 0, FALSE};
     KEVENT event;
     IO_STATUS_BLOCK iosb;
     PIRP irp;
@@ -52,18 +60,83 @@ static NTSTATUS RdmaClientIoctl(PRDMA_CLIENT c,
                                         &iosb);
     if (irp == NULL)
     {
-        return STATUS_INSUFFICIENT_RESOURCES;
+        return result;
     }
 
     irpStack = IoGetNextIrpStackLocation(irp);
     irpStack->FileObject = c->PoolFileObject;
 
+    result.Submitted = TRUE;
     status = IoCallDriver(c->PoolDeviceObject, irp);
     if (status == STATUS_PENDING)
     {
-        KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
+        status = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
+        if (NT_SUCCESS(status))
+        {
+            status = iosb.Status;
+        }
     }
-    return iosb.Status;
+    result.Status = status;
+    result.Information = iosb.Information;
+    return result;
+}
+
+static VOID RdmaClientClosePoolFile(PRDMA_CLIENT c)
+{
+    if (c->PoolFileObject != NULL)
+    {
+        ObDereferenceObject(c->PoolFileObject);
+        c->PoolFileObject = NULL;
+    }
+    c->PoolDeviceObject = NULL;
+}
+
+static BOOLEAN RdmaClientValidPoolInfo(const RDMAPOOL_QUERY_POOL_OUTPUT *Query)
+{
+    ULONG64 physicalBase;
+
+    if (Query->BaseVirtualAddress == NULL || ((ULONG_PTR)Query->BaseVirtualAddress & (PAGE_SIZE - 1)) != 0 ||
+        Query->BasePhysicalAddress.QuadPart < 0 || Query->TotalSize < PAGE_SIZE ||
+        (Query->TotalSize & (PAGE_SIZE - 1)) != 0 || Query->TotalSize > MAXULONG_PTR ||
+        Query->TotalSize / PAGE_SIZE > MAXULONG)
+    {
+        return FALSE;
+    }
+
+    physicalBase = (ULONG64)Query->BasePhysicalAddress.QuadPart;
+    return (physicalBase & (PAGE_SIZE - 1)) == 0 &&
+           (ULONG_PTR)Query->BaseVirtualAddress <= MAXULONG_PTR - (ULONG_PTR)(Query->TotalSize - 1) &&
+           physicalBase <= MAXULONGLONG - (Query->TotalSize - 1);
+}
+
+static BOOLEAN RdmaClientValidAllocation(const RDMAPOOL_QUERY_POOL_OUTPUT *Query,
+                                         const RDMAPOOL_ALLOCATE_OUTPUT *Output,
+                                         ULONG ExpectedPages)
+{
+    ULONG64 allocationSize = (ULONG64)ExpectedPages * PAGE_SIZE;
+    ULONG_PTR baseVa = (ULONG_PTR)Query->BaseVirtualAddress;
+    ULONG_PTR allocationVa = (ULONG_PTR)Output->VirtualAddress;
+    ULONG64 basePa = (ULONG64)Query->BasePhysicalAddress.QuadPart;
+    ULONG64 allocationPa;
+    ULONG64 vaOffset;
+    ULONG64 paOffset;
+
+    if (Output->InterfaceVersion != RDMAPOOL_INTERFACE_VERSION_V2 || Output->NumPages != ExpectedPages ||
+        Output->AllocationToken == 0 || Output->VirtualAddress == NULL || (allocationVa & (PAGE_SIZE - 1)) != 0 ||
+        Output->PhysicalAddress.QuadPart < 0 || allocationVa < baseVa || allocationSize > Query->TotalSize)
+    {
+        return FALSE;
+    }
+
+    allocationPa = (ULONG64)Output->PhysicalAddress.QuadPart;
+    if ((allocationPa & (PAGE_SIZE - 1)) != 0 || allocationPa < basePa)
+    {
+        return FALSE;
+    }
+
+    vaOffset = (ULONG64)(allocationVa - baseVa);
+    paOffset = allocationPa - basePa;
+    return vaOffset == paOffset && vaOffset <= Query->TotalSize - allocationSize;
 }
 
 NTSTATUS RdmaClientConnect(PRDMA_CLIENT c, const char *Tag, ULONG RingPages, ULONG MetaPages)
@@ -74,15 +147,41 @@ NTSTATUS RdmaClientConnect(PRDMA_CLIENT c, const char *Tag, ULONG RingPages, ULO
     RDMAPOOL_QUERY_POOL_OUTPUT queryOutput;
     RDMAPOOL_ALLOCATE_INPUT allocInput;
     RDMAPOOL_ALLOCATE_OUTPUT allocOutput;
+    RDMAPOOL_FREE_INPUT freeInput;
     ULONG totalPages, poolPages, bouncePages;
+    RDMA_CLIENT_IOCTL_RESULT ioctlResult;
+    ULONG64 bouncePageCount;
+    ULONG64 requestedPages;
+
+    if (c->Active || c->PoolFileObject != NULL || c->PoolDeviceObject != NULL || c->BaseVA != NULL || c->Size != 0 ||
+        c->AllocationPages != 0 || c->AllocationToken != 0 || c->DisconnectAttempted)
+    {
+        return NT_SUCCESS(c->DisconnectStatus) ? STATUS_DEVICE_BUSY : c->DisconnectStatus;
+    }
 
     c->Active = FALSE;
     c->Tag = Tag ? Tag : "rdmaclient";
+    c->BaseVA = NULL;
+    c->BasePA.QuadPart = 0;
+    c->Size = 0;
+    c->AllocationPages = 0;
+    c->AllocationToken = 0;
+    c->DisconnectAttempted = FALSE;
+    c->DisconnectStatus = STATUS_SUCCESS;
 
     status = IoGetDeviceInterfaces(&GUID_DEVINTERFACE_RDMAPOOL, NULL, 0, &deviceInterfaceList);
-    if (!NT_SUCCESS(status) || deviceInterfaceList == NULL || *deviceInterfaceList == L'\0')
+    if (!NT_SUCCESS(status))
     {
-        DbgPrint("%s rdmapool: not found (0x%x), using normal DMA\n", c->Tag, status);
+        DbgPrint("%s rdmapool: interface enumeration failed 0x%x\n", c->Tag, status);
+        if (deviceInterfaceList)
+        {
+            ExFreePool(deviceInterfaceList);
+        }
+        return status;
+    }
+    if (deviceInterfaceList == NULL || *deviceInterfaceList == L'\0')
+    {
+        DbgPrint("%s rdmapool: interface not found, using normal DMA\n", c->Tag);
         if (deviceInterfaceList)
         {
             ExFreePool(deviceInterfaceList);
@@ -102,14 +201,32 @@ NTSTATUS RdmaClientConnect(PRDMA_CLIENT c, const char *Tag, ULONG RingPages, ULO
     }
 
     RtlZeroMemory(&queryOutput, sizeof(queryOutput));
-    status = RdmaClientIoctl(c, (ULONG)IOCTL_RDMAPOOL_QUERY_POOL, NULL, 0, &queryOutput, sizeof(queryOutput));
+    ioctlResult = RdmaClientIoctl(c, (ULONG)IOCTL_RDMAPOOL_QUERY_POOL, NULL, 0, &queryOutput, sizeof(queryOutput));
+    status = ioctlResult.Status;
     if (!NT_SUCCESS(status))
     {
         DbgPrint("%s rdmapool: QUERY_POOL failed 0x%x\n", c->Tag, status);
-        ObDereferenceObject(c->PoolFileObject);
-        c->PoolFileObject = NULL;
-        c->PoolDeviceObject = NULL;
+        RdmaClientClosePoolFile(c);
         return status;
+    }
+    if (ioctlResult.Information != sizeof(queryOutput))
+    {
+        DbgPrint("%s rdmapool: QUERY_POOL returned %Iu bytes, expected %Iu\n",
+                 c->Tag,
+                 ioctlResult.Information,
+                 sizeof(queryOutput));
+        RdmaClientClosePoolFile(c);
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    if (queryOutput.InterfaceVersion != RDMAPOOL_INTERFACE_VERSION_V2)
+    {
+        RdmaClientClosePoolFile(c);
+        return STATUS_REVISION_MISMATCH;
+    }
+    if (queryOutput.PageSize != PAGE_SIZE || !RdmaClientValidPoolInfo(&queryOutput))
+    {
+        RdmaClientClosePoolFile(c);
+        return STATUS_DATA_ERROR;
     }
 
     poolPages = (ULONG)(queryOutput.TotalSize / PAGE_SIZE);
@@ -117,35 +234,81 @@ NTSTATUS RdmaClientConnect(PRDMA_CLIENT c, const char *Tag, ULONG RingPages, ULO
     /* Region = vrings + caller metadata (control slots / event area) + a data
      * area capped at 32MB / half the pool (the pool is shared with the other
      * pVM drivers). */
-    bouncePages = MetaPages + min(8192u, poolPages / 2);
-    totalPages = RingPages + bouncePages;
-    if (totalPages > poolPages)
+    bouncePageCount = (ULONG64)MetaPages + min(8192u, poolPages / 2);
+    bouncePages = bouncePageCount > MAXULONG ? MAXULONG : (ULONG)bouncePageCount;
+    requestedPages = (ULONG64)RingPages + bouncePageCount;
+    if ((ULONG64)RingPages + MetaPages > poolPages)
     {
-        totalPages = poolPages;
+        RdmaClientClosePoolFile(c);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    totalPages = requestedPages > poolPages ? poolPages : (ULONG)requestedPages;
+    if (totalPages == 0)
+    {
+        RdmaClientClosePoolFile(c);
+        return STATUS_INSUFFICIENT_RESOURCES;
     }
 
     RtlZeroMemory(&allocInput, sizeof(allocInput));
     RtlZeroMemory(&allocOutput, sizeof(allocOutput));
+    allocInput.InterfaceVersion = RDMAPOOL_INTERFACE_VERSION_V2;
     allocInput.NumPages = totalPages;
-    status = RdmaClientIoctl(c,
-                             (ULONG)IOCTL_RDMAPOOL_ALLOCATE,
-                             &allocInput,
-                             sizeof(allocInput),
-                             &allocOutput,
-                             sizeof(allocOutput));
+    ioctlResult = RdmaClientIoctl(c,
+                                  (ULONG)IOCTL_RDMAPOOL_ALLOCATE,
+                                  &allocInput,
+                                  sizeof(allocInput),
+                                  &allocOutput,
+                                  sizeof(allocOutput));
+    status = ioctlResult.Status;
     if (!NT_SUCCESS(status))
     {
         DbgPrint("%s rdmapool: ALLOCATE %u pages failed 0x%x\n", c->Tag, totalPages, status);
-        ObDereferenceObject(c->PoolFileObject);
-        c->PoolFileObject = NULL;
-        c->PoolDeviceObject = NULL;
+        RdmaClientClosePoolFile(c);
         return status;
     }
+    if (ioctlResult.Information != sizeof(allocOutput) ||
+        !RdmaClientValidAllocation(&queryOutput, &allocOutput, totalPages))
+    {
+        RDMA_CLIENT_IOCTL_RESULT rollbackResult = {STATUS_INVALID_PARAMETER, 0, FALSE};
+        BOOLEAN hasOwnerTuple = allocOutput.VirtualAddress != NULL && allocOutput.NumPages != 0 &&
+                                allocOutput.AllocationToken != 0;
 
-    c->Active = TRUE;
+        if (hasOwnerTuple)
+        {
+            RtlZeroMemory(&freeInput, sizeof(freeInput));
+            freeInput.InterfaceVersion = RDMAPOOL_INTERFACE_VERSION_V2;
+            freeInput.NumPages = allocOutput.NumPages;
+            freeInput.VirtualAddress = allocOutput.VirtualAddress;
+            freeInput.AllocationToken = allocOutput.AllocationToken;
+            rollbackResult = RdmaClientIoctl(c, (ULONG)IOCTL_RDMAPOOL_FREE, &freeInput, sizeof(freeInput), NULL, 0);
+        }
+        if (hasOwnerTuple && (!NT_SUCCESS(rollbackResult.Status) || rollbackResult.Information != 0))
+        {
+            c->BaseVA = allocOutput.VirtualAddress;
+            c->BasePA = allocOutput.PhysicalAddress;
+            c->Size = (ULONG64)allocOutput.NumPages * PAGE_SIZE;
+            c->AllocationPages = allocOutput.NumPages;
+            c->AllocationToken = allocOutput.AllocationToken;
+            c->DisconnectAttempted = rollbackResult.Submitted;
+            c->DisconnectStatus = NT_SUCCESS(rollbackResult.Status) ? STATUS_DATA_ERROR : rollbackResult.Status;
+            DbgPrint("%s rdmapool: malformed ALLOCATE rollback failed 0x%x, info=%Iu\n",
+                     c->Tag,
+                     c->DisconnectStatus,
+                     rollbackResult.Information);
+        }
+        if (c->AllocationToken == 0)
+        {
+            RdmaClientClosePoolFile(c);
+        }
+        return ioctlResult.Information == sizeof(allocOutput) ? STATUS_DATA_ERROR : STATUS_INFO_LENGTH_MISMATCH;
+    }
+
     c->BaseVA = allocOutput.VirtualAddress;
     c->BasePA = allocOutput.PhysicalAddress;
     c->Size = (ULONG64)totalPages * PAGE_SIZE;
+    c->AllocationPages = totalPages;
+    c->AllocationToken = allocOutput.AllocationToken;
+    c->Active = TRUE;
 
     DbgPrint("%s rdmapool: connected VA=%p PA=0x%I64x pages=%u (rings=%u bounce=%u)\n",
              c->Tag,
@@ -157,25 +320,69 @@ NTSTATUS RdmaClientConnect(PRDMA_CLIENT c, const char *Tag, ULONG RingPages, ULO
     return STATUS_SUCCESS;
 }
 
-VOID RdmaClientDisconnect(PRDMA_CLIENT c)
+NTSTATUS RdmaClientDisconnect(PRDMA_CLIENT c)
 {
-    if (c->Active && c->BaseVA != NULL && c->PoolFileObject != NULL)
+    NTSTATUS status = STATUS_SUCCESS;
+    RDMA_CLIENT_IOCTL_RESULT ioctlResult;
+
+    if (c->PollThread != NULL)
+    {
+        return STATUS_DEVICE_BUSY;
+    }
+
+    /* Once dispatched, a failed FREE has indeterminate ownership semantics.
+     * Keep the exact tuple and return the cached result without resubmitting. */
+    if (c->DisconnectAttempted)
+    {
+        return c->DisconnectStatus;
+    }
+
+    if (c->AllocationToken != 0 || c->AllocationPages != 0 || c->BaseVA != NULL)
     {
         RDMAPOOL_FREE_INPUT freeInput;
+
+        if (c->PoolFileObject == NULL || c->PoolDeviceObject == NULL || c->BaseVA == NULL || c->AllocationPages == 0 ||
+            c->AllocationToken == 0)
+        {
+            c->DisconnectStatus = STATUS_INVALID_DEVICE_STATE;
+            return c->DisconnectStatus;
+        }
+
         RtlZeroMemory(&freeInput, sizeof(freeInput));
+        freeInput.InterfaceVersion = RDMAPOOL_INTERFACE_VERSION_V2;
         freeInput.VirtualAddress = c->BaseVA;
-        freeInput.NumPages = (ULONG)(c->Size / PAGE_SIZE);
-        (void)RdmaClientIoctl(c, (ULONG)IOCTL_RDMAPOOL_FREE, &freeInput, sizeof(freeInput), NULL, 0);
+        freeInput.NumPages = c->AllocationPages;
+        freeInput.AllocationToken = c->AllocationToken;
+        ioctlResult = RdmaClientIoctl(c, (ULONG)IOCTL_RDMAPOOL_FREE, &freeInput, sizeof(freeInput), NULL, 0);
+        status = ioctlResult.Status;
+        if (!ioctlResult.Submitted)
+        {
+            c->DisconnectStatus = status;
+            return c->DisconnectStatus;
+        }
+        c->DisconnectAttempted = TRUE;
+        if (!NT_SUCCESS(status) || ioctlResult.Information != 0)
+        {
+            c->DisconnectStatus = NT_SUCCESS(status) ? STATUS_DATA_ERROR : status;
+            DbgPrint("%s rdmapool: FREE failed 0x%x, info=%Iu; retaining owner\n",
+                     c->Tag,
+                     c->DisconnectStatus,
+                     ioctlResult.Information);
+            return c->DisconnectStatus;
+        }
     }
-    if (c->PoolFileObject != NULL)
-    {
-        ObDereferenceObject(c->PoolFileObject);
-        c->PoolFileObject = NULL;
-    }
-    c->PoolDeviceObject = NULL;
+
+    RdmaClientClosePoolFile(c);
     c->BaseVA = NULL;
+    c->BasePA.QuadPart = 0;
     c->Size = 0;
+    c->AllocationPages = 0;
+    c->AllocationToken = 0;
+    c->DisconnectAttempted = FALSE;
     c->Active = FALSE;
+    c->BounceInitialized = FALSE;
+    c->DisconnectStatus = STATUS_SUCCESS;
+    return STATUS_SUCCESS;
 }
 
 /* ------------------------------------------------------------------ */
@@ -198,7 +405,7 @@ BOOLEAN RdmaClientOwnsVA(PRDMA_CLIENT c, PVOID va)
 {
     ULONG_PTR addr = (ULONG_PTR)va;
     ULONG_PTR base = (ULONG_PTR)c->BaseVA;
-    return (c->Active && c->BaseVA != NULL && addr >= base && addr < base + c->Size);
+    return (c->Active && c->BaseVA != NULL && addr >= base && (ULONG64)(addr - base) < c->Size);
 }
 
 /* ------------------------------------------------------------------ */
@@ -232,76 +439,120 @@ NTSTATUS RdmaClientBounceInit(PRDMA_CLIENT c,
                               ULONG EventBytes,
                               ULONG DataChunkSize)
 {
+    ULONG_PTR freeAddress;
+    ULONG_PTR poolBase;
+    ULONG_PTR poolEnd;
+    ULONG_PTR alignedBase;
     PUCHAR base;
-    PUCHAR regionEnd;
     SIZE_T avail;
     ULONG chunk, i;
-    SIZE_T ctlBytes, dataBytes, eventBytes;
+    ULONG ctlSlotCount;
+    ULONG dataChunkCount;
+    SIZE_T ctlBytes, dataBytes, eventBytes = 0;
+    SIZE_T roundedChunk;
 
-    if (!c->Active)
+    c->BounceInitialized = FALSE;
+    c->EventBaseVA = NULL;
+    c->EventBytes = 0;
+    c->CtlBaseVA = NULL;
+    c->CtlSlotSize = 0;
+    c->CtlSlotCount = 0;
+    c->DataBaseVA = NULL;
+    c->DataChunkSize = 0;
+    c->DataChunkCount = 0;
+    InitializeSListHead(&c->CtlFreeList);
+    InitializeSListHead(&c->DataFreeList);
+
+    if (!c->Active || c->BaseVA == NULL || c->Size == 0)
     {
         return STATUS_NOT_SUPPORTED;
     }
+    if (FreeStart == NULL || CtlSlots == 0 || CtlSlotSize < sizeof(SLIST_ENTRY) ||
+        (CtlSlotSize & (MEMORY_ALLOCATION_ALIGNMENT - 1)) != 0 || DataChunkSize < sizeof(SLIST_ENTRY))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
 
-    base = (PUCHAR)(((ULONG_PTR)FreeStart + PAGE_SIZE - 1) & ~((ULONG_PTR)PAGE_SIZE - 1));
-    regionEnd = (PUCHAR)c->BaseVA + c->Size;
-    if (base >= regionEnd)
+    poolBase = (ULONG_PTR)c->BaseVA;
+    if (c->Size > MAXULONG_PTR || poolBase > MAXULONG_PTR - (ULONG_PTR)c->Size)
+    {
+        return STATUS_INTEGER_OVERFLOW;
+    }
+    poolEnd = poolBase + (ULONG_PTR)c->Size;
+    freeAddress = (ULONG_PTR)FreeStart;
+    if (freeAddress < poolBase || freeAddress > poolEnd || freeAddress > MAXULONG_PTR - (PAGE_SIZE - 1))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    alignedBase = (freeAddress + PAGE_SIZE - 1) & ~((ULONG_PTR)PAGE_SIZE - 1);
+    if (alignedBase >= poolEnd)
     {
         DbgPrint("%s bounce: no room after rings\n", c->Tag);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    avail = (SIZE_T)(regionEnd - base);
-
-    c->BounceInitialized = FALSE;
-    InitializeSListHead(&c->CtlFreeList);
-    InitializeSListHead(&c->DataFreeList);
+    base = (PUCHAR)alignedBase;
+    avail = (SIZE_T)(poolEnd - alignedBase);
 
     /* Optional event area (page-aligned so the slots that follow stay aligned). */
-    c->EventBaseVA = NULL;
-    c->EventBytes = EventBytes;
     if (EventBytes)
     {
+        if ((SIZE_T)EventBytes > MAXULONG_PTR - (PAGE_SIZE - 1))
+        {
+            return STATUS_INTEGER_OVERFLOW;
+        }
         eventBytes = ((SIZE_T)EventBytes + PAGE_SIZE - 1) & ~((SIZE_T)PAGE_SIZE - 1);
         if (eventBytes >= avail)
         {
             DbgPrint("%s bounce: no room for event area\n", c->Tag);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        c->EventBaseVA = base;
         base += eventBytes;
         avail -= eventBytes;
     }
 
     /* Control slots: one per outstanding request, bounded by half the space. */
-    ctlBytes = (SIZE_T)CtlSlots * CtlSlotSize;
-    if (ctlBytes > avail / 2)
+    ctlSlotCount = CtlSlots;
+    if ((SIZE_T)ctlSlotCount > (avail / 2) / CtlSlotSize)
     {
-        CtlSlots = (ULONG)((avail / 2) / CtlSlotSize);
-        ctlBytes = (SIZE_T)CtlSlots * CtlSlotSize;
+        ctlSlotCount = (ULONG)((avail / 2) / CtlSlotSize);
     }
-    c->CtlBaseVA = base;
-    c->CtlSlotSize = CtlSlotSize;
-    c->CtlSlotCount = CtlSlots;
-    for (i = 0; i < CtlSlots; i++)
+    if (ctlSlotCount == 0)
     {
-        RdmaClientFreeCtl(c, c->CtlBaseVA + (SIZE_T)i * CtlSlotSize);
+        return STATUS_INSUFFICIENT_RESOURCES;
     }
+    ctlBytes = (SIZE_T)ctlSlotCount * CtlSlotSize;
 
     /* Data chunks: large CONTIGUOUS blocks, each one descriptor; page-align and
      * shrink until there is at least one chunk per control slot (concurrency). */
-    chunk = (DataChunkSize + PAGE_SIZE - 1) & ~((ULONG)PAGE_SIZE - 1);
-    if (chunk == 0)
+    roundedChunk = ((SIZE_T)DataChunkSize + PAGE_SIZE - 1) & ~((SIZE_T)PAGE_SIZE - 1);
+    if (roundedChunk > MAXULONG)
     {
-        chunk = PAGE_SIZE;
+        return STATUS_INTEGER_OVERFLOW;
     }
-    c->DataBaseVA = c->CtlBaseVA + ctlBytes;
+    chunk = (ULONG)roundedChunk;
     dataBytes = avail - ctlBytes;
-    while (chunk > PAGE_SIZE && (dataBytes / chunk) < (SIZE_T)CtlSlots)
+    while (chunk > PAGE_SIZE && (dataBytes / chunk) < (SIZE_T)ctlSlotCount)
     {
         chunk -= PAGE_SIZE;
     }
+    dataChunkCount = (ULONG)(dataBytes / chunk);
+    if (dataChunkCount == 0)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    c->EventBaseVA = EventBytes ? (PUCHAR)alignedBase : NULL;
+    c->EventBytes = EventBytes;
+    c->CtlBaseVA = base;
+    c->CtlSlotSize = CtlSlotSize;
+    c->CtlSlotCount = ctlSlotCount;
+    c->DataBaseVA = c->CtlBaseVA + ctlBytes;
     c->DataChunkSize = chunk;
-    c->DataChunkCount = (ULONG)(dataBytes / chunk);
+    c->DataChunkCount = dataChunkCount;
+    for (i = 0; i < c->CtlSlotCount; i++)
+    {
+        RdmaClientFreeCtl(c, c->CtlBaseVA + (SIZE_T)i * CtlSlotSize);
+    }
     for (i = 0; i < c->DataChunkCount; i++)
     {
         RdmaClientFreeChunk(c, c->DataBaseVA + (SIZE_T)i * chunk);
@@ -315,8 +566,8 @@ NTSTATUS RdmaClientBounceInit(PRDMA_CLIENT c,
              c->CtlSlotSize,
              c->DataChunkCount,
              c->DataChunkSize / 1024,
-             base);
-    return (c->CtlSlotCount && c->DataChunkCount) ? STATUS_SUCCESS : STATUS_INSUFFICIENT_RESOURCES;
+             (PVOID)alignedBase);
+    return STATUS_SUCCESS;
 }
 
 /* ------------------------------------------------------------------ */
@@ -414,15 +665,17 @@ NTSTATUS RdmaClientStartPoll(PRDMA_CLIENT c,
     }
 
     status = ObReferenceObjectByHandle(hThread, THREAD_ALL_ACCESS, *PsThreadType, KernelMode, &c->PollThread, NULL);
-    ZwClose(hThread);
     if (!NT_SUCCESS(status))
     {
         /* Thread is running but we couldn't get a reference: ask it to stop. */
         InterlockedExchange(&c->PollStop, 1);
         KeSetEvent(&c->PollWake, IO_NO_INCREMENT, FALSE);
+        (void)ZwWaitForSingleObject(hThread, FALSE, NULL);
+        ZwClose(hThread);
         c->PollThread = NULL;
         return status;
     }
+    ZwClose(hThread);
 
     DbgPrint("%s poll: thread started (interval %uus, idle %ums safety net)\n",
              c->Tag,

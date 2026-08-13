@@ -348,13 +348,14 @@ VIOInputEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesT
     PINPUT_DEVICE pContext = GetDeviceContext(Device);
     PSINGLE_LIST_ENTRY entry;
     ULONG i;
+    NTSTATUS status;
 
     UNREFERENCED_PARAMETER(ResourcesTranslated);
     PAGED_CODE();
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "--> %s\n", __FUNCTION__);
 
-    VirtIOWdfShutdown(&pContext->VDevice);
+    status = VirtIOWdfShutdown(&pContext->VDevice);
 
     for (i = 0; i < pContext->uNumOfClasses; i++)
     {
@@ -373,7 +374,7 @@ VIOInputEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesT
     VIOInputFreeMemBlocks(pContext);
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "<-- %s\n", __FUNCTION__);
-    return STATUS_SUCCESS;
+    return status;
 }
 
 static NTSTATUS VIOInputInitAllQueues(IN WDFOBJECT Device)

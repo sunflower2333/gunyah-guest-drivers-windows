@@ -227,6 +227,7 @@ NTSTATUS
 ViomemEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTranslated)
 {
     PDEVICE_CONTEXT devCtx = NULL;
+    NTSTATUS status;
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "%s Entry\n", __FUNCTION__);
 
@@ -242,7 +243,7 @@ ViomemEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTra
 
     WdfObjectReleaseLock(Device);
 
-    VirtIOWdfShutdown(&devCtx->VDevice);
+    status = VirtIOWdfShutdown(&devCtx->VDevice);
 
     if (devCtx->bitmapBuffer)
     {
@@ -250,7 +251,7 @@ ViomemEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTra
     }
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "%s Return\n", __FUNCTION__);
-    return STATUS_SUCCESS;
+    return status;
 }
 
 NTSTATUS

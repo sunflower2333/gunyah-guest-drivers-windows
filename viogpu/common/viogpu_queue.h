@@ -58,8 +58,19 @@ typedef struct virtio_gpu_vbuffer
     void *complete_ctx;
 
     bool auto_release;
+    KEVENT completion_event;
+    UINT response_size;
+    LONG64 synchronous_epoch_state;
 } GPU_VBUFFER, *PGPU_VBUFFER;
 // #pragma pack()
+
+enum VIOGPU_SYNCHRONOUS_STATE : LONG
+{
+    VioGpuSynchronousOffline = 0,
+    VioGpuSynchronousEnabled,
+    VioGpuSynchronousQuiescing,
+    VioGpuSynchronousPoisoned,
+};
 
 #define MAX_INLINE_CMD_SIZE  96
 #define MAX_INLINE_RESP_SIZE 24
@@ -73,11 +84,14 @@ class VioGpuBuf
     PGPU_VBUFFER GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void *resp_buf);
     void FreeBuf(_In_ PGPU_VBUFFER pbuf);
     BOOLEAN Init(_In_ UINT cnt, _In_ IVioGpuPCI *pPci);
+    void ReclaimBuffers(void);
+    void Close(void);
+    BOOLEAN HasAllocationOwner(void) const
+    {
+        return m_pPci != NULL;
+    }
     PVOID AllocateMemory(SIZE_T size, SIZE_T alignment = PAGE_SIZE);
     void FreeMemory(PVOID address);
-
-  private:
-    void Close(void);
 
   private:
     LIST_ENTRY m_FreeBufs;
@@ -177,7 +191,7 @@ class VioGpuQueue
                _In_ ULONGLONG phys_indirect)
     {
         return m_pVirtQueue ? virtqueue_add_buf(m_pVirtQueue, sg, out_num, in_num, data, va_indirect, phys_indirect)
-                            : 0;
+                            : -1;
     }
     void *GetBuf(_Out_ UINT *len)
     {
@@ -235,6 +249,8 @@ class CtrlQueue : public VioGpuQueue
     CtrlQueue() : VioGpuQueue()
     {
         m_FenceIdr = 0;
+        KeInitializeMutex(&m_SynchronousMutex, 0);
+        m_SynchronousEpochState = VioGpuSynchronousOffline;
     };
 
     PVOID AllocCmd(PGPU_VBUFFER *buf, int sz);
@@ -250,6 +266,11 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN QueryCapset(UINT capset_id, UINT capset_version, UINT capset_size, PGPU_CAPSET_DRM capset);
     BOOLEAN CreateNativeContext(UINT context_id);
     BOOLEAN DestroyNativeContext(UINT context_id);
+    BOOLEAN EnableSynchronousRequests(void);
+    BOOLEAN IsSynchronousRequestsHealthy(void);
+    NTSTATUS QuiesceSynchronousRequests(void);
+    void CompleteSynchronousRequestTeardown(void);
+    void PoisonSynchronousRequests(void);
 
     void CreateResource(UINT res_id, UINT format, UINT width, UINT height);
     void DestroyResource(UINT id);
@@ -259,13 +280,15 @@ class CtrlQueue : public VioGpuQueue
     void AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents);
     void DetachBacking(UINT id);
 
-    BOOLEAN GetDisplayInfo(PGPU_VBUFFER buf, UINT id, PULONG xres, PULONG yres);
-    BOOLEAN AskDisplayInfo(PGPU_VBUFFER *buf);
-    BOOLEAN AskEdidInfo(PGPU_VBUFFER *buf, UINT id);
-    BOOLEAN GetEdidInfo(PGPU_VBUFFER buf, UINT id, PBYTE edid);
+    BOOLEAN QueryDisplayInfo(UINT id, _Out_ PULONG xres, _Out_ PULONG yres);
+    BOOLEAN QueryEdidInfo(UINT id, _Out_writes_bytes_(EDID_RAW_BLOCK_SIZE) PBYTE edid);
 
   private:
-    BOOLEAN SubmitSynchronous(PGPU_VBUFFER buf);
+    BOOLEAN BeginSynchronousRequest(void);
+    void EndSynchronousRequest(void);
+    BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer);
+    KMUTEX m_SynchronousMutex;
+    DECLSPEC_ALIGN(8) volatile LONG64 m_SynchronousEpochState;
     volatile LONG m_FenceIdr;
 };
 

@@ -648,6 +648,7 @@ class CNdisSharedMemory : public CNdisAllocatable<CNdisSharedMemory, 'XTSM'>
 
     ~CNdisSharedMemory();
     bool Allocate(ULONG Size, bool IsCached = true);
+    NTSTATUS Release();
 
     ULONG GetSize() const
     {

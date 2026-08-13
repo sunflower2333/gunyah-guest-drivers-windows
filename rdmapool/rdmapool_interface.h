@@ -30,6 +30,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_RDMAPOOL, 0x7b5e2f3a, 0x9c1d, 0x4e8f, 0xa6, 0xb2, 
  * Uses FILE_DEVICE_UNKNOWN with function codes starting at 0x800.
  */
 #define FILE_DEVICE_RDMAPOOL            0x8000
+#define RDMAPOOL_INTERFACE_VERSION_V2   2U
 
 /*
  * IOCTL_RDMAPOOL_ALLOCATE
@@ -37,7 +38,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_RDMAPOOL, 0x7b5e2f3a, 0x9c1d, 0x4e8f, 0xa6, 0xb2, 
  *   Input:  RDMAPOOL_ALLOCATE_INPUT
  *   Output: RDMAPOOL_ALLOCATE_OUTPUT
  */
-#define IOCTL_RDMAPOOL_ALLOCATE         CTL_CODE(FILE_DEVICE_RDMAPOOL, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_RDMAPOOL_ALLOCATE         CTL_CODE(FILE_DEVICE_RDMAPOOL, 0x805, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 /*
  * IOCTL_RDMAPOOL_FREE
@@ -45,7 +46,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_RDMAPOOL, 0x7b5e2f3a, 0x9c1d, 0x4e8f, 0xa6, 0xb2, 
  *   Input:  RDMAPOOL_FREE_INPUT
  *   Output: None
  */
-#define IOCTL_RDMAPOOL_FREE             CTL_CODE(FILE_DEVICE_RDMAPOOL, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_RDMAPOOL_FREE             CTL_CODE(FILE_DEVICE_RDMAPOOL, 0x806, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 /*
  * IOCTL_RDMAPOOL_QUERY_POOL
@@ -53,18 +54,7 @@ DEFINE_GUID(GUID_DEVINTERFACE_RDMAPOOL, 0x7b5e2f3a, 0x9c1d, 0x4e8f, 0xa6, 0xb2, 
  *   Input:  None
  *   Output: RDMAPOOL_QUERY_POOL_OUTPUT
  */
-#define IOCTL_RDMAPOOL_QUERY_POOL       CTL_CODE(FILE_DEVICE_RDMAPOOL, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
-
-/*
- * IOCTL_RDMAPOOL_RESERVE
- *   Mark pages as reserved in the bitmap without allocating or zeroing.
- *   Used by drivers (e.g., viostor) that obtain pool base via QUERY_POOL
- *   and manage their own sub-allocation, to prevent overlap with other
- *   clients that use ALLOCATE.
- *   Input:  RDMAPOOL_RESERVE_INPUT
- *   Output: None
- */
-#define IOCTL_RDMAPOOL_RESERVE          CTL_CODE(FILE_DEVICE_RDMAPOOL, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_RDMAPOOL_QUERY_POOL       CTL_CODE(FILE_DEVICE_RDMAPOOL, 0x807, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 /*
  * IOCTL_RDMAPOOL_QUERY_ALLOCATION
@@ -78,19 +68,25 @@ DEFINE_GUID(GUID_DEVINTERFACE_RDMAPOOL, 0x7b5e2f3a, 0x9c1d, 0x4e8f, 0xa6, 0xb2, 
 
 typedef struct _RDMAPOOL_ALLOCATE_INPUT
 {
-    ULONG NumPages; /* Number of PAGE_SIZE pages to allocate */
+    ULONG InterfaceVersion; /* Must be RDMAPOOL_INTERFACE_VERSION_V2 */
+    ULONG NumPages;         /* Number of PAGE_SIZE pages to allocate */
 } RDMAPOOL_ALLOCATE_INPUT, *PRDMAPOOL_ALLOCATE_INPUT;
 
 typedef struct _RDMAPOOL_ALLOCATE_OUTPUT
 {
+    ULONG InterfaceVersion;           /* RDMAPOOL_INTERFACE_VERSION_V2 */
+    ULONG NumPages;                   /* Exact allocated extent */
     PVOID VirtualAddress;             /* Kernel VA of allocated region */
     PHYSICAL_ADDRESS PhysicalAddress; /* Physical address of allocated region */
+    ULONG64 AllocationToken;          /* Opaque owner-bound allocation identity */
 } RDMAPOOL_ALLOCATE_OUTPUT, *PRDMAPOOL_ALLOCATE_OUTPUT;
 
 typedef struct _RDMAPOOL_FREE_INPUT
 {
-    PVOID VirtualAddress; /* VA returned by ALLOCATE */
-    ULONG NumPages;       /* Number of pages to free */
+    ULONG InterfaceVersion;  /* Must be RDMAPOOL_INTERFACE_VERSION_V2 */
+    ULONG NumPages;          /* Exact page count returned by ALLOCATE */
+    PVOID VirtualAddress;    /* Exact VA returned by ALLOCATE */
+    ULONG64 AllocationToken; /* Exact token returned by ALLOCATE */
 } RDMAPOOL_FREE_INPUT, *PRDMAPOOL_FREE_INPUT;
 
 typedef struct _RDMAPOOL_QUERY_POOL_OUTPUT
@@ -98,6 +94,8 @@ typedef struct _RDMAPOOL_QUERY_POOL_OUTPUT
     PVOID BaseVirtualAddress;             /* Kernel VA of pool base */
     PHYSICAL_ADDRESS BasePhysicalAddress; /* Physical address of pool base */
     ULONG64 TotalSize;                    /* Total pool size in bytes */
+    ULONG InterfaceVersion;               /* RDMAPOOL_INTERFACE_VERSION_V2 */
+    ULONG PageSize;                       /* Allocation granularity */
 } RDMAPOOL_QUERY_POOL_OUTPUT, *PRDMAPOOL_QUERY_POOL_OUTPUT;
 
 typedef struct _RDMAPOOL_QUERY_ALLOCATION_OUTPUT
@@ -105,10 +103,5 @@ typedef struct _RDMAPOOL_QUERY_ALLOCATION_OUTPUT
     ULONG FreePages;           /* Pages currently available */
     ULONG LargestFreeRunPages; /* Largest contiguous free range */
 } RDMAPOOL_QUERY_ALLOCATION_OUTPUT, *PRDMAPOOL_QUERY_ALLOCATION_OUTPUT;
-
-typedef struct _RDMAPOOL_RESERVE_INPUT
-{
-    ULONG NumPages; /* Number of pages from pool start to mark reserved */
-} RDMAPOOL_RESERVE_INPUT, *PRDMAPOOL_RESERVE_INPUT;
 
 #pragma pack(pop)

@@ -357,6 +357,12 @@ static NDIS_STATUS ParaNdis6_Initialize(NDIS_HANDLE miniportAdapterHandle,
     {
         if (pContext)
         {
+            NTSTATUS cleanupStatus = ParaNdis_CleanupContext(pContext);
+            if (!NT_SUCCESS(cleanupStatus))
+            {
+                DPrintf(0, "ERROR: adapter cleanup used terminal file-owner recovery (%X)", cleanupStatus);
+                status = NDIS_STATUS_DEVICE_FAILED;
+            }
             pContext->Destroy(pContext, pContext->MiniportHandle);
         }
         // In rare case of initialization failure we need to unregister the protocol.
@@ -381,6 +387,13 @@ static VOID ParaNdis6_Halt(NDIS_HANDLE miniportAdapterContext, NDIS_HALT_ACTION 
     ParaNdis_ProtocolUnregisterAdapter(pContext);
     ParaNdis_DebugHistory(pContext, _etagHistoryLogOperation::hopHalt, NULL, 0, 0, 0);
     ParaNdis_DebugRegisterMiniport(pContext, FALSE);
+    NTSTATUS cleanupStatus = ParaNdis_CleanupContext(pContext);
+    if (!NT_SUCCESS(cleanupStatus))
+    {
+        /* MiniportHaltEx returns VOID. The provider owner has still been
+         * closed and local records are terminal tombstones. */
+        DPrintf(0, "ERROR: adapter halt cleanup used terminal file-owner recovery (%X)", cleanupStatus);
+    }
     pContext->Destroy(pContext, pContext->MiniportHandle);
     DEBUG_EXIT_STATUS(2, 0);
 }

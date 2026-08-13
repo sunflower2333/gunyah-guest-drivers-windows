@@ -74,6 +74,24 @@ typedef struct _CURRENT_MODE
 
 class VioGpuDod;
 
+enum VIOGPU_NATIVE_CONTEXT_STATE : LONG
+{
+    VioGpuNativeContextOffline = 0,
+    VioGpuNativeContextStarting,
+    VioGpuNativeContextReady,
+    VioGpuNativeContextQuiescing,
+    VioGpuNativeContextFailed,
+};
+
+struct VIOGPU_NATIVE_CONTEXT_READINESS
+{
+    BOOLEAN Ready;
+    LONG Generation;
+    UINT CapsetVersion;
+    UINT CapsetSize;
+    GPU_CAPSET_DRM Capset;
+};
+
 class VioGpuAdapter : IVioGpuPCI
 {
   public:
@@ -131,6 +149,9 @@ class VioGpuAdapter : IVioGpuPCI
     PHYSICAL_ADDRESS GetDmaPhysicalAddress(PVOID address);
     BOOLEAN IsRestrictedDmaActive(void);
     BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
+    BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
+                                        _Out_opt_ UINT *capsetVersion,
+                                        _Out_opt_ UINT *capsetSize);
 
     PVIDEO_MODE_INFORMATION GetModeInfo(UINT idx)
     {
@@ -163,7 +184,19 @@ class VioGpuAdapter : IVioGpuPCI
   private:
     NTSTATUS VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo);
     void SetVideoModeInfo(UINT Idx, PVIOGPU_DISP_MODE pModeInfo);
-    void VioGpuAdapterClose(void);
+    NTSTATUS StopNativeContextTransport(void);
+    NTSTATUS StopNativeContextTransportLocked(void);
+    BOOLEAN BeginNativeContextInitialization(void);
+    BOOLEAN CompleteNativeContextInitialization(void);
+    void FailNativeContextAtAnyIrql(void);
+    NTSTATUS NegotiateNativeContextFeatures(void);
+    NTSTATUS ProbeNativeContextReadiness(void);
+    NTSTATUS ConnectRestrictedDma(void);
+    NTSTATUS StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pDispInfo);
+    NTSTATUS FailNativeContextInitialization(NTSTATUS status);
+    NTSTATUS StartWorkThread(void);
+    NTSTATUS StopWorkThread(void);
+    void ClearNativeContextReadiness(void);
     NTSTATUS BuildModeList(DXGK_DISPLAY_INFORMATION *pDispInfo);
     BOOLEAN AckFeature(UINT64 Feature);
     BOOLEAN GetDisplayInfo(void);
@@ -205,6 +238,15 @@ class VioGpuAdapter : IVioGpuPCI
     UINT64 m_u64GuestFeatures;
     UINT32 m_u32NumCapsets;
     UINT32 m_u32NumScanouts;
+    KSPIN_LOCK m_NativeContextReadinessLock;
+    VIOGPU_NATIVE_CONTEXT_READINESS m_NativeContextReadiness;
+    KMUTEX m_NativeContextLifecycleMutex;
+    volatile LONG m_NativeContextState;
+    volatile LONG m_NativeContextGeneration;
+    volatile LONG m_InterruptDispatchEnabled;
+    BOOLEAN m_bVirtioInitialized;
+    BOOLEAN m_bQueuesInitialized;
+    HANDLE m_WorkThreadHandle;
     CtrlQueue m_CtrlQueue;
     CrsrQueue m_CursorQueue;
     VioGpuBuf m_GpuBuf;
@@ -384,6 +426,12 @@ class VioGpuDod
     BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
     {
         return m_pHWDevice != NULL && m_pHWDevice->QueryVidMmSegment(baseAddress, physicalAddress, size);
+    }
+    BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
+                                        _Out_opt_ UINT *capsetVersion,
+                                        _Out_opt_ UINT *capsetSize)
+    {
+        return m_pHWDevice != NULL && m_pHWDevice->QueryNativeContextReadiness(capset, capsetVersion, capsetSize);
     }
 
   private:

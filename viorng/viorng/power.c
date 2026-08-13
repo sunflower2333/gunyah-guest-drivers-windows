@@ -65,6 +65,7 @@ NTSTATUS VirtRngEvtDevicePrepareHardware(IN WDFDEVICE Device,
 NTSTATUS VirtRngEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTranslated)
 {
     PDEVICE_CONTEXT context = GetDeviceContext(Device);
+    NTSTATUS status;
 
     UNREFERENCED_PARAMETER(ResourcesTranslated);
 
@@ -72,11 +73,11 @@ NTSTATUS VirtRngEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Re
 
     PAGED_CODE();
 
-    VirtIOWdfShutdown(&context->VDevice);
+    status = VirtIOWdfShutdown(&context->VDevice);
 
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_POWER, "<-- %!FUNC!");
 
-    return STATUS_SUCCESS;
+    return status;
 }
 
 NTSTATUS VirtRngEvtDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE PreviousState)

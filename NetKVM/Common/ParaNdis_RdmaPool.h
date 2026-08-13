@@ -24,14 +24,22 @@ extern "C"
     /*
      * Try to connect to the rdmapool device. On success sets
      * pContext->RdmaPoolActive = TRUE and records the pool base VA/PA/size.
-     * Safe to call when rdmapool is absent (returns failure, RdmaPoolActive
-     * stays FALSE and NetKVM keeps using normal NdisMAllocateSharedMemory).
-     * Must be called at PASSIVE_LEVEL.
+     * STATUS_NOT_FOUND means rdmapool is absent and permits normal NDIS DMA.
+     * Any other failure is fatal to adapter initialization. Must be called at
+     * PASSIVE_LEVEL.
      */
     NTSTATUS ParaNdis_RdmaPoolConnect(PPARANDIS_ADAPTER_FWD pContext);
 
-    /* Release the rdmapool device reference. */
-    VOID ParaNdis_RdmaPoolDisconnect(PPARANDIS_ADAPTER_FWD pContext);
+    /* Freeze allocation and destroy provider allocations. On the first FREE
+     * failure, close the file owner so provider cleanup reclaims the rest. */
+    NTSTATUS ParaNdis_RdmaPoolReleaseAllocations(PPARANDIS_ADAPTER_FWD pContext);
+
+    /*
+     * Release the file owner after ReleaseAllocations succeeds. A FREE that
+     * reached IoCallDriver is never retried; terminal failure recovery closes
+     * the owner in ReleaseAllocations and publishes local tombstones.
+     */
+    NTSTATUS ParaNdis_RdmaPoolDisconnect(PPARANDIS_ADAPTER_FWD pContext);
 
     /*
      * Allocate 'size' bytes (rounded up to pages) from the restricted DMA
@@ -40,11 +48,12 @@ extern "C"
      */
     PVOID ParaNdis_RdmaPoolAllocate(PPARANDIS_ADAPTER_FWD pContext, ULONG size, PHYSICAL_ADDRESS *pPa);
 
-    /* Free a previous ParaNdis_RdmaPoolAllocate. Must be at PASSIVE_LEVEL. */
-    VOID ParaNdis_RdmaPoolFree(PPARANDIS_ADAPTER_FWD pContext, PVOID va, ULONG size);
-
-    /* TRUE if 'va' lies within the connected restricted DMA pool region. */
-    BOOLEAN ParaNdis_RdmaPoolContains(PPARANDIS_ADAPTER_FWD pContext, PVOID va);
+    /*
+     * Free the exact base VA returned by ParaNdis_RdmaPoolAllocate. The stored
+     * provider token/page count, not caller-derived data, is sent to rdmapool.
+     * Ownership is retained unless FREE succeeds. Must be at PASSIVE_LEVEL.
+     */
+    NTSTATUS ParaNdis_RdmaPoolFree(PPARANDIS_ADAPTER_FWD pContext, PVOID va, ULONG size);
 
 #ifdef __cplusplus
 }

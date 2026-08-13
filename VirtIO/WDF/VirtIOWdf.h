@@ -61,11 +61,14 @@ typedef struct virtio_wdf_driver {
     WDFDMAENABLER DmaEnabler;
     WDFCOLLECTION MemoryBlockCollection;
     WDFSPINLOCK DmaSpinlock;
+    WDFWAITLOCK RdmaPoolIoctlLock;
 
     BOOLEAN IsIoMmuActive;
 
     /* Restricted DMA pool support */
     BOOLEAN RdmaPoolActive;
+    BOOLEAN RdmaPoolClosing;
+    BOOLEAN RdmaPoolOwnerUnknown;
     PDEVICE_OBJECT RdmaPoolDeviceObject;
     PFILE_OBJECT RdmaPoolFileObject;
     PVOID RdmaPoolBaseVA;
@@ -131,6 +134,7 @@ NTSTATUS VirtIOWdfDestroyQueues(PVIRTIO_WDF_DRIVER pWdfDriver);
  * To be called from driver's EvtDeviceReleaseHardware callback.
  */
 NTSTATUS VirtIOWdfShutdown(PVIRTIO_WDF_DRIVER pWdfDriver);
+NTSTATUS VirtIOWdfReleaseRdmaPoolAllocations(PVIRTIO_WDF_DRIVER pWdfDriver);
 
 /* Returns the contents of the ISR status field and acknowledges the
  * interrupt. Called from driver's ISR if traditional IRQ interrupts

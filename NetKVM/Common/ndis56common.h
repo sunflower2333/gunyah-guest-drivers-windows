@@ -488,22 +488,36 @@ struct _tagRxNetDescriptor
 struct _PARANDIS_ADAPTER : public CNdisAllocatable<_PARANDIS_ADAPTER, 'DCTX'>
 {
     _PARANDIS_ADAPTER(NDIS_HANDLE Handle)
-        : MiniportHandle(Handle), guestAnnouncePackets(this), CXPath(this), RSSParameters(Handle)
+        : RdmaPoolAutoDisconnect(Handle), MiniportHandle(Handle), guestAnnouncePackets(this), CXPath(this),
+          RSSParameters(Handle)
     {
         m_StateMachine.RegisterFlow(m_RxStateMachine);
         m_StateMachine.RegisterFlow(m_CxStateMachine);
     }
     ~_PARANDIS_ADAPTER();
-    /* MUST stay the FIRST data member: C++ destroys members in reverse
-     * declaration order, so this disconnects from the restricted DMA pool
-     * only after every other member's destructor (CXPath's control data,
-     * virtqueues, ...) has returned its pool memory. Disconnecting earlier
-     * (as ParaNdis_CleanupContext used to) made those late frees route to
-     * NdisMFreeSharedMemory on pool VAs -> ndis.sys bugcheck on halt
-     * (NIC disable / driver update). Armed by ParaNdis_RdmaPoolConnect. */
+    /* MUST stay the FIRST data member so its final invariant check runs after
+     * every DMA-owning member destructor. Explicit cleanup frees provider
+     * allocations and disconnects; this destructor never closes the owner. */
     struct CRdmaPoolAutoDisconnect
     {
-        struct _PARANDIS_ADAPTER *m_pContext = nullptr;
+        explicit CRdmaPoolAutoDisconnect(NDIS_HANDLE MiniportHandle) : m_MiniportHandle(MiniportHandle)
+        {
+            KeInitializeMutex(&m_IoctlMutex, 0);
+            InitializeListHead(&m_Allocations);
+        }
+
+        KMUTEX m_IoctlMutex;
+        LIST_ENTRY m_Allocations;
+        NDIS_HANDLE m_MiniportHandle = NULL;
+        BOOLEAN m_OwnerOpen = FALSE;
+        BOOLEAN m_DisconnectStarted = FALSE;
+        BOOLEAN m_EmergencyActive = FALSE;
+        PVOID m_EmergencyVirtualAddress = NULL;
+        ULONG m_EmergencyNumPages = 0;
+        ULONG64 m_EmergencyAllocationToken = 0;
+        BOOLEAN m_EmergencyFreeSubmitted = FALSE;
+        NTSTATUS m_EmergencyFreeStatus = STATUS_SUCCESS;
+        NTSTATUS m_Status = STATUS_SUCCESS;
         ~CRdmaPoolAutoDisconnect();
     } RdmaPoolAutoDisconnect;
     NDIS_HANDLE MiniportHandle = NULL;
@@ -525,6 +539,8 @@ struct _PARANDIS_ADAPTER : public CNdisAllocatable<_PARANDIS_ADAPTER, 'DCTX'>
     PVOID RdmaPoolBaseVA = NULL;
     PHYSICAL_ADDRESS RdmaPoolBasePA = {};
     ULONG64 RdmaPoolSize = 0;
+    BOOLEAN CleanupComplete = FALSE;
+    NTSTATUS CleanupStatus = STATUS_SUCCESS;
 
 #ifdef PARANDIS_DEBUG_INTERRUPTS
     LARGE_INTEGER LastInterruptTimeStamp = {};
@@ -812,7 +828,9 @@ BOOLEAN ParaNdis_InitialAllocatePhysicalMemory(PARANDIS_ADAPTER *pContext,
                                                ULONG ulSize,
                                                tCompletePhysicalAddress *pAddresses);
 
-VOID ParaNdis_FreePhysicalMemory(PARANDIS_ADAPTER *pContext, tCompletePhysicalAddress *pAddresses);
+NTSTATUS ParaNdis_FreePhysicalMemory(PARANDIS_ADAPTER *pContext, tCompletePhysicalAddress *pAddresses);
+
+NTSTATUS ParaNdis_CleanupContext(PARANDIS_ADAPTER *pContext);
 
 void ParaNdis_RestoreDeviceConfigurationAfterReset(PARANDIS_ADAPTER *pContext);
 

@@ -178,6 +178,15 @@ VioGpuDodRemoveDevice(_In_ VOID *pDeviceContext)
 
     if (pVioGpuDod)
     {
+        NTSTATUS status = pVioGpuDod->StopDevice();
+        if (!NT_SUCCESS(status))
+        {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu DDI: RemoveDevice retained adapter, status=0x%08X\n",
+                       status);
+            return status;
+        }
         delete pVioGpuDod;
     }
 
@@ -607,11 +616,6 @@ VOID VioGpuDodDpcRoutine(_In_ VOID *pDeviceContext)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
     VioGpuDod *pVioGpuDod = reinterpret_cast<VioGpuDod *>(pDeviceContext);
-    if (!pVioGpuDod->IsHardwareInit())
-    {
-        DbgPrint(TRACE_LEVEL_FATAL, ("VioGpu (%p) is being called when not active!", pVioGpuDod));
-        return;
-    }
     pVioGpuDod->DpcRoutine();
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }

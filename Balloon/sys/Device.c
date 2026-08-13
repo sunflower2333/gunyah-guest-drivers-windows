@@ -269,6 +269,7 @@ NTSTATUS
 BalloonEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTranslated)
 {
     PDEVICE_CONTEXT devCtx = NULL;
+    NTSTATUS status;
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "--> %s\n", __FUNCTION__);
 
@@ -286,10 +287,10 @@ BalloonEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTr
 
     WdfObjectReleaseLock(Device);
 
-    VirtIOWdfShutdown(&devCtx->VDevice);
+    status = VirtIOWdfShutdown(&devCtx->VDevice);
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "<-- %s\n", __FUNCTION__);
-    return STATUS_SUCCESS;
+    return status;
 }
 
 NTSTATUS

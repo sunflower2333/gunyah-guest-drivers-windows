@@ -175,6 +175,7 @@ NTSTATUS VirtFsEvtDevicePrepareHardware(IN WDFDEVICE Device,
 NTSTATUS VirtFsEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTranslated)
 {
     PDEVICE_CONTEXT context = GetDeviceContext(Device);
+    NTSTATUS status;
 
     UNREFERENCED_PARAMETER(ResourcesTranslated);
 
@@ -182,13 +183,19 @@ NTSTATUS VirtFsEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Res
 
     PAGED_CODE();
 
-    VirtIOWdfShutdown(&context->VDevice);
+    status = VirtIOWdfDestroyQueues(&context->VDevice);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
 
     if (context->UseIndirect && context->IndirectVA != NULL)
     {
         VirtIOWdfDeviceFreeDmaMemory(&context->VDevice.VIODevice, context->IndirectVA);
         context->IndirectVA = NULL;
     }
+
+    status = VirtIOWdfShutdown(&context->VDevice);
 
     if (context->VirtQueues != NULL)
     {
@@ -204,7 +211,7 @@ NTSTATUS VirtFsEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Res
 
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_POWER, "<-- %!FUNC!");
 
-    return STATUS_SUCCESS;
+    return status;
 }
 
 NTSTATUS VirtFsEvtDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE PreviousState)

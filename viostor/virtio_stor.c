@@ -382,6 +382,12 @@ VirtIoFindAdapter(IN PVOID DeviceExtension,
     }
 
     RhelGetDiskGeometry(DeviceExtension);
+    if (CHECKBIT(adaptExt->features, VIRTIO_F_ACCESS_PLATFORM))
+    {
+        RhelDbgPrint(TRACE_LEVEL_FATAL,
+                     " VIRTIO_F_ACCESS_PLATFORM requires a restricted-DMA broker; physical StorPort is unsupported\n");
+        return SP_RETURN_ERROR;
+    }
     RhelSetGuestFeatures(DeviceExtension);
 
     ConfigInfo->NumberOfBuses = 1;
@@ -519,22 +525,6 @@ VirtIoFindAdapter(IN PVOID DeviceExtension,
     {
         adaptExt->poolAllocationVa = (PVOID)((ULONG_PTR)adaptExt->pageAllocationVa + adaptExt->pageAllocationSize);
     }
-
-    /*
-     * Restricted DMA pool (Gunyah protected VM): redirect the vrings into
-     * rdmapool (device-visible memory) and stage all I/O through bounce buffers.
-     * Use direct descriptors and a fixed large-chunk transfer size; completions
-     * are reaped by the poll thread plus the ISR. Driver-internal pool memory
-     * (poolAllocationVa) stays in the uncached extension. No-op if rdmapool is
-     * absent (normal KVM path).
-     */
-    if (NT_SUCCESS(VioStorConnectRdmaPool(DeviceExtension)))
-    {
-        adaptExt->indirect = FALSE;
-        ConfigInfo->MaximumTransferLength = BOUNCE_DATA_CHUNK_SIZE;
-        ConfigInfo->NumberOfPhysicalBreaks = (BOUNCE_DATA_CHUNK_SIZE / PAGE_SIZE) + 1;
-        adaptExt->max_tx_length = ConfigInfo->MaximumTransferLength;
-    }
     RhelDbgPrint(TRACE_LEVEL_INFORMATION,
                  " Page-aligned area at %p, size = %d\n",
                  adaptExt->pageAllocationVa,
@@ -558,24 +548,6 @@ VirtIoFindAdapter(IN PVOID DeviceExtension,
     return SP_RETURN_FOUND;
 }
 
-/* Read a REG_DWORD from Services\viostor\Parameters (StorPortRegistryRead Global=1).
- * Leaves *pValue untouched if the value is absent, so the caller's default holds. */
-static VOID VioStorReadRegistryDword(IN PVOID DeviceExtension, IN PUCHAR ValueName, IN OUT PULONG pValue)
-{
-    ULONG Len = sizeof(ULONG);
-    UCHAR *pBuf = StorPortAllocateRegistryBuffer(DeviceExtension, &Len);
-    if (pBuf == NULL)
-    {
-        return;
-    }
-    memset(pBuf, 0, sizeof(ULONG));
-    if (StorPortRegistryRead(DeviceExtension, ValueName, 1, MINIPORT_REG_DWORD, pBuf, &Len) && Len == sizeof(ULONG))
-    {
-        *pValue = *(ULONG *)pBuf;
-    }
-    StorPortFreeRegistryBuffer(DeviceExtension, pBuf);
-}
-
 BOOLEAN
 VirtIoPassiveInitializeRoutine(IN PVOID DeviceExtension)
 {
@@ -586,42 +558,6 @@ VirtIoPassiveInitializeRoutine(IN PVOID DeviceExtension)
         StorPortInitializeDpc(DeviceExtension, &adaptExt->dpc[index], CompleteDpcRoutine);
     }
     adaptExt->dpc_ok = TRUE;
-
-    /*
-     * Restricted DMA pool path: carve the bounce allocator out of the rdmapool
-     * region left after the vrings, and start the completion poll thread. Both
-     * require PASSIVE_LEVEL, which is why they live here and not in HwInitialize.
-     */
-    if (adaptExt->rdma.Active)
-    {
-        if (!NT_SUCCESS(VioStorBounceInit(DeviceExtension)))
-        {
-            RhelDbgPrint(TRACE_LEVEL_FATAL, " bounce init failed\n");
-            return FALSE;
-        }
-        /* The bounce allocator above is required on the rdmapool path regardless of
-         * how completions are reaped. Completion strategy (workaround default): run the
-         * poll thread ON, but as a GENTLE periodic poll -- it sleeps PollIntervalUs
-         * (default 1ms) between drains instead of the old tight busy-spin, so it reaps
-         * completions within ~1ms (no 250ms StorPort-watchdog stall that capped INTx at
-         * ~5MB/s) at low CPU cost, and it blocks entirely when no I/O is outstanding.
-         * The ISR/DPC path (INTx, MSISupported=0) stays wired too. Registry overrides
-         * (Services\viostor\Parameters): PollIntervalUs = us between drains (0 => tight
-         * spin, max IOPS); DisableCompletionPoll=1 => interrupt-only (no poll thread). */
-        adaptExt->pollIntervalUs = VIOSTOR_POLL_INTERVAL_US;
-        VioStorReadRegistryDword(DeviceExtension, (PUCHAR) "PollIntervalUs", &adaptExt->pollIntervalUs);
-        adaptExt->disablePoll = 0;
-        VioStorReadRegistryDword(DeviceExtension, (PUCHAR) "DisableCompletionPoll", &adaptExt->disablePoll);
-        if (adaptExt->disablePoll)
-        {
-            RhelDbgPrint(TRACE_LEVEL_FATAL, " completion poll thread OFF (interrupt-only mode)\n");
-        }
-        else if (!NT_SUCCESS(VioStorStartPollThread(DeviceExtension)))
-        {
-            RhelDbgPrint(TRACE_LEVEL_FATAL, " poll thread start failed\n");
-            return FALSE;
-        }
-    }
     return TRUE;
 }
 
@@ -653,11 +589,6 @@ VOID RhelSetGuestFeatures(IN PVOID DeviceExtension)
         {
             guestFeatures |= (1ULL << VIRTIO_F_RING_PACKED);
         }
-    }
-
-    if (CHECKBIT(adaptExt->features, VIRTIO_F_ACCESS_PLATFORM))
-    {
-        guestFeatures |= (1ULL << VIRTIO_F_ACCESS_PLATFORM);
     }
 
     if (CHECKBIT(adaptExt->features, VIRTIO_F_ANY_LAYOUT))
@@ -1498,6 +1429,12 @@ VirtIoHwReinitialize(IN PVOID DeviceExtension)
         return FALSE;
     }
     RhelGetDiskGeometry(DeviceExtension);
+    if (CHECKBIT(adaptExt->features, VIRTIO_F_ACCESS_PLATFORM))
+    {
+        RhelDbgPrint(TRACE_LEVEL_FATAL,
+                     " VIRTIO_F_ACCESS_PLATFORM requires a restricted-DMA broker; physical StorPort is unsupported\n");
+        return FALSE;
+    }
     RhelSetGuestFeatures(DeviceExtension);
 
     if (!VirtIoHwInitialize(DeviceExtension))
@@ -1626,28 +1563,6 @@ VirtIoBuildIo(IN PVOID DeviceExtension, IN PSCSI_REQUEST_BLOCK Srb)
         RhelDbgPrint(TRACE_LEVEL_ERROR, " no SGL\n");
         CompleteRequestWithStatus(DeviceExtension, (PSRB_TYPE)Srb, SRB_STATUS_BAD_FUNCTION);
         return FALSE;
-    }
-
-    /*
-     * Restricted DMA pool: the device cannot touch the guest data pages in the
-     * SGL, so stage the entire transfer through a few large contiguous bounce
-     * chunks (out_hdr + chunks + status, all in rdmapool). No per-4KB-page
-     * descriptors, no hard splitting in the driver.
-     */
-    if (adaptExt->rdma.Active)
-    {
-        srbExt->vbr.out_hdr.sector = lba;
-        srbExt->vbr.out_hdr.ioprio = 0;
-        srbExt->vbr.req = (PVOID)Srb;
-        srbExt->fua = CHECKBIT(adaptExt->features, VIRTIO_BLK_F_FLUSH) ? (cdb->CDB10.ForceUnitAccess == 1) : FALSE;
-        srbExt->vbr.out_hdr.type = (SRB_FLAGS(Srb) & SRB_FLAGS_DATA_OUT) ? VIRTIO_BLK_T_OUT : VIRTIO_BLK_T_IN;
-        if (!VioStorBounceBuild(DeviceExtension, Srb))
-        {
-            /* Pool momentarily exhausted; ask the class driver to retry. */
-            CompleteRequestWithStatus(DeviceExtension, (PSRB_TYPE)Srb, SRB_STATUS_BUSY);
-            return FALSE;
-        }
-        return TRUE;
     }
 
     sgMaxElements = min((MAX_PHYS_SEGMENTS + 1), sgList->NumberOfElements);
@@ -2363,15 +2278,6 @@ VOID VioStorCompleteRequest(IN PVOID DeviceExtension, IN ULONG MessageID, IN BOO
             if (!bFound)
             {
                 RhelDbgPrint(TRACE_LEVEL_WARNING, " No Srb to complete for ID 0x%p\n", (void *)srbId);
-            }
-
-            /* Restricted DMA pool: copy reads out of the bounce chunks, latch the
-             * device status / serial, and free the bounce resources before any
-             * completion logic reads srbExt->vbr.status or adaptExt->sn. No-op for
-             * non-bounced requests. */
-            if (bFound && srbExt && srbExt->bounceCtl)
-            {
-                VioStorBounceComplete(DeviceExtension, srbExt);
             }
 
             if (bFound && srbExt->vbr.out_hdr.type == VIRTIO_BLK_T_GET_ID)

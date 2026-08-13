@@ -82,7 +82,6 @@ BOOLEAN VioGpuQueue::Init(_In_ VirtIODevice *pVIODevice, _In_ struct virtqueue *
     m_pPci = reinterpret_cast<IVioGpuPCI *>(pVIODevice->DeviceContext);
     m_pVirtQueue = pVirtQueue;
     m_Index = index;
-    EnableInterrupt();
     return TRUE;
 }
 
@@ -160,164 +159,304 @@ UINT VioGpuQueue::QueryAllocation()
 }
 PAGED_CODE_SEG_END
 
+static LONG64 VioGpuMakeSynchronousEpochState(ULONG generation, VIOGPU_SYNCHRONOUS_STATE state)
+{
+    return static_cast<LONG64>((static_cast<ULONGLONG>(generation) << 32) | static_cast<ULONG>(state));
+}
+
+static ULONG VioGpuSynchronousGeneration(LONG64 epochState)
+{
+    return static_cast<ULONG>(static_cast<ULONGLONG>(epochState) >> 32);
+}
+
+static VIOGPU_SYNCHRONOUS_STATE VioGpuSynchronousState(LONG64 epochState)
+{
+    return static_cast<VIOGPU_SYNCHRONOUS_STATE>(static_cast<ULONG>(epochState));
+}
+
+static LONG64 VioGpuReadSynchronousEpochState(volatile LONG64 *epochState)
+{
+    return InterlockedCompareExchange64(epochState, 0, 0);
+}
+
+BOOLEAN CtrlQueue::IsSynchronousRequestsHealthy(void)
+{
+    return VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)) ==
+           VioGpuSynchronousEnabled;
+}
+
+void CtrlQueue::PoisonSynchronousRequests(void)
+{
+    LONG64 current = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
+    for (;;)
+    {
+        if (VioGpuSynchronousState(current) == VioGpuSynchronousPoisoned)
+        {
+            return;
+        }
+        ULONG generation = VioGpuSynchronousGeneration(current);
+        if (generation != MAXULONG)
+        {
+            ++generation;
+        }
+        LONG64 poisoned = VioGpuMakeSynchronousEpochState(generation, VioGpuSynchronousPoisoned);
+        LONG64 observed = InterlockedCompareExchange64(&m_SynchronousEpochState, poisoned, current);
+        if (observed == current)
+        {
+            return;
+        }
+        current = observed;
+    }
+}
+
 PAGED_CODE_SEG_BEGIN
 
-BOOLEAN CtrlQueue::GetDisplayInfo(PGPU_VBUFFER buf, UINT id, PULONG xres, PULONG yres)
+static BOOLEAN IsPlainControlResponse(PGPU_CTRL_HDR response, ULONG expectedType)
+{
+    return response != NULL && response->type == expectedType && response->flags == 0 && response->fence_id == 0 &&
+           response->ctx_id == 0 && response->ring_idx == 0 && response->padding[0] == 0 && response->padding[1] == 0 &&
+           response->padding[2] == 0;
+}
+
+BOOLEAN CtrlQueue::BeginSynchronousRequest(void)
 {
     PAGED_CODE();
 
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
-
-    PGPU_RESP_DISP_INFO resp = (PGPU_RESP_DISP_INFO)buf->resp_buf;
-    if (resp->hdr.type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO)
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)) != VioGpuSynchronousEnabled)
     {
-        DbgPrint(TRACE_LEVEL_VERBOSE, (" %s type = %x: disabled\n", __FUNCTION__, resp->hdr.type));
-        return FALSE;
-    }
-    if (resp->pmodes[id].enabled)
-    {
-        DbgPrint(TRACE_LEVEL_VERBOSE,
-                 ("output %d: %dx%d+%d+%d\n",
-                  id,
-                  resp->pmodes[id].r.width,
-                  resp->pmodes[id].r.height,
-                  resp->pmodes[id].r.x,
-                  resp->pmodes[id].r.y));
-        *xres = resp->pmodes[id].r.width;
-        *yres = resp->pmodes[id].r.height;
-    }
-    else
-    {
-        DbgPrint(TRACE_LEVEL_VERBOSE, ("output %d: disabled\n", id));
         return FALSE;
     }
 
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
-
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&m_SynchronousMutex, Executive, KernelMode, FALSE, &timeout);
+    if (status != STATUS_SUCCESS)
+    {
+        PoisonSynchronousRequests();
+        return FALSE;
+    }
+    if (VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)) != VioGpuSynchronousEnabled)
+    {
+        KeReleaseMutex(&m_SynchronousMutex, FALSE);
+        return FALSE;
+    }
     return TRUE;
 }
 
-BOOLEAN CtrlQueue::AskDisplayInfo(PGPU_VBUFFER *buf)
+void CtrlQueue::EndSynchronousRequest(void)
 {
     PAGED_CODE();
-
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
-
-    PGPU_CTRL_HDR cmd;
-    PGPU_VBUFFER vbuf;
-    PGPU_RESP_DISP_INFO resp_buf;
-    KEVENT event;
-    NTSTATUS status;
-
-    resp_buf = reinterpret_cast<PGPU_RESP_DISP_INFO>(m_pBuf->AllocateMemory(sizeof(GPU_RESP_DISP_INFO)));
-
-    if (!resp_buf)
-    {
-        DbgPrint(TRACE_LEVEL_ERROR, ("---> %s Failed allocate %d bytes\n", __FUNCTION__, sizeof(GPU_RESP_DISP_INFO)));
-        return FALSE;
-    }
-
-    cmd = (PGPU_CTRL_HDR)AllocCmdResp(&vbuf, sizeof(GPU_CTRL_HDR), resp_buf, sizeof(GPU_RESP_DISP_INFO));
-    RtlZeroMemory(cmd, sizeof(GPU_CTRL_HDR));
-
-    cmd->type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
-
-    KeInitializeEvent(&event, NotificationEvent, FALSE);
-    vbuf->complete_cb = NotifyEventCompleteCB;
-    vbuf->complete_ctx = &event;
-    vbuf->auto_release = false;
-
-    LARGE_INTEGER timeout = {0};
-    timeout.QuadPart = Int32x32To64(1000, -10000);
-
-    QueueBuffer(vbuf);
-    status = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, &timeout);
-
-    if (status == STATUS_TIMEOUT)
-    {
-        DbgPrint(TRACE_LEVEL_FATAL, ("---> Failed to ask display info\n"));
-        VioGpuDbgBreak();
-    }
-    *buf = vbuf;
-
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
-
-    return TRUE;
+    KeReleaseMutex(&m_SynchronousMutex, FALSE);
 }
 
-BOOLEAN CtrlQueue::AskEdidInfo(PGPU_VBUFFER *buf, UINT id)
+BOOLEAN CtrlQueue::EnableSynchronousRequests(void)
 {
     PAGED_CODE();
 
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
-
-    PGPU_CMD_GET_EDID cmd;
-    PGPU_VBUFFER vbuf;
-    PGPU_RESP_EDID resp_buf;
-    KEVENT event;
-    NTSTATUS status;
-
-    resp_buf = reinterpret_cast<PGPU_RESP_EDID>(m_pBuf->AllocateMemory(sizeof(GPU_RESP_EDID)));
-
-    if (!resp_buf)
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
-        DbgPrint(TRACE_LEVEL_ERROR, ("---> %s Failed allocate %d bytes\n", __FUNCTION__, sizeof(GPU_RESP_EDID)));
         return FALSE;
     }
-    cmd = (PGPU_CMD_GET_EDID)AllocCmdResp(&vbuf, sizeof(GPU_CMD_GET_EDID), resp_buf, sizeof(GPU_RESP_EDID));
-    RtlZeroMemory(cmd, sizeof(GPU_CMD_GET_EDID));
-
-    cmd->hdr.type = VIRTIO_GPU_CMD_GET_EDID;
-    cmd->scanout = id;
-
-    KeInitializeEvent(&event, NotificationEvent, FALSE);
-    vbuf->complete_cb = NotifyEventCompleteCB;
-    vbuf->complete_ctx = &event;
-    vbuf->auto_release = false;
-
-    LARGE_INTEGER timeout = {0};
-    timeout.QuadPart = Int32x32To64(1000, -10000);
-
-    QueueBuffer(vbuf);
-
-    status = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, &timeout);
-
-    if (status == STATUS_TIMEOUT)
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&m_SynchronousMutex, Executive, KernelMode, FALSE, &timeout);
+    if (status != STATUS_SUCCESS)
     {
-        DbgPrint(TRACE_LEVEL_FATAL, ("---> Failed to get edid info\n"));
-        VioGpuDbgBreak();
+        PoisonSynchronousRequests();
+        return FALSE;
     }
-
-    *buf = vbuf;
-
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
-
-    return TRUE;
+    LONG64 current = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
+    BOOLEAN enabled = FALSE;
+    if (VioGpuSynchronousState(current) == VioGpuSynchronousOffline)
+    {
+        ULONG generation = VioGpuSynchronousGeneration(current);
+        if (generation != MAXULONG)
+        {
+            LONG64 next = VioGpuMakeSynchronousEpochState(generation + 1, VioGpuSynchronousEnabled);
+            enabled = InterlockedCompareExchange64(&m_SynchronousEpochState, next, current) == current;
+        }
+    }
+    KeReleaseMutex(&m_SynchronousMutex, FALSE);
+    return enabled;
 }
 
-BOOLEAN CtrlQueue::GetEdidInfo(PGPU_VBUFFER buf, UINT id, PBYTE edid)
+NTSTATUS CtrlQueue::QuiesceSynchronousRequests(void)
 {
     PAGED_CODE();
 
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
-    PGPU_CMD_GET_EDID cmd = (PGPU_CMD_GET_EDID)buf->buf;
-    PGPU_RESP_EDID resp = (PGPU_RESP_EDID)buf->resp_buf;
-    PUCHAR resp_edit = (PUCHAR)(resp->edid + (ULONGLONG)id * EDID_V1_BLOCK_SIZE);
-    if (resp->hdr.type != VIRTIO_GPU_RESP_OK_EDID)
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
-        DbgPrint(TRACE_LEVEL_VERBOSE, (" %s type = %x: disabled\n", __FUNCTION__, resp->hdr.type));
+        PoisonSynchronousRequests();
+        return STATUS_DEVICE_NOT_READY;
+    }
+    for (;;)
+    {
+        LONG64 current = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
+        VIOGPU_SYNCHRONOUS_STATE state = VioGpuSynchronousState(current);
+        if (state == VioGpuSynchronousOffline)
+        {
+            return STATUS_SUCCESS;
+        }
+        if (state == VioGpuSynchronousQuiescing || state == VioGpuSynchronousPoisoned)
+        {
+            break;
+        }
+        if (state == VioGpuSynchronousEnabled)
+        {
+            LONG64 quiescing = VioGpuMakeSynchronousEpochState(VioGpuSynchronousGeneration(current),
+                                                               VioGpuSynchronousQuiescing);
+            if (InterlockedCompareExchange64(&m_SynchronousEpochState, quiescing, current) == current)
+            {
+                break;
+            }
+            continue;
+        }
+        PoisonSynchronousRequests();
+        return STATUS_DEVICE_NOT_READY;
+    }
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -6LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&m_SynchronousMutex, Executive, KernelMode, FALSE, &timeout);
+    if (status != STATUS_SUCCESS)
+    {
+        PoisonSynchronousRequests();
+        return status;
+    }
+    KeReleaseMutex(&m_SynchronousMutex, FALSE);
+    return STATUS_SUCCESS;
+}
+
+void CtrlQueue::CompleteSynchronousRequestTeardown(void)
+{
+    PAGED_CODE();
+
+    for (;;)
+    {
+        LONG64 current = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
+        VIOGPU_SYNCHRONOUS_STATE state = VioGpuSynchronousState(current);
+        if (state == VioGpuSynchronousOffline)
+        {
+            return;
+        }
+        if (state != VioGpuSynchronousQuiescing && state != VioGpuSynchronousPoisoned)
+        {
+            NT_ASSERT(FALSE);
+            return;
+        }
+        LONG64 offline = VioGpuMakeSynchronousEpochState(VioGpuSynchronousGeneration(current),
+                                                         VioGpuSynchronousOffline);
+        if (InterlockedCompareExchange64(&m_SynchronousEpochState, offline, current) == current)
+        {
+            return;
+        }
+    }
+}
+
+BOOLEAN CtrlQueue::QueryDisplayInfo(UINT id, _Out_ PULONG xres, _Out_ PULONG yres)
+{
+    PAGED_CODE();
+
+    if (xres == NULL || yres == NULL || id >= VIRTIO_GPU_MAX_SCANOUTS)
+    {
         return FALSE;
     }
-    if (cmd->scanout != id)
+    *xres = 0;
+    *yres = 0;
+    if (!BeginSynchronousRequest())
     {
-        DbgPrint(TRACE_LEVEL_VERBOSE, (" %s invalid scaout = %x\n", __FUNCTION__, cmd->scanout));
         return FALSE;
     }
 
-    RtlCopyMemory(edid, resp_edit, EDID_RAW_BLOCK_SIZE);
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
+    PGPU_RESP_DISP_INFO response = reinterpret_cast<PGPU_RESP_DISP_INFO>(m_pBuf->AllocateMemory(sizeof(GPU_RESP_DISP_INFO)));
+    if (response == NULL)
+    {
+        EndSynchronousRequest();
+        return FALSE;
+    }
 
-    return TRUE;
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_CTRL_HDR command = static_cast<PGPU_CTRL_HDR>(AllocCmdResp(&vbuf,
+                                                                    sizeof(GPU_CTRL_HDR),
+                                                                    response,
+                                                                    sizeof(GPU_RESP_DISP_INFO)));
+    if (command == NULL)
+    {
+        m_pBuf->FreeMemory(response);
+        EndSynchronousRequest();
+        return FALSE;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
+
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) &&
+                      vbuf->response_size == sizeof(GPU_RESP_DISP_INFO) &&
+                      IsPlainControlResponse(&response->hdr, VIRTIO_GPU_RESP_OK_DISPLAY_INFO) &&
+                      response->pmodes[id].enabled != 0;
+    if (success)
+    {
+        *xres = response->pmodes[id].r.width;
+        *yres = response->pmodes[id].r.height;
+    }
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
+    return success;
+}
+
+BOOLEAN CtrlQueue::QueryEdidInfo(UINT id, _Out_writes_bytes_(EDID_RAW_BLOCK_SIZE) PBYTE edid)
+{
+    PAGED_CODE();
+
+    if (edid == NULL || id >= VIRTIO_GPU_MAX_SCANOUTS)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(edid, EDID_RAW_BLOCK_SIZE);
+    if (!BeginSynchronousRequest())
+    {
+        return FALSE;
+    }
+
+    PGPU_RESP_EDID response = reinterpret_cast<PGPU_RESP_EDID>(m_pBuf->AllocateMemory(sizeof(GPU_RESP_EDID)));
+    if (response == NULL)
+    {
+        EndSynchronousRequest();
+        return FALSE;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_CMD_GET_EDID command = static_cast<PGPU_CMD_GET_EDID>(AllocCmdResp(&vbuf,
+                                                                            sizeof(GPU_CMD_GET_EDID),
+                                                                            response,
+                                                                            sizeof(GPU_RESP_EDID)));
+    if (command == NULL)
+    {
+        m_pBuf->FreeMemory(response);
+        EndSynchronousRequest();
+        return FALSE;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_GET_EDID;
+    command->scanout = id;
+
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) && vbuf->response_size == sizeof(GPU_RESP_EDID) &&
+                      IsPlainControlResponse(&response->hdr, VIRTIO_GPU_RESP_OK_EDID) && response->padding == 0 &&
+                      response->size >= EDID_RAW_BLOCK_SIZE && response->size <= sizeof(response->edid);
+    if (success)
+    {
+        RtlCopyMemory(edid, response->edid, EDID_RAW_BLOCK_SIZE);
+    }
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
+    return success;
 }
 
 void CtrlQueue::CreateResource(UINT res_id, UINT format, UINT width, UINT height)
@@ -411,39 +550,70 @@ void CtrlQueue::AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
-BOOLEAN CtrlQueue::SubmitSynchronous(PGPU_VBUFFER buf)
+BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer)
 {
     PAGED_CODE();
 
-    if (buf == NULL)
+    if (buf == NULL || release_buffer == NULL)
     {
         return FALSE;
     }
 
-    KEVENT event;
-    KeInitializeEvent(&event, NotificationEvent, FALSE);
+    *release_buffer = TRUE;
+    LONG64 requestEpochState = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
+    if (VioGpuSynchronousState(requestEpochState) != VioGpuSynchronousEnabled)
+    {
+        return FALSE;
+    }
+    KeClearEvent(&buf->completion_event);
+    buf->synchronous_epoch_state = requestEpochState;
     buf->complete_cb = NotifyEventCompleteCB;
-    buf->complete_ctx = &event;
+    buf->complete_ctx = &buf->completion_event;
     buf->auto_release = false;
 
     if (QueueBuffer(buf) < 0)
     {
         buf->complete_cb = NULL;
         buf->complete_ctx = NULL;
+        buf->synchronous_epoch_state = 0;
         return FALSE;
     }
 
-    NTSTATUS status = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
-    buf->complete_cb = NULL;
-    buf->complete_ctx = NULL;
-    return NT_SUCCESS(status);
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&buf->completion_event, Executive, KernelMode, FALSE, &timeout);
+    if (status != STATUS_SUCCESS)
+    {
+        // The device still owns the descriptor. The adapter reset path reclaims
+        // it only after interrupts are disabled and queued DPCs are flushed.
+        PoisonSynchronousRequests();
+        *release_buffer = FALSE;
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s timed out with status 0x%x\n", __FUNCTION__, status));
+        return FALSE;
+    }
+    LONG64 completedEpochState = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
+    if (completedEpochState != requestEpochState || buf->synchronous_epoch_state != requestEpochState ||
+        VioGpuSynchronousState(completedEpochState) != VioGpuSynchronousEnabled)
+    {
+        // A reset or quiesce raced the completion callback. Even if the DPC
+        // dequeued this descriptor, retain it until reset reclamation proves
+        // that no host or callback can still reference its storage.
+        *release_buffer = FALSE;
+        return FALSE;
+    }
+    return TRUE;
 }
 
 BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info)
 {
     PAGED_CODE();
 
-    if (capset_info == NULL)
+    if (capset_info == NULL || m_pBuf == NULL)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(capset_info, sizeof(*capset_info));
+    if (!BeginSynchronousRequest())
     {
         return FALSE;
     }
@@ -451,6 +621,7 @@ BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO caps
     PGPU_RESP_CAPSET_INFO response = static_cast<PGPU_RESP_CAPSET_INFO>(m_pBuf->AllocateMemory(sizeof(GPU_RESP_CAPSET_INFO)));
     if (response == NULL)
     {
+        EndSynchronousRequest();
         return FALSE;
     }
 
@@ -462,6 +633,7 @@ BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO caps
     if (command == NULL)
     {
         m_pBuf->FreeMemory(response);
+        EndSynchronousRequest();
         return FALSE;
     }
 
@@ -469,12 +641,19 @@ BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO caps
     command->hdr.type = VIRTIO_GPU_CMD_GET_CAPSET_INFO;
     command->capset_index = capset_index;
 
-    BOOLEAN success = SubmitSynchronous(vbuf) && response->hdr.type == VIRTIO_GPU_RESP_OK_CAPSET_INFO;
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) &&
+                      vbuf->response_size == sizeof(GPU_RESP_CAPSET_INFO) &&
+                      IsPlainControlResponse(&response->hdr, VIRTIO_GPU_RESP_OK_CAPSET_INFO) && response->padding == 0;
     if (success)
     {
         *capset_info = *response;
     }
-    ReleaseBuffer(vbuf);
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
     return success;
 }
 
@@ -483,7 +662,13 @@ BOOLEAN CtrlQueue::QueryCapset(UINT capset_id, UINT capset_version, UINT capset_
     PAGED_CODE();
 
     const UINT requiredSize = FIELD_OFFSET(GPU_CAPSET_DRM, msm.va_size) + sizeof(capset->msm.va_size);
-    if (capset == NULL || capset_size < requiredSize || capset_size > PAGE_SIZE - sizeof(GPU_CTRL_HDR))
+    if (capset == NULL || m_pBuf == NULL || capset_size < requiredSize ||
+        capset_size > PAGE_SIZE - sizeof(GPU_CTRL_HDR))
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(capset, sizeof(*capset));
+    if (!BeginSynchronousRequest())
     {
         return FALSE;
     }
@@ -492,6 +677,7 @@ BOOLEAN CtrlQueue::QueryCapset(UINT capset_id, UINT capset_version, UINT capset_
     PGPU_CTRL_HDR response = static_cast<PGPU_CTRL_HDR>(m_pBuf->AllocateMemory(responseSize));
     if (response == NULL)
     {
+        EndSynchronousRequest();
         return FALSE;
     }
 
@@ -503,6 +689,7 @@ BOOLEAN CtrlQueue::QueryCapset(UINT capset_id, UINT capset_version, UINT capset_
     if (command == NULL)
     {
         m_pBuf->FreeMemory(response);
+        EndSynchronousRequest();
         return FALSE;
     }
 
@@ -511,7 +698,9 @@ BOOLEAN CtrlQueue::QueryCapset(UINT capset_id, UINT capset_version, UINT capset_
     command->capset_id = capset_id;
     command->capset_version = capset_version;
 
-    BOOLEAN success = SubmitSynchronous(vbuf) && response->type == VIRTIO_GPU_RESP_OK_CAPSET;
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) && vbuf->response_size == responseSize &&
+                      IsPlainControlResponse(response, VIRTIO_GPU_RESP_OK_CAPSET);
     if (success)
     {
         RtlZeroMemory(capset, sizeof(*capset));
@@ -519,7 +708,11 @@ BOOLEAN CtrlQueue::QueryCapset(UINT capset_id, UINT capset_version, UINT capset_
                       reinterpret_cast<PUCHAR>(response) + sizeof(*response),
                       min((SIZE_T)capset_size, sizeof(*capset)));
     }
-    ReleaseBuffer(vbuf);
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
     return success;
 }
 
@@ -531,11 +724,16 @@ BOOLEAN CtrlQueue::CreateNativeContext(UINT context_id)
     {
         return FALSE;
     }
+    if (!BeginSynchronousRequest())
+    {
+        return FALSE;
+    }
 
     PGPU_VBUFFER vbuf = NULL;
     PGPU_CMD_CTX_CREATE command = static_cast<PGPU_CMD_CTX_CREATE>(AllocCmd(&vbuf, sizeof(GPU_CMD_CTX_CREATE)));
     if (command == NULL)
     {
+        EndSynchronousRequest();
         return FALSE;
     }
 
@@ -547,9 +745,15 @@ BOOLEAN CtrlQueue::CreateNativeContext(UINT context_id)
     command->context_init = VIRTIO_GPU_CAPSET_DRM & VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK;
     RtlCopyMemory(command->debug_name, contextName, sizeof(contextName) - 1);
 
-    BOOLEAN success = SubmitSynchronous(vbuf) &&
-                      reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf)->type == VIRTIO_GPU_RESP_OK_NODATA;
-    ReleaseBuffer(vbuf);
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) && vbuf->response_size == sizeof(GPU_CTRL_HDR) &&
+                      IsPlainControlResponse(reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf),
+                                             VIRTIO_GPU_RESP_OK_NODATA);
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
     return success;
 }
 
@@ -561,11 +765,16 @@ BOOLEAN CtrlQueue::DestroyNativeContext(UINT context_id)
     {
         return FALSE;
     }
+    if (!BeginSynchronousRequest())
+    {
+        return FALSE;
+    }
 
     PGPU_VBUFFER vbuf = NULL;
     PGPU_CMD_CTX_DESTROY command = static_cast<PGPU_CMD_CTX_DESTROY>(AllocCmd(&vbuf, sizeof(GPU_CMD_CTX_DESTROY)));
     if (command == NULL)
     {
+        EndSynchronousRequest();
         return FALSE;
     }
 
@@ -573,9 +782,15 @@ BOOLEAN CtrlQueue::DestroyNativeContext(UINT context_id)
     command->hdr.type = VIRTIO_GPU_CMD_CTX_DESTROY;
     command->hdr.ctx_id = context_id;
 
-    BOOLEAN success = SubmitSynchronous(vbuf) &&
-                      reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf)->type == VIRTIO_GPU_RESP_OK_NODATA;
-    ReleaseBuffer(vbuf);
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) && vbuf->response_size == sizeof(GPU_CTRL_HDR) &&
+                      IsPlainControlResponse(reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf),
+                                             VIRTIO_GPU_RESP_OK_NODATA);
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
     return success;
 }
 
@@ -818,6 +1033,7 @@ int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--> %s sgleft %d\n", __FUNCTION__, sgleft));
 
+    buf->response_size = 0;
     Lock(&SavedIrql);
     ret = AddBuf(&sg[0], outcnt, incnt, buf, NULL, 0);
     if (ret >= 0)
@@ -864,10 +1080,22 @@ BOOLEAN VioGpuBuf::Init(_In_ UINT cnt, _In_ IVioGpuPCI *pPci)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
-    m_uCountMin = cnt;
+    if (cnt == 0 || pPci == NULL)
+    {
+        return FALSE;
+    }
+    KeAcquireSpinLock(&m_SpinLock, &OldIrql);
+    if (m_pPci != NULL && m_pPci != pPci)
+    {
+        KeReleaseSpinLock(&m_SpinLock, OldIrql);
+        return FALSE;
+    }
     m_pPci = pPci;
+    m_uCountMin = cnt;
+    UINT allocateCount = m_uCount < cnt ? cnt - m_uCount : 0;
+    KeReleaseSpinLock(&m_SpinLock, OldIrql);
 
-    for (UINT i = 0; i < cnt; ++i)
+    for (UINT i = 0; i < allocateCount; ++i)
     {
         PGPU_VBUFFER pvbuf = reinterpret_cast<PGPU_VBUFFER>(AllocateMemory(VBUFFER_SIZE));
         if (pvbuf)
@@ -879,13 +1107,12 @@ BOOLEAN VioGpuBuf::Init(_In_ UINT cnt, _In_ IVioGpuPCI *pPci)
             KeReleaseSpinLock(&m_SpinLock, OldIrql);
         }
     }
-    ASSERT(m_uCount == cnt);
+    ASSERT(m_uCount >= cnt);
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 
-    if (m_uCount != cnt)
+    if (m_uCount < cnt)
     {
-        Close();
         return FALSE;
     }
     return TRUE;
@@ -893,54 +1120,50 @@ BOOLEAN VioGpuBuf::Init(_In_ UINT cnt, _In_ IVioGpuPCI *pPci)
 
 void VioGpuBuf::Close(void)
 {
-    KIRQL OldIrql;
-
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
-    KeAcquireSpinLock(&m_SpinLock, &OldIrql);
+    LIST_ENTRY buffers;
+    InitializeListHead(&buffers);
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_SpinLock, &oldIrql);
     while (!IsListEmpty(&m_InUseBufs))
     {
-        LIST_ENTRY *pListItem = RemoveHeadList(&m_InUseBufs);
-        if (pListItem)
-        {
-            PGPU_VBUFFER pvbuf = CONTAINING_RECORD(pListItem, GPU_VBUFFER, list_entry);
-            ASSERT(pvbuf);
-            ASSERT(pvbuf->resp_size <= MAX_INLINE_RESP_SIZE);
-
-            FreeMemory(pvbuf);
-            --m_uCount;
-        }
+        LIST_ENTRY *entry = RemoveHeadList(&m_InUseBufs);
+        PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
+        buffer->complete_cb = NULL;
+        buffer->complete_ctx = NULL;
+        buffer->response_size = 0;
+        InsertTailList(&buffers, entry);
     }
-
     while (!IsListEmpty(&m_FreeBufs))
     {
-        LIST_ENTRY *pListItem = RemoveHeadList(&m_FreeBufs);
-        if (pListItem)
-        {
-            PGPU_VBUFFER pbuf = CONTAINING_RECORD(pListItem, GPU_VBUFFER, list_entry);
-            ASSERT(pbuf);
-
-            if (pbuf->resp_buf && pbuf->resp_size > MAX_INLINE_RESP_SIZE)
-            {
-                FreeMemory(pbuf->resp_buf);
-                pbuf->resp_buf = NULL;
-                pbuf->resp_size = 0;
-            }
-
-            if (pbuf->data_buf && pbuf->data_size)
-            {
-                FreeMemory(pbuf->data_buf);
-                pbuf->data_buf = NULL;
-                pbuf->data_size = 0;
-            }
-
-            FreeMemory(pbuf);
-            --m_uCount;
-        }
+        InsertTailList(&buffers, RemoveHeadList(&m_FreeBufs));
     }
-    KeReleaseSpinLock(&m_SpinLock, OldIrql);
+    m_uCount = 0;
+    m_uCountMin = 0;
+    KeReleaseSpinLock(&m_SpinLock, oldIrql);
 
-    ASSERT(m_uCount == 0);
+    // The allocator owner must remain valid until every allocation has been
+    // returned to the same backing pool that created it.
+    while (!IsListEmpty(&buffers))
+    {
+        LIST_ENTRY *entry = RemoveHeadList(&buffers);
+        PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
+        if (buffer->resp_buf != NULL && buffer->resp_size > MAX_INLINE_RESP_SIZE)
+        {
+            FreeMemory(buffer->resp_buf);
+        }
+        if (buffer->data_buf != NULL && buffer->data_size != 0)
+        {
+            FreeMemory(buffer->data_buf);
+        }
+        FreeMemory(buffer);
+    }
+
+    KeAcquireSpinLock(&m_SpinLock, &oldIrql);
+    m_pPci = NULL;
+    KeReleaseSpinLock(&m_SpinLock, oldIrql);
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -997,6 +1220,7 @@ PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void 
         return NULL;
     }
     memset(pbuf, 0, VBUFFER_SIZE);
+    KeInitializeEvent(&pbuf->completion_event, NotificationEvent, FALSE);
     ASSERT(size <= MAX_INLINE_CMD_SIZE);
 
     pbuf->buf = (char *)((ULONG_PTR)pbuf + sizeof(*pbuf));
@@ -1038,58 +1262,144 @@ PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void 
 
 void VioGpuBuf::FreeBuf(_In_ PGPU_VBUFFER pbuf)
 {
+    if (pbuf == NULL)
+    {
+        return;
+    }
+
     KIRQL OldIrql;
+    PVOID response = NULL;
+    PVOID data = NULL;
+    BOOLEAN found = FALSE;
+    BOOLEAN freeBuffer = FALSE;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s buf = %p\n", __FUNCTION__, pbuf));
     KeAcquireSpinLock(&m_SpinLock, &OldIrql);
 
-    if (!IsListEmpty(&m_InUseBufs))
+    for (PLIST_ENTRY entry = m_InUseBufs.Flink; entry != &m_InUseBufs; entry = entry->Flink)
     {
-        PLIST_ENTRY leCurrent = m_InUseBufs.Flink;
-        PGPU_VBUFFER pvbuf = CONTAINING_RECORD(leCurrent, GPU_VBUFFER, list_entry);
-        while (leCurrent && pvbuf)
+        PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
+        if (buffer == pbuf)
         {
-            if (pvbuf == pbuf)
-            {
-                RemoveEntryList(leCurrent);
-                pvbuf = NULL;
-                break;
-            }
-
-            leCurrent = leCurrent->Flink;
-            if (leCurrent)
-            {
-                pvbuf = CONTAINING_RECORD(leCurrent, GPU_VBUFFER, list_entry);
-            }
+            RemoveEntryList(entry);
+            found = TRUE;
+            break;
         }
     }
-    if (pbuf->resp_buf && pbuf->resp_size > MAX_INLINE_RESP_SIZE)
+
+    if (found)
     {
-        FreeMemory(pbuf->resp_buf);
-        pbuf->resp_buf = NULL;
-        pbuf->resp_size = 0;
+        if (pbuf->resp_buf != NULL && pbuf->resp_size > MAX_INLINE_RESP_SIZE)
+        {
+            response = pbuf->resp_buf;
+            pbuf->resp_buf = NULL;
+            pbuf->resp_size = 0;
+        }
+        if (pbuf->data_buf != NULL && pbuf->data_size != 0)
+        {
+            data = pbuf->data_buf;
+            pbuf->data_buf = NULL;
+            pbuf->data_size = 0;
+        }
+        freeBuffer = m_uCount > m_uCountMin;
+        if (freeBuffer)
+        {
+            --m_uCount;
+        }
+    }
+    KeReleaseSpinLock(&m_SpinLock, OldIrql);
+
+    if (!found)
+    {
+        DbgPrint(TRACE_LEVEL_WARNING, ("<--- %s ignored unowned buf = %p\n", __FUNCTION__, pbuf));
+        return;
     }
 
-    if (pbuf->data_buf && pbuf->data_size)
-    {
-        FreeMemory(pbuf->data_buf);
-        pbuf->data_buf = NULL;
-        pbuf->data_size = 0;
-    }
+    FreeMemory(response);
+    FreeMemory(data);
 
-    if (m_uCount > m_uCountMin)
+    if (freeBuffer)
     {
         FreeMemory(pbuf);
-        --m_uCount;
     }
     else
     {
+        KeAcquireSpinLock(&m_SpinLock, &OldIrql);
         InsertTailList(&m_FreeBufs, &pbuf->list_entry);
+        KeReleaseSpinLock(&m_SpinLock, OldIrql);
     }
 
-    KeReleaseSpinLock(&m_SpinLock, OldIrql);
-
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+}
+
+void VioGpuBuf::ReclaimBuffers(void)
+{
+    const UINT keepCount = m_uCountMin;
+    LIST_ENTRY reclaimed;
+    LIST_ENTRY surplus;
+    InitializeListHead(&reclaimed);
+    InitializeListHead(&surplus);
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_SpinLock, &oldIrql);
+    while (!IsListEmpty(&m_InUseBufs))
+    {
+        LIST_ENTRY *entry = RemoveHeadList(&m_InUseBufs);
+        PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
+        buffer->complete_cb = NULL;
+        buffer->complete_ctx = NULL;
+        buffer->response_size = 0;
+        InsertTailList(&reclaimed, entry);
+    }
+    while (m_uCount > keepCount && !IsListEmpty(&m_FreeBufs))
+    {
+        LIST_ENTRY *entry = RemoveHeadList(&m_FreeBufs);
+        InsertTailList(&surplus, entry);
+        --m_uCount;
+    }
+    KeReleaseSpinLock(&m_SpinLock, oldIrql);
+
+    while (!IsListEmpty(&reclaimed))
+    {
+        LIST_ENTRY *entry = RemoveHeadList(&reclaimed);
+        PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
+        if (buffer->resp_buf != NULL && buffer->resp_size > MAX_INLINE_RESP_SIZE)
+        {
+            FreeMemory(buffer->resp_buf);
+            buffer->resp_buf = NULL;
+            buffer->resp_size = 0;
+        }
+        if (buffer->data_buf != NULL && buffer->data_size != 0)
+        {
+            FreeMemory(buffer->data_buf);
+            buffer->data_buf = NULL;
+            buffer->data_size = 0;
+        }
+
+        BOOLEAN freeBuffer;
+        KeAcquireSpinLock(&m_SpinLock, &oldIrql);
+        freeBuffer = m_uCount > keepCount;
+        if (freeBuffer)
+        {
+            --m_uCount;
+        }
+        else
+        {
+            InsertTailList(&m_FreeBufs, &buffer->list_entry);
+        }
+        KeReleaseSpinLock(&m_SpinLock, oldIrql);
+        if (freeBuffer)
+        {
+            FreeMemory(buffer);
+        }
+    }
+
+    while (!IsListEmpty(&surplus))
+    {
+        LIST_ENTRY *entry = RemoveHeadList(&surplus);
+        PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
+        FreeMemory(buffer);
+    }
 }
 
 PAGED_CODE_SEG_BEGIN
@@ -1184,9 +1494,14 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
     ASSERT(size);
+    if (size == 0 || pPci == NULL || size > MAXUINT - (PAGE_SIZE - 1))
+    {
+        return FALSE;
+    }
     PVOID buf = NULL;
     UINT pages = BYTES_TO_PAGES(size);
-    UINT sglsize = sizeof(SCATTER_GATHER_LIST) + (sizeof(SCATTER_GATHER_ELEMENT) * pages);
+    SIZE_T sglsize = FIELD_OFFSET(SCATTER_GATHER_LIST, Elements) +
+                     (sizeof(SCATTER_GATHER_ELEMENT) * static_cast<SIZE_T>(pages));
     size = pages * PAGE_SIZE;
     m_pPci = pPci;
     m_bRestrictedDma = pPci->IsRestrictedDmaActive();
@@ -1223,6 +1538,9 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
         }
         m_bMapped = TRUE;
     }
+    // Close() needs the complete mapping extent even when a later MDL or SG
+    // construction step fails.
+    m_Size = size;
 
     if (!m_bRestrictedDma)
     {
@@ -1273,14 +1591,19 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
         if (pa.QuadPart == 0LL)
         {
             DbgPrint(TRACE_LEVEL_FATAL, ("%s Invalid PA buf = %p element %d\n", __FUNCTION__, buf, i));
-            break;
+            Close();
+            return FALSE;
         }
         m_pSGList->Elements[i].Address = pa;
         m_pSGList->Elements[i].Length = PAGE_SIZE;
         buf = (PVOID)((LONG_PTR)(buf) + PAGE_SIZE);
         m_pSGList->NumberOfElements++;
     }
-    m_Size = size;
+    if (m_pSGList->NumberOfElements != pages)
+    {
+        Close();
+        return FALSE;
+    }
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 
     return TRUE;
@@ -1319,29 +1642,33 @@ void VioGpuMemSegment::Close(void)
         m_pMdl = NULL;
     }
 
-    if (m_bSystemMemory)
+    if (m_pVAddr != NULL && m_bSystemMemory)
     {
         if (m_bRestrictedDma)
         {
-            m_pPci->FreeDmaMemory(m_pVAddr);
+            if (m_pPci != NULL)
+            {
+                m_pPci->FreeDmaMemory(m_pVAddr);
+            }
         }
         else
         {
             delete[] reinterpret_cast<PBYTE>(m_pVAddr);
         }
     }
-    else
+    else if (m_pVAddr != NULL && m_bMapped)
     {
-        UnmapFrameBuffer(m_pVAddr, (ULONG)m_Size);
-        m_bMapped = FALSE;
+        (void)UnmapFrameBuffer(m_pVAddr, (ULONG)m_Size);
     }
     m_pVAddr = NULL;
 
     delete[] reinterpret_cast<PBYTE>(m_pSGList);
     m_pSGList = NULL;
     m_bSystemMemory = FALSE;
+    m_bMapped = FALSE;
     m_bRestrictedDma = FALSE;
     m_Size = 0;
+    m_pPci = NULL;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -1424,7 +1751,7 @@ UINT CrsrQueue::QueueCursor(PGPU_VBUFFER buf)
 
     VirtIOBufferDescriptor sg[1];
     int outcnt = 0;
-    UINT ret = 0;
+    int ret = 0;
 
     ASSERT(buf->size <= PAGE_SIZE);
     if (BuildSGElement(m_pPci, &sg[outcnt], (PVOID)buf->buf, buf->size))
@@ -1438,7 +1765,10 @@ UINT CrsrQueue::QueueCursor(PGPU_VBUFFER buf)
     }
     Lock(&SavedIrql);
     ret = AddBuf(&sg[0], outcnt, 0, buf, NULL, 0);
-    Kick();
+    if (ret >= 0)
+    {
+        Kick();
+    }
     Unlock(SavedIrql);
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s vbuf = %p outcnt = %d, ret = %d\n", __FUNCTION__, buf, outcnt, ret));

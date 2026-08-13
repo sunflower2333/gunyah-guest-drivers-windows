@@ -355,16 +355,54 @@ PVOID CPciBar::GetVA(PDXGKRNL_INTERFACE pDxgkInterface)
     return m_BaseVA;
 }
 
-void CPciBar::Unmap(PDXGKRNL_INTERFACE pDxgkInterface)
+NTSTATUS CPciBar::Unmap(PDXGKRNL_INTERFACE pDxgkInterface)
 {
-    if (m_BaseVA != nullptr)
+    if (m_BaseVA == nullptr)
     {
-        if (!m_bIoMapped)
+        return STATUS_SUCCESS;
+    }
+
+    // Memory BARs and translated port BARs are both created through
+    // DxgkCbMapMemory.  Only direct port-space addresses need no unmap.
+    if (!m_bPortSpace || m_bIoMapped)
+    {
+        if (pDxgkInterface == nullptr || pDxgkInterface->DxgkCbUnmapMemory == nullptr)
         {
-            pDxgkInterface->DxgkCbUnmapMemory(pDxgkInterface->DeviceHandle, m_BaseVA);
+            return STATUS_DEVICE_NOT_READY;
+        }
+        NTSTATUS status = pDxgkInterface->DxgkCbUnmapMemory(pDxgkInterface->DeviceHandle, m_BaseVA);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
         }
     }
     m_BaseVA = nullptr;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS CPciResources::Close(void)
+{
+    NTSTATUS firstFailure = STATUS_SUCCESS;
+    for (UINT bar = 0; bar < PCI_TYPE0_ADDRESSES; ++bar)
+    {
+        NTSTATUS status = m_Bars[bar].Unmap(m_pDxgkInterface);
+        if (!NT_SUCCESS(status) && NT_SUCCESS(firstFailure))
+        {
+            firstFailure = status;
+        }
+    }
+    if (!NT_SUCCESS(firstFailure))
+    {
+        return firstFailure;
+    }
+
+    for (UINT bar = 0; bar < PCI_TYPE0_ADDRESSES; ++bar)
+    {
+        m_Bars[bar] = CPciBar();
+    }
+    m_InterruptFlags = 0;
+    m_pDxgkInterface = nullptr;
+    return STATUS_SUCCESS;
 }
 
 bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pResList)
@@ -375,6 +413,10 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
     bool interrupt_found = false;
     int bar = -1;
 
+    if (pDxgkInterface == nullptr || pResList == nullptr || m_pDxgkInterface != nullptr)
+    {
+        return false;
+    }
     m_pDxgkInterface = pDxgkInterface;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
@@ -389,12 +431,16 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
     if (!NT_SUCCESS(Status))
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("DxgkCbReadDeviceSpace failed with status 0x%X\n", Status));
+        Status = Close();
+        NT_ASSERT(NT_SUCCESS(Status));
         return false;
     }
 
     if (BytesRead != sizeof(pci_config))
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("[%s] could not read PCI config space\n", __FUNCTION__));
+        Status = Close();
+        NT_ASSERT(NT_SUCCESS(Status));
         return false;
     }
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s ListCount = %d\n", __FUNCTION__, pResList->Count));
@@ -470,6 +516,8 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
     if (bar < 0 || !interrupt_found)
     {
         DbgPrint(TRACE_LEVEL_FATAL, ("[%s] resource enumeration failed\n", __FUNCTION__));
+        Status = Close();
+        NT_ASSERT(NT_SUCCESS(Status));
         return false;
     }
     return true;

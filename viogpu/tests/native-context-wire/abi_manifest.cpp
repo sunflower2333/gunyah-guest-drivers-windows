@@ -38,6 +38,29 @@ extern "C"
 #define ABI_CAPSET_ID      VIRTGPU_DRM_CAPSET_DRM
 #endif
 
+/*
+ * CREATE_GUEST_HANDLE is a DroidVM virtio-gpu extension.  Older Linux UAPI
+ * snapshots used by the host and guest fixture endpoints do not declare its
+ * names, while the Windows wire header does.  Keep this compatibility block
+ * local to the fixture and prefer an endpoint-provided VIRTGPU alias when one
+ * is available; the canonical wire values remain part of the manifest below.
+ */
+#ifndef VIRTIO_GPU_F_CREATE_GUEST_HANDLE
+#if defined(VIRTGPU_F_CREATE_GUEST_HANDLE)
+#define VIRTIO_GPU_F_CREATE_GUEST_HANDLE VIRTGPU_F_CREATE_GUEST_HANDLE
+#else
+#define VIRTIO_GPU_F_CREATE_GUEST_HANDLE 6
+#endif
+#endif
+
+#ifndef VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE
+#if defined(VIRTGPU_BLOB_FLAG_CREATE_GUEST_HANDLE)
+#define VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE VIRTGPU_BLOB_FLAG_CREATE_GUEST_HANDLE
+#else
+#define VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE 0x0008U
+#endif
+#endif
+
 static void Emit(const char *name, unsigned long long value)
 {
     printf("%s=%llu\n", name, value);

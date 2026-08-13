@@ -115,25 +115,10 @@ RhelDoFlush(PVOID DeviceExtension, PSRB_TYPE Srb, BOOLEAN resend, BOOLEAN bIsr)
     srbExt->out = 1;
     srbExt->in = 1;
 
-    if (adaptExt->rdma.Active)
-    {
-        PVOID ctl = VioStorBounceAllocCtl(DeviceExtension, srbExt);
-        if (ctl == NULL)
-        {
-            return FALSE;
-        }
-        srbExt->sg[0].physAddr = VioStorRdmaVAtoPA(DeviceExtension, (PUCHAR)ctl + BOUNCE_CTL_OUTHDR_OFFSET);
-        srbExt->sg[0].length = sizeof(srbExt->vbr.out_hdr);
-        srbExt->sg[1].physAddr = VioStorRdmaVAtoPA(DeviceExtension, (PUCHAR)ctl + BOUNCE_CTL_STATUS_OFFSET);
-        srbExt->sg[1].length = sizeof(srbExt->vbr.status);
-    }
-    else
-    {
-        srbExt->sg[0].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.out_hdr, &fragLen);
-        srbExt->sg[0].length = sizeof(srbExt->vbr.out_hdr);
-        srbExt->sg[1].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.status, &fragLen);
-        srbExt->sg[1].length = sizeof(srbExt->vbr.status);
-    }
+    srbExt->sg[0].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.out_hdr, &fragLen);
+    srbExt->sg[0].length = sizeof(srbExt->vbr.out_hdr);
+    srbExt->sg[1].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.status, &fragLen);
+    srbExt->sg[1].length = sizeof(srbExt->vbr.status);
 
     if (!resend)
     {
@@ -276,12 +261,6 @@ RhelDoReadWrite(PVOID DeviceExtension, PSRB_TYPE Srb)
         virtqueue_notify(vq);
     }
 
-    /* Wake the completion poll thread (restricted DMA pool path). */
-    if (adaptExt->rdma.Active)
-    {
-        VioStorPollKick(DeviceExtension);
-    }
-
     if (adaptExt->num_queues > 1)
     {
         if (CHECKFLAG(adaptExt->perfFlags, STOR_PERF_OPTIMIZE_FOR_COMPLETION_DURING_STARTIO))
@@ -378,35 +357,12 @@ RhelDoUnMap(IN PVOID DeviceExtension, IN PSRB_TYPE Srb)
     srbExt->out = 2;
     srbExt->in = 1;
 
-    if (adaptExt->rdma.Active)
-    {
-        /* Restricted DMA pool: the device cannot read the SRB extension, so
-         * stage out_hdr + discard segment list + status through a control slot
-         * (the segment list fits: MAX_DISCARD_SEGMENTS * 16 bytes). */
-        PVOID ctl = VioStorBounceAllocCtl(DeviceExtension, srbExt);
-        if (ctl == NULL)
-        {
-            return FALSE;
-        }
-        RtlCopyMemory((PUCHAR)ctl + BOUNCE_CTL_DISCARD_OFFSET,
-                      &srbExt->blk_discard[0],
-                      sizeof(blk_discard_write_zeroes) * BlockDescrCount);
-        srbExt->sg[0].physAddr = VioStorRdmaVAtoPA(DeviceExtension, (PUCHAR)ctl + BOUNCE_CTL_OUTHDR_OFFSET);
-        srbExt->sg[0].length = sizeof(srbExt->vbr.out_hdr);
-        srbExt->sg[1].physAddr = VioStorRdmaVAtoPA(DeviceExtension, (PUCHAR)ctl + BOUNCE_CTL_DISCARD_OFFSET);
-        srbExt->sg[1].length = sizeof(blk_discard_write_zeroes) * BlockDescrCount;
-        srbExt->sg[2].physAddr = VioStorRdmaVAtoPA(DeviceExtension, (PUCHAR)ctl + BOUNCE_CTL_STATUS_OFFSET);
-        srbExt->sg[2].length = sizeof(srbExt->vbr.status);
-    }
-    else
-    {
-        srbExt->sg[0].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.out_hdr, &fragLen);
-        srbExt->sg[0].length = sizeof(srbExt->vbr.out_hdr);
-        srbExt->sg[1].physAddr = MmGetPhysicalAddress(&srbExt->blk_discard[0]);
-        srbExt->sg[1].length = sizeof(blk_discard_write_zeroes) * BlockDescrCount;
-        srbExt->sg[2].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.status, &fragLen);
-        srbExt->sg[2].length = sizeof(srbExt->vbr.status);
-    }
+    srbExt->sg[0].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.out_hdr, &fragLen);
+    srbExt->sg[0].length = sizeof(srbExt->vbr.out_hdr);
+    srbExt->sg[1].physAddr = MmGetPhysicalAddress(&srbExt->blk_discard[0]);
+    srbExt->sg[1].length = sizeof(blk_discard_write_zeroes) * BlockDescrCount;
+    srbExt->sg[2].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.status, &fragLen);
+    srbExt->sg[2].length = sizeof(srbExt->vbr.status);
 
     QueueNumber = GetSrbQueueNumber(DeviceExtension, Srb);
     MessageId = QueueToMessageId(DeviceExtension, QueueNumber);
@@ -457,11 +413,6 @@ RhelDoUnMap(IN PVOID DeviceExtension, IN PSRB_TYPE Srb)
     else
     {
         VioStorVQUnlock(DeviceExtension, MessageId, &LockHandle, FALSE);
-        if (srbExt->bounceCtl != NULL)
-        {
-            RdmaClientFreeCtl(&adaptExt->rdma, srbExt->bounceCtl);
-            srbExt->bounceCtl = NULL;
-        }
         RhelDbgPrint(TRACE_LEVEL_ERROR, " Can not add packet to queue %d.\n", QueueNumber);
         StorPortBusy(DeviceExtension, 2);
     }
@@ -507,31 +458,12 @@ RhelGetSerialNumber(IN PVOID DeviceExtension, IN PSRB_TYPE Srb)
     srbExt->out = 1;
     srbExt->in = 2;
 
-    if (adaptExt->rdma.Active)
-    {
-        PVOID ctl = VioStorBounceAllocCtl(DeviceExtension, srbExt);
-        if (ctl == NULL)
-        {
-            return FALSE;
-        }
-        /* Device writes the serial into the bounce slot; VioStorBounceComplete
-         * copies it back into adaptExt->sn. */
-        srbExt->sg[0].physAddr = VioStorRdmaVAtoPA(DeviceExtension, (PUCHAR)ctl + BOUNCE_CTL_OUTHDR_OFFSET);
-        srbExt->sg[0].length = sizeof(srbExt->vbr.out_hdr);
-        srbExt->sg[1].physAddr = VioStorRdmaVAtoPA(DeviceExtension, (PUCHAR)ctl + BOUNCE_CTL_SN_OFFSET);
-        srbExt->sg[1].length = sizeof(adaptExt->sn);
-        srbExt->sg[2].physAddr = VioStorRdmaVAtoPA(DeviceExtension, (PUCHAR)ctl + BOUNCE_CTL_STATUS_OFFSET);
-        srbExt->sg[2].length = sizeof(srbExt->vbr.status);
-    }
-    else
-    {
-        srbExt->sg[0].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.out_hdr, &fragLen);
-        srbExt->sg[0].length = sizeof(srbExt->vbr.out_hdr);
-        srbExt->sg[1].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &adaptExt->sn[0], &fragLen);
-        srbExt->sg[1].length = sizeof(adaptExt->sn);
-        srbExt->sg[2].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.status, &fragLen);
-        srbExt->sg[2].length = sizeof(srbExt->vbr.status);
-    }
+    srbExt->sg[0].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.out_hdr, &fragLen);
+    srbExt->sg[0].length = sizeof(srbExt->vbr.out_hdr);
+    srbExt->sg[1].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &adaptExt->sn[0], &fragLen);
+    srbExt->sg[1].length = sizeof(adaptExt->sn);
+    srbExt->sg[2].physAddr = StorPortGetPhysicalAddress(DeviceExtension, NULL, &srbExt->vbr.status, &fragLen);
+    srbExt->sg[2].length = sizeof(srbExt->vbr.status);
 
     VioStorVQLock(DeviceExtension, MessageId, &LockHandle, FALSE);
 
@@ -586,10 +518,6 @@ VOID RhelShutDown(IN PVOID DeviceExtension)
 {
     ULONG index;
     PADAPTER_EXTENSION adaptExt = (PADAPTER_EXTENSION)DeviceExtension;
-
-    /* Stop the completion poll thread before tearing the queues down so it can
-     * no longer touch them (restricted DMA pool path). */
-    VioStorStopPollThread(DeviceExtension);
 
     virtio_device_reset(&adaptExt->vdev);
     virtio_delete_queues(&adaptExt->vdev);
@@ -705,16 +633,6 @@ VOID RhelGetDiskGeometry(IN PVOID DeviceExtension)
 
     PADAPTER_EXTENSION adaptExt = (PADAPTER_EXTENSION)DeviceExtension;
     adaptExt->features = virtio_get_features(&adaptExt->vdev);
-
-    /*
-     * Restricted DMA pool: DISCARD is not bounced (its blk_discard range array
-     * would otherwise sit in non-device-visible guest memory). Drop the feature
-     * so it is neither advertised to the OS nor used, avoiding a corrupt discard.
-     */
-    if (adaptExt->rdma.Active)
-    {
-        adaptExt->features &= ~(1ULL << VIRTIO_BLK_F_DISCARD);
-    }
 
     if (CHECKBIT(adaptExt->features, VIRTIO_BLK_F_BARRIER))
     {

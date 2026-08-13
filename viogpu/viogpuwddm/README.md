@@ -9,6 +9,41 @@ implementation, and is intentionally not installable:
 - There is no INF, package target, or signing input.
 - VirtIO submission fences, preemption, and TDR recovery are not connected.
 
+## Native Context scope
+
+The current P1 artifact is a compile-only transport-readiness slice. Its
+unreachable source path negotiates the required VirtIO-GPU features and validates
+the Native Context capset, but it does not implement the product's guest-backed
+allocation data path. `DriverEntry` remains fail-closed and returns
+`STATUS_NOT_SUPPORTED`; no artifact from this project may be installed or loaded.
+
+The product baseline is `udmabuf=true` with independent `drm-host` and
+`gpu-guest` boot pools. The product transport must fail closed unless
+`VIRTIO_GPU_F_VIRGL`, `VIRTIO_GPU_F_CREATE_GUEST_HANDLE` (feature bit 6),
+`VIRTIO_GPU_F_RESOURCE_BLOB`, and `VIRTIO_GPU_F_CONTEXT_INIT` are offered and
+acknowledged. GPU retirement uses the control-header fence and ring semantics;
+there is no additional generic fence feature bit. For a guest-backed BO, the
+KMD/UMD contract is:
+
+- allocate the extent from `gpu-guest` and set `MSM_BO_GUEST_ALLOC`;
+- issue `RESOURCE_CREATE_BLOB` with `VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST` and
+  `VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE`;
+- provide SG entries/iovecs covering the guest-pool extent so crosvm can validate
+  the grants and build the bounded udmabuf imported by drm2kgsl.
+
+The `drm-host` pool owns native-context control/response shmem and is independent
+of the guest BO pool. The product path does not use `NCTX_LEGACY_HOST_ALLOC`,
+runtime SHARE, pool-outside GPA backing, or a second offset allocator. Real
+Windows CreateBlob/allocation, map/unmap, and teardown transport remains a P2
+implementation item; compile/link success here does not provide that behavior.
+
+The current initialization transport tears down fail-closed. It releases every
+tracked control/display suballocation before issuing the RDMA arena FREE, clears
+the connection only after the provider confirms success, and retains the
+adapter plus cached failure after an error or timeout. It never retries an
+outcome-uncertain FREE. This protects the compile-only P1 lifecycle; it is not
+the missing P2 guest-backed BO teardown implementation.
+
 `VioGpuWddmBuildInitializationData` wires the existing display adapter,
 interrupt, power, cursor, EDID, and VidPN lifecycle into a full-miniport
 `DRIVER_INITIALIZATION_DATA` table. The separate

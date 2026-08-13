@@ -42,7 +42,7 @@ class CPciBar
     PVOID GetVA(PDXGKRNL_INTERFACE pDxgkInterface);
 
     // Undoes the effect of GetVA
-    void Unmap(PDXGKRNL_INTERFACE pDxgkInterface);
+    NTSTATUS Unmap(PDXGKRNL_INTERFACE pDxgkInterface);
 
   private:
     PHYSICAL_ADDRESS m_BasePA;
@@ -61,13 +61,12 @@ class CPciResources
 
     ~CPciResources()
     {
-        for (UINT bar = 0; bar < PCI_TYPE0_ADDRESSES; bar++)
-        {
-            m_Bars[bar].Unmap(m_pDxgkInterface);
-        }
+        NTSTATUS status = Close();
+        NT_ASSERT(NT_SUCCESS(status));
     }
 
     bool Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pResList);
+    NTSTATUS Close(void);
 
     ULONG GetBarSize(UINT bar)
     {

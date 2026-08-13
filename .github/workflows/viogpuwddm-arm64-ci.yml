@@ -9,6 +9,12 @@ on:
       - "viogpu/viogpudo/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
+      - "rdmapool/**"
+      - "NetKVM/Common/**"
+      - "NetKVM/wlh/**"
+      - "NetKVM/NetKVM-VS2015.vcxproj"
+      - "viostor/**"
+      - "vioscsi/**"
       - ".github/workflows/viogpuwddm-arm64-ci.yml"
   push:
     branches: [ master, viogpu-wddm3.1 ]
@@ -18,6 +24,12 @@ on:
       - "viogpu/viogpudo/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
+      - "rdmapool/**"
+      - "NetKVM/Common/**"
+      - "NetKVM/wlh/**"
+      - "NetKVM/NetKVM-VS2015.vcxproj"
+      - "viostor/**"
+      - "vioscsi/**"
       - ".github/workflows/viogpuwddm-arm64-ci.yml"
 
 jobs:
@@ -43,13 +55,40 @@ jobs:
         shell: pwsh
         run: python viogpu/viogpuwddm/check-contract.py
 
-      - name: Build VirtIO dependency
+      - name: Attack restricted-DMA safety contract
+        shell: pwsh
+        run: python viogpu/viogpuwddm/test-rdma-contract.py
+
+      - name: Build restricted-DMA ABI consumers
         shell: pwsh
         run: |
-          msbuild VirtIO/VirtioLib.vcxproj /m `
-            /p:Configuration="Win11 Release" /p:Platform=ARM64 `
-            /p:SpectreMitigation=false
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $common = @(
+            '/m',
+            '/p:ApiValidator_Enable=false',
+            '/p:InfVerif_Enable=false',
+            '/p:SpectreMitigation=false',
+            '/p:SignMode=Off'
+          )
+          $projects = @(
+            @{ Path = 'NetKVM/Mof/Mof.vcxproj'; Configuration = 'Header'; Platform = 'x64' },
+            @{ Path = 'VirtIO/VirtioLib.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
+            @{ Path = 'VirtIO/WDF/VirtioLib-WDF.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
+            @{ Path = 'NetKVM/CoInstaller/netkvmco-vs2015.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
+            @{ Path = 'NetKVM/ProtocolService/ProtocolService.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
+            @{ Path = 'rdmapool/rdmapool.vcxproj'; Configuration = 'Release'; Platform = 'ARM64' },
+            @{ Path = 'viostor/viostor.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
+            @{ Path = 'vioscsi/vioscsi.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
+            @{ Path = 'NetKVM/NetKVM-VS2015.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' }
+          )
+          foreach ($project in $projects) {
+            Write-Host "::group::build $($project.Path) [$($project.Configuration)|$($project.Platform)]"
+            msbuild $project.Path `
+              /p:Configuration="$($project.Configuration)" `
+              /p:Platform="$($project.Platform)" @common
+            $exitCode = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($exitCode -ne 0) { exit $exitCode }
+          }
 
       - name: Build full WDDM contract target
         shell: pwsh

@@ -41,18 +41,40 @@ bool CNdisSharedMemory::Allocate(ULONG Size, bool IsCached)
 
 CNdisSharedMemory::~CNdisSharedMemory()
 {
-    if (m_VA != nullptr)
+    NTSTATUS status = Release();
+    if (!NT_SUCCESS(status))
     {
-        if (m_FromRdmaPool)
-        {
-            ParaNdis_RdmaPoolFree(m_Context, m_VA, m_Size);
-        }
-        else
-        {
-            NdisMFreeSharedMemory(m_DrvHandle, m_Size, m_IsCached, m_VA, m_PA);
-        }
-        m_VA = nullptr;
+        DPrintf(0, "CNdisSharedMemory rdmapool release failed 0x%x for VA=%p; owner retained", status, m_VA);
     }
+}
+
+NTSTATUS CNdisSharedMemory::Release()
+{
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (m_VA == nullptr)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    if (m_FromRdmaPool)
+    {
+        status = ParaNdis_RdmaPoolFree(m_Context, m_VA, m_Size);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+    }
+    else
+    {
+        NdisMFreeSharedMemory(m_DrvHandle, m_Size, m_IsCached, m_VA, m_PA);
+    }
+
+    m_VA = nullptr;
+    m_PA.QuadPart = 0;
+    m_Size = 0;
+    m_FromRdmaPool = false;
+    return STATUS_SUCCESS;
 }
 
 // Generic delete operators

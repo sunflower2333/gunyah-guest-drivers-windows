@@ -54,6 +54,10 @@ typedef struct _RDMA_CLIENT
     PVOID BaseVA;
     PHYSICAL_ADDRESS BasePA;
     ULONG64 Size;
+    ULONG AllocationPages;
+    ULONG64 AllocationToken;
+    BOOLEAN DisconnectAttempted;
+    NTSTATUS DisconnectStatus;
 
     /* --- bounce sub-allocator (RdmaClientBounceInit) --- */
     PUCHAR EventBaseVA; /* reserved EventBytes area, or NULL */
@@ -88,7 +92,7 @@ typedef struct _RDMA_CLIENT
  * absent, so the caller keeps the normal (KVM/QEMU) DMA path.
  */
 NTSTATUS RdmaClientConnect(PRDMA_CLIENT c, const char *Tag, ULONG RingPages, ULONG MetaPages);
-VOID RdmaClientDisconnect(PRDMA_CLIENT c);
+NTSTATUS RdmaClientDisconnect(PRDMA_CLIENT c);
 
 /* VA<->PA within the contiguous rdmapool region. */
 PHYSICAL_ADDRESS RdmaClientVAtoPA(PRDMA_CLIENT c, PVOID va);

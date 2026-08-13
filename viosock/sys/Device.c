@@ -434,9 +434,7 @@ static NTSTATUS VIOSockEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRES
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "--> %s\n", __FUNCTION__);
 
-    VirtIOWdfShutdown(&pContext->VDevice);
-
-    return STATUS_SUCCESS;
+    return VirtIOWdfShutdown(&pContext->VDevice);
 }
 
 static NTSTATUS VIOSockEvtDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE PreviousState)

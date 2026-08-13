@@ -264,6 +264,7 @@ NTSTATUS
 VIOSerialEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTranslated)
 {
     PPORTS_DEVICE pContext = GetPortsDevice(Device);
+    NTSTATUS status;
 
     UNREFERENCED_PARAMETER(ResourcesTranslated);
     PAGED_CODE();
@@ -282,10 +283,10 @@ VIOSerialEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Resources
         pContext->out_vqs = NULL;
     }
 
-    VirtIOWdfShutdown(&pContext->VDevice);
+    status = VirtIOWdfShutdown(&pContext->VDevice);
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "<-- %s\n", __FUNCTION__);
-    return STATUS_SUCCESS;
+    return status;
 }
 
 #if 0

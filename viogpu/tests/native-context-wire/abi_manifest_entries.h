@@ -17,12 +17,16 @@ ABI_VALUE(virtio.resp.ok_nodata, VIRTIO_GPU_RESP_OK_NODATA, 4352);
 ABI_VALUE(virtio.resp.ok_capset_info, VIRTIO_GPU_RESP_OK_CAPSET_INFO, 4354);
 ABI_VALUE(virtio.resp.ok_capset, VIRTIO_GPU_RESP_OK_CAPSET, 4355);
 ABI_VALUE(virtio.resp.invalid_context_id, VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID, 4612);
+ABI_VALUE(virtio.feature.virgl, VIRTIO_GPU_F_VIRGL, 0);
 ABI_VALUE(virtio.feature.resource_blob, VIRTIO_GPU_F_RESOURCE_BLOB, 3);
 ABI_VALUE(virtio.feature.context_init, VIRTIO_GPU_F_CONTEXT_INIT, 4);
+ABI_VALUE(virtio.feature.create_guest_handle, VIRTIO_GPU_F_CREATE_GUEST_HANDLE, 6);
 ABI_VALUE(virtio.flag.fence, VIRTIO_GPU_FLAG_FENCE, 1);
 ABI_VALUE(virtio.flag.info_ring_idx, VIRTIO_GPU_FLAG_INFO_RING_IDX, 2);
 ABI_VALUE(virtio.blob_mem.guest, VIRTIO_GPU_BLOB_MEM_GUEST, 1);
+ABI_VALUE(virtio.blob_mem.host3d_guest, VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST, 3);
 ABI_VALUE(virtio.blob_flag.mappable, VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE, 1);
+ABI_VALUE(virtio.blob_flag.create_guest_handle, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, 8);
 
 ABI_VALUE(msm.flag.guest_alloc, MSM_BO_GUEST_ALLOC, 2147483648ULL);
 ABI_VALUE(msm.ccmd.nop, MSM_CCMD_NOP, 1);

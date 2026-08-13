@@ -16,18 +16,21 @@ through it.
 
 - **rdmapool.sys** (new) binds `ACPI\RDMA0000` and exposes pool
   allocate/free through an IOCTL interface.
-- **StorPort** (viostor/vioscsi) shares the static library
-  `rdmapool/rdmaclient.c`: pool connection, a lock-free SLIST bounce
-  allocator (control slots + large contiguous data chunks) and a
-  completion poll thread.
+- **StorPort** (viostor/vioscsi) does not use the restricted-DMA broker.
+  These are physical StorPort miniports, whose DDI contract prohibits the
+  WDM calls needed by that client. If the host offers
+  `VIRTIO_F_ACCESS_PLATFORM`, they fail adapter discovery before feature
+  acknowledgement, queue sizing, or DMA allocation.
 - **NDIS** (NetKVM) uses `ParaNdis_RdmaPool`: vrings, RX/control and TX
   copy pages all live in the pool; TX is forced through the copy path.
 - **WDF drivers** (vioinput, ...) are routed centrally by
   `VirtIO/WDF` (Dma.c / VirtIOWdf.c).
 
-Every pVM path is gated on the presence of the `ACPI\RDMA0000` device
-interface: the same disk image falls back to the stock virtio paths on
-QEMU/KVM.
+The NetKVM and WDF broker paths are gated on the `ACPI\RDMA0000` device
+interface, so they can retain their stock virtio paths when the broker is
+absent. Storage uses the stricter offered-feature gate above: it supports the
+normal non-`ACCESS_PLATFORM` path and deliberately rejects restricted-DMA
+devices until a StorPort-compatible transport exists.
 
 ## Driver status
 
@@ -36,15 +39,16 @@ Legend:
 * ✅ ported and vrified 
 * ⚠️ ported but not yet verified 
 * ❌ not ported
+* 🚫 explicitly unsupported and rejected
 
 | Driver | Status | Notes |
 |---|:---:|---|
 | rdmapool.sys | ✨ | restricted DMA pool provider (`ACPI\RDMA0000`)<br> pool allocate/free IOCTL interface every other pVM driver builds on |
 | pvmpower.sys | ✨ | PSCI shutdown/reboot bridge<br> detect S5 `ShutdownType` and launch gunyah hypercall to shutdown/restart the VM |
-| viostor | ✅ | rdmaclient bounce + completion poll thread + forced INTx |
+| viostor | 🚫 | rejects `VIRTIO_F_ACCESS_PLATFORM`; no restricted-DMA data path |
 | NetKVM | ✅ | `ParaNdis_RdmaPool`, TX forced through the copy path |
 | vioinput | ✅ | via the VirtIO-WDF routing; in daily use (VNC input) |
-| vioscsi | ⚠️ | port complete, untested on a pVM |
+| vioscsi | 🚫 | rejects `VIRTIO_F_ACCESS_PLATFORM`; no restricted-DMA data path |
 | vioserial | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viorng | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viosock | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |

@@ -47,6 +47,8 @@ RdmaPoolEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
     WDF_OBJECT_ATTRIBUTES deviceAttributes;
     WDF_PNPPOWER_EVENT_CALLBACKS pnpPowerCallbacks;
     WDF_IO_QUEUE_CONFIG queueConfig;
+    WDF_FILEOBJECT_CONFIG fileConfig;
+    WDF_OBJECT_ATTRIBUTES fileAttributes;
     WDFQUEUE queue;
 
     UNREFERENCED_PARAMETER(Driver);
@@ -59,8 +61,13 @@ RdmaPoolEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
     pnpPowerCallbacks.EvtDeviceReleaseHardware = RdmaPoolEvtDeviceReleaseHardware;
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpPowerCallbacks);
 
+    WDF_FILEOBJECT_CONFIG_INIT(&fileConfig, RdmaPoolEvtDeviceFileCreate, RdmaPoolEvtFileClose, WDF_NO_EVENT_CALLBACK);
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&fileAttributes, RDMAPOOL_FILE_CONTEXT);
+    WdfDeviceInitSetFileObjectConfig(DeviceInit, &fileConfig, &fileAttributes);
+
     /* Create the device */
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&deviceAttributes, RDMAPOOL_DEVICE_CONTEXT);
+    deviceAttributes.ExecutionLevel = WdfExecutionLevelPassive;
     status = WdfDeviceCreate(&DeviceInit, &deviceAttributes, &device);
     if (!NT_SUCCESS(status))
     {
@@ -91,6 +98,32 @@ RdmaPoolEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
     }
 
     return STATUS_SUCCESS;
+}
+
+VOID RdmaPoolEvtDeviceFileCreate(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request, _In_ WDFFILEOBJECT FileObject)
+{
+    PRDMAPOOL_FILE_CONTEXT fileContext = RdmaPoolGetFileContext(FileObject);
+
+    UNREFERENCED_PARAMETER(Device);
+
+    fileContext->Closing = FALSE;
+    fileContext->InitializingCount = 0;
+    KeInitializeEvent(&fileContext->NoInitializersEvent, NotificationEvent, TRUE);
+    WdfRequestComplete(Request, STATUS_SUCCESS);
+}
+
+VOID RdmaPoolEvtFileClose(_In_ WDFFILEOBJECT FileObject)
+{
+    PRDMAPOOL_FILE_CONTEXT fileContext = RdmaPoolGetFileContext(FileObject);
+    ULONG released = DmaPoolCloseOwner(fileContext);
+
+    if (released != 0)
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_WARNING_LEVEL,
+                   "rdmapool: file close reclaimed %u allocation(s)\n",
+                   released);
+    }
 }
 
 NTSTATUS
@@ -156,6 +189,11 @@ RdmaPoolEvtDevicePrepareHardware(_In_ WDFDEVICE Device,
             {
                 devCtx->PoolInitialized = TRUE;
             }
+            else
+            {
+                MmUnmapIoSpace(devCtx->PoolVirtualBase, devCtx->PoolSize);
+                devCtx->PoolVirtualBase = NULL;
+            }
 
             break;
         }
@@ -205,6 +243,14 @@ VOID RdmaPoolEvtIoDeviceControl(_In_ WDFQUEUE Queue,
     size_t bytesReturned = 0;
     WDFDEVICE device = WdfIoQueueGetDevice(Queue);
     PRDMAPOOL_DEVICE_CONTEXT devCtx = RdmaPoolGetDeviceContext(device);
+    WDFFILEOBJECT fileObject = WdfRequestGetFileObject(Request);
+    PRDMAPOOL_FILE_CONTEXT fileContext = fileObject != NULL ? RdmaPoolGetFileContext(fileObject) : NULL;
+
+    if (WdfRequestGetRequestorMode(Request) != KernelMode)
+    {
+        WdfRequestComplete(Request, STATUS_ACCESS_DENIED);
+        return;
+    }
 
     if (!devCtx->PoolInitialized)
     {
@@ -219,11 +265,13 @@ VOID RdmaPoolEvtIoDeviceControl(_In_ WDFQUEUE Queue,
             {
                 PRDMAPOOL_ALLOCATE_INPUT input;
                 PRDMAPOOL_ALLOCATE_OUTPUT output;
+                RDMAPOOL_ALLOCATE_INPUT inputValue;
+                RDMAPOOL_ALLOCATE_OUTPUT outputValue;
 
-                if (InputBufferLength < sizeof(RDMAPOOL_ALLOCATE_INPUT) ||
-                    OutputBufferLength < sizeof(RDMAPOOL_ALLOCATE_OUTPUT))
+                if (InputBufferLength != sizeof(RDMAPOOL_ALLOCATE_INPUT) ||
+                    OutputBufferLength != sizeof(RDMAPOOL_ALLOCATE_OUTPUT))
                 {
-                    status = STATUS_BUFFER_TOO_SMALL;
+                    status = STATUS_INFO_LENGTH_MISMATCH;
                     break;
                 }
 
@@ -239,16 +287,31 @@ VOID RdmaPoolEvtIoDeviceControl(_In_ WDFQUEUE Queue,
                     break;
                 }
 
-                if (input->NumPages == 0)
+                inputValue = *input;
+                if (inputValue.NumPages == 0)
                 {
                     status = STATUS_INVALID_PARAMETER;
                     break;
                 }
 
-                status = DmaPoolAllocatePages(input->NumPages, &output->VirtualAddress, &output->PhysicalAddress);
+                if (fileContext == NULL || inputValue.InterfaceVersion != RDMAPOOL_INTERFACE_VERSION_V2)
+                {
+                    status = STATUS_REVISION_MISMATCH;
+                    break;
+                }
+
+                RtlZeroMemory(&outputValue, sizeof(outputValue));
+                status = DmaPoolAllocatePages(fileContext,
+                                              inputValue.NumPages,
+                                              &outputValue.VirtualAddress,
+                                              &outputValue.PhysicalAddress,
+                                              &outputValue.AllocationToken);
 
                 if (NT_SUCCESS(status))
                 {
+                    outputValue.InterfaceVersion = RDMAPOOL_INTERFACE_VERSION_V2;
+                    outputValue.NumPages = inputValue.NumPages;
+                    *output = outputValue;
                     bytesReturned = sizeof(*output);
                 }
                 break;
@@ -257,10 +320,11 @@ VOID RdmaPoolEvtIoDeviceControl(_In_ WDFQUEUE Queue,
         case IOCTL_RDMAPOOL_FREE:
             {
                 PRDMAPOOL_FREE_INPUT input;
+                RDMAPOOL_FREE_INPUT inputValue;
 
-                if (InputBufferLength < sizeof(RDMAPOOL_FREE_INPUT))
+                if (InputBufferLength != sizeof(RDMAPOOL_FREE_INPUT) || OutputBufferLength != 0)
                 {
-                    status = STATUS_BUFFER_TOO_SMALL;
+                    status = STATUS_INFO_LENGTH_MISMATCH;
                     break;
                 }
 
@@ -270,14 +334,23 @@ VOID RdmaPoolEvtIoDeviceControl(_In_ WDFQUEUE Queue,
                     break;
                 }
 
-                if (input->VirtualAddress == NULL || input->NumPages == 0)
+                inputValue = *input;
+                if (fileContext == NULL || inputValue.InterfaceVersion != RDMAPOOL_INTERFACE_VERSION_V2)
+                {
+                    status = STATUS_REVISION_MISMATCH;
+                    break;
+                }
+
+                if (inputValue.VirtualAddress == NULL || inputValue.NumPages == 0 || inputValue.AllocationToken == 0)
                 {
                     status = STATUS_INVALID_PARAMETER;
                     break;
                 }
 
-                DmaPoolFreePages(input->VirtualAddress, input->NumPages);
-                status = STATUS_SUCCESS;
+                status = DmaPoolFreePages(fileContext,
+                                          inputValue.VirtualAddress,
+                                          inputValue.NumPages,
+                                          inputValue.AllocationToken);
                 break;
             }
 
@@ -285,9 +358,9 @@ VOID RdmaPoolEvtIoDeviceControl(_In_ WDFQUEUE Queue,
             {
                 PRDMAPOOL_QUERY_POOL_OUTPUT output;
 
-                if (OutputBufferLength < sizeof(RDMAPOOL_QUERY_POOL_OUTPUT))
+                if (InputBufferLength != 0 || OutputBufferLength != sizeof(RDMAPOOL_QUERY_POOL_OUTPUT))
                 {
-                    status = STATUS_BUFFER_TOO_SMALL;
+                    status = STATUS_INFO_LENGTH_MISMATCH;
                     break;
                 }
 
@@ -297,7 +370,10 @@ VOID RdmaPoolEvtIoDeviceControl(_In_ WDFQUEUE Queue,
                     break;
                 }
 
+                RtlZeroMemory(output, sizeof(*output));
                 DmaPoolQueryInfo(&output->BaseVirtualAddress, &output->BasePhysicalAddress, &output->TotalSize);
+                output->InterfaceVersion = RDMAPOOL_INTERFACE_VERSION_V2;
+                output->PageSize = PAGE_SIZE;
 
                 bytesReturned = sizeof(*output);
                 status = STATUS_SUCCESS;
@@ -308,9 +384,9 @@ VOID RdmaPoolEvtIoDeviceControl(_In_ WDFQUEUE Queue,
             {
                 PRDMAPOOL_QUERY_ALLOCATION_OUTPUT output;
 
-                if (OutputBufferLength < sizeof(*output))
+                if (InputBufferLength != 0 || OutputBufferLength != sizeof(RDMAPOOL_QUERY_ALLOCATION_OUTPUT))
                 {
-                    status = STATUS_BUFFER_TOO_SMALL;
+                    status = STATUS_INFO_LENGTH_MISMATCH;
                     break;
                 }
 
@@ -320,35 +396,10 @@ VOID RdmaPoolEvtIoDeviceControl(_In_ WDFQUEUE Queue,
                     break;
                 }
 
+                RtlZeroMemory(output, sizeof(*output));
                 DmaPoolQueryAllocation(&output->FreePages, &output->LargestFreeRunPages);
                 bytesReturned = sizeof(*output);
                 status = STATUS_SUCCESS;
-                break;
-            }
-
-        case IOCTL_RDMAPOOL_RESERVE:
-            {
-                PRDMAPOOL_RESERVE_INPUT input;
-
-                if (InputBufferLength < sizeof(RDMAPOOL_RESERVE_INPUT))
-                {
-                    status = STATUS_BUFFER_TOO_SMALL;
-                    break;
-                }
-
-                status = WdfRequestRetrieveInputBuffer(Request, sizeof(*input), (PVOID *)&input, NULL);
-                if (!NT_SUCCESS(status))
-                {
-                    break;
-                }
-
-                if (input->NumPages == 0)
-                {
-                    status = STATUS_INVALID_PARAMETER;
-                    break;
-                }
-
-                status = DmaPoolReservePages(input->NumPages);
                 break;
             }
 

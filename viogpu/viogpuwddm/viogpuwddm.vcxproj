@@ -40,7 +40,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win11 Release|ARM64'">
     <ClCompile>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories);$(DDK_INC_PATH);$(SDK_INC_PATH);..\common;..\shared;..\..\VirtIO;..\viogpudo;</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>VIOGPU_DOD=1;VIOGPU_FULL_WDDM=1;VIOGPU_EXTERNAL_DRIVER_ENTRY=1;VIOGPU_WDDM_CI_ONLY=1;DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WIN8;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>VIOGPU_DOD=1;VIOGPU_EXTERNAL_DRIVER_ENTRY=1;VIOGPU_WDDM_CI_ONLY=1;DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WIN8;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WppEnabled>true</WppEnabled>
       <WppScanConfigurationData>..\viogpudo\trace.h</WppScanConfigurationData>
       <WppMinimalRebuildFromTracking>false</WppMinimalRebuildFromTracking>
