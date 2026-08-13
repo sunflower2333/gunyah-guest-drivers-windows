@@ -11,6 +11,8 @@ ABI_VALUE(render.opcode.native_submit, VIOGPU_WDDM_RENDER_NATIVE_SUBMIT, 1);
 ABI_VALUE(render.flags.none, VIOGPU_WDDM_RENDER_FLAGS_NONE, 0);
 ABI_VALUE(reference.flag.read, VIOGPU_WDDM_REFERENCE_READ, 1);
 ABI_VALUE(reference.flag.write, VIOGPU_WDDM_REFERENCE_WRITE, 2);
+ABI_SIZE(size.uint32, VIOGPU_WDDM_UINT32, 4);
+ABI_SIZE(size.uint64, VIOGPU_WDDM_UINT64, 8);
 
 ABI_SIZE(size.header, VIOGPU_WDDM_ABI_HEADER, 16);
 ABI_OFFSET(offset.header.magic, VIOGPU_WDDM_ABI_HEADER, Magic, 0);

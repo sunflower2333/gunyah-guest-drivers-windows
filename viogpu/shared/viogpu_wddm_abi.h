@@ -1,8 +1,6 @@
 #ifndef VIOGPU_WDDM_ABI_H
 #define VIOGPU_WDDM_ABI_H
 
-#include <stdint.h>
-
 /*
  * Experimental pre-v1 snapshot. Version 1 must not be published until the
  * context VA and allocation IOVA control contracts are implemented.
@@ -21,6 +19,9 @@
 #define VIOGPU_WDDM_REFERENCE_READ         0x00000001U
 #define VIOGPU_WDDM_REFERENCE_WRITE        0x00000002U
 
+typedef unsigned int VIOGPU_WDDM_UINT32;
+typedef unsigned long long VIOGPU_WDDM_UINT64;
+
 typedef enum VIOGPU_WDDM_FORMAT
 {
     VIOGPU_WDDM_FORMAT_NONE = 0,
@@ -37,79 +38,79 @@ typedef enum VIOGPU_WDDM_RENDER_OPCODE
 
 typedef struct VIOGPU_WDDM_ABI_HEADER
 {
-    uint32_t Magic;
-    uint32_t Version;
-    uint32_t Size;
-    uint32_t Reserved;
+    VIOGPU_WDDM_UINT32 Magic;
+    VIOGPU_WDDM_UINT32 Version;
+    VIOGPU_WDDM_UINT32 Size;
+    VIOGPU_WDDM_UINT32 Reserved;
 } VIOGPU_WDDM_ABI_HEADER;
 
 typedef struct VIOGPU_WDDM_ADAPTER_INFO
 {
     VIOGPU_WDDM_ABI_HEADER Header;
-    uint64_t Capabilities;
-    uint64_t ResetGeneration;
-    uint32_t MsmMajorVersion;
-    uint32_t MsmMinorVersion;
-    uint32_t MsmPatchVersion;
-    uint32_t GpuId;
-    uint64_t ChipId;
-    uint32_t GmemSize;
-    uint32_t PriorityCount;
-    uint64_t GmemBase;
-    uint32_t HighestBankBit;
-    uint32_t HasCachedCoherentMemory;
-    uint64_t UbwcSwizzle;
-    uint64_t MacrotileMode;
-    uint64_t UcheTrapBase;
-    uint32_t HasRayTracing;
-    uint32_t MaxFrequency;
-    uint64_t Reserved[2];
+    VIOGPU_WDDM_UINT64 Capabilities;
+    VIOGPU_WDDM_UINT64 ResetGeneration;
+    VIOGPU_WDDM_UINT32 MsmMajorVersion;
+    VIOGPU_WDDM_UINT32 MsmMinorVersion;
+    VIOGPU_WDDM_UINT32 MsmPatchVersion;
+    VIOGPU_WDDM_UINT32 GpuId;
+    VIOGPU_WDDM_UINT64 ChipId;
+    VIOGPU_WDDM_UINT32 GmemSize;
+    VIOGPU_WDDM_UINT32 PriorityCount;
+    VIOGPU_WDDM_UINT64 GmemBase;
+    VIOGPU_WDDM_UINT32 HighestBankBit;
+    VIOGPU_WDDM_UINT32 HasCachedCoherentMemory;
+    VIOGPU_WDDM_UINT64 UbwcSwizzle;
+    VIOGPU_WDDM_UINT64 MacrotileMode;
+    VIOGPU_WDDM_UINT64 UcheTrapBase;
+    VIOGPU_WDDM_UINT32 HasRayTracing;
+    VIOGPU_WDDM_UINT32 MaxFrequency;
+    VIOGPU_WDDM_UINT64 Reserved[2];
 } VIOGPU_WDDM_ADAPTER_INFO;
 
 typedef struct VIOGPU_WDDM_ALLOCATION_INFO
 {
     VIOGPU_WDDM_ABI_HEADER Header;
-    uint64_t Size;
-    uint64_t Alignment;
-    uint32_t Flags;
-    uint32_t Format;
-    uint32_t Width;
-    uint32_t Height;
-    uint32_t Pitch;
-    uint32_t RefreshRateNumerator;
-    uint32_t RefreshRateDenominator;
-    uint32_t Reserved;
+    VIOGPU_WDDM_UINT64 Size;
+    VIOGPU_WDDM_UINT64 Alignment;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT32 Format;
+    VIOGPU_WDDM_UINT32 Width;
+    VIOGPU_WDDM_UINT32 Height;
+    VIOGPU_WDDM_UINT32 Pitch;
+    VIOGPU_WDDM_UINT32 RefreshRateNumerator;
+    VIOGPU_WDDM_UINT32 RefreshRateDenominator;
+    VIOGPU_WDDM_UINT32 Reserved;
 } VIOGPU_WDDM_ALLOCATION_INFO;
 
 typedef struct VIOGPU_WDDM_CONTEXT_CREATE
 {
     VIOGPU_WDDM_ABI_HEADER Header;
-    uint64_t ExpectedResetGeneration;
-    uint32_t Flags;
-    uint32_t Reserved;
+    VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT32 Reserved;
 } VIOGPU_WDDM_CONTEXT_CREATE;
 
 typedef struct VIOGPU_WDDM_RENDER_COMMAND
 {
     VIOGPU_WDDM_ABI_HEADER Header;
-    uint32_t Opcode;
-    uint32_t Flags;
-    uint64_t ExpectedResetGeneration;
-    uint32_t AllocationReferencesOffset;
-    uint32_t AllocationReferenceCount;
-    uint32_t CommandStreamOffset;
-    uint32_t CommandStreamSize;
-    uint32_t Reserved[4];
+    VIOGPU_WDDM_UINT32 Opcode;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+    VIOGPU_WDDM_UINT32 AllocationReferencesOffset;
+    VIOGPU_WDDM_UINT32 AllocationReferenceCount;
+    VIOGPU_WDDM_UINT32 CommandStreamOffset;
+    VIOGPU_WDDM_UINT32 CommandStreamSize;
+    VIOGPU_WDDM_UINT32 Reserved[4];
 } VIOGPU_WDDM_RENDER_COMMAND;
 
 typedef struct VIOGPU_WDDM_ALLOCATION_REFERENCE
 {
-    uint32_t AllocationIndex;
-    uint32_t Flags;
-    uint64_t AllocationOffset;
-    uint64_t Length;
-    uint32_t PatchOffset;
-    uint32_t Reserved;
+    VIOGPU_WDDM_UINT32 AllocationIndex;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT64 AllocationOffset;
+    VIOGPU_WDDM_UINT64 Length;
+    VIOGPU_WDDM_UINT32 PatchOffset;
+    VIOGPU_WDDM_UINT32 Reserved;
 } VIOGPU_WDDM_ALLOCATION_REFERENCE;
 
 #pragma pack(pop)

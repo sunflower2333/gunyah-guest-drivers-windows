@@ -1793,72 +1793,80 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         fail("WDDM private ABI must use one balanced pack(4) region")
     if re.search(r"\b[A-Z0-9_]*(?:MIN|MAX|FULL|FORWARD|COMPAT)[A-Z0-9_]*VERSION\b", WDDM_ABI_HEADER_CODE):
         fail("WDDM private ABI must use exact current-version matching without compatibility macros")
+    for integer_type in (
+        "typedefunsignedintVIOGPU_WDDM_UINT32;",
+        "typedefunsignedlonglongVIOGPU_WDDM_UINT64;",
+    ):
+        if abi.count(integer_type) != 1:
+            fail(f"WDDM private ABI must declare its WDK-independent integer type exactly once: {integer_type}")
+    if "#include<stdint.h>" in abi:
+        fail("WDDM private ABI must not pull user CRT integer headers into the WDK kernel build")
 
     expected_structs = {
         "VIOGPU_WDDM_ABI_HEADER": """
-            uint32_t Magic;
-            uint32_t Version;
-            uint32_t Size;
-            uint32_t Reserved;
+            VIOGPU_WDDM_UINT32 Magic;
+            VIOGPU_WDDM_UINT32 Version;
+            VIOGPU_WDDM_UINT32 Size;
+            VIOGPU_WDDM_UINT32 Reserved;
         """,
         "VIOGPU_WDDM_ADAPTER_INFO": """
             VIOGPU_WDDM_ABI_HEADER Header;
-            uint64_t Capabilities;
-            uint64_t ResetGeneration;
-            uint32_t MsmMajorVersion;
-            uint32_t MsmMinorVersion;
-            uint32_t MsmPatchVersion;
-            uint32_t GpuId;
-            uint64_t ChipId;
-            uint32_t GmemSize;
-            uint32_t PriorityCount;
-            uint64_t GmemBase;
-            uint32_t HighestBankBit;
-            uint32_t HasCachedCoherentMemory;
-            uint64_t UbwcSwizzle;
-            uint64_t MacrotileMode;
-            uint64_t UcheTrapBase;
-            uint32_t HasRayTracing;
-            uint32_t MaxFrequency;
-            uint64_t Reserved[2];
+            VIOGPU_WDDM_UINT64 Capabilities;
+            VIOGPU_WDDM_UINT64 ResetGeneration;
+            VIOGPU_WDDM_UINT32 MsmMajorVersion;
+            VIOGPU_WDDM_UINT32 MsmMinorVersion;
+            VIOGPU_WDDM_UINT32 MsmPatchVersion;
+            VIOGPU_WDDM_UINT32 GpuId;
+            VIOGPU_WDDM_UINT64 ChipId;
+            VIOGPU_WDDM_UINT32 GmemSize;
+            VIOGPU_WDDM_UINT32 PriorityCount;
+            VIOGPU_WDDM_UINT64 GmemBase;
+            VIOGPU_WDDM_UINT32 HighestBankBit;
+            VIOGPU_WDDM_UINT32 HasCachedCoherentMemory;
+            VIOGPU_WDDM_UINT64 UbwcSwizzle;
+            VIOGPU_WDDM_UINT64 MacrotileMode;
+            VIOGPU_WDDM_UINT64 UcheTrapBase;
+            VIOGPU_WDDM_UINT32 HasRayTracing;
+            VIOGPU_WDDM_UINT32 MaxFrequency;
+            VIOGPU_WDDM_UINT64 Reserved[2];
         """,
         "VIOGPU_WDDM_ALLOCATION_INFO": """
             VIOGPU_WDDM_ABI_HEADER Header;
-            uint64_t Size;
-            uint64_t Alignment;
-            uint32_t Flags;
-            uint32_t Format;
-            uint32_t Width;
-            uint32_t Height;
-            uint32_t Pitch;
-            uint32_t RefreshRateNumerator;
-            uint32_t RefreshRateDenominator;
-            uint32_t Reserved;
+            VIOGPU_WDDM_UINT64 Size;
+            VIOGPU_WDDM_UINT64 Alignment;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT32 Format;
+            VIOGPU_WDDM_UINT32 Width;
+            VIOGPU_WDDM_UINT32 Height;
+            VIOGPU_WDDM_UINT32 Pitch;
+            VIOGPU_WDDM_UINT32 RefreshRateNumerator;
+            VIOGPU_WDDM_UINT32 RefreshRateDenominator;
+            VIOGPU_WDDM_UINT32 Reserved;
         """,
         "VIOGPU_WDDM_CONTEXT_CREATE": """
             VIOGPU_WDDM_ABI_HEADER Header;
-            uint64_t ExpectedResetGeneration;
-            uint32_t Flags;
-            uint32_t Reserved;
+            VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT32 Reserved;
         """,
         "VIOGPU_WDDM_RENDER_COMMAND": """
             VIOGPU_WDDM_ABI_HEADER Header;
-            uint32_t Opcode;
-            uint32_t Flags;
-            uint64_t ExpectedResetGeneration;
-            uint32_t AllocationReferencesOffset;
-            uint32_t AllocationReferenceCount;
-            uint32_t CommandStreamOffset;
-            uint32_t CommandStreamSize;
-            uint32_t Reserved[4];
+            VIOGPU_WDDM_UINT32 Opcode;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+            VIOGPU_WDDM_UINT32 AllocationReferencesOffset;
+            VIOGPU_WDDM_UINT32 AllocationReferenceCount;
+            VIOGPU_WDDM_UINT32 CommandStreamOffset;
+            VIOGPU_WDDM_UINT32 CommandStreamSize;
+            VIOGPU_WDDM_UINT32 Reserved[4];
         """,
         "VIOGPU_WDDM_ALLOCATION_REFERENCE": """
-            uint32_t AllocationIndex;
-            uint32_t Flags;
-            uint64_t AllocationOffset;
-            uint64_t Length;
-            uint32_t PatchOffset;
-            uint32_t Reserved;
+            VIOGPU_WDDM_UINT32 AllocationIndex;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT64 AllocationOffset;
+            VIOGPU_WDDM_UINT64 Length;
+            VIOGPU_WDDM_UINT32 PatchOffset;
+            VIOGPU_WDDM_UINT32 Reserved;
         """,
     }
     declared_structs = re.findall(
@@ -1910,6 +1918,13 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if fixture_attributes != "expected-pre-v1.txt -text\n":
         fail("WDDM private ABI fixture must preserve byte-exact LF manifest data on Windows checkout")
     manifest = (WDDM_ABI_FIXTURE_DIR / "abi_manifest.cpp").read_text(encoding="utf-8")
+    manifest_entries = (WDDM_ABI_FIXTURE_DIR / "abi_manifest_entries.h").read_text(encoding="utf-8")
+    for width_assertion in (
+        "ABI_SIZE(size.uint32, VIOGPU_WDDM_UINT32, 4);",
+        "ABI_SIZE(size.uint64, VIOGPU_WDDM_UINT64, 8);",
+    ):
+        if manifest_entries.count(width_assertion) != 1:
+            fail(f"WDDM private ABI fixture must assert each local integer width exactly once: {width_assertion}")
     local_runner_path = WDDM_ABI_FIXTURE_DIR / "run-local.sh"
     local_runner = local_runner_path.read_text(encoding="utf-8")
     msvc_runner = (WDDM_ABI_FIXTURE_DIR / "run-msvc.cmd").read_text(encoding="utf-8")
@@ -2163,9 +2178,9 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     render_requirements = (
         "render->CommandLength>VIOGPU_WDDM_DMA_BUFFER_SIZE",
         "BYTE*commandSnapshot=NULL;",
-        "D3DDI_PATCHLOCATIONLIST*patchSnapshot=NULL;",
+        "D3DDDI_PATCHLOCATIONLIST*patchSnapshot=NULL;",
         "commandSnapshot=new(NonPagedPoolNx)BYTE[render->CommandLength];",
-        "patchSnapshot=new(NonPagedPoolNx)D3DDI_PATCHLOCATIONLIST[render->PatchLocationListInSize];",
+        "patchSnapshot=new(NonPagedPoolNx)D3DDDI_PATCHLOCATIONLIST[render->PatchLocationListInSize];",
     )
     for fragment in render_requirements:
         if render.count(fragment) != 1:
@@ -2210,7 +2225,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     publication, publication_start = publication_blocks[0][1:]
     publication_sequence = (
         "PVOIDdmaBuffer=render->pDmaBuffer;",
-        "D3DDI_PATCHLOCATIONLIST*patchOutput=render->pPatchLocationListOut;",
+        "D3DDDI_PATCHLOCATIONLIST*patchOutput=render->pPatchLocationListOut;",
         "RtlCopyMemory(dmaBuffer,commandSnapshot,render->CommandLength);",
         "RtlCopyMemory(patchOutput,patchSnapshot,patchBytes);",
         "RtlZeroMemory(privateData,sizeof(*privateData));",

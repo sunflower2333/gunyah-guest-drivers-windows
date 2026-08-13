@@ -58,7 +58,7 @@ BOOLEAN IsSupportedSurfaceFormat(D3DDDIFORMAT format)
     return format == D3DDDIFMT_A8R8G8B8 || format == D3DDDIFMT_X8R8G8B8;
 }
 
-uint32_t ToPrivateFormat(D3DDDIFORMAT format)
+VIOGPU_WDDM_UINT32 ToPrivateFormat(D3DDDIFORMAT format)
 {
     switch (format)
     {
@@ -71,7 +71,7 @@ uint32_t ToPrivateFormat(D3DDDIFORMAT format)
     }
 }
 
-D3DDDIFORMAT FromPrivateFormat(uint32_t format)
+D3DDDIFORMAT FromPrivateFormat(VIOGPU_WDDM_UINT32 format)
 {
     switch (format)
     {
@@ -84,7 +84,7 @@ D3DDDIFORMAT FromPrivateFormat(uint32_t format)
     }
 }
 
-VOID InitializeAbiHeader(VIOGPU_WDDM_ABI_HEADER *header, uint32_t size)
+VOID InitializeAbiHeader(VIOGPU_WDDM_ABI_HEADER *header, VIOGPU_WDDM_UINT32 size)
 {
     RtlZeroMemory(header, size);
     header->Magic = VIOGPU_WDDM_ABI_MAGIC;
@@ -92,7 +92,7 @@ VOID InitializeAbiHeader(VIOGPU_WDDM_ABI_HEADER *header, uint32_t size)
     header->Size = size;
 }
 
-BOOLEAN IsCurrentAbiHeader(const VIOGPU_WDDM_ABI_HEADER *header, uint32_t size)
+BOOLEAN IsCurrentAbiHeader(const VIOGPU_WDDM_ABI_HEADER *header, VIOGPU_WDDM_UINT32 size)
 {
     return header != NULL && header->Magic == VIOGPU_WDDM_ABI_MAGIC && header->Version == VIOGPU_WDDM_ABI_VERSION &&
            header->Size == size && header->Reserved == 0;
@@ -120,7 +120,7 @@ NTSTATUS CalculateSurfaceLayout(UINT width, UINT height, D3DDDIFORMAT format, UI
 
 NTSTATUS ValidateAllocationPrivate(const VIOGPU_WDDM_ALLOCATION_INFO *privateData, SIZE_T *alignedSize)
 {
-    const uint32_t validFlags = VIOGPU_WDDM_ALLOCATION_PRIMARY | VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE;
+    const VIOGPU_WDDM_UINT32 validFlags = VIOGPU_WDDM_ALLOCATION_PRIMARY | VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE;
     D3DDDIFORMAT format = privateData == NULL ? D3DDDIFMT_UNKNOWN : FromPrivateFormat(privateData->Format);
 
     if (privateData == NULL || alignedSize == NULL || !IsCurrentAbiHeader(&privateData->Header, sizeof(*privateData)) ||
@@ -289,7 +289,7 @@ NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_RENDER_COMMAND *header,
                                UINT patchListSize,
                                ULONGLONG resetGeneration)
 {
-    const uint32_t validReferenceFlags = VIOGPU_WDDM_REFERENCE_READ | VIOGPU_WDDM_REFERENCE_WRITE;
+    const VIOGPU_WDDM_UINT32 validReferenceFlags = VIOGPU_WDDM_REFERENCE_READ | VIOGPU_WDDM_REFERENCE_WRITE;
     ULONGLONG referencesSize = (ULONGLONG)header->AllocationReferenceCount * sizeof(VIOGPU_WDDM_ALLOCATION_REFERENCE);
     ULONGLONG referencesEnd = (ULONGLONG)header->AllocationReferencesOffset + referencesSize;
     ULONGLONG commandEnd = (ULONGLONG)header->CommandStreamOffset + header->CommandStreamSize;
@@ -1012,7 +1012,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
 
     NTSTATUS status = STATUS_SUCCESS;
     BYTE *commandSnapshot = NULL;
-    D3DDI_PATCHLOCATIONLIST *patchSnapshot = NULL;
+    D3DDDI_PATCHLOCATIONLIST *patchSnapshot = NULL;
     SIZE_T patchBytes = (SIZE_T)render->PatchLocationListInSize * sizeof(*patchSnapshot);
 
     if (render->DmaSize < render->CommandLength || render->PatchLocationListOutSize < render->PatchLocationListInSize)
@@ -1022,7 +1022,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
     if (NT_SUCCESS(status))
     {
         commandSnapshot = new (NonPagedPoolNx) BYTE[render->CommandLength];
-        patchSnapshot = new (NonPagedPoolNx) D3DDI_PATCHLOCATIONLIST[render->PatchLocationListInSize];
+        patchSnapshot = new (NonPagedPoolNx) D3DDDI_PATCHLOCATIONLIST[render->PatchLocationListInSize];
         if (commandSnapshot == NULL || patchSnapshot == NULL)
         {
             status = STATUS_NO_MEMORY;
@@ -1062,7 +1062,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
     if (NT_SUCCESS(status))
     {
         PVOID dmaBuffer = render->pDmaBuffer;
-        D3DDI_PATCHLOCATIONLIST *patchOutput = render->pPatchLocationListOut;
+        D3DDDI_PATCHLOCATIONLIST *patchOutput = render->pPatchLocationListOut;
         RtlCopyMemory(dmaBuffer, commandSnapshot, render->CommandLength);
         RtlCopyMemory(patchOutput, patchSnapshot, patchBytes);
 
