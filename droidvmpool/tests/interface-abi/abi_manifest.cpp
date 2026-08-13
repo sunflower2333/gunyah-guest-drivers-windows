@@ -25,8 +25,12 @@ typedef struct _INTERFACE
 } INTERFACE;
 
 #define DEFINE_GUID(name, l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8) static const ULONG name = (l)
+#ifndef _In_
 #define _In_
+#endif
+#ifndef _Out_
 #define _Out_
+#endif
 
 #include "../../droidvmpool_interface.h"
 
