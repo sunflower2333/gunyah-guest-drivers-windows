@@ -92,7 +92,7 @@ class VioGpuDrmHostPool
     mutable EX_RUNDOWN_REF m_Operations;
     EX_RUNDOWN_REF m_NotificationCallbacks;
     mutable volatile LONG m_Ready;
-    DECLSPEC_ALIGN(8) volatile LONG64 m_Generation;
+    mutable DECLSPEC_ALIGN(8) volatile LONG64 m_Generation;
     BOOLEAN m_RundownCompleted;
     BOOLEAN m_NotificationRundownCompleted;
     BOOLEAN m_DisconnectInProgress;

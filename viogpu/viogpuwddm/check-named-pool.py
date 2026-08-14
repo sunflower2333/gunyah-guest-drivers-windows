@@ -468,7 +468,7 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "PKTHREAD m_OwningThread;",
         "KIRQL m_AcquireIrql;",
         "ULONGLONG m_Generation;",
-        "DECLSPEC_ALIGN(8) volatile LONG64 m_Generation;",
+        "mutable DECLSPEC_ALIGN(8) volatile LONG64 m_Generation;",
         "EX_RUNDOWN_REF m_NotificationCallbacks;",
         "BOOLEAN m_NotificationRundownCompleted;",
         "BOOLEAN m_DisconnectInProgress;",
