@@ -307,6 +307,7 @@ NTSTATUS VioGpuRdmaPool::Disconnect(void)
     if (!m_RundownCompleted)
     {
         ExWaitForRundownProtectionRelease(&m_Operations);
+        ExRundownCompleted(&m_Operations);
         m_RundownCompleted = TRUE;
     }
     if (m_FileObject == NULL || m_DeviceObject == NULL || m_BaseVA == NULL || m_Size == 0 || m_PageCount == 0 ||

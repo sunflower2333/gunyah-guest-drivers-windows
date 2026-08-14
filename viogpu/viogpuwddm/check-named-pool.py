@@ -118,7 +118,8 @@ def require_once(source: str, token: str, message: str) -> None:
 def check_client(source_text: str, header_text: str, interface_text: str) -> None:
     source = strip_comments_and_literals(source_text)
     code = compact(source)
-    connect = compact(function_body("VioGpuDrmHostPool::Connect", source))
+    header_code = compact(header_text)
+    connect = compact(function_body("VioGpuNamedPool::Connect", source))
     open_connection = compact(function_body("OpenNamedPoolConnection", source))
     release_connection = compact(function_body("ReleaseNamedPoolConnection", source))
     duplicate_name = compact(function_body("DuplicateInterfaceName", source))
@@ -126,18 +127,28 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
     validate_direct = compact(function_body("ValidateDirectInterface", source))
     validate_mapping = compact(function_body("ValidateNamedPoolMapping", source))
     query_direct = compact(function_body("NamedPoolQueryDirectInterface", source))
-    disconnect = compact(function_body("VioGpuDrmHostPool::Disconnect", source))
-    callback = compact(function_body("VioGpuDrmHostPool::PnpNotificationCallback", source))
-    handle_pnp = compact(function_body("VioGpuDrmHostPool::HandlePnpNotification", source))
-    query_remove = compact(function_body("VioGpuDrmHostPool::HandleQueryRemove", source))
-    remove_cancelled = compact(function_body("VioGpuDrmHostPool::HandleRemoveCancelled", source))
-    remove_complete = compact(function_body("VioGpuDrmHostPool::HandleRemoveComplete", source))
-    has_owner = compact(function_body("VioGpuDrmHostPool::HasConnectionOwner", source))
-    acquire = compact(function_body("VioGpuDrmHostPool::AcquireMapping", source))
-    release_mapping = compact(function_body("VioGpuDrmHostPool::ReleaseMapping", source))
+    disconnect = compact(function_body("VioGpuNamedPool::Disconnect", source))
+    disconnect_internal = compact(function_body("VioGpuNamedPool::DisconnectInternal", source))
+    queue_cleanup = compact(function_body("VioGpuNamedPool::QueuePnpCleanup", source))
+    cleanup_worker = compact(function_body("VioGpuNamedPool::PnpCleanupWorker", source))
+    callback = compact(function_body("VioGpuNamedPool::PnpNotificationCallback", source))
+    handle_pnp = compact(function_body("VioGpuNamedPool::HandlePnpNotification", source))
+    query_remove = compact(function_body("VioGpuNamedPool::HandleQueryRemove", source))
+    remove_complete = compact(function_body("VioGpuNamedPool::HandleRemoveComplete", source))
+    has_owner = compact(function_body("VioGpuNamedPool::HasConnectionOwner", source))
+    query_range = compact(function_body("VioGpuNamedPool::QueryPhysicalRange", source))
+    acquire = compact(function_body("VioGpuNamedPool::AcquireMapping", source))
+    release_mapping = compact(function_body("VioGpuNamedPool::ReleaseMapping", source))
 
-    if source_text.count('"drm2kgsl_host"') != 1 or "gpu_guest" in source_text:
-        fail("client must select only the exact drm2kgsl_host wire name")
+    if source_text.count('"drm2kgsl_host"') != 1 or source_text.count('"gpu_guest"') != 1:
+        fail("client must define each exact product pool name once")
+    for token in (
+        "VioGpuNamedPoolConnecting",
+        "volatileLONGm_RemovalLatched",
+        "volatileLONGm_PnpState",
+    ):
+        if token not in header_code:
+            fail(f"callback-visible registration state must be atomic: {token}")
     for assertion in (
         "static_assert(sizeof(DROIDVMPOOL_QUERY_OUTPUT)==96",
         "static_assert(FIELD_OFFSET(DROIDVMPOOL_QUERY_OUTPUT,PoolName)==32",
@@ -154,8 +165,8 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
     for token in (
         "IoGetDeviceObjectPointer(deviceName,FILE_ALL_ACCESS,&fileObject,&deviceObject)",
         "NamedPoolQuery(deviceObject,fileObject,&query)",
-        "ValidateNamedPoolQuery(&query,ioctlResult.Information,isDrmHost)",
-        "if(!NT_SUCCESS(status)||!*isDrmHost){ObDereferenceObject(fileObject);returnstatus;}",
+        "ValidateNamedPoolQuery(&query,ioctlResult.Information,expectedName,expectedNameLength,isMatch)",
+        "if(!NT_SUCCESS(status)||!*isMatch){ObDereferenceObject(fileObject);returnstatus;}",
         "NamedPoolQueryDirectInterface(deviceObject,&directInterface)",
         "ValidateDirectInterface(&directInterface)",
         "directInterface.AcquireMapping(directInterface.InterfaceHeader.Context,&mapping)",
@@ -187,37 +198,132 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         require_once(duplicate_name, token, f"saved target symbolic link must remain bounded and terminated: {token}")
 
     for token in (
+        "cleanupWait=WaitForPnpCleanupIdle();",
         "GetNamedPoolNotificationDriverObject()",
         "IoGetDeviceInterfaces(&GUID_DEVINTERFACE_DROIDVMPOOL,NULL,0,&interfaceList)",
         "for(PWSTRinterfaceName=interfaceList;",
         "interfaceName+=(deviceName.Length/sizeof(WCHAR))+1)",
-        "status=OpenNamedPoolConnection(&deviceName,&connection,&isDrmHost);",
-        "if(!isDrmHost){continue;}",
+        "status=OpenNamedPoolConnection(&deviceName,m_ExpectedName,m_ExpectedNameLength,&connection,&isMatch);",
+        "if(!isMatch){continue;}",
         "++matchCount;",
         "status=DuplicateInterfaceName(&deviceName,&selectedName);",
         "if(!NT_SUCCESS(firstFailure)||matchCount!=1)",
+        "LONG64registrationGeneration=InterlockedIncrement64(&m_Generation);",
+        "InterlockedExchange(&m_PnpState,VioGpuNamedPoolConnecting);",
+        "InterlockedExchangePointer((PVOIDvolatile*)&m_FileObject,selectedConnection.FileObject);",
         "IoRegisterPlugPlayNotification(EventCategoryTargetDeviceChange,0,selectedConnection.FileObject,notificationDriverObject,PnpNotificationCallback,this,&notificationEntry)",
         "m_NotificationDriverObject=notificationDriverObject;",
         "m_NotificationEntry=notificationEntry;",
         "m_InterfaceName=selectedName;",
-        "m_FileObject=selectedConnection.FileObject;",
         "m_DirectInterface=selectedConnection.DirectInterface;",
-        "m_PnpState=VioGpuDrmHostPoolConnected;",
         "InterlockedExchange(&m_Ready,TRUE);",
+        "LONGpreviousState=InterlockedCompareExchange(&m_PnpState,VioGpuNamedPoolConnected,VioGpuNamedPoolConnecting);",
+        "LONG64publishedGeneration=InterlockedCompareExchange64(&m_Generation,0,0);",
+        "BOOLEANcommitValid=previousState==VioGpuNamedPoolConnecting&&!removalLatched&&publishedGeneration==registrationGeneration;",
+        "pnpState=InterlockedCompareExchange(&m_PnpState,0,0)",
+        "fileObject=reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOIDvolatile*)&m_FileObject,NULL,NULL))",
     ):
         require_once(connect, token, f"enumeration must retain exact fail-closed selection/PnP step: {token}")
+    connect_state = connect.find("pnpState=InterlockedCompareExchange(&m_PnpState,0,0)")
+    connect_file = connect.find(
+        "fileObject=reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOIDvolatile*)&m_FileObject,NULL,NULL))"
+    )
+    connect_stale = connect.find("if(InterlockedCompareExchange(&m_PnpCleanupQueued,FALSE,FALSE)!=FALSE")
+    if min(connect_state, connect_file, connect_stale) < 0 or not (connect_state < connect_stale and connect_file < connect_stale):
+        fail("connect must snapshot callback-visible PnP fields atomically before stale-owner inspection")
+    if connect.count("InterlockedExchange(&m_RemovalLatched,FALSE);") < 2:
+        fail("connect must clear the removal latch before each new registration attempt")
+    require_once(
+        connect,
+        "BOOLEANcommitValid=previousState==VioGpuNamedPoolConnecting&&!removalLatched&&publishedGeneration==registrationGeneration;",
+        "Connect must fail closed when the callback wins the Connecting commit race",
+    )
+    require_once(
+        connect,
+        "commitValid=InterlockedCompareExchange(&m_PnpState,0,0)==VioGpuNamedPoolConnected&&InterlockedCompareExchange(&m_RemovalLatched,FALSE,FALSE)==FALSE&&InterlockedCompareExchange64(&m_Generation,0,0)==registrationGeneration;",
+        "Connect must recheck state, removal latch, and generation after publishing readiness",
+    )
+    cleanup_join = connect.find("cleanupWait=WaitForPnpCleanupIdle();")
+    lock_state = connect.find("LockState();")
+    if min(cleanup_join, lock_state) < 0 or cleanup_join > lock_state:
+        fail("connect must join the previous PnP worker before inspecting reusable pool state")
     if connect.count("ReleaseNamedPoolConnection(&selectedConnection);") != 2 or connect.count(
         "FreeInterfaceName(&selectedName);"
     ) != 2:
         fail("selection and registration failures must release both the provisional target and saved name")
     free_interfaces = connect.find("ExFreePool(interfaceList);")
+    registration_generation = connect.find("LONG64registrationGeneration=InterlockedIncrement64(&m_Generation);")
+    pre_register_latch = connect.find("InterlockedExchange(&m_RemovalLatched,FALSE);", registration_generation)
+    publish_connecting = connect.find("InterlockedExchange(&m_PnpState,VioGpuNamedPoolConnecting);")
     register_target = connect.find("IoRegisterPlugPlayNotification(EventCategoryTargetDeviceChange")
-    publish_connection = connect.find("m_FileObject=selectedConnection.FileObject;")
+    publish_connection = connect.find(
+        "InterlockedExchangePointer((PVOIDvolatile*)&m_FileObject,selectedConnection.FileObject);"
+    )
     publish_ready = connect.find("InterlockedExchange(&m_Ready,TRUE);")
-    if min(free_interfaces, register_target, publish_connection, publish_ready) < 0 or not (
-        free_interfaces < register_target < publish_connection < publish_ready
+    publish_state = connect.find(
+        "LONGpreviousState=InterlockedCompareExchange(&m_PnpState,VioGpuNamedPoolConnected,VioGpuNamedPoolConnecting);"
+    )
+    publish_entry = connect.find("m_NotificationEntry=notificationEntry;")
+    publish_name = connect.find("m_InterfaceName=selectedName;")
+    publish_direct = connect.find("m_DirectInterface=selectedConnection.DirectInterface;")
+    published_generation = connect.find("LONG64publishedGeneration=InterlockedCompareExchange64(&m_Generation,0,0);")
+    if min(
+        free_interfaces,
+        registration_generation,
+        pre_register_latch,
+        publish_connecting,
+        publish_connection,
+        register_target,
+        publish_state,
+        published_generation,
+        publish_ready,
+        publish_entry,
+        publish_name,
+        publish_direct,
+    ) < 0 or not (
+        free_interfaces
+        < registration_generation
+        < pre_register_latch
+        < publish_connecting
+        < publish_connection
+        < register_target
+        < publish_entry
+        < publish_name
+        < publish_direct
+        < publish_state
+        < published_generation
+        < publish_ready
     ):
-        fail("client must free discovery storage, register target PnP, then publish the connection and readiness")
+        fail("client must seed generation and publish Connecting identity before PnP registration, then commit after owner transfer")
+    registration_failure = connect.find("InterlockedExchange(&m_PnpState,VioGpuNamedPoolFailed);")
+    failure_wait = connect.find("ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);", registration_failure)
+    failure_complete = connect.find("ExRundownCompleted(&m_NotificationCallbacks);", failure_wait)
+    failure_release = connect.find("ReleaseNamedPoolConnection(&selectedConnection);", failure_wait)
+    failure_name_release = connect.find("FreeInterfaceName(&selectedName);", failure_release)
+    failure_mark_rundown = connect.find("m_NotificationRundownCompleted=TRUE;", failure_name_release)
+    failure_disconnected = connect.find("InterlockedExchange(&m_PnpState,VioGpuNamedPoolDisconnected);", failure_mark_rundown)
+    failure_unlock = connect.find("UnlockState();", failure_disconnected)
+    failure_first_unlock = connect.find("UnlockState();", registration_failure)
+    if min(
+        registration_failure,
+        failure_wait,
+        failure_complete,
+        failure_release,
+        failure_name_release,
+        failure_mark_rundown,
+        failure_disconnected,
+        failure_unlock,
+    ) < 0 or not (
+        registration_failure
+        < failure_wait
+        < failure_complete
+        < failure_release
+        < failure_name_release
+        < failure_mark_rundown
+        < failure_disconnected
+        < failure_unlock
+    ) or failure_first_unlock != failure_unlock:
+        fail("failed registration must retain the state lock while joining callback rundown and releasing provisional ownership")
 
     for token in (
         "information!=sizeof(*query)",
@@ -231,8 +337,12 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "!NamedPoolCharacterIsValid(query->PoolName[index])",
         "for(ULONGindex=query->PoolNameLength+1;index<DROIDVMPOOL_NAME_CAPACITY;++index)",
         "if(query->PoolName[index]!=){returnSTATUS_DATA_ERROR;}",
-        "query->PoolNameLength==sizeof(VIOGPU_DRM_HOST_POOL_NAME)-1",
-        "RtlCompareMemory(query->PoolName,VIOGPU_DRM_HOST_POOL_NAME,sizeof(VIOGPU_DRM_HOST_POOL_NAME)-1)",
+        "expectedName==NULL",
+        "expectedNameLength==0",
+        "expectedNameLength>=DROIDVMPOOL_NAME_CAPACITY",
+        "expectedName[expectedNameLength]!=",
+        "query->PoolNameLength==expectedNameLength",
+        "RtlCompareMemory(query->PoolName,expectedName,expectedNameLength)==expectedNameLength",
     ):
         require_once(validate, token, f"provider query must retain ABI/name/bounds validation: {token}")
 
@@ -281,138 +391,326 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "GUID_TARGET_DEVICE_QUERY_REMOVE",
         "HandleQueryRemove(removal->FileObject)",
         "GUID_TARGET_DEVICE_REMOVE_CANCELLED",
-        "HandleRemoveCancelled()",
+        "if(IsEqualGUID(header->Event,GUID_TARGET_DEVICE_REMOVE_CANCELLED)){returnSTATUS_SUCCESS;}",
         "GUID_TARGET_DEVICE_REMOVE_COMPLETE",
         "HandleRemoveComplete()",
     ):
         require_once(handle_pnp, token, f"target-device callback must dispatch every removal event: {token}")
 
-    query_withdraw = query_remove.find("InterlockedExchange(&m_Ready,FALSE);")
-    query_drain = query_remove.find("ExWaitForRundownProtectionRelease(&m_Operations);")
-    query_clear = query_remove.find("RtlZeroMemory(&m_DirectInterface,sizeof(m_DirectInterface));")
-    query_state = query_remove.find("m_PnpState=VioGpuDrmHostPoolQueryRemove;")
-    query_unlock = query_remove.find("UnlockState();", query_state)
-    query_release = query_remove.find("ReleaseNamedPoolConnection(&connection);", query_unlock)
-    if min(query_withdraw, query_drain, query_clear, query_state, query_unlock, query_release) < 0 or not (
-        query_withdraw < query_drain < query_clear < query_state < query_unlock < query_release
+    callback_tree = (callback, handle_pnp, query_remove, remove_complete)
+    for forbidden in (
+        "LockState(",
+        "KeWaitForSingleObject(",
+        "ExWaitForRundownProtectionRelease(",
+        "IoUnregisterPlugPlayNotification",
+        "OpenNamedPoolConnection(",
+        "ReleaseNamedPoolConnection(",
+        "DisconnectInternal(",
     ):
-        fail("query-remove must withdraw readiness, drain leases, detach the interface, and release the target")
-    if "m_NotificationEntry=NULL" in query_remove or "IoUnregisterPlugPlayNotification" in query_remove:
-        fail("query-remove must retain the old registration for remove-cancelled or remove-complete")
-    if "m_BasePA.QuadPart=0" in query_remove or "m_Size=0" in query_remove:
-        fail("query-remove must retain the selected pool identity for remove-cancelled validation")
-    require_once(
-        query_remove,
-        "notificationFileObject!=m_FileObject",
-        "query-remove must verify the notification belongs to the retained target file object",
-    )
+        if any(forbidden in function for function in callback_tree):
+            fail(f"PnP notification callback tree must not block or perform synchronous target teardown: {forbidden}")
 
-    cancel_detach = remove_cancelled.find("oldNotificationEntry=m_NotificationEntry;")
-    cancel_unregister = remove_cancelled.find("IoUnregisterPlugPlayNotificationEx(oldNotificationEntry);")
-    cancel_open = remove_cancelled.find("OpenNamedPoolConnection(&m_InterfaceName,&connection,&isDrmHost);")
-    cancel_identity = remove_cancelled.find(
-        "connection.Query.BasePhysicalAddress.QuadPart!=m_BasePA.QuadPart"
-    )
-    cancel_register = remove_cancelled.find("IoRegisterPlugPlayNotification(EventCategoryTargetDeviceChange")
-    cancel_reinitialize = remove_cancelled.find("ExReInitializeRundownProtection(&m_Operations);")
-    cancel_publish = remove_cancelled.find("m_FileObject=connection.FileObject;")
-    cancel_ready = remove_cancelled.find("InterlockedExchange(&m_Ready,TRUE);")
-    if min(
-        cancel_detach,
-        cancel_unregister,
-        cancel_open,
-        cancel_identity,
-        cancel_register,
-        cancel_reinitialize,
-        cancel_publish,
-        cancel_ready,
-    ) < 0 or not (
-        cancel_detach
-        < cancel_unregister
-        < cancel_open
-        < cancel_identity
-        < cancel_register
-        < cancel_reinitialize
-        < cancel_publish
-        < cancel_ready
-    ):
-        fail("remove-cancelled must replace the old registration, requery the exact target, and publish a new lease epoch")
     for token in (
-        "NT_ASSERT(m_NotificationEntry==NULL||m_NotificationEntry==oldNotificationEntry);",
-        "if(m_NotificationEntry==NULL){m_NotificationEntry=oldNotificationEntry;}",
+        "InterlockedCompareExchange(&m_ShuttingDown,FALSE,FALSE)",
+        "pnpState=InterlockedCompareExchange(&m_PnpState,0,0)",
+        "if(pnpState==VioGpuNamedPoolConnecting){returnSTATUS_UNSUCCESSFUL;}",
+        "InterlockedCompareExchangePointer((PVOIDvolatile*)&m_FileObject,NULL,NULL)",
+        "notificationFileObject==NULL",
+        "notificationFileObject==currentFileObject",
+        "targetOwned=notificationFileObject==NULL||notificationFileObject==currentFileObject",
+        "returntargetOwned&&pnpState==VioGpuNamedPoolConnected?STATUS_UNSUCCESSFUL:STATUS_SUCCESS",
     ):
-        require_once(
-            remove_cancelled,
-            token,
-            "remove-cancelled must retain an unregister-failed entry even during concurrent disconnect",
-        )
+        require_once(query_remove, token, f"active named pools must veto query-remove without blocking: {token}")
+    query_state = query_remove.find("pnpState=InterlockedCompareExchange(&m_PnpState,0,0)")
+    query_shutdown = query_remove.find("InterlockedCompareExchange(&m_ShuttingDown,FALSE,FALSE)")
+    query_connecting = query_remove.find("if(pnpState==VioGpuNamedPoolConnecting){returnSTATUS_UNSUCCESSFUL;}")
+    query_file = query_remove.find("InterlockedCompareExchangePointer((PVOIDvolatile*)&m_FileObject,NULL,NULL)")
+    if min(query_shutdown, query_state, query_connecting, query_file) < 0 or not (
+        query_shutdown < query_state < query_connecting < query_file
+    ):
+        fail("query-remove must honor shutdown and veto Connecting before inspecting a possibly invalid notification file object")
 
+    complete_shutdown = remove_complete.find("InterlockedCompareExchange(&m_ShuttingDown,FALSE,FALSE)")
+    complete_connecting = remove_complete.find(
+        "InterlockedCompareExchange(&m_PnpState,VioGpuNamedPoolFailed,VioGpuNamedPoolConnecting)"
+    )
+    complete_connected = remove_complete.find(
+        "InterlockedCompareExchange(&m_PnpState,VioGpuNamedPoolFailed,VioGpuNamedPoolConnected)"
+    )
+    complete_latch = remove_complete.find("InterlockedExchange(&m_RemovalLatched,TRUE);")
     complete_withdraw = remove_complete.find("InterlockedExchange(&m_Ready,FALSE);")
-    complete_drain = remove_complete.find("ExWaitForRundownProtectionRelease(&m_Operations);")
-    complete_detach = remove_complete.find("m_NotificationEntry=NULL;")
-    complete_release = remove_complete.find("ReleaseNamedPoolConnection(&connection);")
-    complete_unregister = remove_complete.find("IoUnregisterPlugPlayNotificationEx(notificationEntry);")
-    if min(complete_withdraw, complete_drain, complete_detach, complete_release, complete_unregister) < 0 or not (
-        complete_withdraw < complete_drain < complete_detach < complete_unregister < complete_release
+    complete_generation = remove_complete.find("InterlockedIncrement64(&m_Generation);")
+    complete_fail = remove_complete.find("m_FailureCallback(m_FailureContext);")
+    complete_queue = remove_complete.find("QueuePnpCleanup();")
+    if min(
+        complete_shutdown,
+        complete_connecting,
+        complete_connected,
+        complete_latch,
+        complete_withdraw,
+        complete_generation,
+        complete_fail,
+        complete_queue,
+    ) < 0 or not (
+        complete_shutdown
+        < complete_connecting
+        < complete_connected
+        < complete_latch
+        < complete_withdraw
+        < complete_generation
+        < complete_fail
+        < complete_queue
     ):
-        fail("remove-complete must unregister before releasing surprise-removed target references")
-    for token in (
-        "NT_ASSERT(m_NotificationEntry==NULL||m_NotificationEntry==notificationEntry);",
-        "if(m_NotificationEntry==NULL){m_NotificationEntry=notificationEntry;}",
-    ):
-        require_once(
-            remove_complete,
-            token,
-            "remove-complete must retain an unregister-failed entry even during concurrent disconnect",
-        )
-    for token in (
-        "m_FileObject=connection.FileObject;",
-        "m_DirectInterface=connection.DirectInterface;",
-        "RtlZeroMemory(&connection,sizeof(connection));",
-    ):
-        require_once(
-            remove_complete,
-            token,
-            "surprise-remove unregister failure must restore the complete target connection",
-        )
-    if "!m_ShuttingDown&&m_NotificationEntry==NULL" in remove_cancelled or (
-        "!m_ShuttingDown&&m_NotificationEntry==NULL" in remove_complete
-    ):
-        fail("callback unregister failure must not hide a live registration from concurrent disconnect")
+        fail("surprise removal must atomically fail Connecting/Connected, latch removal, withdraw readiness, and queue external cleanup")
+    require_once(
+        remove_complete,
+        "elseif(previousState!=VioGpuNamedPoolConnecting){returnSTATUS_SUCCESS;}",
+        "duplicate or stale remove-complete callbacks must not republish adapter failure",
+    )
+    require_once(
+        remove_complete,
+        "if(queueCleanup){QueuePnpCleanup();}",
+        "Connecting removal must defer cleanup until Connect transfers ownership",
+    )
 
-    withdraw = disconnect.find("InterlockedExchange(&m_Ready,FALSE);")
-    drain = disconnect.find("ExWaitForRundownProtectionRelease(&m_Operations);")
-    clear_direct = disconnect.find("RtlZeroMemory(&m_DirectInterface,sizeof(m_DirectInterface));")
-    release_target = disconnect.find("ReleaseNamedPoolConnection(&connection);")
-    unregister = disconnect.find("IoUnregisterPlugPlayNotificationEx(notificationEntry);")
-    drain_callbacks = disconnect.find("ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);")
-    free_name = disconnect.find("FreeInterfaceName(&m_InterfaceName);")
-    disconnected = disconnect.find("m_PnpState=VioGpuDrmHostPoolDisconnected;")
-    if min(withdraw, drain, clear_direct, release_target, unregister, drain_callbacks, free_name, disconnected) < 0 or not (
-        withdraw < drain < clear_direct < unregister < drain_callbacks < release_target < free_name < disconnected
+    constructor = compact(function_body("VioGpuNamedPool::VioGpuNamedPool", source))
+    queue_lock = queue_cleanup.find("KeAcquireSpinLock(&m_PnpCleanupLock,&oldIrql);")
+    queue_claim = queue_cleanup.find(
+        "InterlockedCompareExchange(&m_PnpCleanupQueued,0,0)!=VioGpuNamedPoolCleanupIdle"
+    )
+    queue_worker_idle = queue_cleanup.find(
+        "InterlockedCompareExchange(&m_PnpCleanupWorkerState,0,0)!=VioGpuNamedPoolWorkerIdle"
+    )
+    queue_rundown = queue_cleanup.find("ExAcquireRundownProtection(&m_PnpCleanupWorkerReferences)")
+    queue_publish = queue_cleanup.find(
+        "InterlockedExchange(&m_PnpCleanupQueued,VioGpuNamedPoolCleanupPublishing);"
+    )
+    queue_worker_running = queue_cleanup.find(
+        "InterlockedExchange(&m_PnpCleanupWorkerState,VioGpuNamedPoolWorkerRunning);"
+    )
+    queue_pending = queue_cleanup.find("InterlockedExchange(&m_PnpCleanupStatus,STATUS_PENDING);")
+    queue_clear = queue_cleanup.find("KeClearEvent(&m_PnpCleanupComplete);")
+    queue_generation = queue_cleanup.find("InterlockedIncrement(&m_PnpCleanupGeneration);")
+    queue_queued = queue_cleanup.find(
+        "InterlockedExchange(&m_PnpCleanupQueued,VioGpuNamedPoolCleanupQueued);"
+    )
+    queue_submit = queue_cleanup.find("ExQueueWorkItem(&m_PnpCleanupWorkItem,DelayedWorkQueue);")
+    queue_unlock = queue_cleanup.rfind("KeReleaseSpinLock(&m_PnpCleanupLock,oldIrql);")
+    if min(
+        queue_lock,
+        queue_claim,
+        queue_worker_idle,
+        queue_rundown,
+        queue_publish,
+        queue_worker_running,
+        queue_pending,
+        queue_clear,
+        queue_generation,
+        queue_queued,
+        queue_submit,
+        queue_unlock,
+    ) < 0 or not (
+        queue_lock
+        < queue_claim
+        < queue_worker_idle
+        < queue_rundown
+        < queue_publish
+        < queue_worker_running
+        < queue_pending
+        < queue_clear
+        < queue_generation
+        < queue_queued
+        < queue_submit
+        < queue_unlock
     ):
-        fail("disconnect must unregister and drain callbacks before releasing the target connection")
-    if disconnect.count("IoUnregisterPlugPlayNotificationEx(notificationEntry)") != 2:
-        fail("disconnect must unregister both the initial entry and any entry published by an in-flight callback")
+        fail("cleanup publication must serialize worker ownership, state, event, and generation under one spin lock")
+    if queue_cleanup.count("KeReleaseSpinLock(&m_PnpCleanupLock,oldIrql);") != 3:
+        fail("cleanup publication must release its spin lock on duplicate, rundown-failure, and queue paths")
+    if constructor.count("ExInitializeWorkItem(&m_PnpCleanupWorkItem,PnpCleanupWorker,this);") != 1:
+        fail("the embedded cleanup work item must be initialized exactly once with the pool lifetime")
+    if "ExInitializeWorkItem" in queue_cleanup:
+        fail("cleanup publication must not reinitialize an embedded work item")
+
+    worker_claim = cleanup_worker.find("pool->ClaimQueuedPnpCleanup()")
+    worker_cleanup = cleanup_worker.find("status=pool->DisconnectInternal();")
+    worker_complete = cleanup_worker.find("pool->CompletePnpCleanupTeardown(status,TRUE);")
+    worker_release = cleanup_worker.find(
+        "ExReleaseRundownProtection(&pool->m_PnpCleanupWorkerReferences);", worker_complete
+    )
+    if min(worker_claim, worker_cleanup, worker_complete, worker_release) < 0 or not (
+        worker_claim < worker_cleanup < worker_complete < worker_release
+    ):
+        fail("PnP worker must publish teardown completion before releasing its work-item lifetime reference")
+    if cleanup_worker.count("ExReleaseRundownProtection(&pool->m_PnpCleanupWorkerReferences);") != 2:
+        fail("all PnP worker exits must release the work-item lifetime reference exactly once")
+    if not cleanup_worker.endswith("ExReleaseRundownProtection(&pool->m_PnpCleanupWorkerReferences);"):
+        fail("the successful PnP worker path must perform no pool access after its lifetime release")
+
+    complete_cleanup = compact(function_body("VioGpuNamedPool::CompletePnpCleanupTeardown", source))
+    external_idle = (
+        "if(!worker){NT_ASSERT(InterlockedCompareExchange(&m_PnpCleanupWorkerState,0,0)=="
+        "VioGpuNamedPoolWorkerIdle);InterlockedExchange(&m_PnpCleanupQueued,VioGpuNamedPoolCleanupIdle);}"
+    )
+    if complete_cleanup.count(external_idle) != 1:
+        fail("worker completion must keep Teardown published until a waiter joins the last-object-access barrier")
+
+    cleanup_waiter = compact(function_body("VioGpuNamedPool::WaitForPnpCleanupIdle", source))
+    worker_rundown_reinitialize = cleanup_waiter.find(
+        "ExReInitializeRundownProtection(&m_PnpCleanupWorkerReferences);"
+    )
+    finalize_lock = cleanup_waiter.find(
+        "KeAcquireSpinLock(&m_PnpCleanupLock,&oldIrql);", worker_rundown_reinitialize + 1
+    )
+    finalize_sequence = (
+        cleanup_waiter.find("cleanupState==VioGpuNamedPoolCleanupTeardown&&workerState==VioGpuNamedPoolWorkerRunning"),
+        cleanup_waiter.find("InterlockedExchange(&m_PnpCleanupWorkerState,VioGpuNamedPoolWorkerFinalizing);"),
+        cleanup_waiter.find("KeClearEvent(&m_PnpCleanupComplete);"),
+        cleanup_waiter.find("ExWaitForRundownProtectionRelease(&m_PnpCleanupWorkerReferences);"),
+        cleanup_waiter.find("ExRundownCompleted(&m_PnpCleanupWorkerReferences);"),
+        worker_rundown_reinitialize,
+        finalize_lock,
+        cleanup_waiter.find("InterlockedExchange(&m_PnpCleanupWorkerState,VioGpuNamedPoolWorkerIdle);"),
+        cleanup_waiter.find("InterlockedExchange(&m_PnpCleanupQueued,VioGpuNamedPoolCleanupIdle);"),
+        cleanup_waiter.find("KeSetEvent(&m_PnpCleanupComplete,IO_NO_INCREMENT,FALSE);"),
+    )
+    if min(finalize_sequence) < 0 or list(finalize_sequence) != sorted(finalize_sequence):
+        fail("cleanup waiter must join and reinitialize worker rundown before publishing reusable Idle state")
+    if cleanup_waiter.count("ExReInitializeRundownProtection(&m_PnpCleanupWorkerReferences);") != 1:
+        fail("cleanup waiter must reinitialize worker rundown exactly once per completed lifetime barrier")
+    if "ExReInitializeRundownProtection" in queue_cleanup:
+        fail("cleanup publication must not reinitialize rundown protection while holding its spin lock")
+
+    wrapper_first_wait = disconnect.find("waitStatus=BeginPnpCleanupTeardown();")
+    wrapper_generation = disconnect.find("cleanupGeneration=InterlockedCompareExchange(&m_PnpCleanupGeneration,0,0);")
+    wrapper_cleanup = disconnect.find("status=DisconnectInternal();")
+    wrapper_complete = disconnect.find("CompletePnpCleanupTeardown(status,FALSE);")
+    wrapper_second_wait = disconnect.find(
+        "waitStatus=KeWaitForSingleObject(&m_PnpCleanupComplete", wrapper_first_wait + 1
+    )
+    wrapper_final_generation = disconnect.find(
+        "finalCleanupGeneration=InterlockedCompareExchange(&m_PnpCleanupGeneration,0,0);"
+    )
+    wrapper_status = disconnect.find("InterlockedCompareExchange(&m_PnpCleanupStatus,0,0)")
+    if min(
+        wrapper_first_wait,
+        wrapper_generation,
+        wrapper_cleanup,
+        wrapper_complete,
+        wrapper_second_wait,
+        wrapper_final_generation,
+        wrapper_status,
+    ) < 0 or not (
+        wrapper_first_wait
+        < wrapper_generation
+        < wrapper_cleanup
+        < wrapper_complete
+        < wrapper_second_wait
+        < wrapper_final_generation
+        < wrapper_status
+    ):
+        fail("external disconnect must join PnP cleanup both before teardown and before object destruction")
+    if disconnect.count("KeWaitForSingleObject(&m_PnpCleanupComplete") != 1:
+        fail("external disconnect must use the claimed cleanup state before its final completion wait")
+    require_once(
+        disconnect,
+        "status==STATUS_DEVICE_BUSY&&cleanupGeneration!=finalCleanupGeneration",
+        "an unrelated external disconnect owner must still report STATUS_DEVICE_BUSY",
+    )
+
+    withdraw = disconnect_internal.find("InterlockedExchange(&m_Ready,FALSE);")
+    drain = disconnect_internal.find("ExWaitForRundownProtectionRelease(&m_Operations);")
+    complete_operations = disconnect_internal.find("ExRundownCompleted(&m_Operations);")
+    clear_direct = disconnect_internal.find("RtlZeroMemory(&m_DirectInterface,sizeof(m_DirectInterface));")
+    release_target = disconnect_internal.find("ReleaseNamedPoolConnection(&connection);")
+    unregister = disconnect_internal.find("IoUnregisterPlugPlayNotificationEx(notificationEntry);")
+    drain_callbacks = disconnect_internal.find("ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);")
+    complete_callbacks = disconnect_internal.find("ExRundownCompleted(&m_NotificationCallbacks);")
+    free_name = disconnect_internal.find("FreeInterfaceName(&m_InterfaceName);")
+    disconnected = disconnect_internal.find("InterlockedExchange(&m_PnpState,VioGpuNamedPoolDisconnected);")
+    if min(
+        withdraw,
+        drain,
+        complete_operations,
+        clear_direct,
+        release_target,
+        unregister,
+        drain_callbacks,
+        complete_callbacks,
+        free_name,
+        disconnected,
+    ) < 0 or not (
+        withdraw
+        < drain
+        < complete_operations
+        < clear_direct
+        < unregister
+        < drain_callbacks
+        < complete_callbacks
+        < release_target
+        < free_name
+        < disconnected
+    ):
+        fail("worker/external teardown must complete both rundown objects before releasing the target connection")
+    if disconnect_internal.count("IoUnregisterPlugPlayNotificationEx(notificationEntry)") != 1:
+        fail("callback-external teardown must synchronously unregister exactly one target notification")
+    if "IoUnregisterPlugPlayNotification(notificationEntry)" in disconnect_internal:
+        fail("callback-external teardown must use synchronous unregister")
     for token in (
         "if(m_DisconnectInProgress){UnlockState();returnSTATUS_DEVICE_BUSY;}",
         "m_DisconnectInProgress=TRUE;",
     ):
-        require_once(disconnect, token, f"disconnect must serialize teardown and restore failed ownership: {token}")
-    for token in ("m_FileObject=connection.FileObject;", "m_DirectInterface=connection.DirectInterface;"):
-        if disconnect.count(token) != 2:
-            fail(f"both unregister failure exits must restore the target connection: {token}")
-    if disconnect.count("m_DisconnectInProgress=FALSE;") != 3:
-        fail("every disconnect success/failure exit must release the single-flight owner")
+        require_once(disconnect_internal, token, f"disconnect must serialize teardown and restore failed ownership: {token}")
     for token in (
-        "m_PnpState!=VioGpuDrmHostPoolDisconnected",
+        "InterlockedExchangePointer((PVOIDvolatile*)&m_FileObject,connection.FileObject);",
+        "m_DirectInterface=connection.DirectInterface;",
+    ):
+        require_once(disconnect_internal, token, f"unregister failure must restore the target connection: {token}")
+    if disconnect_internal.count("m_DisconnectInProgress=FALSE;") != 2:
+        fail("disconnect success and unregister failure must both release the single-flight owner")
+    for token in (
+        "InterlockedCompareExchange(&m_PnpCleanupQueued,FALSE,FALSE)!=FALSE",
+        "KeReadStateEvent(&m_PnpCleanupComplete)==0",
+        "pnpState=InterlockedCompareExchange(&m_PnpState,0,0)",
         "m_NotificationDriverObject!=NULL",
         "m_NotificationEntry!=NULL",
         "m_InterfaceName.Buffer!=NULL",
-        "m_FileObject!=NULL",
+        "fileObject=reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOIDvolatile*)&m_FileObject,NULL,NULL))",
+        "fileObject!=NULL",
         "m_DirectInterface.InterfaceHeader.Context!=NULL",
     ):
         require_once(has_owner, token, f"connection ownership must include every PnP lifetime component: {token}")
+    owner_state = has_owner.find("pnpState=InterlockedCompareExchange(&m_PnpState,0,0)")
+    owner_file = has_owner.find(
+        "fileObject=reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOIDvolatile*)&m_FileObject,NULL,NULL))"
+    )
+    owner_value = has_owner.find("BOOLEANowned=")
+    if min(owner_state, owner_file, owner_value) < 0 or not (owner_state < owner_value and owner_file < owner_value):
+        fail("connection ownership must snapshot callback-visible PnP fields atomically before evaluating ownership")
+
+    for obsolete_state in (
+        "VioGpuNamedPoolQueryRemove",
+        "VioGpuNamedPoolReconnecting",
+        "VioGpuNamedPoolRemoved",
+    ):
+        if obsolete_state in source_text or obsolete_state in header_text:
+            fail(f"veto-only PnP handling must not retain an unreachable state: {obsolete_state}")
+
+    for token in (
+        "physicalAddress==NULL",
+        "size==NULL",
+        "KeGetCurrentIrql()>DISPATCH_LEVEL",
+        "!ExAcquireRundownProtection(&m_Operations)",
+        "generation=InterlockedCompareExchange64(&m_Generation,0,0)",
+        "rangeBase=m_BasePA;",
+        "rangeSize=m_Size;",
+        "generation==InterlockedCompareExchange64(&m_Generation,0,0)",
+        "*physicalAddress=rangeBase;",
+        "*size=rangeSize;",
+        "ExReleaseRundownProtection(&m_Operations);",
+    ):
+        require_once(query_range, token, f"physical-range query must retain active generation provenance: {token}")
+    if "BaseVirtualAddress" in query_range or "AcquireMapping" in query_range:
+        fail("physical-range query must not publish or acquire a mapping lease")
 
     for token in (
         "mapping==NULL",
@@ -424,19 +722,26 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "m_DirectInterface.AcquireMapping(m_DirectInterface.InterfaceHeader.Context,&mappingValue)",
         "mappingValue.BasePhysicalAddress.QuadPart!=m_BasePA.QuadPart",
         "mappingValue.TotalSize!=m_Size",
+        "fileObject=reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOIDvolatile*)&m_FileObject,NULL,NULL))",
         "mapping->m_Owner=this;",
         "mapping->m_OwningThread=KeGetCurrentThread();",
         "mapping->m_AcquireIrql=currentIrql;",
         "mapping->m_Generation=(ULONGLONG)generation;",
     ):
         require_once(acquire, token, f"client acquire must retain nested lease validation: {token}")
+    acquire_file = acquire.find(
+        "fileObject=reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOIDvolatile*)&m_FileObject,NULL,NULL))"
+    )
+    acquire_guard = acquire.find("if(generation>0&&IsActive()&&fileObject!=NULL")
+    if min(acquire_file, acquire_guard) < 0 or acquire_file > acquire_guard:
+        fail("mapping acquire must atomically snapshot the callback-visible target file object")
     for token in (
         "generation=InterlockedCompareExchange64(&m_Generation,0,0)",
         "generation!=InterlockedCompareExchange64(&m_Generation,0,0)",
     ):
         require_once(acquire, token, f"client acquire must reject a named-pool generation race: {token}")
-    if source.count("InterlockedIncrement64(&m_Generation);") != 5:
-        fail("connect, disconnect, query-remove, remove-cancelled, and remove-complete must each advance generation")
+    if source.count("InterlockedIncrement64(&m_Generation);") != 3:
+        fail("connect, callback-external disconnect, and surprise removal must each advance generation")
     release_direct = release_mapping.find(
         "m_DirectInterface.ReleaseMapping(m_DirectInterface.InterfaceHeader.Context);"
     )
@@ -456,22 +761,48 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
 
     if "Allocate" in header_text or re.search(r"\bFree\s*\(", header_text):
         fail("named host-pool client header must not expose allocation operations")
-    if re.search(r"\bQuery\s*\(", header_text):
-        fail("client must not expose a raw mapping query without a lease")
-    if "VioGpuDrmHostPoolMapping(const VioGpuDrmHostPoolMapping &);" not in header_text or (
-        "VioGpuDrmHostPoolMapping &operator=(const VioGpuDrmHostPoolMapping &);" not in header_text
+    if header_text.count("QueryPhysicalRange(") != 1:
+        fail("client may expose only one physical-range snapshot API")
+    if "VioGpuNamedPoolMapping(const VioGpuNamedPoolMapping &);" not in header_text or (
+        "VioGpuNamedPoolMapping &operator=(const VioGpuNamedPoolMapping &);" not in header_text
     ):
         fail("mapping lease must remain non-copyable")
     for token in (
+        "VioGpuNamedPool(_In_reads_(expectedNameLength)constCHAR*expectedName,_In_ULONGexpectedNameLength,"
+        "_In_VIOGPU_NAMED_POOL_FAILURE_CALLBACKfailureCallback,_In_opt_PVOIDfailureContext);",
+        "constCHAR*m_ExpectedName;",
+        "ULONGm_ExpectedNameLength;",
+        "VIOGPU_NAMED_POOL_FAILURE_CALLBACKm_FailureCallback;",
+        "PVOIDm_FailureContext;",
+        "classVioGpuDrmHostPoolfinal:publicVioGpuNamedPool",
+        "classVioGpuGuestPoolfinal:publicVioGpuNamedPool",
+    ):
+        require_once(header_code, token, f"generic pool client must retain exact immutable identity: {token}")
+    for token in (
+        "VioGpuNamedPool(VIOGPU_DRM_HOST_POOL_NAME,",
+        "VioGpuNamedPool(VIOGPU_GUEST_POOL_NAME,",
+    ):
+        require_once(source_text, token, f"product pool wrapper must bind one exact identity: {token}")
+    for token in (
         "static DRIVER_NOTIFICATION_CALLBACK_ROUTINE PnpNotificationCallback;",
+        "static WORKER_THREAD_ROUTINE PnpCleanupWorker;",
         "mutable KMUTEX m_StateLock;",
         "PKTHREAD m_OwningThread;",
         "KIRQL m_AcquireIrql;",
         "ULONGLONG m_Generation;",
         "mutable DECLSPEC_ALIGN(8) volatile LONG64 m_Generation;",
         "EX_RUNDOWN_REF m_NotificationCallbacks;",
+        "EX_RUNDOWN_REF m_PnpCleanupWorkerReferences;",
         "BOOLEAN m_NotificationRundownCompleted;",
         "BOOLEAN m_DisconnectInProgress;",
+        "WORK_QUEUE_ITEM m_PnpCleanupWorkItem;",
+        "KEVENT m_PnpCleanupComplete;",
+        "KSPIN_LOCK m_PnpCleanupLock;",
+        "mutable volatile LONG m_PnpCleanupQueued;",
+        "volatile LONG m_PnpCleanupGeneration;",
+        "volatile LONG m_PnpCleanupStatus;",
+        "volatile LONG m_PnpCleanupWorkerState;",
+        "volatile LONG m_ShuttingDown;",
         "PDRIVER_OBJECT m_NotificationDriverObject;",
         "PVOID m_NotificationEntry;",
         "UNICODE_STRING m_InterfaceName;",
@@ -484,39 +815,91 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
 
 def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
     adapter = strip_comments_and_literals(adapter_text)
+    adapter_code = compact(adapter)
     start = compact(function_body("VioGpuAdapter::StartNativeContextTransport", adapter))
     begin = compact(function_body("VioGpuAdapter::BeginNativeContextInitialization", adapter))
     complete = compact(function_body("VioGpuAdapter::CompleteNativeContextInitialization", adapter))
     query_readiness = compact(function_body("VioGpuAdapter::QueryNativeContextReadiness", adapter))
     generation_current = compact(function_body("VioGpuAdapter::IsNativeContextGenerationCurrent", adapter))
+    query_segment = compact(function_body("VioGpuAdapter::QueryVidMmSegment", adapter))
+    connect_host = compact(function_body("VioGpuAdapter::ConnectDrmHostPool", adapter))
+    connect_guest = compact(function_body("VioGpuAdapter::ConnectGpuGuestPool", adapter))
+    pool_failure = compact(function_body("VioGpuAdapter::NamedPoolFailureCallback", adapter))
     stop = compact(function_body("VioGpuAdapter::StopNativeContextTransportLocked", adapter))
     destructor = compact(function_body("VioGpuAdapter::~VioGpuAdapter", adapter))
 
     rdma = start.find("status=ConnectRestrictedDma();")
-    named = start.find("status=ConnectDrmHostPool();")
+    host = start.find("status=ConnectDrmHostPool();")
+    guest = start.find("status=ConnectGpuGuestPool();")
     virtio = start.find("status=VioGpuAdapterInit(pDispInfo);")
-    if min(rdma, named, virtio) < 0 or not rdma < named < virtio:
-        fail("adapter must connect restricted DMA, then drm2kgsl_host, before VirtIO initialization")
-    require_once(begin, "m_DrmHostPool.HasConnectionOwner()", "initialization must reject a stale named-pool owner")
-    require_once(complete, "m_DrmHostPool.IsActive()", "Ready publication must require the named pool connection")
-    if query_readiness.count("m_DrmHostPool.IsActive()") != 2:
-        fail("readiness snapshots must check named-pool activity before and after copying published state")
+    if min(rdma, host, guest, virtio) < 0 or not rdma < host < guest < virtio:
+        fail("adapter must connect restricted DMA, drm2kgsl_host, and gpu_guest before VirtIO initialization")
     require_once(
-        generation_current,
-        "m_DrmHostPool.IsActive()",
-        "context generation must become invalid while the remote pool is unavailable",
+        connect_host,
+        "returnConnectNamedPoolWithRetry(&m_DrmHostPool);",
+        "drm2kgsl_host connect wrapper must target only its own pool instance",
     )
-    named_close = stop.find("status=m_DrmHostPool.Disconnect();")
-    named_failure = stop.find("if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", named_close)
+    require_once(
+        connect_guest,
+        "returnConnectNamedPoolWithRetry(&m_GpuGuestPool);",
+        "gpu_guest connect wrapper must target only its own pool instance",
+    )
+    for member in ("m_DrmHostPool", "m_GpuGuestPool"):
+        require_once(begin, f"{member}.HasConnectionOwner()", "initialization must reject every stale pool owner")
+        require_once(complete, f"{member}.IsActive()", "Ready publication must require both named pools")
+        if query_readiness.count(f"{member}.IsActive()") != 2:
+            fail("readiness snapshots must check both named pools before and after copying published state")
+        require_once(
+            generation_current,
+            f"{member}.IsActive()",
+            "context generation must become invalid while either named pool is unavailable",
+        )
+    require_once(
+        pool_failure,
+        "adapter->FailNativeContextAtAnyIrql();",
+        "surprise removal must advance adapter and reset generations before asynchronous teardown",
+    )
+    reset_gate = pool_failure.find("dod->RequestHardwareResetAtAnyIrql();")
+    native_failure = pool_failure.find("adapter->FailNativeContextAtAnyIrql();")
+    if min(reset_gate, native_failure) < 0 or reset_gate > native_failure:
+        fail("named-pool loss must close the outer DDI gate before poisoning Native Context state")
+    for token in (
+        "m_DrmHostPool(NamedPoolFailureCallback,this)",
+        "m_GpuGuestPool(NamedPoolFailureCallback,this)",
+    ):
+        require_once(adapter_code, token, "both named pools must propagate surprise removal to their owning adapter")
+    guest_close = stop.find("status=m_GpuGuestPool.Disconnect();")
+    guest_failure = stop.find("if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", guest_close)
+    host_close = stop.find("status=m_DrmHostPool.Disconnect();")
+    host_failure = stop.find("if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", host_close)
     rdma_close = stop.find("status=m_RdmaPool.Disconnect();")
     offline = stop.find("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline);")
-    if min(named_close, named_failure, rdma_close, offline) < 0 or not (
-        named_close < named_failure < rdma_close < offline
+    if min(guest_close, guest_failure, host_close, host_failure, rdma_close, offline) < 0 or not (
+        guest_close < guest_failure < host_close < host_failure < rdma_close < offline
     ):
-        fail("teardown must propagate named-pool unregister failure before RDMA and Offline publication")
-    if destructor.count("m_DrmHostPool.HasConnectionOwner()") != 2:
-        fail("destructor must detect and then assert release of the named-pool owner")
-    require_once(destructor, "NT_ASSERT(!m_DrmHostPool.HasConnectionOwner());", "destructor must require named-pool release")
+        fail("teardown must release gpu_guest then drm2kgsl_host before RDMA and Offline publication")
+    for member in ("m_DrmHostPool", "m_GpuGuestPool"):
+        if destructor.count(f"{member}.HasConnectionOwner()") != 2:
+            fail("destructor must detect and then assert release of both named-pool owners")
+        require_once(
+            destructor,
+            f"NT_ASSERT(!{member}.HasConnectionOwner());",
+            "destructor must require both named-pool owners to be released",
+        )
+
+    segment_branches = (
+        "#ifdefined(VIOGPU_WDDM_CI_ONLY)"
+        "returnm_GpuGuestPool.QueryPhysicalRange(physicalAddress,size);"
+        "#else"
+        "PVOIDbaseAddress=NULL;"
+        "returnm_RdmaPool.QueryVidMmSegment(&baseAddress,physicalAddress,size);"
+        "#endif"
+    )
+    require_once(
+        query_segment,
+        segment_branches,
+        "full WDDM must publish gpu_guest while stable Display-Only retains restricted-DMA provenance",
+    )
 
     if adapter_text.count("AcquireDrmHostPoolMapping") != 3 or adapter_header_text.count(
         "AcquireDrmHostPoolMapping"
@@ -555,11 +938,24 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
         fail("native response leases must capture and revalidate one exact named-pool generation")
 
     guarded_header = compact(adapter_header_text)
-    for token in (
+    require_once(
+        guarded_header,
         '#ifdefined(VIOGPU_WDDM_CI_ONLY)#include"viogpu_named_pool.h"#endif',
-        "#ifdefined(VIOGPU_WDDM_CI_ONLY)VioGpuDrmHostPoolm_DrmHostPool;#endif",
-    ):
-        require_once(guarded_header, token, "stable Display-Only target must not acquire the compile-only named-pool client")
+        "stable Display-Only target must not include the compile-only named-pool client",
+    )
+    for token in ("VioGpuDrmHostPoolm_DrmHostPool;", "VioGpuGuestPoolm_GpuGuestPool;"):
+        require_once(guarded_header, token, "full WDDM target must own both compile-only named-pool clients")
+    require_once(
+        guarded_header,
+        "staticVOIDNamedPoolFailureCallback(_In_opt_PVOIDcontext);",
+        "adapter must expose one private nonblocking named-pool failure bridge",
+    )
+    require_once(
+        guarded_header,
+        "VOIDRequestHardwareResetAtAnyIrql(void){InterlockedExchange(&m_HardwareResetState,"
+        "VioGpuHardwareResetRequested);}",
+        "named-pool loss must have a nonblocking outer hardware-reset gate",
+    )
 
 
 def check_project_and_workflow(workflow: str) -> None:

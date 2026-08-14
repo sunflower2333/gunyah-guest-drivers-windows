@@ -1255,30 +1255,39 @@ def check_native_context_readiness(
     require_call_count(transport_start, "ProbeNativeContextReadiness", 1, "transport start")
     require_call_count(transport_start, "ConnectRestrictedDma", 1, "transport start")
     require_call_count(transport_start, "ConnectDrmHostPool", 1, "transport start")
+    require_call_count(transport_start, "ConnectGpuGuestPool", 1, "transport start")
     transport_start_compact = compact_code(transport_start)
     rdma_connect_offset = transport_start_compact.find("NTSTATUSstatus=ConnectRestrictedDma();")
     rdma_failure_offset = transport_start_compact.find(
         "if(!NT_SUCCESS(status)){returnstatus;}", rdma_connect_offset
     )
-    named_connect_offset = transport_start_compact.find("status=ConnectDrmHostPool();")
-    named_failure_offset = transport_start_compact.find(
-        "if(!NT_SUCCESS(status)){returnstatus;}", named_connect_offset
+    host_connect_offset = transport_start_compact.find("status=ConnectDrmHostPool();")
+    host_failure_offset = transport_start_compact.find(
+        "if(!NT_SUCCESS(status)){returnstatus;}", host_connect_offset
+    )
+    guest_connect_offset = transport_start_compact.find("status=ConnectGpuGuestPool();")
+    guest_failure_offset = transport_start_compact.find(
+        "if(!NT_SUCCESS(status)){returnstatus;}", guest_connect_offset
     )
     virtio_init_offset = transport_start_compact.find("status=VioGpuAdapterInit(pDispInfo);")
     if min(
         rdma_connect_offset,
         rdma_failure_offset,
-        named_connect_offset,
-        named_failure_offset,
+        host_connect_offset,
+        host_failure_offset,
+        guest_connect_offset,
+        guest_failure_offset,
         virtio_init_offset,
     ) < 0 or not (
         rdma_connect_offset
         < rdma_failure_offset
-        < named_connect_offset
-        < named_failure_offset
+        < host_connect_offset
+        < host_failure_offset
+        < guest_connect_offset
+        < guest_failure_offset
         < virtio_init_offset
     ):
-        fail("transport start must connect restricted DMA, then drm2kgsl_host, before initializing VirtIO")
+        fail("transport start must connect restricted DMA and both product pools before initializing VirtIO")
     if len(re.findall(r"\bm_RdmaPool\s*\.\s*Connect\s*\(", viogpu_code)) != 1 or len(
         re.findall(r"\bm_RdmaPool\s*\.\s*Connect\s*\(", rdma_connect)
     ) != 1:
@@ -1356,6 +1365,7 @@ def check_native_context_readiness(
         ("m_FrameSegment.Close()", "frame segment teardown"),
         ("m_CursorSegment.Close()", "cursor segment teardown"),
         ("m_GpuBuf.Close()", "control-buffer allocator teardown"),
+        ("status=m_GpuGuestPool.Disconnect()", "gpu_guest connection release"),
         ("status=m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
         ("status=m_RdmaPool.Disconnect()", "restricted-DMA arena disconnect"),
         ("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)", "offline publication"),
@@ -1457,6 +1467,7 @@ def check_native_context_readiness(
         ("m_FrameSegment.Close()", "frame segment teardown"),
         ("m_CursorSegment.Close()", "cursor segment teardown"),
         ("m_GpuBuf.Close()", "control-buffer allocator teardown"),
+        ("status=m_GpuGuestPool.Disconnect()", "gpu_guest connection release"),
         ("status=m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
         ("status=m_RdmaPool.Disconnect()", "restricted-DMA arena disconnect"),
         ("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)", "offline publication"),
@@ -1465,15 +1476,19 @@ def check_native_context_readiness(
     for (offset, description), (next_offset, next_description) in zip(teardown_offsets, teardown_offsets[1:]):
         if offset > next_offset:
             fail(f"transport teardown must perform {description} before {next_description}")
-    named_disconnect = stop_compact.find("status=m_DrmHostPool.Disconnect()")
-    named_failure = stop_compact.find(
-        "if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", named_disconnect
+    guest_disconnect = stop_compact.find("status=m_GpuGuestPool.Disconnect()")
+    guest_failure = stop_compact.find(
+        "if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", guest_disconnect
+    )
+    host_disconnect = stop_compact.find("status=m_DrmHostPool.Disconnect()")
+    host_failure = stop_compact.find(
+        "if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", host_disconnect
     )
     rdma_disconnect = stop_compact.find("status=m_RdmaPool.Disconnect()")
     rdma_failure = stop_compact.find("if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", rdma_disconnect)
     offline_publish = stop_compact.find("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)")
-    if min(named_disconnect, named_failure, rdma_disconnect) < 0 or not (
-        named_disconnect < named_failure < rdma_disconnect
+    if min(guest_disconnect, guest_failure, host_disconnect, host_failure, rdma_disconnect) < 0 or not (
+        guest_disconnect < guest_failure < host_disconnect < host_failure < rdma_disconnect
     ):
         fail("transport teardown must retain the adapter when named-pool notification teardown fails")
     if min(rdma_disconnect, rdma_failure, offline_publish) < 0 or not (
@@ -3214,6 +3229,7 @@ def check_rdma_ioctl_lifetime() -> None:
     for required in (
         "m_Ready=FALSE;",
         "ExWaitForRundownProtectionRelease(&m_Operations);",
+        "ExRundownCompleted(&m_Operations);",
         "input.InterfaceVersion=RDMAPOOL_INTERFACE_VERSION_V2;",
         "input.NumPages=m_PageCount;",
         "input.AllocationToken=m_AllocationToken;",
@@ -3242,6 +3258,11 @@ def check_rdma_ioctl_lifetime() -> None:
         fail("RDMA FREE must cache only a submitted attempt and prohibit duplicate submission")
     if not disconnect.find("m_Ready=FALSE;") < disconnect.find("ExWaitForRundownProtectionRelease") < disconnect.find("RdmaPoolIoctl("):
         fail("RDMA Disconnect must close operations and drain rundown before provider FREE")
+    rundown_wait = disconnect.find("ExWaitForRundownProtectionRelease(&m_Operations);")
+    rundown_complete = disconnect.find("ExRundownCompleted(&m_Operations);")
+    rundown_mark = disconnect.find("m_RundownCompleted=TRUE;")
+    if min(rundown_wait, rundown_complete, rundown_mark) < 0 or not rundown_wait < rundown_complete < rundown_mark:
+        fail("RDMA Disconnect must complete the rundown object before marking it closed")
 
     header = canonical_code(RDMA_HEADER_CODE)
     for required in (
@@ -3845,6 +3866,19 @@ def check_adapter_lifecycle() -> None:
     ):
         fail("DOD destructor must close rundown, require a cleared adapter, and never bypass HWClose")
 
+    adapter_destructor_body = function_body("VioGpuAdapter::~VioGpuAdapter", VIOGPU_CODE)
+    adapter_destructor = canonical_code(adapter_destructor_body)
+    native_wait = adapter_destructor.find("ExWaitForRundownProtectionRelease(&m_NativeContextReferences);")
+    native_complete = adapter_destructor.find("ExRundownCompleted(&m_NativeContextReferences);", native_wait)
+    native_cleanup = adapter_destructor.find("CloseResolutionEvent();", native_complete)
+    if (
+        min(native_wait, native_complete, native_cleanup) < 0
+        or not native_wait < native_complete < native_cleanup
+        or adapter_destructor.count("ExWaitForRundownProtectionRelease(&m_NativeContextReferences);") != 1
+        or adapter_destructor.count("ExRundownCompleted(&m_NativeContextReferences);") != 1
+    ):
+        fail("adapter destructor must complete native-context rundown before releasing remaining state")
+
     stop_body = function_body("VioGpuDod::StopDevice", VIOGPU_CODE)
     stop = canonical_code(stop_body)
     stop_close_blocks = [
@@ -3917,7 +3951,7 @@ def check_adapter_lifecycle() -> None:
             "returnFALSE;",
             "VioGpuAdapter*adapter=m_pHWDevice;"
             "BOOLEANavailable=!IsHardwareResetRequested()&&adapter!=NULL&&"
-            "adapter->QueryVidMmSegment(baseAddress,physicalAddress,size);"
+            "adapter->QueryVidMmSegment(physicalAddress,size);"
             "ExReleaseRundownProtection(&m_HardwareOperations);returnavailable;",
         ),
         (

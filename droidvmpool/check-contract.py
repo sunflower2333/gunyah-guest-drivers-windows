@@ -199,10 +199,15 @@ def check_provider(source: str) -> None:
     release = compact(function_body("DroidVmPoolEvtDeviceReleaseHardware", source))
     offline = release.find("InterlockedExchange(&deviceContext->PoolReady,FALSE);")
     rundown = release.find("ExWaitForRundownProtectionRelease(&deviceContext->MappingReferences);")
+    rundown_complete = release.find("ExRundownCompleted(&deviceContext->MappingReferences);", rundown)
     unmap = release.find("MmUnmapIoSpace(deviceContext->PoolVirtualBase,deviceContext->PoolSize);")
     clear = release.find("deviceContext->PoolVirtualBase=NULL;")
-    if min(offline, rundown, unmap, clear) < 0 or not offline < rundown < unmap < clear:
-        fail("ReleaseHardware must withdraw readiness and drain mapping leases before unmapping")
+    if min(offline, rundown, rundown_complete, unmap, clear) < 0 or not offline < rundown < rundown_complete < unmap < clear:
+        fail("ReleaseHardware must withdraw readiness, complete mapping rundown, and drain leases before unmapping")
+    if release.count("ExWaitForRundownProtectionRelease(&deviceContext->MappingReferences);") != 1 or release.count(
+        "ExRundownCompleted(&deviceContext->MappingReferences);"
+    ) != 1:
+        fail("ReleaseHardware must complete mapping rundown exactly once")
 
     query = compact(function_body("DroidVmPoolEvtIoDeviceControl", source))
     acquire_query = query.find("ExAcquireRundownProtection(&deviceContext->MappingReferences)")

@@ -265,6 +265,7 @@ NTSTATUS DroidVmPoolEvtDeviceReleaseHardware(_In_ WDFDEVICE device, _In_ WDFCMRE
     if (!deviceContext->MappingRundownCompleted)
     {
         ExWaitForRundownProtectionRelease(&deviceContext->MappingReferences);
+        ExRundownCompleted(&deviceContext->MappingReferences);
         deviceContext->MappingRundownCompleted = TRUE;
     }
     if (deviceContext->PoolVirtualBase != NULL)

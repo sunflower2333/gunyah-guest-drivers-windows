@@ -220,7 +220,7 @@ class VioGpuAdapter : IVioGpuPCI
     void FreeDmaMemory(PVOID address);
     PHYSICAL_ADDRESS GetDmaPhysicalAddress(PVOID address);
     BOOLEAN IsRestrictedDmaActive(void);
-    BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
+    BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     BOOLEAN AcquireDrmHostPoolMapping(_Out_ VioGpuDrmHostPoolMapping *mapping) const;
 #endif
@@ -292,6 +292,8 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS ConnectRestrictedDma(void);
 #if defined(VIOGPU_WDDM_CI_ONLY)
     NTSTATUS ConnectDrmHostPool(void);
+    NTSTATUS ConnectGpuGuestPool(void);
+    static VOID NamedPoolFailureCallback(_In_opt_ PVOID context);
 #endif
     NTSTATUS StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pDispInfo);
     NTSTATUS FailNativeContextInitialization(NTSTATUS status);
@@ -337,6 +339,7 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuRdmaPool m_RdmaPool;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     VioGpuDrmHostPool m_DrmHostPool;
+    VioGpuGuestPool m_GpuGuestPool;
 #endif
     UINT64 m_u64HostFeatures;
     UINT64 m_u64GuestFeatures;
@@ -536,7 +539,7 @@ class VioGpuDod
     {
         return &m_DxgkInterface;
     }
-    BOOLEAN QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
+    BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
     BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                         _Out_opt_ UINT *capsetVersion,
                                         _Out_opt_ UINT *capsetSize,
@@ -548,6 +551,10 @@ class VioGpuDod
     {
         return InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareActive) !=
                VioGpuHardwareActive;
+    }
+    VOID RequestHardwareResetAtAnyIrql(void)
+    {
+        InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
     }
     BOOLEAN IsHardwareInterruptDispatchAllowed(void) const
     {

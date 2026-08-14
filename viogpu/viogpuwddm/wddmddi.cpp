@@ -214,11 +214,12 @@ NTSTATUS QuerySegment(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryA
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    PVOID segmentBase = NULL;
     PHYSICAL_ADDRESS segmentPhysicalAddress = {};
     SIZE_T segmentSize = 0;
-    if (!adapter->QueryVidMmSegment(&segmentBase, &segmentPhysicalAddress, &segmentSize) || segmentBase == NULL ||
-        segmentSize == 0 || (segmentSize & (PAGE_SIZE - 1)) != 0)
+    if (!adapter->QueryVidMmSegment(&segmentPhysicalAddress, &segmentSize) || segmentPhysicalAddress.QuadPart < 0 ||
+        ((ULONG64)segmentPhysicalAddress.QuadPart & (PAGE_SIZE - 1)) != 0 || segmentSize < PAGE_SIZE ||
+        (segmentSize & (PAGE_SIZE - 1)) != 0 ||
+        (ULONG64)segmentPhysicalAddress.QuadPart > MAXULONGLONG - (segmentSize - 1))
     {
         return STATUS_DEVICE_NOT_READY;
     }

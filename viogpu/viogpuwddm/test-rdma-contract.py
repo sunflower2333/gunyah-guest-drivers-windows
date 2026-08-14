@@ -13,8 +13,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CHECKER = "viogpu/viogpuwddm/check-contract.py"
-CHECKED_SUBTREES = (".github", "viogpu", "rdmapool", "VirtIO", "NetKVM", "viostor", "vioscsi")
+CHECKERS = (
+    "viogpu/viogpuwddm/check-contract.py",
+    "viogpu/viogpuwddm/check-named-pool.py",
+    "droidvmpool/check-contract.py",
+)
+CHECKED_SUBTREES = (".github", "viogpu", "rdmapool", "droidvmpool", "VirtIO", "NetKVM", "viostor", "vioscsi")
 
 
 @dataclass(frozen=True)
@@ -118,11 +122,19 @@ REWRITES = (
         "viogpu/viogpudo/viogpudo.cpp",
         """    if (!IsListEmpty(&m_NativeContextRegistry) || m_bVirtioInitialized || m_bQueuesInitialized ||
         m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() ||
-        m_RdmaPool.HasArenaOwner() || m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0 ||
+        m_RdmaPool.HasArenaOwner() ||
+#if defined(VIOGPU_WDDM_CI_ONLY)
+        m_DrmHostPool.HasConnectionOwner() || m_GpuGuestPool.HasConnectionOwner() ||
+#endif
+        m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0 ||
         InterlockedCompareExchange(&m_NativeContextState,""",
         """    if (!IsListEmpty(&m_NativeContextRegistry) || m_bVirtioInitialized || m_bQueuesInitialized ||
         m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() ||
-        m_RdmaPool.IsActive() || m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0 ||
+        m_RdmaPool.IsActive() ||
+#if defined(VIOGPU_WDDM_CI_ONLY)
+        m_DrmHostPool.HasConnectionOwner() || m_GpuGuestPool.HasConnectionOwner() ||
+#endif
+        m_FrameSegment.GetSize() != 0 || m_CursorSegment.GetSize() != 0 ||
         InterlockedCompareExchange(&m_NativeContextState,""",
     ),
     Rewrite(
@@ -622,15 +634,11 @@ REWRITES = (
     Rewrite(
         "R50_create_retire_unknown_owner",
         "viogpu/viogpudo/viogpudo.cpp",
-        """        if (createResult == VioGpuHostContextNotSubmitted || createResult == VioGpuHostContextRejected)
-        {
-            RetireNativeContextOwnerLocked(owner);
-        }""",
-        """        if (createResult == VioGpuHostContextNotSubmitted || createResult == VioGpuHostContextRejected ||
-            createResult == VioGpuHostContextUnknown)
-        {
-            RetireNativeContextOwnerLocked(owner);
-        }""",
+        """        if (!hostContextCreated &&
+            (createResult == VioGpuHostContextNotSubmitted || createResult == VioGpuHostContextRejected))""",
+        """        if (!hostContextCreated &&
+            (createResult == VioGpuHostContextNotSubmitted || createResult == VioGpuHostContextRejected ||
+             createResult == VioGpuHostContextUnknown))""",
     ),
     Rewrite(
         "R51_drop_no_reset_owner_guard",
@@ -929,10 +937,10 @@ REWRITES = (
     Rewrite(
         "R74_bypass_vidmm_hardware_rundown",
         "viogpu/viogpudo/viogpudo.cpp",
-        """BOOLEAN VioGpuDod::QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
+        """BOOLEAN VioGpuDod::QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))""",
-        """BOOLEAN VioGpuDod::QueryVidMmSegment(PVOID *baseAddress, PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
+        """BOOLEAN VioGpuDod::QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
 {
     if (FALSE && !ExAcquireRundownProtection(&m_HardwareOperations))""",
     ),
@@ -990,8 +998,15 @@ REWRITES = (
         "R79_generation_ignores_hardware_reset_gate",
         "viogpu/viogpudo/viogpudo.cpp",
         """    return !m_pVioGpuDod->IsHardwareResetRequested() &&
+#if defined(VIOGPU_WDDM_CI_ONLY)
+           m_DrmHostPool.IsActive() && m_GpuGuestPool.IsActive() &&
+#endif
            generation == InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) &&""",
-        """    return generation == InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) &&""",
+        """    return
+#if defined(VIOGPU_WDDM_CI_ONLY)
+           m_DrmHostPool.IsActive() && m_GpuGuestPool.IsActive() &&
+#endif
+           generation == InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) &&""",
     ),
     Rewrite(
         "R80_system_display_gate_after_early_return",
@@ -1685,6 +1700,441 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
     if (m_endId != 0 && !IsListEmpty(&m_freeList))""",
     ),
     Rewrite(
+        "R160_guest_pool_uses_host_identity",
+        "viogpu/common/viogpu_named_pool.cpp",
+        'static const CHAR VIOGPU_GUEST_POOL_NAME[] = "gpu_guest";',
+        'static const CHAR VIOGPU_GUEST_POOL_NAME[] = "drm2kgsl_host";',
+    ),
+    Rewrite(
+        "R161_full_wddm_segment_uses_restricted_dma",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "    return m_GpuGuestPool.QueryPhysicalRange(physicalAddress, size);",
+        "    PVOID baseAddress = NULL;\n    return m_RdmaPool.QueryVidMmSegment(&baseAddress, physicalAddress, size);",
+    ),
+    Rewrite(
+        "R162_transport_skips_guest_pool_connect",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    status = ConnectGpuGuestPool();
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }""",
+        """    status = STATUS_SUCCESS;
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }""",
+    ),
+    Rewrite(
+        "R163_ready_ignores_guest_pool",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """#if defined(VIOGPU_WDDM_CI_ONLY)
+                    m_DrmHostPool.IsActive() && m_GpuGuestPool.IsActive() &&
+#endif""",
+        """#if defined(VIOGPU_WDDM_CI_ONLY)
+                    m_DrmHostPool.IsActive() &&
+#endif""",
+    ),
+    Rewrite(
+        "R164_physical_range_skips_generation_recheck",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """                    (ULONG64)rangeBase.QuadPart <= MAXULONGLONG - (rangeSize - 1) &&
+                    generation == InterlockedCompareExchange64(&m_Generation, 0, 0) && IsActive();""",
+        """                    (ULONG64)rangeBase.QuadPart <= MAXULONGLONG - (rangeSize - 1) && IsActive();""",
+    ),
+    Rewrite(
+        "R165_disconnects_host_before_guest_pool",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    status = m_GpuGuestPool.Disconnect();
+    if (!NT_SUCCESS(status))
+    {
+        FailNativeContextAtAnyIrql();
+        return status;
+    }
+    status = m_DrmHostPool.Disconnect();""",
+        """    status = m_DrmHostPool.Disconnect();
+    if (!NT_SUCCESS(status))
+    {
+        FailNativeContextAtAnyIrql();
+        return status;
+    }
+    status = m_GpuGuestPool.Disconnect();""",
+    ),
+    Rewrite(
+        "R166_guest_connect_targets_host_pool",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "    return ConnectNamedPoolWithRetry(&m_GpuGuestPool);",
+        "    return ConnectNamedPoolWithRetry(&m_DrmHostPool);",
+    ),
+    Rewrite(
+        "R167_callback_waits_for_cleanup",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    if (queueCleanup)
+    {
+        QueuePnpCleanup();
+    }""",
+        """    if (queueCleanup)
+    {
+        KeWaitForSingleObject(&m_PnpCleanupComplete, Executive, KernelMode, FALSE, NULL);
+        QueuePnpCleanup();
+    }""",
+    ),
+    Rewrite(
+        "R168_query_remove_stops_vetoing",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    return targetOwned && pnpState == VioGpuNamedPoolConnected ? STATUS_UNSUCCESSFUL : STATUS_SUCCESS;""",
+        """    UNREFERENCED_PARAMETER(notificationFileObject);
+    UNREFERENCED_PARAMETER(currentFileObject);
+    return STATUS_SUCCESS;""",
+    ),
+    Rewrite(
+        "R169_surprise_remove_skips_adapter_failure",
+        "viogpu/common/viogpu_named_pool.cpp",
+        "        m_FailureCallback(m_FailureContext);",
+        "        UNREFERENCED_PARAMETER(m_FailureContext);",
+    ),
+    Rewrite(
+        "R170_full_stable_segment_branches_swapped",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """#if defined(VIOGPU_WDDM_CI_ONLY)
+    return m_GpuGuestPool.QueryPhysicalRange(physicalAddress, size);
+#else
+    PVOID baseAddress = NULL;
+    return m_RdmaPool.QueryVidMmSegment(&baseAddress, physicalAddress, size);
+#endif""",
+        """#if defined(VIOGPU_WDDM_CI_ONLY)
+    PVOID baseAddress = NULL;
+    return m_RdmaPool.QueryVidMmSegment(&baseAddress, physicalAddress, size);
+#else
+    return m_GpuGuestPool.QueryPhysicalRange(physicalAddress, size);
+#endif""",
+    ),
+    Rewrite(
+        "R171_cleanup_generation_precedes_event_clear",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    InterlockedExchange(&m_PnpCleanupStatus, STATUS_PENDING);
+    KeClearEvent(&m_PnpCleanupComplete);
+    InterlockedIncrement(&m_PnpCleanupGeneration);""",
+        """    InterlockedExchange(&m_PnpCleanupStatus, STATUS_PENDING);
+    InterlockedIncrement(&m_PnpCleanupGeneration);
+    KeClearEvent(&m_PnpCleanupComplete);""",
+    ),
+    Rewrite(
+        "R172_pool_loss_leaves_outer_ddi_active",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "            dod->RequestHardwareResetAtAnyIrql();",
+        "            UNREFERENCED_PARAMETER(dod);",
+    ),
+    Rewrite(
+        "R173_connect_skips_connecting_state",
+        "viogpu/common/viogpu_named_pool.cpp",
+        "    InterlockedExchange(&m_PnpState, VioGpuNamedPoolConnecting);",
+        "    InterlockedExchange(&m_PnpState, VioGpuNamedPoolConnected);",
+    ),
+    Rewrite(
+        "R174_connect_seeds_generation_after_register",
+        "viogpu/common/viogpu_named_pool.cpp",
+        "    LONG64 registrationGeneration = InterlockedIncrement64(&m_Generation);",
+        "    LONG64 registrationGeneration = InterlockedCompareExchange64(&m_Generation, 0, 0);",
+    ),
+    Rewrite(
+        "R175_connect_drops_postready_recheck",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """        commitValid = InterlockedCompareExchange(&m_PnpState, 0, 0) == VioGpuNamedPoolConnected &&
+                      InterlockedCompareExchange(&m_RemovalLatched, FALSE, FALSE) == FALSE &&
+                      InterlockedCompareExchange64(&m_Generation, 0, 0) == registrationGeneration;""",
+        """        commitValid = InterlockedCompareExchange(&m_PnpState, 0, 0) == VioGpuNamedPoolConnected;""",
+    ),
+    Rewrite(
+        "R176_connecting_remove_uses_connected_cas",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    LONG previousState = InterlockedCompareExchange(&m_PnpState, VioGpuNamedPoolFailed, VioGpuNamedPoolConnecting);
+    BOOLEAN queueCleanup = FALSE;""",
+        """    LONG previousState = InterlockedCompareExchange(&m_PnpState, VioGpuNamedPoolFailed, VioGpuNamedPoolConnected);
+    BOOLEAN queueCleanup = FALSE;""",
+    ),
+    Rewrite(
+        "R177_connecting_remove_queues_worker",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    if (queueCleanup)
+    {
+        QueuePnpCleanup();
+    }""",
+        """    QueuePnpCleanup();""",
+    ),
+    Rewrite(
+        "R178_connect_drops_pre_registration_file_publish",
+        "viogpu/common/viogpu_named_pool.cpp",
+        "    InterlockedExchangePointer((PVOID volatile *)&m_FileObject, selectedConnection.FileObject);",
+        "    m_FileObject = selectedConnection.FileObject;",
+    ),
+    Rewrite(
+        "R179_query_remove_allows_connected_commit_window",
+        "viogpu/common/viogpu_named_pool.cpp",
+        "    return targetOwned && pnpState == VioGpuNamedPoolConnected ? STATUS_UNSUCCESSFUL : STATUS_SUCCESS;",
+        "    return targetOwned && IsActive() ? STATUS_UNSUCCESSFUL : STATUS_SUCCESS;",
+    ),
+    Rewrite(
+        "R180_register_failure_drops_callback_join",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """        ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);
+        ExRundownCompleted(&m_NotificationCallbacks);
+        ReleaseNamedPoolConnection(&selectedConnection);""",
+        """        ExReleaseRundownProtection(&m_NotificationCallbacks);
+        ExRundownCompleted(&m_NotificationCallbacks);
+        ReleaseNamedPoolConnection(&selectedConnection);""",
+    ),
+    Rewrite(
+        "R181_query_remove_ignores_shutdown",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    if (InterlockedCompareExchange(&m_ShuttingDown, FALSE, FALSE) != FALSE)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    LONG pnpState = InterlockedCompareExchange(&m_PnpState, 0, 0);""",
+        """    LONG pnpState = InterlockedCompareExchange(&m_PnpState, 0, 0);""",
+    ),
+    Rewrite(
+        "R182_connect_publishes_state_before_latch_clear",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    InterlockedExchange(&m_RemovalLatched, FALSE);
+    InterlockedExchange(&m_Ready, FALSE);
+    InterlockedExchange(&m_PnpState, VioGpuNamedPoolConnecting);""",
+        """    InterlockedExchange(&m_PnpState, VioGpuNamedPoolConnecting);
+    InterlockedExchange(&m_RemovalLatched, FALSE);
+    InterlockedExchange(&m_Ready, FALSE);""",
+    ),
+    Rewrite(
+        "R183_register_failure_releases_before_join",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """        ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);
+        ExRundownCompleted(&m_NotificationCallbacks);
+        ReleaseNamedPoolConnection(&selectedConnection);""",
+        """        ReleaseNamedPoolConnection(&selectedConnection);
+        ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);
+        ExRundownCompleted(&m_NotificationCallbacks);""",
+    ),
+    Rewrite(
+        "R184_connect_commits_before_owner_transfer",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    m_DirectInterface = selectedConnection.DirectInterface;
+    m_BasePA = selectedConnection.Query.BasePhysicalAddress;
+    m_Size = (SIZE_T)selectedConnection.Query.TotalSize;
+    RtlZeroMemory(&selectedName, sizeof(selectedName));
+    RtlZeroMemory(&selectedConnection, sizeof(selectedConnection));
+
+    LONG previousState = InterlockedCompareExchange(&m_PnpState, VioGpuNamedPoolConnected, VioGpuNamedPoolConnecting);""",
+        """    LONG previousState = InterlockedCompareExchange(&m_PnpState, VioGpuNamedPoolConnected, VioGpuNamedPoolConnecting);
+    m_DirectInterface = selectedConnection.DirectInterface;
+    m_BasePA = selectedConnection.Query.BasePhysicalAddress;
+    m_Size = (SIZE_T)selectedConnection.Query.TotalSize;
+    RtlZeroMemory(&selectedName, sizeof(selectedName));
+        RtlZeroMemory(&selectedConnection, sizeof(selectedConnection));""",
+    ),
+    Rewrite(
+        "R185_register_failure_skips_rundown_completion",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """        ExRundownCompleted(&m_NotificationCallbacks);
+        ReleaseNamedPoolConnection(&selectedConnection);""",
+        """        ReleaseNamedPoolConnection(&selectedConnection);""",
+    ),
+    Rewrite(
+        "R186_disconnect_skips_operations_completion",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """        ExWaitForRundownProtectionRelease(&m_Operations);
+        ExRundownCompleted(&m_Operations);""",
+        """        ExWaitForRundownProtectionRelease(&m_Operations);""",
+    ),
+    Rewrite(
+        "R187_disconnect_skips_callback_completion",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """        ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);
+        ExRundownCompleted(&m_NotificationCallbacks);
+        m_NotificationRundownCompleted = TRUE;""",
+        """        ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);
+        m_NotificationRundownCompleted = TRUE;""",
+    ),
+    Rewrite(
+        "R188_query_remove_ignores_shutdown_gate",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    if (InterlockedCompareExchange(&m_ShuttingDown, FALSE, FALSE) != FALSE)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    LONG pnpState = InterlockedCompareExchange(&m_PnpState, 0, 0);""",
+        """    LONG pnpState = InterlockedCompareExchange(&m_PnpState, 0, 0);""",
+    ),
+    Rewrite(
+        "R189_has_owner_reads_pnp_state_non_atomically",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    LockState();
+    LONG pnpState = InterlockedCompareExchange(&m_PnpState, 0, 0);
+    PFILE_OBJECT fileObject = reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOID volatile *)&m_FileObject,
+                                                                                               NULL,
+                                                                                               NULL));""",
+        """    LockState();
+    LONG pnpState = m_PnpState;
+    PFILE_OBJECT fileObject = reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOID volatile *)&m_FileObject,
+                                                                                               NULL,
+                                                                                               NULL));""",
+    ),
+    Rewrite(
+        "R190_connect_reads_pnp_state_non_atomically",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    if (IsActive())
+    {
+        UnlockState();
+        return STATUS_SUCCESS;
+    }
+    LONG pnpState = InterlockedCompareExchange(&m_PnpState, 0, 0);""",
+        """    if (IsActive())
+    {
+        UnlockState();
+        return STATUS_SUCCESS;
+    }
+    LONG pnpState = m_PnpState;""",
+    ),
+    Rewrite(
+        "R191_acquire_reads_file_object_non_atomically",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    BOOLEAN acquired = FALSE;
+    LONG64 generation = InterlockedCompareExchange64(&m_Generation, 0, 0);
+    PFILE_OBJECT fileObject = reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOID volatile *)&m_FileObject,
+                                                                                               NULL,
+                                                                                               NULL));""",
+        """    BOOLEAN acquired = FALSE;
+    LONG64 generation = InterlockedCompareExchange64(&m_Generation, 0, 0);
+    PFILE_OBJECT fileObject = m_FileObject;""",
+    ),
+    Rewrite(
+        "R192_rdma_disconnect_skips_operations_completion",
+        "viogpu/common/viogpu_rdma.cpp",
+        """        ExWaitForRundownProtectionRelease(&m_Operations);
+        ExRundownCompleted(&m_Operations);
+        m_RundownCompleted = TRUE;""",
+        """        ExWaitForRundownProtectionRelease(&m_Operations);
+        m_RundownCompleted = TRUE;""",
+    ),
+    Rewrite(
+        "R193_adapter_destructor_skips_native_context_completion",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    ExWaitForRundownProtectionRelease(&m_NativeContextReferences);
+    ExRundownCompleted(&m_NativeContextReferences);
+    CloseResolutionEvent();""",
+        """    ExWaitForRundownProtectionRelease(&m_NativeContextReferences);
+    CloseResolutionEvent();""",
+    ),
+    Rewrite(
+        "R194_provider_release_skips_mapping_completion",
+        "droidvmpool/droidvmpool.c",
+        """        ExWaitForRundownProtectionRelease(&deviceContext->MappingReferences);
+        ExRundownCompleted(&deviceContext->MappingReferences);
+        deviceContext->MappingRundownCompleted = TRUE;""",
+        """        ExWaitForRundownProtectionRelease(&deviceContext->MappingReferences);
+        deviceContext->MappingRundownCompleted = TRUE;""",
+    ),
+    Rewrite(
+        "R195_disconnect_bypasses_cleanup_claim",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    NTSTATUS waitStatus = BeginPnpCleanupTeardown();""",
+        """    NTSTATUS waitStatus = KeWaitForSingleObject(&m_PnpCleanupComplete, Executive, KernelMode, FALSE, NULL);""",
+    ),
+    Rewrite(
+        "R196_queue_cleanup_skips_spin_lock",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """void VioGpuNamedPool::QueuePnpCleanup(void)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_PnpCleanupLock, &oldIrql);""",
+        """void VioGpuNamedPool::QueuePnpCleanup(void)
+{
+    KIRQL oldIrql;
+    oldIrql = PASSIVE_LEVEL;""",
+    ),
+    Rewrite(
+        "R197_cleanup_publishes_after_event_clear",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    InterlockedExchange(&m_PnpCleanupQueued, VioGpuNamedPoolCleanupPublishing);
+    InterlockedExchange(&m_PnpCleanupWorkerState, VioGpuNamedPoolWorkerRunning);
+    InterlockedExchange(&m_PnpCleanupStatus, STATUS_PENDING);
+    KeClearEvent(&m_PnpCleanupComplete);""",
+        """    InterlockedExchange(&m_PnpCleanupWorkerState, VioGpuNamedPoolWorkerRunning);
+    InterlockedExchange(&m_PnpCleanupStatus, STATUS_PENDING);
+    KeClearEvent(&m_PnpCleanupComplete);
+    InterlockedExchange(&m_PnpCleanupQueued, VioGpuNamedPoolCleanupPublishing);""",
+    ),
+    Rewrite(
+        "R198_worker_skips_cleanup_claim",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    if (!pool->ClaimQueuedPnpCleanup())
+    {
+        ExReleaseRundownProtection(&pool->m_PnpCleanupWorkerReferences);
+        return;
+    }""",
+        """    if (FALSE)
+    {
+        ExReleaseRundownProtection(&pool->m_PnpCleanupWorkerReferences);
+        return;
+    }""",
+    ),
+    Rewrite(
+        "R199_register_failure_unlocks_before_callback_join",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """        InterlockedExchange(&m_ShuttingDown, TRUE);
+
+        /*
+         * A failed registration may still have a callback in flight.""",
+        """        InterlockedExchange(&m_ShuttingDown, TRUE);
+        UnlockState();
+
+        /*
+         * A failed registration may still have a callback in flight.""",
+    ),
+    Rewrite(
+        "R200_worker_releases_lifetime_before_completion",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    pool->CompletePnpCleanupTeardown(status, TRUE);
+    /* The work item was dequeued before this routine ran; no pool access follows this release. */
+    ExReleaseRundownProtection(&pool->m_PnpCleanupWorkerReferences);""",
+        """    ExReleaseRundownProtection(&pool->m_PnpCleanupWorkerReferences);
+    pool->CompletePnpCleanupTeardown(status, TRUE);""",
+    ),
+    Rewrite(
+        "R201_waiter_skips_worker_rundown_completion",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """            ExWaitForRundownProtectionRelease(&m_PnpCleanupWorkerReferences);
+            ExRundownCompleted(&m_PnpCleanupWorkerReferences);""",
+        """            ExWaitForRundownProtectionRelease(&m_PnpCleanupWorkerReferences);""",
+    ),
+    Rewrite(
+        "R202_worker_completion_publishes_reusable_idle",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    if (!worker)
+    {
+        NT_ASSERT(InterlockedCompareExchange(&m_PnpCleanupWorkerState, 0, 0) == VioGpuNamedPoolWorkerIdle);
+        InterlockedExchange(&m_PnpCleanupQueued, VioGpuNamedPoolCleanupIdle);
+    }""",
+        """    UNREFERENCED_PARAMETER(worker);
+    InterlockedExchange(&m_PnpCleanupQueued, VioGpuNamedPoolCleanupIdle);""",
+    ),
+    Rewrite(
+        "R203_queue_reinitializes_embedded_work_item",
+        "viogpu/common/viogpu_named_pool.cpp",
+        """    KeClearEvent(&m_PnpCleanupComplete);
+    InterlockedIncrement(&m_PnpCleanupGeneration);""",
+        """    KeClearEvent(&m_PnpCleanupComplete);
+    ExInitializeWorkItem(&m_PnpCleanupWorkItem, PnpCleanupWorker, this);
+    InterlockedIncrement(&m_PnpCleanupGeneration);""",
+    ),
+    Rewrite(
+        "R204_waiter_skips_worker_rundown_reinitialize",
+        "viogpu/common/viogpu_named_pool.cpp",
+        "            ExReInitializeRundownProtection(&m_PnpCleanupWorkerReferences);",
+        "",
+    ),
+    Rewrite(
         "S01_pending_comparison_reversed",
         "viogpu/common/viogpu_rdma.cpp",
         "if (status == STATUS_PENDING)",
@@ -1732,16 +2182,22 @@ def tree_hash(root: Path) -> str:
 
 
 def run_checker(root: Path) -> tuple[int, str]:
-    result = subprocess.run(
-        [sys.executable, CHECKER],
-        cwd=root,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=30,
-    )
-    return result.returncode, result.stdout.strip().replace("\n", " / ")
+    outputs = []
+    for checker in CHECKERS:
+        result = subprocess.run(
+            [sys.executable, checker],
+            cwd=root,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+        output = result.stdout.strip().replace("\n", " / ")
+        outputs.append(f"{Path(checker).name}: {output}")
+        if result.returncode != 0:
+            return result.returncode, " / ".join(outputs)
+    return 0, " / ".join(outputs)
 
 
 def main() -> int:

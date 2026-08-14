@@ -5,6 +5,7 @@
 #define VIOGPU_NAMED_POOL_TAG 'PNGV'
 
 static const CHAR VIOGPU_DRM_HOST_POOL_NAME[] = "drm2kgsl_host";
+static const CHAR VIOGPU_GUEST_POOL_NAME[] = "gpu_guest";
 static PVOID volatile g_VioGpuNamedPoolNotificationDriverObject = NULL;
 
 static_assert(sizeof(DROIDVMPOOL_QUERY_OUTPUT) == 96, "unexpected droidvmpool query ABI size");
@@ -126,13 +127,17 @@ static BOOLEAN NamedPoolCharacterIsValid(CHAR character)
 
 static NTSTATUS ValidateNamedPoolQuery(_In_ const DROIDVMPOOL_QUERY_OUTPUT *query,
                                        _In_ ULONG_PTR information,
-                                       _Out_ BOOLEAN *isDrmHost)
+                                       _In_reads_(expectedNameLength) const CHAR *expectedName,
+                                       _In_ ULONG expectedNameLength,
+                                       _Out_ BOOLEAN *isMatch)
 {
-    *isDrmHost = FALSE;
-    if (information != sizeof(*query) || query->InterfaceVersion != DROIDVMPOOL_INTERFACE_VERSION ||
-        query->StructureSize != sizeof(*query) || query->PoolNameLength == 0 ||
-        query->PoolNameLength >= DROIDVMPOOL_NAME_CAPACITY || query->PoolName[query->PoolNameLength] != '\0' ||
-        query->PageSize != PAGE_SIZE || query->BasePhysicalAddress.QuadPart < 0 ||
+    *isMatch = FALSE;
+    if (expectedName == NULL || expectedNameLength == 0 || expectedNameLength >= DROIDVMPOOL_NAME_CAPACITY ||
+        expectedName[expectedNameLength] != '\0' || information != sizeof(*query) ||
+        query->InterfaceVersion != DROIDVMPOOL_INTERFACE_VERSION || query->StructureSize != sizeof(*query) ||
+        query->PoolNameLength == 0 || query->PoolNameLength >= DROIDVMPOOL_NAME_CAPACITY ||
+        query->PoolName[query->PoolNameLength] != '\0' || query->PageSize != PAGE_SIZE ||
+        query->BasePhysicalAddress.QuadPart < 0 ||
         ((ULONG64)query->BasePhysicalAddress.QuadPart & (PAGE_SIZE - 1)) != 0 || query->TotalSize < PAGE_SIZE ||
         (query->TotalSize & (PAGE_SIZE - 1)) != 0 || query->TotalSize > MAXULONG_PTR ||
         (ULONG64)query->BasePhysicalAddress.QuadPart > MAXULONGLONG - (query->TotalSize - 1))
@@ -155,10 +160,8 @@ static NTSTATUS ValidateNamedPoolQuery(_In_ const DROIDVMPOOL_QUERY_OUTPUT *quer
         }
     }
 
-    *isDrmHost = query->PoolNameLength == sizeof(VIOGPU_DRM_HOST_POOL_NAME) - 1 &&
-                 RtlCompareMemory(query->PoolName,
-                                  VIOGPU_DRM_HOST_POOL_NAME,
-                                  sizeof(VIOGPU_DRM_HOST_POOL_NAME) - 1) == sizeof(VIOGPU_DRM_HOST_POOL_NAME) - 1;
+    *isMatch = query->PoolNameLength == expectedNameLength &&
+               RtlCompareMemory(query->PoolName, expectedName, expectedNameLength) == expectedNameLength;
     return STATUS_SUCCESS;
 }
 
@@ -242,11 +245,13 @@ static void FreeInterfaceName(_Inout_ PUNICODE_STRING name)
 }
 
 static NTSTATUS OpenNamedPoolConnection(_In_ PUNICODE_STRING deviceName,
+                                        _In_reads_(expectedNameLength) const CHAR *expectedName,
+                                        _In_ ULONG expectedNameLength,
                                         _Out_ PVIOGPU_NAMED_POOL_CONNECTION connection,
-                                        _Out_ BOOLEAN *isDrmHost)
+                                        _Out_ BOOLEAN *isMatch)
 {
     RtlZeroMemory(connection, sizeof(*connection));
-    *isDrmHost = FALSE;
+    *isMatch = FALSE;
 
     PFILE_OBJECT fileObject = NULL;
     PDEVICE_OBJECT deviceObject = NULL;
@@ -261,9 +266,9 @@ static NTSTATUS OpenNamedPoolConnection(_In_ PUNICODE_STRING deviceName,
     status = ioctlResult.Status;
     if (NT_SUCCESS(status))
     {
-        status = ValidateNamedPoolQuery(&query, ioctlResult.Information, isDrmHost);
+        status = ValidateNamedPoolQuery(&query, ioctlResult.Information, expectedName, expectedNameLength, isMatch);
     }
-    if (!NT_SUCCESS(status) || !*isDrmHost)
+    if (!NT_SUCCESS(status) || !*isMatch)
     {
         ObDereferenceObject(fileObject);
         return status;
@@ -307,18 +312,18 @@ static NTSTATUS OpenNamedPoolConnection(_In_ PUNICODE_STRING deviceName,
     return STATUS_SUCCESS;
 }
 
-VioGpuDrmHostPoolMapping::VioGpuDrmHostPoolMapping()
+VioGpuNamedPoolMapping::VioGpuNamedPoolMapping()
     : m_Owner(NULL), m_OwningThread(NULL), m_AcquireIrql(PASSIVE_LEVEL), m_Generation(0)
 {
     RtlZeroMemory(&m_Mapping, sizeof(m_Mapping));
 }
 
-VioGpuDrmHostPoolMapping::~VioGpuDrmHostPoolMapping()
+VioGpuNamedPoolMapping::~VioGpuNamedPoolMapping()
 {
     Release();
 }
 
-void VioGpuDrmHostPoolMapping::Release(void)
+void VioGpuNamedPoolMapping::Release(void)
 {
     if (m_Owner != NULL)
     {
@@ -327,20 +332,33 @@ void VioGpuDrmHostPoolMapping::Release(void)
     NT_ASSERT(m_Owner == NULL);
 }
 
-VioGpuDrmHostPool::VioGpuDrmHostPool()
-    : m_Ready(FALSE), m_Generation(0), m_RundownCompleted(FALSE), m_NotificationRundownCompleted(FALSE),
-      m_DisconnectInProgress(FALSE), m_ShuttingDown(FALSE), m_PnpState(VioGpuDrmHostPoolDisconnected),
+VioGpuNamedPool::VioGpuNamedPool(_In_reads_(expectedNameLength) const CHAR *expectedName,
+                                 _In_ ULONG expectedNameLength,
+                                 _In_ VIOGPU_NAMED_POOL_FAILURE_CALLBACK failureCallback,
+                                 _In_opt_ PVOID failureContext)
+    : m_Ready(FALSE), m_Generation(0), m_PnpCleanupQueued(FALSE), m_PnpCleanupGeneration(0),
+      m_PnpCleanupStatus(STATUS_SUCCESS), m_PnpCleanupWorkerState(VioGpuNamedPoolWorkerIdle), m_RundownCompleted(FALSE),
+      m_NotificationRundownCompleted(FALSE), m_DisconnectInProgress(FALSE), m_ShuttingDown(FALSE),
+      m_RemovalLatched(FALSE), m_PnpState(VioGpuNamedPoolDisconnected), m_ExpectedName(expectedName),
+      m_ExpectedNameLength(expectedNameLength), m_FailureCallback(failureCallback), m_FailureContext(failureContext),
       m_NotificationDriverObject(NULL), m_NotificationEntry(NULL), m_FileObject(NULL), m_Size(0)
 {
+    NT_ASSERT(expectedName != NULL && expectedNameLength != 0 && expectedNameLength < DROIDVMPOOL_NAME_CAPACITY &&
+              expectedName[expectedNameLength] == '\0');
+    NT_ASSERT(failureCallback != NULL);
     KeInitializeMutex(&m_StateLock, 0);
+    KeInitializeSpinLock(&m_PnpCleanupLock);
     ExInitializeRundownProtection(&m_Operations);
     ExInitializeRundownProtection(&m_NotificationCallbacks);
+    ExInitializeRundownProtection(&m_PnpCleanupWorkerReferences);
+    ExInitializeWorkItem(&m_PnpCleanupWorkItem, PnpCleanupWorker, this);
+    KeInitializeEvent(&m_PnpCleanupComplete, NotificationEvent, TRUE);
     RtlZeroMemory(&m_InterfaceName, sizeof(m_InterfaceName));
     RtlZeroMemory(&m_DirectInterface, sizeof(m_DirectInterface));
     m_BasePA.QuadPart = 0;
 }
 
-VioGpuDrmHostPool::~VioGpuDrmHostPool()
+VioGpuNamedPool::~VioGpuNamedPool()
 {
     PAGED_CODE();
     NTSTATUS status = Disconnect();
@@ -349,31 +367,55 @@ VioGpuDrmHostPool::~VioGpuDrmHostPool()
     NT_ASSERT(!HasConnectionOwner());
 }
 
-void VioGpuDrmHostPool::LockState(void) const
+VioGpuDrmHostPool::VioGpuDrmHostPool(_In_ VIOGPU_NAMED_POOL_FAILURE_CALLBACK failureCallback,
+                                     _In_opt_ PVOID failureContext)
+    : VioGpuNamedPool(VIOGPU_DRM_HOST_POOL_NAME,
+                      static_cast<ULONG>(RTL_NUMBER_OF(VIOGPU_DRM_HOST_POOL_NAME) - 1),
+                      failureCallback,
+                      failureContext)
+{
+}
+
+VioGpuGuestPool::VioGpuGuestPool(_In_ VIOGPU_NAMED_POOL_FAILURE_CALLBACK failureCallback, _In_opt_ PVOID failureContext)
+    : VioGpuNamedPool(VIOGPU_GUEST_POOL_NAME,
+                      static_cast<ULONG>(RTL_NUMBER_OF(VIOGPU_GUEST_POOL_NAME) - 1),
+                      failureCallback,
+                      failureContext)
+{
+}
+
+void VioGpuNamedPool::LockState(void) const
 {
     NTSTATUS status = KeWaitForSingleObject(&m_StateLock, Executive, KernelMode, FALSE, NULL);
     NT_ASSERT(NT_SUCCESS(status));
     UNREFERENCED_PARAMETER(status);
 }
 
-void VioGpuDrmHostPool::UnlockState(void) const
+void VioGpuNamedPool::UnlockState(void) const
 {
     KeReleaseMutex(&m_StateLock, FALSE);
 }
 
-BOOLEAN VioGpuDrmHostPool::HasConnectionOwner(void) const
+BOOLEAN VioGpuNamedPool::HasConnectionOwner(void) const
 {
     PAGED_CODE();
 
     LockState();
-    BOOLEAN owned = m_PnpState != VioGpuDrmHostPoolDisconnected || m_NotificationEntry != NULL ||
-                    m_NotificationDriverObject != NULL || m_InterfaceName.Buffer != NULL || m_FileObject != NULL ||
+    LONG pnpState = InterlockedCompareExchange(&m_PnpState, 0, 0);
+    PFILE_OBJECT fileObject = reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOID volatile *)&m_FileObject,
+                                                                                               NULL,
+                                                                                               NULL));
+    BOOLEAN owned = InterlockedCompareExchange(&m_PnpCleanupQueued, FALSE, FALSE) != FALSE ||
+                    KeReadStateEvent(&m_PnpCleanupComplete) == 0 ||
+                    InterlockedCompareExchange(&m_RemovalLatched, FALSE, FALSE) != FALSE ||
+                    pnpState != VioGpuNamedPoolDisconnected || m_NotificationEntry != NULL ||
+                    m_NotificationDriverObject != NULL || m_InterfaceName.Buffer != NULL || fileObject != NULL ||
                     m_DirectInterface.InterfaceHeader.Context != NULL;
     UnlockState();
     return owned;
 }
 
-NTSTATUS VioGpuDrmHostPool::Connect(void)
+NTSTATUS VioGpuNamedPool::Connect(void)
 {
     PAGED_CODE();
 
@@ -382,15 +424,27 @@ NTSTATUS VioGpuDrmHostPool::Connect(void)
         return STATUS_INVALID_DEVICE_STATE;
     }
 
+    NTSTATUS cleanupWait = WaitForPnpCleanupIdle();
+    if (!NT_SUCCESS(cleanupWait))
+    {
+        return cleanupWait;
+    }
+
     LockState();
     if (IsActive())
     {
         UnlockState();
         return STATUS_SUCCESS;
     }
-    if (m_PnpState != VioGpuDrmHostPoolDisconnected || m_NotificationDriverObject != NULL ||
-        m_NotificationEntry != NULL || m_InterfaceName.Buffer != NULL || m_FileObject != NULL ||
-        m_DirectInterface.InterfaceHeader.Context != NULL || m_Size != 0)
+    LONG pnpState = InterlockedCompareExchange(&m_PnpState, 0, 0);
+    PFILE_OBJECT fileObject = reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOID volatile *)&m_FileObject,
+                                                                                               NULL,
+                                                                                               NULL));
+    if (InterlockedCompareExchange(&m_PnpCleanupQueued, FALSE, FALSE) != FALSE ||
+        InterlockedCompareExchange(&m_RemovalLatched, FALSE, FALSE) != FALSE ||
+        pnpState != VioGpuNamedPoolDisconnected || m_NotificationDriverObject != NULL || m_NotificationEntry != NULL ||
+        m_InterfaceName.Buffer != NULL || fileObject != NULL || m_DirectInterface.InterfaceHeader.Context != NULL ||
+        m_Size != 0)
     {
         UnlockState();
         return STATUS_DEVICE_NOT_READY;
@@ -412,7 +466,9 @@ NTSTATUS VioGpuDrmHostPool::Connect(void)
         ExReInitializeRundownProtection(&m_NotificationCallbacks);
         m_NotificationRundownCompleted = FALSE;
     }
-    m_ShuttingDown = FALSE;
+    InterlockedExchange(&m_ShuttingDown, FALSE);
+    InterlockedExchange(&m_RemovalLatched, FALSE);
+    InterlockedExchange(&m_PnpCleanupStatus, STATUS_SUCCESS);
 
     PWSTR interfaceList = NULL;
     NTSTATUS status = IoGetDeviceInterfaces(&GUID_DEVINTERFACE_DROIDVMPOOL, NULL, 0, &interfaceList);
@@ -442,8 +498,8 @@ NTSTATUS VioGpuDrmHostPool::Connect(void)
     {
         RtlInitUnicodeString(&deviceName, interfaceName);
         VIOGPU_NAMED_POOL_CONNECTION connection = {};
-        BOOLEAN isDrmHost = FALSE;
-        status = OpenNamedPoolConnection(&deviceName, &connection, &isDrmHost);
+        BOOLEAN isMatch = FALSE;
+        status = OpenNamedPoolConnection(&deviceName, m_ExpectedName, m_ExpectedNameLength, &connection, &isMatch);
         if (!NT_SUCCESS(status))
         {
             if (NT_SUCCESS(firstFailure))
@@ -452,7 +508,7 @@ NTSTATUS VioGpuDrmHostPool::Connect(void)
             }
             continue;
         }
-        if (!isDrmHost)
+        if (!isMatch)
         {
             continue;
         }
@@ -486,6 +542,20 @@ NTSTATUS VioGpuDrmHostPool::Connect(void)
         return status;
     }
 
+    /*
+     * Publish the target identity and a callback-visible Connecting state before
+     * registration.  The registration API may deliver a target-device event
+     * before it returns, so the callback must be able to veto/remove this
+     * connection without relying on the state mutex or a fully published owner.
+     */
+    m_BasePA = selectedConnection.Query.BasePhysicalAddress;
+    m_Size = (SIZE_T)selectedConnection.Query.TotalSize;
+    LONG64 registrationGeneration = InterlockedIncrement64(&m_Generation);
+    InterlockedExchange(&m_RemovalLatched, FALSE);
+    InterlockedExchange(&m_Ready, FALSE);
+    InterlockedExchange(&m_PnpState, VioGpuNamedPoolConnecting);
+    InterlockedExchangePointer((PVOID volatile *)&m_FileObject, selectedConnection.FileObject);
+
     PVOID notificationEntry = NULL;
     status = IoRegisterPlugPlayNotification(EventCategoryTargetDeviceChange,
                                             0,
@@ -496,8 +566,29 @@ NTSTATUS VioGpuDrmHostPool::Connect(void)
                                             &notificationEntry);
     if (!NT_SUCCESS(status))
     {
+        InterlockedExchangePointer((PVOID volatile *)&m_FileObject, NULL);
+        m_BasePA.QuadPart = 0;
+        m_Size = 0;
+        InterlockedExchange(&m_Ready, FALSE);
+        InterlockedExchange(&m_PnpState, VioGpuNamedPoolFailed);
+        InterlockedExchange(&m_ShuttingDown, TRUE);
+
+        /*
+         * A failed registration may still have a callback in flight.  Join
+         * that callback before dropping the provisional target references or
+         * allowing a concurrent Disconnect()/Connect() to touch the same
+         * rundown object.  Keep m_StateLock held for the entire provisional
+         * ownership handoff; the callback path never takes this mutex.
+         */
+        ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);
+        ExRundownCompleted(&m_NotificationCallbacks);
         ReleaseNamedPoolConnection(&selectedConnection);
         FreeInterfaceName(&selectedName);
+
+        m_NotificationRundownCompleted = TRUE;
+        InterlockedExchange(&m_PnpState, VioGpuNamedPoolDisconnected);
+        InterlockedExchange(&m_RemovalLatched, FALSE);
+        InterlockedExchange(&m_ShuttingDown, FALSE);
         UnlockState();
         return status;
     }
@@ -505,15 +596,37 @@ NTSTATUS VioGpuDrmHostPool::Connect(void)
     m_NotificationDriverObject = notificationDriverObject;
     m_NotificationEntry = notificationEntry;
     m_InterfaceName = selectedName;
-    m_FileObject = selectedConnection.FileObject;
+    /* m_FileObject was published before registration and remains owned here. */
     m_DirectInterface = selectedConnection.DirectInterface;
     m_BasePA = selectedConnection.Query.BasePhysicalAddress;
     m_Size = (SIZE_T)selectedConnection.Query.TotalSize;
-    m_PnpState = VioGpuDrmHostPoolConnected;
-    InterlockedIncrement64(&m_Generation);
-    InterlockedExchange(&m_Ready, TRUE);
     RtlZeroMemory(&selectedName, sizeof(selectedName));
     RtlZeroMemory(&selectedConnection, sizeof(selectedConnection));
+
+    LONG previousState = InterlockedCompareExchange(&m_PnpState, VioGpuNamedPoolConnected, VioGpuNamedPoolConnecting);
+    BOOLEAN removalLatched = InterlockedCompareExchange(&m_RemovalLatched, FALSE, FALSE) != FALSE;
+    LONG64 publishedGeneration = InterlockedCompareExchange64(&m_Generation, 0, 0);
+    BOOLEAN commitValid = previousState == VioGpuNamedPoolConnecting && !removalLatched &&
+                          publishedGeneration == registrationGeneration;
+    if (commitValid)
+    {
+        InterlockedExchange(&m_Ready, TRUE);
+        commitValid = InterlockedCompareExchange(&m_PnpState, 0, 0) == VioGpuNamedPoolConnected &&
+                      InterlockedCompareExchange(&m_RemovalLatched, FALSE, FALSE) == FALSE &&
+                      InterlockedCompareExchange64(&m_Generation, 0, 0) == registrationGeneration;
+    }
+    if (!commitValid)
+    {
+        InterlockedExchange(&m_Ready, FALSE);
+        if (InterlockedCompareExchange(&m_PnpState, 0, 0) == VioGpuNamedPoolConnecting)
+        {
+            InterlockedCompareExchange(&m_PnpState, VioGpuNamedPoolFailed, VioGpuNamedPoolConnecting);
+        }
+        UnlockState();
+        QueuePnpCleanup();
+        /* The queued worker owns provisional teardown after the callback race. */
+        return STATUS_DEVICE_NOT_READY;
+    }
 
     PHYSICAL_ADDRESS basePA = m_BasePA;
     SIZE_T size = m_Size;
@@ -521,13 +634,14 @@ NTSTATUS VioGpuDrmHostPool::Connect(void)
 
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,
-               "viogpu droidvmpool: drm2kgsl_host PA=0x%llx size=0x%Ix\n",
+               "viogpu droidvmpool: %s PA=0x%llx size=0x%Ix\n",
+               m_ExpectedName,
                basePA.QuadPart,
                size);
     return STATUS_SUCCESS;
 }
 
-NTSTATUS VioGpuDrmHostPool::Disconnect(void)
+NTSTATUS VioGpuNamedPool::DisconnectInternal(void)
 {
     PAGED_CODE();
 
@@ -546,21 +660,22 @@ NTSTATUS VioGpuDrmHostPool::Disconnect(void)
         return STATUS_DEVICE_BUSY;
     }
     m_DisconnectInProgress = TRUE;
-    m_ShuttingDown = TRUE;
+    InterlockedExchange(&m_ShuttingDown, TRUE);
     InterlockedIncrement64(&m_Generation);
     InterlockedExchange(&m_Ready, FALSE);
     if (!m_RundownCompleted)
     {
         ExWaitForRundownProtectionRelease(&m_Operations);
+        ExRundownCompleted(&m_Operations);
         m_RundownCompleted = TRUE;
     }
-    connection.FileObject = m_FileObject;
+    connection.FileObject = reinterpret_cast<PFILE_OBJECT>(InterlockedExchangePointer((PVOID volatile *)&m_FileObject,
+                                                                                      NULL));
     connection.DirectInterface = m_DirectInterface;
-    m_FileObject = NULL;
     RtlZeroMemory(&m_DirectInterface, sizeof(m_DirectInterface));
     notificationEntry = m_NotificationEntry;
     m_NotificationEntry = NULL;
-    m_PnpState = VioGpuDrmHostPoolFailed;
+    InterlockedExchange(&m_PnpState, VioGpuNamedPoolFailed);
     UnlockState();
 
     NTSTATUS status = STATUS_SUCCESS;
@@ -575,8 +690,9 @@ NTSTATUS VioGpuDrmHostPool::Disconnect(void)
         {
             m_NotificationEntry = notificationEntry;
         }
-        NT_ASSERT(m_FileObject == NULL && m_DirectInterface.InterfaceHeader.Context == NULL);
-        m_FileObject = connection.FileObject;
+        NT_ASSERT(InterlockedCompareExchangePointer((PVOID volatile *)&m_FileObject, NULL, NULL) == NULL &&
+                  m_DirectInterface.InterfaceHeader.Context == NULL);
+        InterlockedExchangePointer((PVOID volatile *)&m_FileObject, connection.FileObject);
         m_DirectInterface = connection.DirectInterface;
         RtlZeroMemory(&connection, sizeof(connection));
         m_DisconnectInProgress = FALSE;
@@ -587,39 +703,8 @@ NTSTATUS VioGpuDrmHostPool::Disconnect(void)
     if (!m_NotificationRundownCompleted)
     {
         ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);
+        ExRundownCompleted(&m_NotificationCallbacks);
         m_NotificationRundownCompleted = TRUE;
-    }
-
-    LockState();
-    notificationEntry = m_NotificationEntry;
-    m_NotificationEntry = NULL;
-    if (connection.FileObject == NULL && connection.DirectInterface.InterfaceHeader.Context == NULL)
-    {
-        connection.FileObject = m_FileObject;
-        connection.DirectInterface = m_DirectInterface;
-        m_FileObject = NULL;
-        RtlZeroMemory(&m_DirectInterface, sizeof(m_DirectInterface));
-    }
-    else
-    {
-        NT_ASSERT(m_FileObject == NULL && m_DirectInterface.InterfaceHeader.Context == NULL);
-    }
-    UnlockState();
-    if (notificationEntry != NULL)
-    {
-        status = IoUnregisterPlugPlayNotificationEx(notificationEntry);
-        if (!NT_SUCCESS(status))
-        {
-            LockState();
-            m_NotificationEntry = notificationEntry;
-            NT_ASSERT(m_FileObject == NULL && m_DirectInterface.InterfaceHeader.Context == NULL);
-            m_FileObject = connection.FileObject;
-            m_DirectInterface = connection.DirectInterface;
-            RtlZeroMemory(&connection, sizeof(connection));
-            m_DisconnectInProgress = FALSE;
-            UnlockState();
-            return status;
-        }
     }
 
     ReleaseNamedPoolConnection(&connection);
@@ -628,16 +713,206 @@ NTSTATUS VioGpuDrmHostPool::Disconnect(void)
     m_Size = 0;
     FreeInterfaceName(&m_InterfaceName);
     m_NotificationDriverObject = NULL;
-    m_PnpState = VioGpuDrmHostPoolDisconnected;
-    m_ShuttingDown = FALSE;
+    InterlockedExchange(&m_PnpState, VioGpuNamedPoolDisconnected);
+    InterlockedExchange(&m_RemovalLatched, FALSE);
+    InterlockedExchange(&m_ShuttingDown, FALSE);
     m_DisconnectInProgress = FALSE;
     UnlockState();
     return STATUS_SUCCESS;
 }
 
-_Use_decl_annotations_ NTSTATUS VioGpuDrmHostPool::PnpNotificationCallback(PVOID notificationStructure, PVOID context)
+NTSTATUS VioGpuNamedPool::WaitForPnpCleanupIdle(void)
 {
-    VioGpuDrmHostPool *pool = reinterpret_cast<VioGpuDrmHostPool *>(context);
+    PAGED_CODE();
+
+    for (;;)
+    {
+        NTSTATUS waitStatus = KeWaitForSingleObject(&m_PnpCleanupComplete, Executive, KernelMode, FALSE, NULL);
+        if (!NT_SUCCESS(waitStatus))
+        {
+            return waitStatus;
+        }
+
+        BOOLEAN finalizeWorker = FALSE;
+        KIRQL oldIrql;
+        KeAcquireSpinLock(&m_PnpCleanupLock, &oldIrql);
+        LONG cleanupState = InterlockedCompareExchange(&m_PnpCleanupQueued, 0, 0);
+        LONG workerState = InterlockedCompareExchange(&m_PnpCleanupWorkerState, 0, 0);
+        if (cleanupState == VioGpuNamedPoolCleanupIdle && workerState == VioGpuNamedPoolWorkerIdle)
+        {
+            KeReleaseSpinLock(&m_PnpCleanupLock, oldIrql);
+            return STATUS_SUCCESS;
+        }
+        if (cleanupState == VioGpuNamedPoolCleanupTeardown && workerState == VioGpuNamedPoolWorkerRunning)
+        {
+            /* Keep Teardown published until the work-item routine has released its rundown reference. */
+            InterlockedExchange(&m_PnpCleanupWorkerState, VioGpuNamedPoolWorkerFinalizing);
+            KeClearEvent(&m_PnpCleanupComplete);
+            finalizeWorker = TRUE;
+        }
+        KeReleaseSpinLock(&m_PnpCleanupLock, oldIrql);
+
+        if (finalizeWorker)
+        {
+            ExWaitForRundownProtectionRelease(&m_PnpCleanupWorkerReferences);
+            ExRundownCompleted(&m_PnpCleanupWorkerReferences);
+            /* Idle may be published only after PASSIVE_LEVEL reinitialization makes the next acquire legal. */
+            ExReInitializeRundownProtection(&m_PnpCleanupWorkerReferences);
+
+            KeAcquireSpinLock(&m_PnpCleanupLock, &oldIrql);
+            NT_ASSERT(InterlockedCompareExchange(&m_PnpCleanupWorkerState, 0, 0) == VioGpuNamedPoolWorkerFinalizing);
+            InterlockedExchange(&m_PnpCleanupWorkerState, VioGpuNamedPoolWorkerIdle);
+            InterlockedExchange(&m_PnpCleanupQueued, VioGpuNamedPoolCleanupIdle);
+            KeSetEvent(&m_PnpCleanupComplete, IO_NO_INCREMENT, FALSE);
+            KeReleaseSpinLock(&m_PnpCleanupLock, oldIrql);
+        }
+    }
+}
+
+NTSTATUS VioGpuNamedPool::BeginPnpCleanupTeardown(void)
+{
+    PAGED_CODE();
+
+    for (;;)
+    {
+        NTSTATUS waitStatus = WaitForPnpCleanupIdle();
+        if (!NT_SUCCESS(waitStatus))
+        {
+            return waitStatus;
+        }
+
+        KIRQL oldIrql;
+        KeAcquireSpinLock(&m_PnpCleanupLock, &oldIrql);
+        LONG cleanupState = InterlockedCompareExchange(&m_PnpCleanupQueued, 0, 0);
+        if (cleanupState == VioGpuNamedPoolCleanupIdle &&
+            InterlockedCompareExchange(&m_PnpCleanupWorkerState, 0, 0) == VioGpuNamedPoolWorkerIdle)
+        {
+            InterlockedExchange(&m_PnpCleanupQueued, VioGpuNamedPoolCleanupTeardown);
+            KeClearEvent(&m_PnpCleanupComplete);
+            KeReleaseSpinLock(&m_PnpCleanupLock, oldIrql);
+            return STATUS_SUCCESS;
+        }
+        KeReleaseSpinLock(&m_PnpCleanupLock, oldIrql);
+    }
+}
+
+BOOLEAN VioGpuNamedPool::ClaimQueuedPnpCleanup(void)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_PnpCleanupLock, &oldIrql);
+    LONG cleanupState = InterlockedCompareExchange(&m_PnpCleanupQueued, 0, 0);
+    BOOLEAN claimed = cleanupState == VioGpuNamedPoolCleanupQueued;
+    if (claimed)
+    {
+        InterlockedExchange(&m_PnpCleanupQueued, VioGpuNamedPoolCleanupTeardown);
+        KeClearEvent(&m_PnpCleanupComplete);
+    }
+    KeReleaseSpinLock(&m_PnpCleanupLock, oldIrql);
+    return claimed;
+}
+
+void VioGpuNamedPool::CompletePnpCleanupTeardown(_In_ NTSTATUS status, _In_ BOOLEAN worker)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_PnpCleanupLock, &oldIrql);
+    InterlockedExchange(&m_PnpCleanupStatus, status);
+    if (!worker)
+    {
+        NT_ASSERT(InterlockedCompareExchange(&m_PnpCleanupWorkerState, 0, 0) == VioGpuNamedPoolWorkerIdle);
+        InterlockedExchange(&m_PnpCleanupQueued, VioGpuNamedPoolCleanupIdle);
+    }
+    /* A worker leaves Teardown published until a waiter joins its last-object-access barrier. */
+    KeSetEvent(&m_PnpCleanupComplete, IO_NO_INCREMENT, FALSE);
+    KeReleaseSpinLock(&m_PnpCleanupLock, oldIrql);
+}
+
+NTSTATUS VioGpuNamedPool::Disconnect(void)
+{
+    PAGED_CODE();
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    NTSTATUS waitStatus = BeginPnpCleanupTeardown();
+    if (!NT_SUCCESS(waitStatus))
+    {
+        return waitStatus;
+    }
+
+    LONG cleanupGeneration = InterlockedCompareExchange(&m_PnpCleanupGeneration, 0, 0);
+    NTSTATUS status = DisconnectInternal();
+    CompletePnpCleanupTeardown(status, FALSE);
+    waitStatus = KeWaitForSingleObject(&m_PnpCleanupComplete, Executive, KernelMode, FALSE, NULL);
+    if (!NT_SUCCESS(waitStatus))
+    {
+        return waitStatus;
+    }
+    LONG finalCleanupGeneration = InterlockedCompareExchange(&m_PnpCleanupGeneration, 0, 0);
+    if (status == STATUS_DEVICE_BUSY && cleanupGeneration != finalCleanupGeneration)
+    {
+        status = (NTSTATUS)InterlockedCompareExchange(&m_PnpCleanupStatus, 0, 0);
+    }
+    return status;
+}
+
+void VioGpuNamedPool::QueuePnpCleanup(void)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_PnpCleanupLock, &oldIrql);
+    if (InterlockedCompareExchange(&m_PnpCleanupQueued, 0, 0) != VioGpuNamedPoolCleanupIdle ||
+        InterlockedCompareExchange(&m_PnpCleanupWorkerState, 0, 0) != VioGpuNamedPoolWorkerIdle)
+    {
+        KeReleaseSpinLock(&m_PnpCleanupLock, oldIrql);
+        return;
+    }
+
+    if (!ExAcquireRundownProtection(&m_PnpCleanupWorkerReferences))
+    {
+        KeReleaseSpinLock(&m_PnpCleanupLock, oldIrql);
+        return;
+    }
+
+    InterlockedExchange(&m_PnpCleanupQueued, VioGpuNamedPoolCleanupPublishing);
+    InterlockedExchange(&m_PnpCleanupWorkerState, VioGpuNamedPoolWorkerRunning);
+    InterlockedExchange(&m_PnpCleanupStatus, STATUS_PENDING);
+    KeClearEvent(&m_PnpCleanupComplete);
+    InterlockedIncrement(&m_PnpCleanupGeneration);
+    InterlockedExchange(&m_PnpCleanupQueued, VioGpuNamedPoolCleanupQueued);
+    ExQueueWorkItem(&m_PnpCleanupWorkItem, DelayedWorkQueue);
+    KeReleaseSpinLock(&m_PnpCleanupLock, oldIrql);
+}
+
+_Use_decl_annotations_ VOID VioGpuNamedPool::PnpCleanupWorker(PVOID context)
+{
+    VioGpuNamedPool *pool = reinterpret_cast<VioGpuNamedPool *>(context);
+    if (pool == NULL)
+    {
+        return;
+    }
+    if (!pool->ClaimQueuedPnpCleanup())
+    {
+        ExReleaseRundownProtection(&pool->m_PnpCleanupWorkerReferences);
+        return;
+    }
+
+    NTSTATUS status = pool->DisconnectInternal();
+    if (!NT_SUCCESS(status) && status != STATUS_DEVICE_BUSY)
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu droidvmpool: asynchronous PnP cleanup failed, status=0x%08X\n",
+                   status);
+    }
+    pool->CompletePnpCleanupTeardown(status, TRUE);
+    /* The work item was dequeued before this routine ran; no pool access follows this release. */
+    ExReleaseRundownProtection(&pool->m_PnpCleanupWorkerReferences);
+}
+
+_Use_decl_annotations_ NTSTATUS VioGpuNamedPool::PnpNotificationCallback(PVOID notificationStructure, PVOID context)
+{
+    VioGpuNamedPool *pool = reinterpret_cast<VioGpuNamedPool *>(context);
     if (pool == NULL || !ExAcquireRundownProtection(&pool->m_NotificationCallbacks))
     {
         return STATUS_SUCCESS;
@@ -648,7 +923,7 @@ _Use_decl_annotations_ NTSTATUS VioGpuDrmHostPool::PnpNotificationCallback(PVOID
     return status;
 }
 
-NTSTATUS VioGpuDrmHostPool::HandlePnpNotification(_In_ PVOID notificationStructure)
+NTSTATUS VioGpuNamedPool::HandlePnpNotification(_In_ PVOID notificationStructure)
 {
     PAGED_CODE();
 
@@ -669,7 +944,7 @@ NTSTATUS VioGpuDrmHostPool::HandlePnpNotification(_In_ PVOID notificationStructu
     }
     if (IsEqualGUID(header->Event, GUID_TARGET_DEVICE_REMOVE_CANCELLED))
     {
-        return HandleRemoveCancelled();
+        return STATUS_SUCCESS;
     }
     if (IsEqualGUID(header->Event, GUID_TARGET_DEVICE_REMOVE_COMPLETE))
     {
@@ -678,210 +953,98 @@ NTSTATUS VioGpuDrmHostPool::HandlePnpNotification(_In_ PVOID notificationStructu
     return STATUS_SUCCESS;
 }
 
-NTSTATUS VioGpuDrmHostPool::HandleQueryRemove(_In_ PFILE_OBJECT notificationFileObject)
+NTSTATUS VioGpuNamedPool::HandleQueryRemove(_In_ PFILE_OBJECT notificationFileObject)
 {
     PAGED_CODE();
 
-    VIOGPU_NAMED_POOL_CONNECTION connection = {};
-    LockState();
-    if (m_ShuttingDown || m_PnpState == VioGpuDrmHostPoolQueryRemove)
+    if (InterlockedCompareExchange(&m_ShuttingDown, FALSE, FALSE) != FALSE)
     {
-        UnlockState();
         return STATUS_SUCCESS;
     }
-    if (m_PnpState != VioGpuDrmHostPoolConnected || notificationFileObject == NULL ||
-        notificationFileObject != m_FileObject)
+
+    LONG pnpState = InterlockedCompareExchange(&m_PnpState, 0, 0);
+    if (pnpState == VioGpuNamedPoolConnecting)
     {
-        UnlockState();
-        return STATUS_DEVICE_NOT_READY;
+        return STATUS_UNSUCCESSFUL;
     }
 
-    InterlockedIncrement64(&m_Generation);
+    PFILE_OBJECT currentFileObject = reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOID volatile *)&m_FileObject,
+                                                                                                      NULL,
+                                                                                                      NULL));
+    BOOLEAN targetOwned = notificationFileObject == NULL || notificationFileObject == currentFileObject;
+    return targetOwned && pnpState == VioGpuNamedPoolConnected ? STATUS_UNSUCCESSFUL : STATUS_SUCCESS;
+}
+
+NTSTATUS VioGpuNamedPool::HandleRemoveComplete(void)
+{
+    PAGED_CODE();
+
+    if (InterlockedCompareExchange(&m_ShuttingDown, FALSE, FALSE) != FALSE)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    LONG previousState = InterlockedCompareExchange(&m_PnpState, VioGpuNamedPoolFailed, VioGpuNamedPoolConnecting);
+    BOOLEAN queueCleanup = FALSE;
+    if (previousState == VioGpuNamedPoolConnected)
+    {
+        previousState = InterlockedCompareExchange(&m_PnpState, VioGpuNamedPoolFailed, VioGpuNamedPoolConnected);
+        if (previousState != VioGpuNamedPoolConnected)
+        {
+            return STATUS_SUCCESS;
+        }
+        queueCleanup = TRUE;
+    }
+    else if (previousState != VioGpuNamedPoolConnecting)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    InterlockedExchange(&m_RemovalLatched, TRUE);
     InterlockedExchange(&m_Ready, FALSE);
-    if (!m_RundownCompleted)
-    {
-        ExWaitForRundownProtectionRelease(&m_Operations);
-        m_RundownCompleted = TRUE;
-    }
-    connection.FileObject = m_FileObject;
-    connection.DirectInterface = m_DirectInterface;
-    m_FileObject = NULL;
-    RtlZeroMemory(&m_DirectInterface, sizeof(m_DirectInterface));
-    m_PnpState = VioGpuDrmHostPoolQueryRemove;
-    UnlockState();
-
-    ReleaseNamedPoolConnection(&connection);
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS VioGpuDrmHostPool::HandleRemoveCancelled(void)
-{
-    PAGED_CODE();
-
-    PVOID oldNotificationEntry = NULL;
-    LockState();
-    if (m_ShuttingDown)
-    {
-        UnlockState();
-        return STATUS_SUCCESS;
-    }
-    if (m_PnpState != VioGpuDrmHostPoolQueryRemove || m_NotificationEntry == NULL ||
-        m_NotificationDriverObject == NULL || m_InterfaceName.Buffer == NULL)
-    {
-        InterlockedExchange(&m_Ready, FALSE);
-        m_PnpState = VioGpuDrmHostPoolFailed;
-        UnlockState();
-        return STATUS_SUCCESS;
-    }
-    oldNotificationEntry = m_NotificationEntry;
-    m_NotificationEntry = NULL;
-    m_PnpState = VioGpuDrmHostPoolReconnecting;
-    UnlockState();
-
-    NTSTATUS status = IoUnregisterPlugPlayNotificationEx(oldNotificationEntry);
-    if (!NT_SUCCESS(status))
-    {
-        LockState();
-        NT_ASSERT(m_NotificationEntry == NULL || m_NotificationEntry == oldNotificationEntry);
-        if (m_NotificationEntry == NULL)
-        {
-            m_NotificationEntry = oldNotificationEntry;
-        }
-        m_PnpState = VioGpuDrmHostPoolFailed;
-        UnlockState();
-        return STATUS_SUCCESS;
-    }
-
-    VIOGPU_NAMED_POOL_CONNECTION connection = {};
-    BOOLEAN isDrmHost = FALSE;
-    status = OpenNamedPoolConnection(&m_InterfaceName, &connection, &isDrmHost);
-    if (NT_SUCCESS(status) && !isDrmHost)
-    {
-        status = STATUS_OBJECT_NAME_NOT_FOUND;
-    }
-
-    PVOID newNotificationEntry = NULL;
-    BOOLEAN published = FALSE;
-    LockState();
-    if (NT_SUCCESS(status) && (connection.Query.BasePhysicalAddress.QuadPart != m_BasePA.QuadPart ||
-                               (SIZE_T)connection.Query.TotalSize != m_Size))
-    {
-        status = STATUS_DEVICE_CONFIGURATION_ERROR;
-    }
-    if (NT_SUCCESS(status) && (m_ShuttingDown || m_PnpState != VioGpuDrmHostPoolReconnecting))
-    {
-        status = STATUS_DELETE_PENDING;
-    }
-    if (NT_SUCCESS(status))
-    {
-        status = IoRegisterPlugPlayNotification(EventCategoryTargetDeviceChange,
-                                                0,
-                                                connection.FileObject,
-                                                m_NotificationDriverObject,
-                                                PnpNotificationCallback,
-                                                this,
-                                                &newNotificationEntry);
-        if (NT_SUCCESS(status))
-        {
-            if (m_RundownCompleted)
-            {
-                ExReInitializeRundownProtection(&m_Operations);
-                m_RundownCompleted = FALSE;
-            }
-            m_NotificationEntry = newNotificationEntry;
-            m_FileObject = connection.FileObject;
-            m_DirectInterface = connection.DirectInterface;
-            m_BasePA = connection.Query.BasePhysicalAddress;
-            m_Size = (SIZE_T)connection.Query.TotalSize;
-            m_PnpState = VioGpuDrmHostPoolConnected;
-            InterlockedIncrement64(&m_Generation);
-            InterlockedExchange(&m_Ready, TRUE);
-            RtlZeroMemory(&connection, sizeof(connection));
-            published = TRUE;
-        }
-    }
-    if (!published && !m_ShuttingDown)
-    {
-        m_PnpState = VioGpuDrmHostPoolFailed;
-    }
-    UnlockState();
-
-    ReleaseNamedPoolConnection(&connection);
-    if (!published)
-    {
-        DbgPrintEx(DPFLTR_DEFAULT_ID,
-                   DPFLTR_ERROR_LEVEL,
-                   "viogpu droidvmpool: remove-cancelled reconnect failed, status=0x%08X\n",
-                   status);
-    }
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS VioGpuDrmHostPool::HandleRemoveComplete(void)
-{
-    PAGED_CODE();
-
-    VIOGPU_NAMED_POOL_CONNECTION connection = {};
-    PVOID notificationEntry = NULL;
-
-    LockState();
-    if (m_ShuttingDown)
-    {
-        UnlockState();
-        return STATUS_SUCCESS;
-    }
-
     InterlockedIncrement64(&m_Generation);
-    InterlockedExchange(&m_Ready, FALSE);
-    if (!m_RundownCompleted)
+    if (m_FailureCallback != NULL)
     {
-        ExWaitForRundownProtectionRelease(&m_Operations);
-        m_RundownCompleted = TRUE;
+        m_FailureCallback(m_FailureContext);
     }
-    connection.FileObject = m_FileObject;
-    connection.DirectInterface = m_DirectInterface;
-    m_FileObject = NULL;
-    RtlZeroMemory(&m_DirectInterface, sizeof(m_DirectInterface));
-    notificationEntry = m_NotificationEntry;
-    m_NotificationEntry = NULL;
-    m_PnpState = VioGpuDrmHostPoolRemoved;
-    UnlockState();
-
-    NTSTATUS status = STATUS_SUCCESS;
-    if (notificationEntry != NULL)
+    if (queueCleanup)
     {
-        status = IoUnregisterPlugPlayNotificationEx(notificationEntry);
+        QueuePnpCleanup();
     }
-    if (!NT_SUCCESS(status))
-    {
-        LockState();
-        NT_ASSERT(m_NotificationEntry == NULL || m_NotificationEntry == notificationEntry);
-        if (m_NotificationEntry == NULL)
-        {
-            m_NotificationEntry = notificationEntry;
-        }
-        NT_ASSERT(m_FileObject == NULL && m_DirectInterface.InterfaceHeader.Context == NULL);
-        m_FileObject = connection.FileObject;
-        m_DirectInterface = connection.DirectInterface;
-        RtlZeroMemory(&connection, sizeof(connection));
-        m_PnpState = VioGpuDrmHostPoolFailed;
-        UnlockState();
-        DbgPrintEx(DPFLTR_DEFAULT_ID,
-                   DPFLTR_ERROR_LEVEL,
-                   "viogpu droidvmpool: remove-complete unregister failed, status=0x%08X\n",
-                   status);
-        return STATUS_SUCCESS;
-    }
-
-    ReleaseNamedPoolConnection(&connection);
-    LockState();
-    m_BasePA.QuadPart = 0;
-    m_Size = 0;
-    UnlockState();
     return STATUS_SUCCESS;
 }
 
-BOOLEAN VioGpuDrmHostPool::AcquireMapping(_Out_ VioGpuDrmHostPoolMapping *mapping) const
+BOOLEAN VioGpuNamedPool::QueryPhysicalRange(_Out_ PPHYSICAL_ADDRESS physicalAddress, _Out_ SIZE_T *size) const
+{
+    if (physicalAddress == NULL || size == NULL || KeGetCurrentIrql() > DISPATCH_LEVEL)
+    {
+        return FALSE;
+    }
+    physicalAddress->QuadPart = 0;
+    *size = 0;
+
+    if (!ExAcquireRundownProtection(&m_Operations))
+    {
+        return FALSE;
+    }
+
+    LONG64 generation = InterlockedCompareExchange64(&m_Generation, 0, 0);
+    PHYSICAL_ADDRESS rangeBase = m_BasePA;
+    SIZE_T rangeSize = m_Size;
+    BOOLEAN valid = generation > 0 && IsActive() && rangeBase.QuadPart >= 0 && rangeSize >= PAGE_SIZE &&
+                    ((ULONG64)rangeBase.QuadPart & (PAGE_SIZE - 1)) == 0 && (rangeSize & (PAGE_SIZE - 1)) == 0 &&
+                    (ULONG64)rangeBase.QuadPart <= MAXULONGLONG - (rangeSize - 1) &&
+                    generation == InterlockedCompareExchange64(&m_Generation, 0, 0) && IsActive();
+    if (valid)
+    {
+        *physicalAddress = rangeBase;
+        *size = rangeSize;
+    }
+    ExReleaseRundownProtection(&m_Operations);
+    return valid;
+}
+
+BOOLEAN VioGpuNamedPool::AcquireMapping(_Out_ VioGpuNamedPoolMapping *mapping) const
 {
     KIRQL currentIrql = KeGetCurrentIrql();
     if (mapping == NULL || mapping->m_Owner != NULL || mapping->m_OwningThread != NULL ||
@@ -897,8 +1060,11 @@ BOOLEAN VioGpuDrmHostPool::AcquireMapping(_Out_ VioGpuDrmHostPoolMapping *mappin
 
     BOOLEAN acquired = FALSE;
     LONG64 generation = InterlockedCompareExchange64(&m_Generation, 0, 0);
+    PFILE_OBJECT fileObject = reinterpret_cast<PFILE_OBJECT>(InterlockedCompareExchangePointer((PVOID volatile *)&m_FileObject,
+                                                                                               NULL,
+                                                                                               NULL));
     DROIDVMPOOL_MAPPING mappingValue = {};
-    if (generation > 0 && IsActive() && m_FileObject != NULL && m_DirectInterface.InterfaceHeader.Context != NULL &&
+    if (generation > 0 && IsActive() && fileObject != NULL && m_DirectInterface.InterfaceHeader.Context != NULL &&
         m_DirectInterface.AcquireMapping != NULL && m_DirectInterface.ReleaseMapping != NULL)
     {
         acquired = m_DirectInterface.AcquireMapping(m_DirectInterface.InterfaceHeader.Context, &mappingValue);
@@ -929,7 +1095,7 @@ BOOLEAN VioGpuDrmHostPool::AcquireMapping(_Out_ VioGpuDrmHostPoolMapping *mappin
     return TRUE;
 }
 
-void VioGpuDrmHostPool::ReleaseMapping(_Inout_ VioGpuDrmHostPoolMapping *mapping) const
+void VioGpuNamedPool::ReleaseMapping(_Inout_ VioGpuNamedPoolMapping *mapping) const
 {
     NT_ASSERT(mapping != NULL && mapping->m_Owner == this);
     NT_ASSERT(mapping->m_OwningThread == KeGetCurrentThread());
