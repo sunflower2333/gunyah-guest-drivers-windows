@@ -94,11 +94,20 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
     source = strip_comments_and_literals(source_text)
     code = compact(source)
     connect = compact(function_body("VioGpuDrmHostPool::Connect", source))
+    open_connection = compact(function_body("OpenNamedPoolConnection", source))
+    release_connection = compact(function_body("ReleaseNamedPoolConnection", source))
+    duplicate_name = compact(function_body("DuplicateInterfaceName", source))
     validate = compact(function_body("ValidateNamedPoolQuery", source))
     validate_direct = compact(function_body("ValidateDirectInterface", source))
     validate_mapping = compact(function_body("ValidateNamedPoolMapping", source))
     query_direct = compact(function_body("NamedPoolQueryDirectInterface", source))
     disconnect = compact(function_body("VioGpuDrmHostPool::Disconnect", source))
+    callback = compact(function_body("VioGpuDrmHostPool::PnpNotificationCallback", source))
+    handle_pnp = compact(function_body("VioGpuDrmHostPool::HandlePnpNotification", source))
+    query_remove = compact(function_body("VioGpuDrmHostPool::HandleQueryRemove", source))
+    remove_cancelled = compact(function_body("VioGpuDrmHostPool::HandleRemoveCancelled", source))
+    remove_complete = compact(function_body("VioGpuDrmHostPool::HandleRemoveComplete", source))
+    has_owner = compact(function_body("VioGpuDrmHostPool::HasConnectionOwner", source))
     acquire = compact(function_body("VioGpuDrmHostPool::AcquireMapping", source))
     release_mapping = compact(function_body("VioGpuDrmHostPool::ReleaseMapping", source))
 
@@ -118,37 +127,64 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
             fail(f"host-owned pool client must not allocate, free, clear, or remap storage: {forbidden}")
 
     for token in (
-        "IoGetDeviceInterfaces(&GUID_DEVINTERFACE_DROIDVMPOOL,NULL,0,&interfaceList)",
-        "for(PWSTRinterfaceName=interfaceList;",
-        "interfaceName+=(deviceName.Length/sizeof(WCHAR))+1)",
-        "IoGetDeviceObjectPointer(&deviceName,FILE_ALL_ACCESS,&fileObject,&deviceObject)",
+        "IoGetDeviceObjectPointer(deviceName,FILE_ALL_ACCESS,&fileObject,&deviceObject)",
         "NamedPoolQuery(deviceObject,fileObject,&query)",
-        "ValidateNamedPoolQuery(&query,ioctlResult.Information,&isDrmHost)",
-        "if(!isDrmHost){ObDereferenceObject(fileObject);continue;}",
+        "ValidateNamedPoolQuery(&query,ioctlResult.Information,isDrmHost)",
+        "if(!NT_SUCCESS(status)||!*isDrmHost){ObDereferenceObject(fileObject);returnstatus;}",
         "NamedPoolQueryDirectInterface(deviceObject,&directInterface)",
         "ValidateDirectInterface(&directInterface)",
         "directInterface.AcquireMapping(directInterface.InterfaceHeader.Context,&mapping)",
         "ValidateNamedPoolMapping(&mapping,&query)",
         "directInterface.ReleaseMapping(directInterface.InterfaceHeader.Context);",
+        "connection->FileObject=fileObject;",
+        "connection->DirectInterface=directInterface;",
+        "connection->Query=query;",
+    ):
+        require_once(open_connection, token, f"target open must retain validated direct-interface step: {token}")
+
+    release_direct = release_connection.find("DereferenceDirectInterface(&connection->DirectInterface);")
+    release_file = release_connection.find("ObDereferenceObject(connection->FileObject);")
+    if min(release_direct, release_file) < 0 or release_direct > release_file:
+        fail("connection release must dereference the direct interface before the file object")
+    for token in (
+        "source->Length>MAXUSHORT-sizeof(WCHAR)",
+        "ExAllocatePoolUninitialized(PagedPool,maximumLength,VIOGPU_NAMED_POOL_TAG)",
+        "buffer[source->Length/sizeof(WCHAR)]=",
+    ):
+        require_once(duplicate_name, token, f"saved target symbolic link must remain bounded and terminated: {token}")
+
+    for token in (
+        "GetNamedPoolNotificationDriverObject()",
+        "IoGetDeviceInterfaces(&GUID_DEVINTERFACE_DROIDVMPOOL,NULL,0,&interfaceList)",
+        "for(PWSTRinterfaceName=interfaceList;",
+        "interfaceName+=(deviceName.Length/sizeof(WCHAR))+1)",
+        "status=OpenNamedPoolConnection(&deviceName,&connection,&isDrmHost);",
+        "if(!isDrmHost){continue;}",
         "++matchCount;",
+        "status=DuplicateInterfaceName(&deviceName,&selectedName);",
         "if(!NT_SUCCESS(firstFailure)||matchCount!=1)",
-        "returnmatchCount==0?STATUS_NOT_FOUND:STATUS_DEVICE_CONFIGURATION_ERROR;",
-        "m_FileObject=selectedFileObject;",
-        "m_DirectInterface=selectedDirectInterface;",
+        "IoRegisterPlugPlayNotification(EventCategoryTargetDeviceChange,0,selectedConnection.FileObject,notificationDriverObject,PnpNotificationCallback,this,&notificationEntry)",
+        "m_NotificationDriverObject=notificationDriverObject;",
+        "m_NotificationEntry=notificationEntry;",
+        "m_InterfaceName=selectedName;",
+        "m_FileObject=selectedConnection.FileObject;",
+        "m_DirectInterface=selectedConnection.DirectInterface;",
+        "m_PnpState=VioGpuDrmHostPoolConnected;",
         "InterlockedExchange(&m_Ready,TRUE);",
     ):
-        require_once(connect, token, f"enumeration must retain exact fail-closed selection step: {token}")
-
-    selected_release = (
-        "if(selectedFileObject!=NULL){"
-        "DereferenceDirectInterface(&selectedDirectInterface);"
-        "ObDereferenceObject(selectedFileObject);"
-        "}"
-        "if(!NT_SUCCESS(firstFailure)){returnfirstFailure;}"
-    )
-    require_once(connect, selected_release, "any malformed or unreachable provider must release a provisional match and fail")
-    if connect.find("ExFreePool(interfaceList);") > connect.find("m_FileObject=selectedFileObject;"):
-        fail("client must release the interface MULTI_SZ before publishing its connection")
+        require_once(connect, token, f"enumeration must retain exact fail-closed selection/PnP step: {token}")
+    if connect.count("ReleaseNamedPoolConnection(&selectedConnection);") != 2 or connect.count(
+        "FreeInterfaceName(&selectedName);"
+    ) != 2:
+        fail("selection and registration failures must release both the provisional target and saved name")
+    free_interfaces = connect.find("ExFreePool(interfaceList);")
+    register_target = connect.find("IoRegisterPlugPlayNotification(EventCategoryTargetDeviceChange")
+    publish_connection = connect.find("m_FileObject=selectedConnection.FileObject;")
+    publish_ready = connect.find("InterlockedExchange(&m_Ready,TRUE);")
+    if min(free_interfaces, register_target, publish_connection, publish_ready) < 0 or not (
+        free_interfaces < register_target < publish_connection < publish_ready
+    ):
+        fail("client must free discovery storage, register target PnP, then publish the connection and readiness")
 
     for token in (
         "information!=sizeof(*query)",
@@ -196,15 +232,154 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
     ):
         require_once(validate_mapping, token, f"initial mapping must match discovery metadata: {token}")
 
+    for token in (
+        "ExAcquireRundownProtection(&pool->m_NotificationCallbacks)",
+        "status=pool->HandlePnpNotification(notificationStructure);",
+        "ExReleaseRundownProtection(&pool->m_NotificationCallbacks);",
+    ):
+        require_once(callback, token, f"PnP callback must hold its object-lifetime rundown: {token}")
+    callback_acquire = callback.find("ExAcquireRundownProtection(&pool->m_NotificationCallbacks)")
+    callback_dispatch = callback.find("pool->HandlePnpNotification(notificationStructure)")
+    callback_release = callback.find("ExReleaseRundownProtection(&pool->m_NotificationCallbacks)")
+    if not 0 <= callback_acquire < callback_dispatch < callback_release:
+        fail("PnP callback must hold notification rundown across dispatch")
+
+    for token in (
+        "GUID_TARGET_DEVICE_QUERY_REMOVE",
+        "HandleQueryRemove(removal->FileObject)",
+        "GUID_TARGET_DEVICE_REMOVE_CANCELLED",
+        "HandleRemoveCancelled()",
+        "GUID_TARGET_DEVICE_REMOVE_COMPLETE",
+        "HandleRemoveComplete()",
+    ):
+        require_once(handle_pnp, token, f"target-device callback must dispatch every removal event: {token}")
+
+    query_withdraw = query_remove.find("InterlockedExchange(&m_Ready,FALSE);")
+    query_drain = query_remove.find("ExWaitForRundownProtectionRelease(&m_Operations);")
+    query_clear = query_remove.find("RtlZeroMemory(&m_DirectInterface,sizeof(m_DirectInterface));")
+    query_state = query_remove.find("m_PnpState=VioGpuDrmHostPoolQueryRemove;")
+    query_unlock = query_remove.find("UnlockState();", query_state)
+    query_release = query_remove.find("ReleaseNamedPoolConnection(&connection);", query_unlock)
+    if min(query_withdraw, query_drain, query_clear, query_state, query_unlock, query_release) < 0 or not (
+        query_withdraw < query_drain < query_clear < query_state < query_unlock < query_release
+    ):
+        fail("query-remove must withdraw readiness, drain leases, detach the interface, and release the target")
+    if "m_NotificationEntry=NULL" in query_remove or "IoUnregisterPlugPlayNotification" in query_remove:
+        fail("query-remove must retain the old registration for remove-cancelled or remove-complete")
+    if "m_BasePA.QuadPart=0" in query_remove or "m_Size=0" in query_remove:
+        fail("query-remove must retain the selected pool identity for remove-cancelled validation")
+    require_once(
+        query_remove,
+        "notificationFileObject!=m_FileObject",
+        "query-remove must verify the notification belongs to the retained target file object",
+    )
+
+    cancel_detach = remove_cancelled.find("oldNotificationEntry=m_NotificationEntry;")
+    cancel_unregister = remove_cancelled.find("IoUnregisterPlugPlayNotificationEx(oldNotificationEntry);")
+    cancel_open = remove_cancelled.find("OpenNamedPoolConnection(&m_InterfaceName,&connection,&isDrmHost);")
+    cancel_identity = remove_cancelled.find(
+        "connection.Query.BasePhysicalAddress.QuadPart!=m_BasePA.QuadPart"
+    )
+    cancel_register = remove_cancelled.find("IoRegisterPlugPlayNotification(EventCategoryTargetDeviceChange")
+    cancel_reinitialize = remove_cancelled.find("ExReInitializeRundownProtection(&m_Operations);")
+    cancel_publish = remove_cancelled.find("m_FileObject=connection.FileObject;")
+    cancel_ready = remove_cancelled.find("InterlockedExchange(&m_Ready,TRUE);")
+    if min(
+        cancel_detach,
+        cancel_unregister,
+        cancel_open,
+        cancel_identity,
+        cancel_register,
+        cancel_reinitialize,
+        cancel_publish,
+        cancel_ready,
+    ) < 0 or not (
+        cancel_detach
+        < cancel_unregister
+        < cancel_open
+        < cancel_identity
+        < cancel_register
+        < cancel_reinitialize
+        < cancel_publish
+        < cancel_ready
+    ):
+        fail("remove-cancelled must replace the old registration, requery the exact target, and publish a new lease epoch")
+    for token in (
+        "NT_ASSERT(m_NotificationEntry==NULL||m_NotificationEntry==oldNotificationEntry);",
+        "if(m_NotificationEntry==NULL){m_NotificationEntry=oldNotificationEntry;}",
+    ):
+        require_once(
+            remove_cancelled,
+            token,
+            "remove-cancelled must retain an unregister-failed entry even during concurrent disconnect",
+        )
+
+    complete_withdraw = remove_complete.find("InterlockedExchange(&m_Ready,FALSE);")
+    complete_drain = remove_complete.find("ExWaitForRundownProtectionRelease(&m_Operations);")
+    complete_detach = remove_complete.find("m_NotificationEntry=NULL;")
+    complete_release = remove_complete.find("ReleaseNamedPoolConnection(&connection);")
+    complete_unregister = remove_complete.find("IoUnregisterPlugPlayNotificationEx(notificationEntry);")
+    if min(complete_withdraw, complete_drain, complete_detach, complete_release, complete_unregister) < 0 or not (
+        complete_withdraw < complete_drain < complete_detach < complete_unregister < complete_release
+    ):
+        fail("remove-complete must unregister before releasing surprise-removed target references")
+    for token in (
+        "NT_ASSERT(m_NotificationEntry==NULL||m_NotificationEntry==notificationEntry);",
+        "if(m_NotificationEntry==NULL){m_NotificationEntry=notificationEntry;}",
+    ):
+        require_once(
+            remove_complete,
+            token,
+            "remove-complete must retain an unregister-failed entry even during concurrent disconnect",
+        )
+    for token in (
+        "m_FileObject=connection.FileObject;",
+        "m_DirectInterface=connection.DirectInterface;",
+        "RtlZeroMemory(&connection,sizeof(connection));",
+    ):
+        require_once(
+            remove_complete,
+            token,
+            "surprise-remove unregister failure must restore the complete target connection",
+        )
+    if "!m_ShuttingDown&&m_NotificationEntry==NULL" in remove_cancelled or (
+        "!m_ShuttingDown&&m_NotificationEntry==NULL" in remove_complete
+    ):
+        fail("callback unregister failure must not hide a live registration from concurrent disconnect")
+
     withdraw = disconnect.find("InterlockedExchange(&m_Ready,FALSE);")
     drain = disconnect.find("ExWaitForRundownProtectionRelease(&m_Operations);")
     clear_direct = disconnect.find("RtlZeroMemory(&m_DirectInterface,sizeof(m_DirectInterface));")
-    dereference_direct = disconnect.find("DereferenceDirectInterface(&directInterface);")
-    dereference_file = disconnect.find("ObDereferenceObject(fileObject);")
-    if min(withdraw, drain, clear_direct, dereference_direct, dereference_file) < 0 or not (
-        withdraw < drain < clear_direct < dereference_direct < dereference_file
+    release_target = disconnect.find("ReleaseNamedPoolConnection(&connection);")
+    unregister = disconnect.find("IoUnregisterPlugPlayNotificationEx(notificationEntry);")
+    drain_callbacks = disconnect.find("ExWaitForRundownProtectionRelease(&m_NotificationCallbacks);")
+    free_name = disconnect.find("FreeInterfaceName(&m_InterfaceName);")
+    disconnected = disconnect.find("m_PnpState=VioGpuDrmHostPoolDisconnected;")
+    if min(withdraw, drain, clear_direct, release_target, unregister, drain_callbacks, free_name, disconnected) < 0 or not (
+        withdraw < drain < clear_direct < unregister < drain_callbacks < release_target < free_name < disconnected
     ):
-        fail("disconnect must drain mapping operations before releasing the direct interface and file owner")
+        fail("disconnect must unregister and drain callbacks before releasing the target connection")
+    if disconnect.count("IoUnregisterPlugPlayNotificationEx(notificationEntry)") != 2:
+        fail("disconnect must unregister both the initial entry and any entry published by an in-flight callback")
+    for token in (
+        "if(m_DisconnectInProgress){UnlockState();returnSTATUS_DEVICE_BUSY;}",
+        "m_DisconnectInProgress=TRUE;",
+    ):
+        require_once(disconnect, token, f"disconnect must serialize teardown and restore failed ownership: {token}")
+    for token in ("m_FileObject=connection.FileObject;", "m_DirectInterface=connection.DirectInterface;"):
+        if disconnect.count(token) != 2:
+            fail(f"both unregister failure exits must restore the target connection: {token}")
+    if disconnect.count("m_DisconnectInProgress=FALSE;") != 3:
+        fail("every disconnect success/failure exit must release the single-flight owner")
+    for token in (
+        "m_PnpState!=VioGpuDrmHostPoolDisconnected",
+        "m_NotificationDriverObject!=NULL",
+        "m_NotificationEntry!=NULL",
+        "m_InterfaceName.Buffer!=NULL",
+        "m_FileObject!=NULL",
+        "m_DirectInterface.InterfaceHeader.Context!=NULL",
+    ):
+        require_once(has_owner, token, f"connection ownership must include every PnP lifetime component: {token}")
 
     for token in (
         "mapping==NULL",
@@ -233,6 +408,18 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "VioGpuDrmHostPoolMapping &operator=(const VioGpuDrmHostPoolMapping &);" not in header_text
     ):
         fail("mapping lease must remain non-copyable")
+    for token in (
+        "static DRIVER_NOTIFICATION_CALLBACK_ROUTINE PnpNotificationCallback;",
+        "mutable KMUTEX m_StateLock;",
+        "EX_RUNDOWN_REF m_NotificationCallbacks;",
+        "BOOLEAN m_NotificationRundownCompleted;",
+        "BOOLEAN m_DisconnectInProgress;",
+        "PDRIVER_OBJECT m_NotificationDriverObject;",
+        "PVOID m_NotificationEntry;",
+        "UNICODE_STRING m_InterfaceName;",
+    ):
+        if header_text.count(token) != 1:
+            fail(f"named-pool client must retain remote-PnP lifetime state: {token}")
     if "DROIDVMPOOL_INTERFACE_VERSION_V1" not in interface_text or "IOCTL_DROIDVMPOOL_QUERY" not in interface_text:
         fail("client must consume the versioned provider query ABI")
 
@@ -242,6 +429,8 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
     start = compact(function_body("VioGpuAdapter::StartNativeContextTransport", adapter))
     begin = compact(function_body("VioGpuAdapter::BeginNativeContextInitialization", adapter))
     complete = compact(function_body("VioGpuAdapter::CompleteNativeContextInitialization", adapter))
+    query_readiness = compact(function_body("VioGpuAdapter::QueryNativeContextReadiness", adapter))
+    generation_current = compact(function_body("VioGpuAdapter::IsNativeContextGenerationCurrent", adapter))
     stop = compact(function_body("VioGpuAdapter::StopNativeContextTransportLocked", adapter))
     destructor = compact(function_body("VioGpuAdapter::~VioGpuAdapter", adapter))
 
@@ -252,11 +441,21 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
         fail("adapter must connect restricted DMA, then drm2kgsl_host, before VirtIO initialization")
     require_once(begin, "m_DrmHostPool.HasConnectionOwner()", "initialization must reject a stale named-pool owner")
     require_once(complete, "m_DrmHostPool.IsActive()", "Ready publication must require the named pool connection")
-    named_close = stop.find("m_DrmHostPool.Disconnect();")
+    if query_readiness.count("m_DrmHostPool.IsActive()") != 2:
+        fail("readiness snapshots must check named-pool activity before and after copying published state")
+    require_once(
+        generation_current,
+        "m_DrmHostPool.IsActive()",
+        "context generation must become invalid while the remote pool is unavailable",
+    )
+    named_close = stop.find("status=m_DrmHostPool.Disconnect();")
+    named_failure = stop.find("if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", named_close)
     rdma_close = stop.find("status=m_RdmaPool.Disconnect();")
     offline = stop.find("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline);")
-    if min(named_close, rdma_close, offline) < 0 or not named_close < rdma_close < offline:
-        fail("teardown must release the named pool before RDMA and before Offline publication")
+    if min(named_close, named_failure, rdma_close, offline) < 0 or not (
+        named_close < named_failure < rdma_close < offline
+    ):
+        fail("teardown must propagate named-pool unregister failure before RDMA and Offline publication")
     if destructor.count("m_DrmHostPool.HasConnectionOwner()") != 2:
         fail("destructor must detect and then assert release of the named-pool owner")
     require_once(destructor, "NT_ASSERT(!m_DrmHostPool.HasConnectionOwner());", "destructor must require named-pool release")
@@ -264,7 +463,7 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
     if adapter_text.count("AcquireDrmHostPoolMapping") != 1 or adapter_header_text.count(
         "AcquireDrmHostPoolMapping"
     ) != 1:
-        fail("mapping access must remain an unused scaffold until target-device PnP coordination is implemented")
+        fail("mapping access must remain unused until no-suspend and cache/coherency contracts are implemented")
 
     guarded_header = compact(adapter_header_text)
     for token in (

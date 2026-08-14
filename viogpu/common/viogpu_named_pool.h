@@ -6,6 +6,9 @@
 
 class VioGpuDrmHostPool;
 
+VOID VioGpuSetNamedPoolNotificationDriverObject(_In_ PDRIVER_OBJECT driverObject);
+VOID VioGpuClearNamedPoolNotificationDriverObject(void);
+
 class VioGpuDrmHostPoolMapping
 {
   public:
@@ -47,25 +50,49 @@ class VioGpuDrmHostPool
     ~VioGpuDrmHostPool();
 
     NTSTATUS Connect(void);
-    void Disconnect(void);
+    NTSTATUS Disconnect(void);
     BOOLEAN AcquireMapping(_Out_ VioGpuDrmHostPoolMapping *mapping) const;
     BOOLEAN IsActive(void) const
     {
         return InterlockedCompareExchange(&m_Ready, FALSE, FALSE) != FALSE;
     }
-    BOOLEAN HasConnectionOwner(void) const
-    {
-        return m_FileObject != NULL || m_DirectInterface.InterfaceHeader.Context != NULL;
-    }
+    BOOLEAN HasConnectionOwner(void) const;
 
   private:
     friend class VioGpuDrmHostPoolMapping;
 
+    enum VIOGPU_DRM_HOST_POOL_PNP_STATE
+    {
+        VioGpuDrmHostPoolDisconnected = 0,
+        VioGpuDrmHostPoolConnected,
+        VioGpuDrmHostPoolQueryRemove,
+        VioGpuDrmHostPoolReconnecting,
+        VioGpuDrmHostPoolRemoved,
+        VioGpuDrmHostPoolFailed,
+    };
+
+    static DRIVER_NOTIFICATION_CALLBACK_ROUTINE PnpNotificationCallback;
+
+    NTSTATUS HandlePnpNotification(_In_ PVOID notificationStructure);
+    NTSTATUS HandleQueryRemove(_In_ PFILE_OBJECT notificationFileObject);
+    NTSTATUS HandleRemoveCancelled(void);
+    NTSTATUS HandleRemoveComplete(void);
+    void LockState(void) const;
+    void UnlockState(void) const;
     void ReleaseMapping(_Inout_ VioGpuDrmHostPoolMapping *mapping) const;
 
+    mutable KMUTEX m_StateLock;
     mutable EX_RUNDOWN_REF m_Operations;
+    EX_RUNDOWN_REF m_NotificationCallbacks;
     mutable volatile LONG m_Ready;
     BOOLEAN m_RundownCompleted;
+    BOOLEAN m_NotificationRundownCompleted;
+    BOOLEAN m_DisconnectInProgress;
+    BOOLEAN m_ShuttingDown;
+    VIOGPU_DRM_HOST_POOL_PNP_STATE m_PnpState;
+    PDRIVER_OBJECT m_NotificationDriverObject;
+    PVOID m_NotificationEntry;
+    UNICODE_STRING m_InterfaceName;
     PFILE_OBJECT m_FileObject;
     DROIDVMPOOL_DIRECT_INTERFACE m_DirectInterface;
     PHYSICAL_ADDRESS m_BasePA;

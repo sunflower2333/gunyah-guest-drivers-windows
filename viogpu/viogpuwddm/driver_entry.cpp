@@ -76,11 +76,13 @@ extern "C" NTSTATUS VioGpuWddmInitializeMiniportCompileOnly(_In_ DRIVER_OBJECT *
     DRIVER_INITIALIZATION_DATA initialData;
     VioGpuWddmBuildInitializationData(&initialData);
 
+    VioGpuSetNamedPoolNotificationDriverObject(driverObject);
     WPP_INIT_TRACING(driverObject, registryPath);
     NTSTATUS status = DxgkInitialize(driverObject, registryPath, &initialData);
     if (!NT_SUCCESS(status))
     {
         WPP_CLEANUP(NULL);
+        VioGpuClearNamedPoolNotificationDriverObject();
     }
 
     return status;

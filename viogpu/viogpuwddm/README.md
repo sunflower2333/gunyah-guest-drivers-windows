@@ -82,11 +82,26 @@ The compile-only target now discovers the exact `drm2kgsl_host` provider and
 uses its versioned direct interface. The discovery IOCTL exposes only name,
 GPA, and size. Provider and client rundown protection make the kernel VA valid
 only inside a successful `AcquireMapping`/`ReleaseMapping` interval, and
-provider `ReleaseHardware` waits for those intervals before unmapping. This is
-not yet a complete cross-stack PnP contract: viogpu must register for target
-device change notification, release the remote interface on query-remove or
-surprise-remove, and reconnect after remove-cancelled before any blob data path
-can be enabled. A retained file or direct-interface reference is not a mapping
+provider `ReleaseHardware` waits for those intervals before unmapping.
+
+The client now registers `EventCategoryTargetDeviceChange` with the callback's
+own viogpu `DRIVER_OBJECT` and retains the exact selected symbolic link. On
+query-remove it withdraws mapping and adapter readiness, drains the mapping
+epoch, and releases the direct interface and file reference while retaining the
+old notification registration. Remove-cancelled unregisters the old entry,
+reopens that exact link, revalidates the provider plus unchanged GPA/size,
+registers a replacement notification, and opens a new mapping epoch.
+Remove-complete also covers surprise removal. Voluntary disconnect is
+single-flight and unregisters notifications before releasing the corresponding
+target references; an unregister failure restores every owner and propagates to
+adapter teardown instead of publishing `Offline`.
+
+This remains a lifecycle scaffold, not a usable shared-memory transport. The
+adapter mapping API intentionally has no consumer. Before any control/response
+ring can use it, the contract must require short, non-suspendable mapping leases
+so query-remove cannot wait indefinitely on arbitrary transport ownership, and
+must define cache maintenance and coherency across the Windows CPU mapping,
+crosvm, and KGSL. A retained file or direct-interface reference is not a mapping
 lease and must not be treated as removal coordination.
 
 The current initialization transport tears down fail-closed. It releases every

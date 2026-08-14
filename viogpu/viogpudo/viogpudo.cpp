@@ -3160,6 +3160,9 @@ BOOLEAN VioGpuAdapter::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
     ready = InterlockedCompareExchange(&m_NativeContextState,
                                        VioGpuNativeContextOffline,
                                        VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
+#if defined(VIOGPU_WDDM_CI_ONLY)
+            m_DrmHostPool.IsActive() &&
+#endif
             m_NativeContextReadiness.Ready && m_NativeContextReadiness.Generation == generation &&
             m_NativeContextReadiness.ResetGeneration == currentResetGeneration && currentResetGeneration != 0 &&
             m_CtrlQueue.IsSynchronousRequestsHealthy();
@@ -3181,6 +3184,9 @@ BOOLEAN VioGpuAdapter::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
         ready = InterlockedCompareExchange(&m_NativeContextState,
                                            VioGpuNativeContextOffline,
                                            VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
+#if defined(VIOGPU_WDDM_CI_ONLY)
+                m_DrmHostPool.IsActive() &&
+#endif
                 InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) == generation &&
                 (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration,
                                                         0,
@@ -3542,6 +3548,9 @@ BOOLEAN VioGpuAdapter::IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REG
 BOOLEAN VioGpuAdapter::IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration)
 {
     return !m_pVioGpuDod->IsHardwareResetRequested() &&
+#if defined(VIOGPU_WDDM_CI_ONLY)
+           m_DrmHostPool.IsActive() &&
+#endif
            generation == InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) && resetGeneration != 0 &&
            resetGeneration == (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0) &&
            InterlockedCompareExchange(&m_NativeContextState,
@@ -5257,7 +5266,12 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     m_CursorSegment.Close();
     m_GpuBuf.Close();
 #if defined(VIOGPU_WDDM_CI_ONLY)
-    m_DrmHostPool.Disconnect();
+    status = m_DrmHostPool.Disconnect();
+    if (!NT_SUCCESS(status))
+    {
+        FailNativeContextAtAnyIrql();
+        return status;
+    }
 #endif
     status = m_RdmaPool.Disconnect();
     if (!NT_SUCCESS(status))

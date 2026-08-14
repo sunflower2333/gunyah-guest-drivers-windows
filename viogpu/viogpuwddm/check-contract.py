@@ -915,9 +915,10 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
         "PAGED_CODE(); "
         "DRIVER_INITIALIZATION_DATA initialData; "
         "VioGpuWddmBuildInitializationData(&initialData); "
+        "VioGpuSetNamedPoolNotificationDriverObject(driverObject); "
         "WPP_INIT_TRACING(driverObject, registryPath); "
         "NTSTATUS status = DxgkInitialize(driverObject, registryPath, &initialData); "
-        "if (!NT_SUCCESS(status)) { WPP_CLEANUP(NULL); } "
+        "if (!NT_SUCCESS(status)) { WPP_CLEANUP(NULL); VioGpuClearNamedPoolNotificationDriverObject(); } "
         "return status;"
     )
     if normalized != expected:
@@ -947,6 +948,10 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
     unload_body = function_body("VioGpuDodUnload", unload_definitions[0][1])
     if len(re.findall(r"\bWPP_CLEANUP\s*\(\s*NULL\s*\)\s*;", unload_body)) != 1:
         fail("registered unload callback must clean up WPP exactly once after successful initialization")
+    unload_cleanup = unload_body.find("WPP_CLEANUP(NULL);")
+    unload_driver_object = unload_body.find("VioGpuClearNamedPoolNotificationDriverObject();")
+    if unload_cleanup < 0 or unload_driver_object < unload_cleanup:
+        fail("registered unload must clear named-pool notification DriverObject after WPP cleanup")
 
 
 def check_callback_table() -> None:
@@ -1345,7 +1350,7 @@ def check_native_context_readiness(
         ("m_FrameSegment.Close()", "frame segment teardown"),
         ("m_CursorSegment.Close()", "cursor segment teardown"),
         ("m_GpuBuf.Close()", "control-buffer allocator teardown"),
-        ("m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
+        ("status=m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
         ("status=m_RdmaPool.Disconnect()", "restricted-DMA arena disconnect"),
         ("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)", "offline publication"),
     ):
@@ -1446,7 +1451,7 @@ def check_native_context_readiness(
         ("m_FrameSegment.Close()", "frame segment teardown"),
         ("m_CursorSegment.Close()", "cursor segment teardown"),
         ("m_GpuBuf.Close()", "control-buffer allocator teardown"),
-        ("m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
+        ("status=m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
         ("status=m_RdmaPool.Disconnect()", "restricted-DMA arena disconnect"),
         ("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)", "offline publication"),
     )
@@ -1454,9 +1459,17 @@ def check_native_context_readiness(
     for (offset, description), (next_offset, next_description) in zip(teardown_offsets, teardown_offsets[1:]):
         if offset > next_offset:
             fail(f"transport teardown must perform {description} before {next_description}")
+    named_disconnect = stop_compact.find("status=m_DrmHostPool.Disconnect()")
+    named_failure = stop_compact.find(
+        "if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", named_disconnect
+    )
     rdma_disconnect = stop_compact.find("status=m_RdmaPool.Disconnect()")
     rdma_failure = stop_compact.find("if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", rdma_disconnect)
     offline_publish = stop_compact.find("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)")
+    if min(named_disconnect, named_failure, rdma_disconnect) < 0 or not (
+        named_disconnect < named_failure < rdma_disconnect
+    ):
+        fail("transport teardown must retain the adapter when named-pool notification teardown fails")
     if min(rdma_disconnect, rdma_failure, offline_publish) < 0 or not (
         rdma_disconnect < rdma_failure < offline_publish
     ):
