@@ -13,7 +13,7 @@ for compiler in g++ clang++; do
   compiler_count=$((compiler_count + 1))
   "${compiler}" -std=c++14 -Wall -Wextra -Werror "${test_dir}/abi_manifest.cpp" -o "${temp_dir}/abi-${compiler}"
   "${temp_dir}/abi-${compiler}" >"${temp_dir}/actual-${compiler}.txt"
-  diff -u "${test_dir}/expected-v1.txt" "${temp_dir}/actual-${compiler}.txt"
+  diff -u "${test_dir}/expected-v2.txt" "${temp_dir}/actual-${compiler}.txt"
   echo "PASS ${compiler}"
 done
 

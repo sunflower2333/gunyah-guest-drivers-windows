@@ -141,6 +141,14 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "connection->Query=query;",
     ):
         require_once(open_connection, token, f"target open must retain validated direct-interface step: {token}")
+    probe_guard_enter = open_connection.find("KeEnterGuardedRegion();")
+    probe_acquire = open_connection.find("directInterface.AcquireMapping(")
+    probe_release = open_connection.find("directInterface.ReleaseMapping(")
+    probe_guard_leave = open_connection.find("KeLeaveGuardedRegion();")
+    if min(probe_guard_enter, probe_acquire, probe_release, probe_guard_leave) < 0 or not (
+        probe_guard_enter < probe_acquire < probe_release < probe_guard_leave
+    ):
+        fail("connection probe must hold a non-suspendable lease while validating the mapping")
 
     release_direct = release_connection.find("DereferenceDirectInterface(&connection->DirectInterface);")
     release_file = release_connection.find("ObDereferenceObject(connection->FileObject);")
@@ -188,7 +196,7 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
 
     for token in (
         "information!=sizeof(*query)",
-        "query->InterfaceVersion!=DROIDVMPOOL_INTERFACE_VERSION_V1",
+        "query->InterfaceVersion!=DROIDVMPOOL_INTERFACE_VERSION",
         "query->StructureSize!=sizeof(*query)",
         "query->PoolNameLength==0",
         "query->PoolNameLength>=DROIDVMPOOL_NAME_CAPACITY",
@@ -205,7 +213,7 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
 
     for token in (
         "directInterface->InterfaceHeader.Size!=sizeof(*directInterface)",
-        "directInterface->InterfaceHeader.Version!=DROIDVMPOOL_DIRECT_VERSION_V1",
+        "directInterface->InterfaceHeader.Version!=DROIDVMPOOL_DIRECT_VERSION",
         "directInterface->InterfaceHeader.Context==NULL",
         "directInterface->InterfaceHeader.InterfaceReference==NULL",
         "directInterface->InterfaceHeader.InterfaceDereference==NULL",
@@ -219,7 +227,7 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "irpStack->MinorFunction=IRP_MN_QUERY_INTERFACE;",
         "irpStack->Parameters.QueryInterface.InterfaceType=(LPGUID)&GUID_DROIDVMPOOL_DIRECT_INTERFACE;",
         "irpStack->Parameters.QueryInterface.Size=sizeof(*directInterface);",
-        "irpStack->Parameters.QueryInterface.Version=DROIDVMPOOL_DIRECT_VERSION_V1;",
+        "irpStack->Parameters.QueryInterface.Version=DROIDVMPOOL_DIRECT_VERSION;",
         "irp->IoStatus.Status=STATUS_NOT_SUPPORTED;",
     ):
         require_once(query_direct, token, f"direct-interface query must retain synchronous PnP step: {token}")
@@ -384,12 +392,16 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
     for token in (
         "mapping==NULL",
         "mapping->m_Owner!=NULL",
-        "KeGetCurrentIrql()>DISPATCH_LEVEL",
+        "mapping->m_OwningThread!=NULL",
+        "currentIrql>DISPATCH_LEVEL",
+        "!KeAreAllApcsDisabled()",
         "!ExAcquireRundownProtection(&m_Operations)",
         "m_DirectInterface.AcquireMapping(m_DirectInterface.InterfaceHeader.Context,&mappingValue)",
         "mappingValue.BasePhysicalAddress.QuadPart!=m_BasePA.QuadPart",
         "mappingValue.TotalSize!=m_Size",
         "mapping->m_Owner=this;",
+        "mapping->m_OwningThread=KeGetCurrentThread();",
+        "mapping->m_AcquireIrql=currentIrql;",
     ):
         require_once(acquire, token, f"client acquire must retain nested lease validation: {token}")
     release_direct = release_mapping.find(
@@ -399,6 +411,14 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
     release_local = release_mapping.find("ExReleaseRundownProtection(&m_Operations);")
     if min(release_direct, clear_owner, release_local) < 0 or not release_direct < clear_owner < release_local:
         fail("client release must drop provider lease before local rundown")
+    for token in (
+        "mapping->m_OwningThread==KeGetCurrentThread()",
+        "KeAreAllApcsDisabled()",
+        "mapping->m_AcquireIrql!=DISPATCH_LEVEL||KeGetCurrentIrql()==DISPATCH_LEVEL",
+    ):
+        require_once(release_mapping, token, f"client release must enforce the no-suspend lease rule: {token}")
+    if "KeEnterGuardedRegion" in acquire or "KeLeaveGuardedRegion" in release_mapping:
+        fail("mapping wrapper must not own a guarded region across the public lease boundary")
 
     if "Allocate" in header_text or re.search(r"\bFree\s*\(", header_text):
         fail("named host-pool client header must not expose allocation operations")
@@ -411,6 +431,8 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
     for token in (
         "static DRIVER_NOTIFICATION_CALLBACK_ROUTINE PnpNotificationCallback;",
         "mutable KMUTEX m_StateLock;",
+        "PKTHREAD m_OwningThread;",
+        "KIRQL m_AcquireIrql;",
         "EX_RUNDOWN_REF m_NotificationCallbacks;",
         "BOOLEAN m_NotificationRundownCompleted;",
         "BOOLEAN m_DisconnectInProgress;",
@@ -420,7 +442,7 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
     ):
         if header_text.count(token) != 1:
             fail(f"named-pool client must retain remote-PnP lifetime state: {token}")
-    if "DROIDVMPOOL_INTERFACE_VERSION_V1" not in interface_text or "IOCTL_DROIDVMPOOL_QUERY" not in interface_text:
+    if "DROIDVMPOOL_INTERFACE_VERSION" not in interface_text or "IOCTL_DROIDVMPOOL_QUERY" not in interface_text:
         fail("client must consume the versioned provider query ABI")
 
 

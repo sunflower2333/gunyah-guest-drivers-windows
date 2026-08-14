@@ -127,7 +127,7 @@ def check_provider(source: str) -> None:
     interface_steps = (
         "ExInitializeRundownProtection(&deviceContext->MappingReferences);",
         "directInterface.InterfaceHeader.Size=sizeof(directInterface);",
-        "directInterface.InterfaceHeader.Version=DROIDVMPOOL_DIRECT_VERSION_V1;",
+        "directInterface.InterfaceHeader.Version=DROIDVMPOOL_DIRECT_VERSION;",
         "directInterface.InterfaceHeader.Context=device;",
         "directInterface.InterfaceHeader.InterfaceReference=DroidVmPoolInterfaceReference;",
         "directInterface.InterfaceHeader.InterfaceDereference=DroidVmPoolInterfaceDereference;",
@@ -140,7 +140,7 @@ def check_provider(source: str) -> None:
     )
     interface_offsets = [device_add.find(step) for step in interface_steps]
     if min(interface_offsets) < 0 or interface_offsets != sorted(interface_offsets):
-        fail("provider must initialize and register the complete version-1 direct interface before discovery")
+        fail("provider must initialize and register the complete current direct interface before discovery")
 
     interface_reference = compact(function_body("DroidVmPoolInterfaceReference", source))
     interface_dereference = compact(function_body("DroidVmPoolInterfaceDereference", source))
@@ -174,20 +174,27 @@ def check_provider(source: str) -> None:
     prepare = compact(function_body("DroidVmPoolEvtDevicePrepareHardware", source))
     uid_read = prepare.find("status=DroidVmPoolReadUid(")
     resource_walk = prepare.find("WdfCmResourceListGetCount(resourcesTranslated)")
+    cache_policy = prepare.find("(descriptor->Flags&CM_RESOURCE_MEMORY_CACHEABLE)==0")
     map_pool = prepare.find("MmMapIoSpaceEx(")
     publish_ready = prepare.find("InterlockedExchange(&deviceContext->PoolReady,TRUE);")
-    if min(uid_read, resource_walk, map_pool, publish_ready) < 0 or not (
-        uid_read < resource_walk < map_pool < publish_ready
+    if min(uid_read, resource_walk, cache_policy, map_pool, publish_ready) < 0 or not (
+        uid_read < resource_walk < cache_policy < map_pool < publish_ready
     ):
-        fail("PrepareHardware must validate _UID and resources before mapping and publishing readiness")
+        fail("PrepareHardware must validate _UID, resources, and cache policy before mapping and publishing readiness")
     for token in (
         "if(memoryFound){returnSTATUS_DEVICE_CONFIGURATION_ERROR;}",
         "((ULONG64)poolPhysicalBase.QuadPart&(PAGE_SIZE-1))!=0",
         "(poolSize&(PAGE_SIZE-1))!=0",
         "(ULONG64)poolPhysicalBase.QuadPart>MAXULONGLONG-((ULONG64)poolSize-1)",
+        "(descriptor->Flags&CM_RESOURCE_MEMORY_CACHEABLE)==0",
+        "descriptor->Flags&(CM_RESOURCE_MEMORY_COMBINEDWRITE|CM_RESOURCE_MEMORY_PREFETCHABLE|"
+        "CM_RESOURCE_MEMORY_READ_ONLY|CM_RESOURCE_MEMORY_WRITE_ONLY)",
+        "poolVirtualBase=MmMapIoSpaceEx(poolPhysicalBase,poolSize,PAGE_READWRITE);",
         "if(deviceContext->PoolVirtualBase!=NULL){returnSTATUS_INVALID_DEVICE_STATE;}",
     ):
         require_once(prepare, token, f"PrepareHardware must retain resource bound: {token}")
+    if "MmMapIoSpace(" in source:
+        fail("provider must not retain the old-target MmMapIoSpace fallback")
 
     release = compact(function_body("DroidVmPoolEvtDeviceReleaseHardware", source))
     offline = release.find("InterlockedExchange(&deviceContext->PoolReady,FALSE);")
@@ -211,7 +218,7 @@ def check_provider(source: str) -> None:
         "InterlockedCompareExchange(&deviceContext->PoolReady,FALSE,FALSE)==FALSE",
         "if(ioControlCode==IOCTL_DROIDVMPOOL_QUERY)",
         "inputBufferLength!=0||outputBufferLength!=sizeof(*output)",
-        "outputValue.InterfaceVersion=DROIDVMPOOL_INTERFACE_VERSION_V1;",
+        "outputValue.InterfaceVersion=DROIDVMPOOL_INTERFACE_VERSION;",
         "outputValue.StructureSize=sizeof(outputValue);",
         "outputValue.PoolNameLength=deviceContext->PoolNameLength;",
         "outputValue.BasePhysicalAddress=deviceContext->PoolPhysicalBase;",
@@ -223,6 +230,7 @@ def check_provider(source: str) -> None:
     release_mapping = compact(function_body("DroidVmPoolReleaseMapping", source))
     for token in (
         "KeGetCurrentIrql()>DISPATCH_LEVEL",
+        "!KeAreAllApcsDisabled()",
         "DroidVmPoolGetDeviceContext((WDFDEVICE)context)",
         "ExAcquireRundownProtection(&deviceContext->MappingReferences)",
         "InterlockedCompareExchange(&deviceContext->PoolReady,FALSE,FALSE)==FALSE",
@@ -231,6 +239,11 @@ def check_provider(source: str) -> None:
         "mappingValue.TotalSize=deviceContext->PoolSize;",
     ):
         require_once(acquire, token, f"direct mapping acquire must retain lease step: {token}")
+    require_once(
+        release_mapping,
+        "KeAreAllApcsDisabled()",
+        "direct mapping release must require APCs to remain disabled",
+    )
     require_once(
         release_mapping,
         "ExReleaseRundownProtection(&deviceContext->MappingReferences);",
@@ -246,7 +259,7 @@ def check_interface(interface: str, header: str) -> None:
     if re.search(r"\b(?:ALLOCATE|ALLOC|FREE|RELEASE)\b", code, re.IGNORECASE):
         fail("public interface must not expose allocation or free operations")
     for token in (
-        "DROIDVMPOOL_INTERFACE_VERSION_V1",
+        "DROIDVMPOOL_INTERFACE_VERSION",
         "DROIDVMPOOL_NAME_CAPACITY",
         "BasePhysicalAddress",
         "TotalSize",
@@ -257,6 +270,13 @@ def check_interface(interface: str, header: str) -> None:
     ):
         if token not in interface:
             fail(f"public query ABI is missing {token}")
+    for token in (
+        "#define DROIDVMPOOL_INTERFACE_VERSION 2U",
+        "#define DROIDVMPOOL_DIRECT_VERSION    2U",
+    ):
+        require_once(interface, token, f"public interface must retain the current version-2 contract: {token}")
+    if re.search(r"DROIDVMPOOL_(?:INTERFACE|DIRECT)_VERSION_V\d+", interface):
+        fail("public interface must expose only the current contract, not compatibility version aliases")
     query_struct = compact(interface)
     query_match = re.search(r"typedefstruct_DROIDVMPOOL_QUERY_OUTPUT\{(?P<body>.*?)\}DROIDVMPOOL_QUERY_OUTPUT", query_struct)
     if query_match is None or "BaseVirtualAddress" in query_match.group("body"):
@@ -298,7 +318,7 @@ def check_project() -> None:
 
 
 def check_abi_fixture(workflow: str) -> None:
-    for name in ("abi_manifest.cpp", "expected-v1.txt", "run-local.sh", "run-msvc.cmd"):
+    for name in ("abi_manifest.cpp", "expected-v2.txt", "run-local.sh", "run-msvc.cmd"):
         if not (ABI_TEST_DIR / name).is_file():
             fail(f"provider ABI fixture is missing {name}")
     require_once(

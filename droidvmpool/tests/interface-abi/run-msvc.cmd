@@ -12,7 +12,7 @@ if errorlevel 1 goto :fail
 "%OUT_DIR%\abi.exe" >"%OUT_DIR%\actual.txt"
 if errorlevel 1 goto :fail
 
-fc /b "%SCRIPT_DIR%\expected-v1.txt" "%OUT_DIR%\actual.txt" >nul
+fc /b "%SCRIPT_DIR%\expected-v2.txt" "%OUT_DIR%\actual.txt" >nul
 if errorlevel 1 goto :mismatch
 
 echo PASS msvc
@@ -20,7 +20,7 @@ rmdir /s /q "%OUT_DIR%"
 exit /b 0
 
 :mismatch
-fc "%SCRIPT_DIR%\expected-v1.txt" "%OUT_DIR%\actual.txt"
+fc "%SCRIPT_DIR%\expected-v2.txt" "%OUT_DIR%\actual.txt"
 
 :fail
 echo FAIL droidvmpool-interface-abi: artifacts retained in %OUT_DIR%

@@ -40,6 +40,8 @@ class VioGpuDrmHostPoolMapping
     VioGpuDrmHostPoolMapping &operator=(const VioGpuDrmHostPoolMapping &);
 
     const VioGpuDrmHostPool *m_Owner;
+    PKTHREAD m_OwningThread;
+    KIRQL m_AcquireIrql;
     DROIDVMPOOL_MAPPING m_Mapping;
 };
 

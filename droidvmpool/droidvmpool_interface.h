@@ -29,9 +29,9 @@ DEFINE_GUID(GUID_DROIDVMPOOL_DIRECT_INTERFACE,
             0x0e,
             0x86);
 
-#define FILE_DEVICE_DROIDVMPOOL          0x8001
-#define DROIDVMPOOL_INTERFACE_VERSION_V1 1U
-#define DROIDVMPOOL_DIRECT_VERSION_V1    1U
+#define FILE_DEVICE_DROIDVMPOOL       0x8001
+#define DROIDVMPOOL_INTERFACE_VERSION 2U
+#define DROIDVMPOOL_DIRECT_VERSION    2U
 #ifndef DROIDVMPOOL_NAME_CAPACITY
 #define DROIDVMPOOL_NAME_CAPACITY 64U
 #endif
@@ -68,9 +68,18 @@ typedef struct _DROIDVMPOOL_MAPPING
 } DROIDVMPOOL_MAPPING, *PDROIDVMPOOL_MAPPING;
 
 /*
+ * Version 2 is a Normal Write-Back, coherent shared-memory contract. Firmware
+ * must publish the pool as cacheable, the Gunyah stage-2 mapping must be
+ * Normal-WB and shareable, and the host mapping must use the same memory type.
+ * Naturally aligned 32-bit publication words use release/acquire ordering.
+ *
  * AcquireMapping and ReleaseMapping may be called at IRQL <= DISPATCH_LEVEL.
- * A successful acquire pins the provider mapping until the matching release.
- * The mapping must not be retained or dereferenced outside that interval.
+ * The caller owns the surrounding APC-disabled region and must keep all APCs
+ * disabled for the complete lease. The caller must not wait or call pageable
+ * code and must release on the acquiring thread. A lease acquired at
+ * DISPATCH_LEVEL must be released at DISPATCH_LEVEL. A successful acquire pins
+ * the provider mapping until the matching release. The mapping must not be
+ * retained or dereferenced outside that interval.
  */
 typedef BOOLEAN (*PDROIDVMPOOL_ACQUIRE_MAPPING)(_In_ PVOID context, _Out_ PDROIDVMPOOL_MAPPING mapping);
 typedef VOID (*PDROIDVMPOOL_RELEASE_MAPPING)(_In_ PVOID context);

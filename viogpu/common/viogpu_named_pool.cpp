@@ -103,7 +103,7 @@ static NTSTATUS NamedPoolQueryDirectInterface(_In_ PDEVICE_OBJECT deviceObject,
     irpStack->MinorFunction = IRP_MN_QUERY_INTERFACE;
     irpStack->Parameters.QueryInterface.InterfaceType = (LPGUID)&GUID_DROIDVMPOOL_DIRECT_INTERFACE;
     irpStack->Parameters.QueryInterface.Size = sizeof(*directInterface);
-    irpStack->Parameters.QueryInterface.Version = DROIDVMPOOL_DIRECT_VERSION_V1;
+    irpStack->Parameters.QueryInterface.Version = DROIDVMPOOL_DIRECT_VERSION;
     irpStack->Parameters.QueryInterface.Interface = (PINTERFACE)directInterface;
     irpStack->Parameters.QueryInterface.InterfaceSpecificData = NULL;
     irp->IoStatus.Status = STATUS_NOT_SUPPORTED;
@@ -129,7 +129,7 @@ static NTSTATUS ValidateNamedPoolQuery(_In_ const DROIDVMPOOL_QUERY_OUTPUT *quer
                                        _Out_ BOOLEAN *isDrmHost)
 {
     *isDrmHost = FALSE;
-    if (information != sizeof(*query) || query->InterfaceVersion != DROIDVMPOOL_INTERFACE_VERSION_V1 ||
+    if (information != sizeof(*query) || query->InterfaceVersion != DROIDVMPOOL_INTERFACE_VERSION ||
         query->StructureSize != sizeof(*query) || query->PoolNameLength == 0 ||
         query->PoolNameLength >= DROIDVMPOOL_NAME_CAPACITY || query->PoolName[query->PoolNameLength] != '\0' ||
         query->PageSize != PAGE_SIZE || query->BasePhysicalAddress.QuadPart < 0 ||
@@ -165,7 +165,7 @@ static NTSTATUS ValidateNamedPoolQuery(_In_ const DROIDVMPOOL_QUERY_OUTPUT *quer
 static NTSTATUS ValidateDirectInterface(_In_ const DROIDVMPOOL_DIRECT_INTERFACE *directInterface)
 {
     if (directInterface->InterfaceHeader.Size != sizeof(*directInterface) ||
-        directInterface->InterfaceHeader.Version != DROIDVMPOOL_DIRECT_VERSION_V1 ||
+        directInterface->InterfaceHeader.Version != DROIDVMPOOL_DIRECT_VERSION ||
         directInterface->InterfaceHeader.Context == NULL ||
         directInterface->InterfaceHeader.InterfaceReference == NULL ||
         directInterface->InterfaceHeader.InterfaceDereference == NULL || directInterface->AcquireMapping == NULL ||
@@ -279,6 +279,7 @@ static NTSTATUS OpenNamedPoolConnection(_In_ PUNICODE_STRING deviceName,
     if (NT_SUCCESS(status))
     {
         DROIDVMPOOL_MAPPING mapping = {};
+        KeEnterGuardedRegion();
         if (!directInterface.AcquireMapping(directInterface.InterfaceHeader.Context, &mapping))
         {
             status = STATUS_DEVICE_NOT_READY;
@@ -288,6 +289,7 @@ static NTSTATUS OpenNamedPoolConnection(_In_ PUNICODE_STRING deviceName,
             status = ValidateNamedPoolMapping(&mapping, &query);
             directInterface.ReleaseMapping(directInterface.InterfaceHeader.Context);
         }
+        KeLeaveGuardedRegion();
     }
     if (!NT_SUCCESS(status))
     {
@@ -305,7 +307,7 @@ static NTSTATUS OpenNamedPoolConnection(_In_ PUNICODE_STRING deviceName,
     return STATUS_SUCCESS;
 }
 
-VioGpuDrmHostPoolMapping::VioGpuDrmHostPoolMapping() : m_Owner(NULL)
+VioGpuDrmHostPoolMapping::VioGpuDrmHostPoolMapping() : m_Owner(NULL), m_OwningThread(NULL), m_AcquireIrql(PASSIVE_LEVEL)
 {
     RtlZeroMemory(&m_Mapping, sizeof(m_Mapping));
 }
@@ -875,8 +877,14 @@ NTSTATUS VioGpuDrmHostPool::HandleRemoveComplete(void)
 
 BOOLEAN VioGpuDrmHostPool::AcquireMapping(_Out_ VioGpuDrmHostPoolMapping *mapping) const
 {
-    if (mapping == NULL || mapping->m_Owner != NULL || KeGetCurrentIrql() > DISPATCH_LEVEL ||
-        !ExAcquireRundownProtection(&m_Operations))
+    KIRQL currentIrql = KeGetCurrentIrql();
+    if (mapping == NULL || mapping->m_Owner != NULL || mapping->m_OwningThread != NULL ||
+        currentIrql > DISPATCH_LEVEL || !KeAreAllApcsDisabled())
+    {
+        return FALSE;
+    }
+
+    if (!ExAcquireRundownProtection(&m_Operations))
     {
         return FALSE;
     }
@@ -906,6 +914,8 @@ BOOLEAN VioGpuDrmHostPool::AcquireMapping(_Out_ VioGpuDrmHostPoolMapping *mappin
     }
 
     mapping->m_Mapping = mappingValue;
+    mapping->m_OwningThread = KeGetCurrentThread();
+    mapping->m_AcquireIrql = currentIrql;
     mapping->m_Owner = this;
     return TRUE;
 }
@@ -913,10 +923,15 @@ BOOLEAN VioGpuDrmHostPool::AcquireMapping(_Out_ VioGpuDrmHostPoolMapping *mappin
 void VioGpuDrmHostPool::ReleaseMapping(_Inout_ VioGpuDrmHostPoolMapping *mapping) const
 {
     NT_ASSERT(mapping != NULL && mapping->m_Owner == this);
+    NT_ASSERT(mapping->m_OwningThread == KeGetCurrentThread());
     NT_ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+    NT_ASSERT(KeAreAllApcsDisabled());
+    NT_ASSERT(mapping->m_AcquireIrql != DISPATCH_LEVEL || KeGetCurrentIrql() == DISPATCH_LEVEL);
 
     m_DirectInterface.ReleaseMapping(m_DirectInterface.InterfaceHeader.Context);
     mapping->m_Owner = NULL;
+    mapping->m_OwningThread = NULL;
+    mapping->m_AcquireIrql = PASSIVE_LEVEL;
     RtlZeroMemory(&mapping->m_Mapping, sizeof(mapping->m_Mapping));
     ExReleaseRundownProtection(&m_Operations);
 }

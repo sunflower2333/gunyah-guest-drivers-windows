@@ -97,12 +97,20 @@ target references; an unregister failure restores every owner and propagates to
 adapter teardown instead of publishing `Offline`.
 
 This remains a lifecycle scaffold, not a usable shared-memory transport. The
-adapter mapping API intentionally has no consumer. Before any control/response
-ring can use it, the contract must require short, non-suspendable mapping leases
-so query-remove cannot wait indefinitely on arbitrary transport ownership, and
-must define cache maintenance and coherency across the Windows CPU mapping,
-crosvm, and KGSL. A retained file or direct-interface reference is not a mapping
-lease and must not be treated as removal coordination.
+adapter mapping API intentionally has no consumer. The current provider ABI now
+requires a cacheable ACPI resource and a short, non-suspendable mapping lease:
+the client disables APCs for the whole lease, performs no waits or pageable
+calls, and releases on the acquiring thread. This lets query-remove drain
+leases without depending on a suspendable transport thread. A retained file or
+direct-interface reference is not a mapping lease and must not be treated as
+removal coordination.
+
+For `drm2kgsl_host`, the cache contract is Windows CPU mapping <-> crosvm/host
+renderer CPU mapping through Gunyah Normal-WB, Inner-Shareable memory. KGSL
+cache maintenance is a separate `gpu_guest` BO contract; the capset
+`has_cached_coherent` bit does not authorize this control-ring mapping or any
+blob-id-zero data access. A real ring consumer remains blocked until its
+release/acquire publication points and bounded access path are implemented.
 
 The current initialization transport tears down fail-closed. It releases every
 tracked control/display suballocation before issuing the RDMA arena FREE, clears

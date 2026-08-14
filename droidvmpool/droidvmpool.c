@@ -141,7 +141,7 @@ NTSTATUS DroidVmPoolEvtDeviceAdd(_In_ WDFDRIVER driver, _Inout_ PWDFDEVICE_INIT 
     ExInitializeRundownProtection(&deviceContext->MappingReferences);
 
     directInterface.InterfaceHeader.Size = sizeof(directInterface);
-    directInterface.InterfaceHeader.Version = DROIDVMPOOL_DIRECT_VERSION_V1;
+    directInterface.InterfaceHeader.Version = DROIDVMPOOL_DIRECT_VERSION;
     directInterface.InterfaceHeader.Context = device;
     directInterface.InterfaceHeader.InterfaceReference = DroidVmPoolInterfaceReference;
     directInterface.InterfaceHeader.InterfaceDereference = DroidVmPoolInterfaceDereference;
@@ -214,6 +214,12 @@ NTSTATUS DroidVmPoolEvtDevicePrepareHardware(_In_ WDFDEVICE device,
         }
 
         memoryFound = TRUE;
+        if ((descriptor->Flags & CM_RESOURCE_MEMORY_CACHEABLE) == 0 ||
+            (descriptor->Flags & (CM_RESOURCE_MEMORY_COMBINEDWRITE | CM_RESOURCE_MEMORY_PREFETCHABLE |
+                                  CM_RESOURCE_MEMORY_READ_ONLY | CM_RESOURCE_MEMORY_WRITE_ONLY)) != 0)
+        {
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        }
         poolPhysicalBase = descriptor->u.Memory.Start;
         poolSize = descriptor->u.Memory.Length;
     }
@@ -228,11 +234,7 @@ NTSTATUS DroidVmPoolEvtDevicePrepareHardware(_In_ WDFDEVICE device,
         return STATUS_INTEGER_OVERFLOW;
     }
 
-#if defined(NTDDI_WINTHRESHOLD) && (NTDDI_VERSION >= NTDDI_WINTHRESHOLD)
     poolVirtualBase = MmMapIoSpaceEx(poolPhysicalBase, poolSize, PAGE_READWRITE);
-#else
-    poolVirtualBase = MmMapIoSpace(poolPhysicalBase, poolSize, MmCached);
-#endif
     if (poolVirtualBase == NULL)
     {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -290,7 +292,7 @@ BOOLEAN DroidVmPoolAcquireMapping(_In_ PVOID context, _Out_ PDROIDVMPOOL_MAPPING
     PDROIDVMPOOL_DEVICE_CONTEXT deviceContext = DroidVmPoolGetDeviceContext((WDFDEVICE)context);
     DROIDVMPOOL_MAPPING mappingValue = {0};
 
-    if (mapping == NULL || KeGetCurrentIrql() > DISPATCH_LEVEL ||
+    if (mapping == NULL || KeGetCurrentIrql() > DISPATCH_LEVEL || !KeAreAllApcsDisabled() ||
         !ExAcquireRundownProtection(&deviceContext->MappingReferences))
     {
         return FALSE;
@@ -315,6 +317,7 @@ VOID DroidVmPoolReleaseMapping(_In_ PVOID context)
     PDROIDVMPOOL_DEVICE_CONTEXT deviceContext = DroidVmPoolGetDeviceContext((WDFDEVICE)context);
 
     NT_ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+    NT_ASSERT(KeAreAllApcsDisabled());
     ExReleaseRundownProtection(&deviceContext->MappingReferences);
 }
 
@@ -360,7 +363,7 @@ VOID DroidVmPoolEvtIoDeviceControl(_In_ WDFQUEUE queue,
             if (NT_SUCCESS(status))
             {
                 DROIDVMPOOL_QUERY_OUTPUT outputValue = {0};
-                outputValue.InterfaceVersion = DROIDVMPOOL_INTERFACE_VERSION_V1;
+                outputValue.InterfaceVersion = DROIDVMPOOL_INTERFACE_VERSION;
                 outputValue.StructureSize = sizeof(outputValue);
                 outputValue.PoolNameLength = deviceContext->PoolNameLength;
                 outputValue.PageSize = PAGE_SIZE;
