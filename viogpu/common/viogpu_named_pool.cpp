@@ -653,7 +653,7 @@ NTSTATUS VioGpuDrmHostPool::HandlePnpNotification(_In_ PVOID notificationStructu
     }
 
     PPLUGPLAY_NOTIFICATION_HEADER header = (PPLUGPLAY_NOTIFICATION_HEADER)notificationStructure;
-    if (IsEqualGUID((LPGUID)&header->Event, (LPGUID)&GUID_TARGET_DEVICE_QUERY_REMOVE))
+    if (IsEqualGUID(header->Event, GUID_TARGET_DEVICE_QUERY_REMOVE))
     {
         if (header->Size < sizeof(TARGET_DEVICE_REMOVAL_NOTIFICATION))
         {
@@ -662,11 +662,11 @@ NTSTATUS VioGpuDrmHostPool::HandlePnpNotification(_In_ PVOID notificationStructu
         PTARGET_DEVICE_REMOVAL_NOTIFICATION removal = (PTARGET_DEVICE_REMOVAL_NOTIFICATION)notificationStructure;
         return HandleQueryRemove(removal->FileObject);
     }
-    if (IsEqualGUID((LPGUID)&header->Event, (LPGUID)&GUID_TARGET_DEVICE_REMOVE_CANCELLED))
+    if (IsEqualGUID(header->Event, GUID_TARGET_DEVICE_REMOVE_CANCELLED))
     {
         return HandleRemoveCancelled();
     }
-    if (IsEqualGUID((LPGUID)&header->Event, (LPGUID)&GUID_TARGET_DEVICE_REMOVE_COMPLETE))
+    if (IsEqualGUID(header->Event, GUID_TARGET_DEVICE_REMOVE_COMPLETE))
     {
         return HandleRemoveComplete();
     }
