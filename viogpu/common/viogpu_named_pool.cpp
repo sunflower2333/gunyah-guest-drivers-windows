@@ -1,4 +1,5 @@
 #include <initguid.h>
+#include <wdmguid.h>
 #include "viogpu_named_pool.h"
 
 #define VIOGPU_NAMED_POOL_TAG 'PNGV'
@@ -33,6 +34,7 @@ VOID VioGpuSetNamedPoolNotificationDriverObject(_In_ PDRIVER_OBJECT driverObject
     NT_ASSERT(driverObject != NULL);
     PVOID previous = InterlockedCompareExchangePointer(&g_VioGpuNamedPoolNotificationDriverObject, driverObject, NULL);
     NT_ASSERT(previous == NULL || previous == driverObject);
+    UNREFERENCED_PARAMETER(previous);
 }
 
 VOID VioGpuClearNamedPoolNotificationDriverObject(void)
@@ -340,6 +342,7 @@ VioGpuDrmHostPool::~VioGpuDrmHostPool()
     PAGED_CODE();
     NTSTATUS status = Disconnect();
     NT_ASSERT(NT_SUCCESS(status));
+    UNREFERENCED_PARAMETER(status);
     NT_ASSERT(!HasConnectionOwner());
 }
 
@@ -347,6 +350,7 @@ void VioGpuDrmHostPool::LockState(void) const
 {
     NTSTATUS status = KeWaitForSingleObject(&m_StateLock, Executive, KernelMode, FALSE, NULL);
     NT_ASSERT(NT_SUCCESS(status));
+    UNREFERENCED_PARAMETER(status);
 }
 
 void VioGpuDrmHostPool::UnlockState(void) const
