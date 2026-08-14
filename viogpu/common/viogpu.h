@@ -157,10 +157,46 @@ typedef struct virtio_gpu_resource_create_blob
 } GPU_CMD_RESOURCE_CREATE_BLOB, *PGPU_CMD_RESOURCE_CREATE_BLOB;
 #pragma pack()
 
+#define VIOGPU_NATIVE_RESOURCE_ID_START 0x80000000U
+
+/* VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB */
+#pragma pack(1)
+typedef struct virtio_gpu_resource_map_blob
+{
+    GPU_CTRL_HDR hdr;
+    ULONG resource_id;
+    ULONG padding;
+    ULONGLONG offset;
+} GPU_CMD_RESOURCE_MAP_BLOB, *PGPU_CMD_RESOURCE_MAP_BLOB;
+#pragma pack()
+
+/* VIRTIO_GPU_RESP_OK_MAP_INFO */
+#pragma pack(1)
+typedef struct virtio_gpu_resp_map_info
+{
+    GPU_CTRL_HDR hdr;
+    ULONG map_info;
+    ULONG pool_offset;
+} GPU_RESP_MAP_INFO, *PGPU_RESP_MAP_INFO;
+#pragma pack()
+
+/* VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB */
+#pragma pack(1)
+typedef struct virtio_gpu_resource_unmap_blob
+{
+    GPU_CTRL_HDR hdr;
+    ULONG resource_id;
+    ULONG padding;
+} GPU_CMD_RESOURCE_UNMAP_BLOB, *PGPU_CMD_RESOURCE_UNMAP_BLOB;
+#pragma pack()
+
 static_assert(sizeof(GPU_CTRL_HDR) == 24, "virtio-gpu control header wire size");
 static_assert(sizeof(GPU_CMD_SUBMIT_3D) == 32, "virtio-gpu submit wire size");
 static_assert(sizeof(GPU_CMD_CTX_CREATE) == 96, "virtio-gpu context create wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_CREATE_BLOB) == 56, "virtio-gpu blob create wire size");
+static_assert(sizeof(GPU_CMD_RESOURCE_MAP_BLOB) == 40, "virtio-gpu blob map wire size");
+static_assert(sizeof(GPU_RESP_MAP_INFO) == 32, "virtio-gpu blob map response wire size");
+static_assert(sizeof(GPU_CMD_RESOURCE_UNMAP_BLOB) == 32, "virtio-gpu blob unmap wire size");
 
 #pragma pack(1)
 typedef struct virtio_gpu_display_one

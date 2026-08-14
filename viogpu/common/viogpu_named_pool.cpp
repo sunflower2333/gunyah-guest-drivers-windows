@@ -307,7 +307,8 @@ static NTSTATUS OpenNamedPoolConnection(_In_ PUNICODE_STRING deviceName,
     return STATUS_SUCCESS;
 }
 
-VioGpuDrmHostPoolMapping::VioGpuDrmHostPoolMapping() : m_Owner(NULL), m_OwningThread(NULL), m_AcquireIrql(PASSIVE_LEVEL)
+VioGpuDrmHostPoolMapping::VioGpuDrmHostPoolMapping()
+    : m_Owner(NULL), m_OwningThread(NULL), m_AcquireIrql(PASSIVE_LEVEL), m_Generation(0)
 {
     RtlZeroMemory(&m_Mapping, sizeof(m_Mapping));
 }
@@ -327,9 +328,9 @@ void VioGpuDrmHostPoolMapping::Release(void)
 }
 
 VioGpuDrmHostPool::VioGpuDrmHostPool()
-    : m_Ready(FALSE), m_RundownCompleted(FALSE), m_NotificationRundownCompleted(FALSE), m_DisconnectInProgress(FALSE),
-      m_ShuttingDown(FALSE), m_PnpState(VioGpuDrmHostPoolDisconnected), m_NotificationDriverObject(NULL),
-      m_NotificationEntry(NULL), m_FileObject(NULL), m_Size(0)
+    : m_Ready(FALSE), m_Generation(0), m_RundownCompleted(FALSE), m_NotificationRundownCompleted(FALSE),
+      m_DisconnectInProgress(FALSE), m_ShuttingDown(FALSE), m_PnpState(VioGpuDrmHostPoolDisconnected),
+      m_NotificationDriverObject(NULL), m_NotificationEntry(NULL), m_FileObject(NULL), m_Size(0)
 {
     KeInitializeMutex(&m_StateLock, 0);
     ExInitializeRundownProtection(&m_Operations);
@@ -509,6 +510,7 @@ NTSTATUS VioGpuDrmHostPool::Connect(void)
     m_BasePA = selectedConnection.Query.BasePhysicalAddress;
     m_Size = (SIZE_T)selectedConnection.Query.TotalSize;
     m_PnpState = VioGpuDrmHostPoolConnected;
+    InterlockedIncrement64(&m_Generation);
     InterlockedExchange(&m_Ready, TRUE);
     RtlZeroMemory(&selectedName, sizeof(selectedName));
     RtlZeroMemory(&selectedConnection, sizeof(selectedConnection));
@@ -545,6 +547,7 @@ NTSTATUS VioGpuDrmHostPool::Disconnect(void)
     }
     m_DisconnectInProgress = TRUE;
     m_ShuttingDown = TRUE;
+    InterlockedIncrement64(&m_Generation);
     InterlockedExchange(&m_Ready, FALSE);
     if (!m_RundownCompleted)
     {
@@ -693,6 +696,7 @@ NTSTATUS VioGpuDrmHostPool::HandleQueryRemove(_In_ PFILE_OBJECT notificationFile
         return STATUS_DEVICE_NOT_READY;
     }
 
+    InterlockedIncrement64(&m_Generation);
     InterlockedExchange(&m_Ready, FALSE);
     if (!m_RundownCompleted)
     {
@@ -790,6 +794,7 @@ NTSTATUS VioGpuDrmHostPool::HandleRemoveCancelled(void)
             m_BasePA = connection.Query.BasePhysicalAddress;
             m_Size = (SIZE_T)connection.Query.TotalSize;
             m_PnpState = VioGpuDrmHostPoolConnected;
+            InterlockedIncrement64(&m_Generation);
             InterlockedExchange(&m_Ready, TRUE);
             RtlZeroMemory(&connection, sizeof(connection));
             published = TRUE;
@@ -826,6 +831,7 @@ NTSTATUS VioGpuDrmHostPool::HandleRemoveComplete(void)
         return STATUS_SUCCESS;
     }
 
+    InterlockedIncrement64(&m_Generation);
     InterlockedExchange(&m_Ready, FALSE);
     if (!m_RundownCompleted)
     {
@@ -890,8 +896,9 @@ BOOLEAN VioGpuDrmHostPool::AcquireMapping(_Out_ VioGpuDrmHostPoolMapping *mappin
     }
 
     BOOLEAN acquired = FALSE;
+    LONG64 generation = InterlockedCompareExchange64(&m_Generation, 0, 0);
     DROIDVMPOOL_MAPPING mappingValue = {};
-    if (IsActive() && m_FileObject != NULL && m_DirectInterface.InterfaceHeader.Context != NULL &&
+    if (generation > 0 && IsActive() && m_FileObject != NULL && m_DirectInterface.InterfaceHeader.Context != NULL &&
         m_DirectInterface.AcquireMapping != NULL && m_DirectInterface.ReleaseMapping != NULL)
     {
         acquired = m_DirectInterface.AcquireMapping(m_DirectInterface.InterfaceHeader.Context, &mappingValue);
@@ -902,7 +909,8 @@ BOOLEAN VioGpuDrmHostPool::AcquireMapping(_Out_ VioGpuDrmHostPoolMapping *mappin
         return FALSE;
     }
 
-    if (mappingValue.BaseVirtualAddress == NULL ||
+    if (generation != InterlockedCompareExchange64(&m_Generation, 0, 0) || !IsActive() ||
+        mappingValue.BaseVirtualAddress == NULL ||
         ((ULONG_PTR)mappingValue.BaseVirtualAddress & (PAGE_SIZE - 1)) != 0 ||
         mappingValue.BasePhysicalAddress.QuadPart != m_BasePA.QuadPart || mappingValue.TotalSize != m_Size ||
         mappingValue.TotalSize > MAXULONG_PTR ||
@@ -916,6 +924,7 @@ BOOLEAN VioGpuDrmHostPool::AcquireMapping(_Out_ VioGpuDrmHostPoolMapping *mappin
     mapping->m_Mapping = mappingValue;
     mapping->m_OwningThread = KeGetCurrentThread();
     mapping->m_AcquireIrql = currentIrql;
+    mapping->m_Generation = (ULONGLONG)generation;
     mapping->m_Owner = this;
     return TRUE;
 }
@@ -932,6 +941,7 @@ void VioGpuDrmHostPool::ReleaseMapping(_Inout_ VioGpuDrmHostPoolMapping *mapping
     mapping->m_Owner = NULL;
     mapping->m_OwningThread = NULL;
     mapping->m_AcquireIrql = PASSIVE_LEVEL;
+    mapping->m_Generation = 0;
     RtlZeroMemory(&mapping->m_Mapping, sizeof(mapping->m_Mapping));
     ExReleaseRundownProtection(&m_Operations);
 }

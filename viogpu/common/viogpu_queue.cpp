@@ -842,6 +842,289 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::DestroyNativeContext(UINT context_id)
     return result;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeControlBlob(UINT context_id, UINT resource_id)
+{
+    PAGED_CODE();
+
+    if (context_id == 0 || resource_id == 0 || !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_CMD_RESOURCE_CREATE_BLOB command = static_cast<PGPU_CMD_RESOURCE_CREATE_BLOB>(AllocCmd(&vbuf,
+                                                                                                sizeof(GPU_CMD_RESOURCE_CREATE_BLOB)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB;
+    command->hdr.ctx_id = context_id;
+    command->resource_id = resource_id;
+    command->blob_mem = VIRTIO_GPU_BLOB_MEM_HOST3D;
+    command->blob_flags = VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE;
+    command->blob_id = 0;
+    command->size = VIOGPU_NATIVE_CONTROL_BLOB_SIZE;
+
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN submitted = FALSE;
+    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
+    if (!submitted)
+    {
+        result = VioGpuHostContextNotSubmitted;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR))
+    {
+        if (IsPlainControlResponse(response, VIRTIO_GPU_RESP_OK_NODATA))
+        {
+            result = VioGpuHostContextConfirmed;
+        }
+        else if (IsPlainControlErrorResponse(response))
+        {
+            result = VioGpuHostContextRejected;
+        }
+        else
+        {
+            PoisonSynchronousRequests();
+        }
+    }
+    else if (completed)
+    {
+        PoisonSynchronousRequests();
+    }
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, _Out_ PULONG pool_offset)
+{
+    PAGED_CODE();
+
+    if (pool_offset == NULL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    *pool_offset = 0;
+    if (resource_id == 0 || !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_RESP_MAP_INFO response = static_cast<PGPU_RESP_MAP_INFO>(m_pBuf->AllocateMemory(sizeof(GPU_RESP_MAP_INFO)));
+    if (response == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_CMD_RESOURCE_MAP_BLOB command = static_cast<PGPU_CMD_RESOURCE_MAP_BLOB>(AllocCmdResp(&vbuf,
+                                                                                              sizeof(GPU_CMD_RESOURCE_MAP_BLOB),
+                                                                                              response,
+                                                                                              sizeof(GPU_RESP_MAP_INFO)));
+    if (command == NULL)
+    {
+        m_pBuf->FreeMemory(response);
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB;
+    command->resource_id = resource_id;
+
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN submitted = FALSE;
+    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
+    if (!submitted)
+    {
+        result = VioGpuHostContextNotSubmitted;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_RESP_MAP_INFO) &&
+             IsPlainControlResponse(&response->hdr, VIRTIO_GPU_RESP_OK_MAP_INFO) &&
+             response->map_info == (VIRTIO_GPU_MAP_INFO_POOL | VIRTIO_GPU_MAP_CACHE_CACHED) &&
+             response->pool_offset != 0 && (response->pool_offset & (PAGE_SIZE - 1)) == 0)
+    {
+        *pool_offset = response->pool_offset;
+        result = VioGpuHostContextConfirmed;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) && IsPlainControlErrorResponse(&response->hdr))
+    {
+        result = VioGpuHostContextRejected;
+    }
+    else if (completed)
+    {
+        PoisonSynchronousRequests();
+    }
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnmapNativeControlBlob(UINT resource_id)
+{
+    PAGED_CODE();
+
+    if (resource_id == 0 || !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_CMD_RESOURCE_UNMAP_BLOB command = static_cast<PGPU_CMD_RESOURCE_UNMAP_BLOB>(AllocCmd(&vbuf,
+                                                                                              sizeof(GPU_CMD_RESOURCE_UNMAP_BLOB)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB;
+    command->resource_id = resource_id;
+
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN submitted = FALSE;
+    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
+    if (!submitted)
+    {
+        result = VioGpuHostContextNotSubmitted;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) &&
+             IsPlainControlResponse(response, VIRTIO_GPU_RESP_OK_NODATA))
+    {
+        result = VioGpuHostContextConfirmed;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) && IsPlainControlErrorResponse(response) &&
+             response->type == VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID)
+    {
+        result = VioGpuHostContextRejected;
+    }
+    else if (completed)
+    {
+        PoisonSynchronousRequests();
+    }
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefNativeResource(UINT resource_id)
+{
+    PAGED_CODE();
+
+    if (resource_id == 0 || !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_RES_UNREF command = static_cast<PGPU_RES_UNREF>(AllocCmd(&vbuf, sizeof(GPU_RES_UNREF)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_UNREF;
+    command->resource_id = resource_id;
+
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN submitted = FALSE;
+    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
+    if (!submitted)
+    {
+        result = VioGpuHostContextNotSubmitted;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) &&
+             IsPlainControlResponse(response, VIRTIO_GPU_RESP_OK_NODATA))
+    {
+        result = VioGpuHostContextConfirmed;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) && IsPlainControlErrorResponse(response) &&
+             response->type == VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID)
+    {
+        result = VioGpuHostContextRejected;
+    }
+    else if (completed)
+    {
+        PoisonSynchronousRequests();
+    }
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitNativeControl(UINT context_id, const void *command, UINT command_size)
+{
+    PAGED_CODE();
+
+    if (context_id == 0 || command == NULL || command_size == 0 || !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = PrepareNativeSubmit(context_id, command, command_size);
+    if (vbuf == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN submitted = FALSE;
+    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
+    if (!submitted)
+    {
+        result = VioGpuHostContextNotSubmitted;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) &&
+             IsPlainControlResponse(response, VIRTIO_GPU_RESP_OK_NODATA))
+    {
+        result = VioGpuHostContextConfirmed;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) && IsPlainControlErrorResponse(response))
+    {
+        result = VioGpuHostContextRejected;
+    }
+    else if (completed)
+    {
+        PoisonSynchronousRequests();
+    }
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
+    return result;
+}
+
 PAGED_CODE_SEG_END
 
 void CtrlQueue::DestroyResource(UINT res_id)

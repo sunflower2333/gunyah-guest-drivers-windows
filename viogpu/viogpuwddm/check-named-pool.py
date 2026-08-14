@@ -85,6 +85,31 @@ def function_body(name: str, source: str) -> str:
     return ""
 
 
+def function_body_with_parameters(name: str, parameters: str, source: str) -> str:
+    expected = compact(parameters)
+    matches = [
+        match
+        for match in re.finditer(
+            rf"\b{re.escape(name)}\s*\((?P<parameters>[^;{{}}]*?)\)\s*(?:const\s*)?{{", source, re.DOTALL
+        )
+        if compact(match.group("parameters")) == expected
+    ]
+    if len(matches) != 1:
+        fail(f"expected one definition of {name}({parameters}), found {len(matches)}")
+
+    start = matches[0].end() - 1
+    depth = 0
+    for offset in range(start, len(source)):
+        if source[offset] == "{":
+            depth += 1
+        elif source[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start + 1 : offset]
+    fail(f"unterminated function {name}({parameters})")
+    return ""
+
+
 def require_once(source: str, token: str, message: str) -> None:
     if source.count(token) != 1:
         fail(message)
@@ -402,8 +427,16 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "mapping->m_Owner=this;",
         "mapping->m_OwningThread=KeGetCurrentThread();",
         "mapping->m_AcquireIrql=currentIrql;",
+        "mapping->m_Generation=(ULONGLONG)generation;",
     ):
         require_once(acquire, token, f"client acquire must retain nested lease validation: {token}")
+    for token in (
+        "generation=InterlockedCompareExchange64(&m_Generation,0,0)",
+        "generation!=InterlockedCompareExchange64(&m_Generation,0,0)",
+    ):
+        require_once(acquire, token, f"client acquire must reject a named-pool generation race: {token}")
+    if source.count("InterlockedIncrement64(&m_Generation);") != 5:
+        fail("connect, disconnect, query-remove, remove-cancelled, and remove-complete must each advance generation")
     release_direct = release_mapping.find(
         "m_DirectInterface.ReleaseMapping(m_DirectInterface.InterfaceHeader.Context);"
     )
@@ -415,6 +448,7 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "mapping->m_OwningThread==KeGetCurrentThread()",
         "KeAreAllApcsDisabled()",
         "mapping->m_AcquireIrql!=DISPATCH_LEVEL||KeGetCurrentIrql()==DISPATCH_LEVEL",
+        "mapping->m_Generation=0;",
     ):
         require_once(release_mapping, token, f"client release must enforce the no-suspend lease rule: {token}")
     if "KeEnterGuardedRegion" in acquire or "KeLeaveGuardedRegion" in release_mapping:
@@ -433,6 +467,8 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "mutable KMUTEX m_StateLock;",
         "PKTHREAD m_OwningThread;",
         "KIRQL m_AcquireIrql;",
+        "ULONGLONG m_Generation;",
+        "DECLSPEC_ALIGN(8) volatile LONG64 m_Generation;",
         "EX_RUNDOWN_REF m_NotificationCallbacks;",
         "BOOLEAN m_NotificationRundownCompleted;",
         "BOOLEAN m_DisconnectInProgress;",
@@ -482,10 +518,41 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
         fail("destructor must detect and then assert release of the named-pool owner")
     require_once(destructor, "NT_ASSERT(!m_DrmHostPool.HasConnectionOwner());", "destructor must require named-pool release")
 
-    if adapter_text.count("AcquireDrmHostPoolMapping") != 1 or adapter_header_text.count(
+    if adapter_text.count("AcquireDrmHostPoolMapping") != 3 or adapter_header_text.count(
         "AcquireDrmHostPoolMapping"
     ) != 1:
-        fail("mapping access must remain unused until no-suspend and cache/coherency contracts are implemented")
+        fail("native control responses must use exactly two short mapping leases plus one adapter wrapper")
+
+    seed = compact(
+        function_body_with_parameters(
+            "VioGpuSeedNativeControlResponse",
+            "_In_ VioGpuAdapter *adapter, _Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ ULONG sequence",
+            adapter,
+        )
+    )
+    consume = compact(
+        function_body_with_parameters(
+            "VioGpuConsumeNativeControlResponse",
+            "_In_ VioGpuAdapter *adapter, _In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ ULONG sequence, "
+            "_In_ ULONG parameter, _Out_ PULONGLONG value",
+            adapter,
+        )
+    )
+    for owner, body in (("seed", seed), ("consume", consume)):
+        if body.count("adapter->AcquireDrmHostPoolMapping(&mapping)") != 1 or body.count("mapping.Release();") != 1:
+            fail(f"native response {owner} must hold exactly one mapping lease")
+        if "KeWaitForSingleObject" in body or "SubmitNativeControl" in body or "PAGED_CODE" in body:
+            fail(f"native response {owner} must not wait, submit, or page while holding its mapping lease")
+        enter = body.find("KeEnterGuardedRegion();")
+        acquire_mapping = body.find("adapter->AcquireDrmHostPoolMapping(&mapping)")
+        release_mapping = body.find("mapping.Release();")
+        leave = body.find("KeLeaveGuardedRegion();")
+        if min(enter, acquire_mapping, release_mapping, leave) < 0 or not enter < acquire_mapping < release_mapping < leave:
+            fail(f"native response {owner} must keep APCs disabled across the complete mapping lease")
+    if seed.count("owner->ControlPoolGeneration=mapping.GetGeneration();") != 1 or consume.count(
+        "owner->ControlPoolGeneration==mapping.GetGeneration()"
+    ) != 1:
+        fail("native response leases must capture and revalidate one exact named-pool generation")
 
     guarded_header = compact(adapter_header_text)
     for token in (

@@ -18,6 +18,8 @@
 #define ABI_CAPSET_MSM     msm
 #define ABI_CAPSET_PADDING padding
 #define ABI_CAPSET_ID      VIRTIO_GPU_CAPSET_DRM
+#define ABI_GET_PARAM_REQ  struct msm_ccmd_ioctl_simple_get_param_req
+#define ABI_GET_PARAM_RSP  struct msm_ccmd_ioctl_simple_get_param_rsp
 #else
 #include <linux/virtio_gpu.h>
 
@@ -26,6 +28,7 @@ extern "C"
 {
 #endif
 #include "drm_hw.h"
+#include "msm_drm.h"
 #include "msm_proto.h"
 #include "virtgpu_drm.h"
 #if defined(__cplusplus)
@@ -36,6 +39,25 @@ extern "C"
 #define ABI_CAPSET_MSM     u.msm
 #define ABI_CAPSET_PADDING pad
 #define ABI_CAPSET_ID      VIRTGPU_DRM_CAPSET_DRM
+
+#pragma pack(push, 4)
+struct abi_msm_ccmd_ioctl_simple_get_param_req
+{
+    struct vdrm_ccmd_req hdr;
+    uint32_t ioctl_cmd;
+    struct drm_msm_param param;
+};
+
+struct abi_msm_ccmd_ioctl_simple_get_param_rsp
+{
+    struct vdrm_ccmd_rsp hdr;
+    int32_t ret;
+    struct drm_msm_param param;
+};
+#pragma pack(pop)
+
+#define ABI_GET_PARAM_REQ struct abi_msm_ccmd_ioctl_simple_get_param_req
+#define ABI_GET_PARAM_RSP struct abi_msm_ccmd_ioctl_simple_get_param_rsp
 #endif
 
 /*
@@ -59,6 +81,10 @@ extern "C"
 #else
 #define VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE 0x0008U
 #endif
+#endif
+
+#ifndef VIRTIO_GPU_MAP_INFO_POOL
+#define VIRTIO_GPU_MAP_INFO_POOL 0x80000000U
 #endif
 
 static void Emit(const char *name, unsigned long long value)

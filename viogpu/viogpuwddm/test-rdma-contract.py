@@ -1632,6 +1632,59 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
         "    initialData->DxgkDdiEscape = VioGpuDodEscape;",
     ),
     Rewrite(
+        "R155_control_seed_allows_special_apc",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    VioGpuDrmHostPoolMapping mapping;
+    KeEnterGuardedRegion();
+    BOOLEAN acquired = adapter->AcquireDrmHostPoolMapping(&mapping);
+    PMSM_SHMEM shmem = NULL;
+    PMSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP response = NULL;""",
+        """    VioGpuDrmHostPoolMapping mapping;
+    KeEnterCriticalRegion();
+    BOOLEAN acquired = adapter->AcquireDrmHostPoolMapping(&mapping);
+    PMSM_SHMEM shmem = NULL;
+    PMSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP response = NULL;""",
+    ),
+    Rewrite(
+        "R156_control_consume_allows_special_apc",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    VioGpuDrmHostPoolMapping mapping;
+    KeEnterGuardedRegion();
+    BOOLEAN acquired = adapter->AcquireDrmHostPoolMapping(&mapping);
+    PMSM_SHMEM shmem = NULL;
+    PMSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP sharedResponse = NULL;""",
+        """    VioGpuDrmHostPoolMapping mapping;
+    KeEnterCriticalRegion();
+    BOOLEAN acquired = adapter->AcquireDrmHostPoolMapping(&mapping);
+    PMSM_SHMEM shmem = NULL;
+        PMSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP sharedResponse = NULL;""",
+    ),
+    Rewrite(
+        "R157_legacy_resource_ids_enter_native_range",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "m_Idr.Init(1, VIOGPU_NATIVE_RESOURCE_ID_START)",
+        "m_Idr.Init(1, MAXULONG)",
+    ),
+    Rewrite(
+        "R158_legacy_resource_id_drops_upper_bound",
+        "viogpu/common/viogpu_idr.cpp",
+        "else if (m_nextId != 0 && m_nextId < m_endId)",
+        "else if (m_nextId != 0)",
+    ),
+    Rewrite(
+        "R159_legacy_resource_id_increment_is_unlocked",
+        "viogpu/common/viogpu_idr.cpp",
+        """    FreeId *freeId = NULL;
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_lock, &oldIrql);
+    if (m_endId != 0 && !IsListEmpty(&m_freeList))""",
+        """    FreeId *freeId = NULL;
+
+    KIRQL oldIrql;
+    if (m_endId != 0 && !IsListEmpty(&m_freeList))""",
+    ),
+    Rewrite(
         "S01_pending_comparison_reversed",
         "viogpu/common/viogpu_rdma.cpp",
         "if (status == STATUS_PENDING)",

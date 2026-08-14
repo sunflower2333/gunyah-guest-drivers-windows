@@ -94,6 +94,15 @@ struct VIOGPU_NATIVE_CONTEXT_OWNER
     LONG Generation;
     ULONGLONG ResetGeneration;
     UINT ContextId;
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    UINT ControlResourceId;
+    ULONG ControlPoolOffset;
+    ULONG ControlBlobSize;
+    ULONG LastControlSeqno;
+    ULONGLONG ControlPoolGeneration;
+    BOOLEAN ControlResourceCreated;
+    BOOLEAN ControlMapped;
+#endif
 };
 
 enum VIOGPU_NATIVE_CONTEXT_OBJECT_STATE : LONG
@@ -268,6 +277,13 @@ class VioGpuAdapter : IVioGpuPCI
     void RetireAllNativeContextOwnersLocked(void);
     void RetireNativeContextOwnerLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner);
     UINT AllocateNativeContextIdLocked(void);
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    UINT AllocateNativeResourceIdLocked(void);
+    VIOGPU_HOST_CONTEXT_RESULT QueryNativeContextParameterLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner,
+                                                                 _In_ ULONG parameter,
+                                                                 _Out_ PULONGLONG value);
+    VIOGPU_HOST_CONTEXT_RESULT DestroyNativeContextHostObjectsLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner);
+#endif
     BOOLEAN BeginNativeContextInitialization(void);
     BOOLEAN CompleteNativeContextInitialization(void);
     void FailNativeContextAtAnyIrql(void);
@@ -332,6 +348,9 @@ class VioGpuAdapter : IVioGpuPCI
     LIST_ENTRY m_NativeContextRegistry;
     EX_RUNDOWN_REF m_NativeContextReferences;
     UINT m_NextNativeContextId;
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    UINT m_NextNativeResourceId;
+#endif
     volatile LONG m_NativeContextState;
     volatile LONG m_NativeContextGeneration;
     DECLSPEC_ALIGN(8) volatile LONG64 m_NativeContextResetGeneration;

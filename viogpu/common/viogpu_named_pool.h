@@ -31,6 +31,10 @@ class VioGpuDrmHostPoolMapping
     {
         return (SIZE_T)m_Mapping.TotalSize;
     }
+    ULONGLONG GetGeneration(void) const
+    {
+        return m_Generation;
+    }
     void Release(void);
 
   private:
@@ -42,6 +46,7 @@ class VioGpuDrmHostPoolMapping
     const VioGpuDrmHostPool *m_Owner;
     PKTHREAD m_OwningThread;
     KIRQL m_AcquireIrql;
+    ULONGLONG m_Generation;
     DROIDVMPOOL_MAPPING m_Mapping;
 };
 
@@ -87,6 +92,7 @@ class VioGpuDrmHostPool
     mutable EX_RUNDOWN_REF m_Operations;
     EX_RUNDOWN_REF m_NotificationCallbacks;
     mutable volatile LONG m_Ready;
+    DECLSPEC_ALIGN(8) volatile LONG64 m_Generation;
     BOOLEAN m_RundownCompleted;
     BOOLEAN m_NotificationRundownCompleted;
     BOOLEAN m_DisconnectInProgress;

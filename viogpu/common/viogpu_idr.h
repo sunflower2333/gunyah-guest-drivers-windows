@@ -34,7 +34,7 @@ class VioGpuIdr
   public:
     VioGpuIdr();
     ~VioGpuIdr();
-    BOOLEAN Init(_In_ ULONG start);
+    BOOLEAN Init(_In_ ULONG start, _In_ ULONG end);
     ULONG GetId(VOID);
     VOID PutId(_In_ ULONG id);
 
@@ -49,6 +49,7 @@ class VioGpuIdr
     };
 
     ULONG m_nextId;
+    ULONG m_endId;
     KSPIN_LOCK m_lock;
     LIST_ENTRY m_freeList;
 };

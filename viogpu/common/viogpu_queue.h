@@ -80,9 +80,10 @@ enum VIOGPU_HOST_CONTEXT_RESULT : LONG
     VioGpuHostContextUnknown,
 };
 
-#define MAX_INLINE_CMD_SIZE  96
-#define MAX_INLINE_RESP_SIZE 24
-#define VBUFFER_SIZE         (sizeof(GPU_VBUFFER) + MAX_INLINE_CMD_SIZE + MAX_INLINE_RESP_SIZE)
+#define MAX_INLINE_CMD_SIZE             96
+#define MAX_INLINE_RESP_SIZE            24
+#define VBUFFER_SIZE                    (sizeof(GPU_VBUFFER) + MAX_INLINE_CMD_SIZE + MAX_INLINE_RESP_SIZE)
+#define VIOGPU_NATIVE_CONTROL_BLOB_SIZE 0x4000U
 
 class VioGpuBuf
 {
@@ -274,6 +275,11 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN QueryCapset(UINT capset_id, UINT capset_version, UINT capset_size, PGPU_CAPSET_DRM capset);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeContext(UINT context_id);
     VIOGPU_HOST_CONTEXT_RESULT DestroyNativeContext(UINT context_id);
+    VIOGPU_HOST_CONTEXT_RESULT CreateNativeControlBlob(UINT context_id, UINT resource_id);
+    VIOGPU_HOST_CONTEXT_RESULT MapNativeControlBlob(UINT resource_id, _Out_ PULONG pool_offset);
+    VIOGPU_HOST_CONTEXT_RESULT UnmapNativeControlBlob(UINT resource_id);
+    VIOGPU_HOST_CONTEXT_RESULT UnrefNativeResource(UINT resource_id);
+    VIOGPU_HOST_CONTEXT_RESULT SubmitNativeControl(UINT context_id, const void *command, UINT command_size);
     BOOLEAN EnableSynchronousRequests(void);
     BOOLEAN IsSynchronousRequestsHealthy(void);
     NTSTATUS QuiesceSynchronousRequests(void);

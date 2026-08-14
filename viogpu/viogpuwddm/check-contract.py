@@ -20,6 +20,9 @@ VIOGPU_HEADER_PATH = (PROJECT_DIR.parent / "viogpudo" / "viogpudo.h").resolve()
 DOD_DRIVER_SOURCE_PATH = (PROJECT_DIR.parent / "viogpudo" / "driver.cpp").resolve()
 QUEUE_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_queue.h").resolve()
 WIRE_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_3d_wire.h").resolve()
+RESOURCE_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu.h").resolve()
+IDR_SOURCE_PATH = (PROJECT_DIR.parent / "common" / "viogpu_idr.cpp").resolve()
+IDR_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_idr.h").resolve()
 WDDM_ABI_HEADER_PATH = (PROJECT_DIR.parent / "shared" / "viogpu_wddm_abi.h").resolve()
 WDDM_ABI_FIXTURE_DIR = (PROJECT_DIR.parent / "tests" / "wddm-private-abi").resolve()
 QUEUE_SOURCE_PATH = (PROJECT_DIR.parent / "common" / "viogpu_queue.cpp").resolve()
@@ -166,6 +169,9 @@ VIOGPU_CODE = strip_cpp_comments_and_literals(VIOGPU_SOURCE)
 VIOGPU_HEADER_CODE = strip_cpp_comments_and_literals(VIOGPU_HEADER_SOURCE)
 DOD_DRIVER_CODE = strip_cpp_comments_and_literals(DOD_DRIVER_SOURCE)
 WIRE_HEADER_CODE = strip_cpp_comments_and_literals(WIRE_HEADER_PATH.read_text(encoding="utf-8"))
+RESOURCE_HEADER_CODE = strip_cpp_comments_and_literals(RESOURCE_HEADER_PATH.read_text(encoding="utf-8"))
+IDR_CODE = strip_cpp_comments_and_literals(IDR_SOURCE_PATH.read_text(encoding="utf-8"))
+IDR_HEADER_CODE = strip_cpp_comments_and_literals(IDR_HEADER_PATH.read_text(encoding="utf-8"))
 WDDM_ABI_HEADER_SOURCE = WDDM_ABI_HEADER_PATH.read_text(encoding="utf-8")
 WDDM_ABI_HEADER_CODE = strip_cpp_comments_and_literals(WDDM_ABI_HEADER_SOURCE)
 QUEUE_CODE = strip_cpp_comments_and_literals(QUEUE_SOURCE_PATH.read_text(encoding="utf-8"))
@@ -1280,7 +1286,7 @@ def check_native_context_readiness(
     hw_init_compact = compact_code(hw_init)
     probe_offset = compact_code(transport_start).find("status=ProbeNativeContextReadiness();")
     buffer_offset = compact_code(transport_start).find("m_GpuBuf.Init(allocation,this)")
-    idr_offset = compact_code(transport_start).find("m_Idr.Init(1)")
+    idr_offset = compact_code(transport_start).find("m_Idr.Init(1,VIOGPU_NATIVE_RESOURCE_ID_START)")
     if min(probe_offset, buffer_offset, idr_offset) < 0 or not (buffer_offset < idr_offset < probe_offset):
         fail("HWInit must probe only after control buffers and the ID allocator are initialized")
     require_call_count(hw_init, "StartWorkThread", 1, "HWInit")
@@ -1706,6 +1712,7 @@ def check_queue_failure_semantics() -> None:
 
 def check_native_context_ownership() -> None:
     queue_header = canonical_code(strip_cpp_comments_and_literals(QUEUE_HEADER_SOURCE))
+    wire_header = canonical_code(WIRE_HEADER_CODE)
     expected_results = (
         "VioGpuHostContextNotSubmitted=0,"
         "VioGpuHostContextConfirmed,"
@@ -1749,6 +1756,160 @@ def check_native_context_ownership() -> None:
     if destroy_queue.count("VioGpuHostContextRejected") != 1:
         fail("Host destroy must leave every other submitted non-success response Unknown")
 
+    wire_requirements = (
+        "#defineMSM_PIPE_3D00x10",
+        "#defineMSM_PARAM_VA_START0x0eU",
+        "#defineMSM_PARAM_VA_SIZE0x0fU",
+        "#defineDRM_IOCTL_MSM_GET_PARAM0xc0186440",
+        "VIOGPU_WIRE_ASSERT_SIZE(drm_msm_param,24);",
+        "VIOGPU_WIRE_ASSERT_SIZE(msm_ccmd_ioctl_simple_get_param_req,44);",
+        "VIOGPU_WIRE_ASSERT_SIZE(msm_ccmd_ioctl_simple_get_param_rsp,32);",
+    )
+    for fragment in wire_requirements:
+        if wire_header.count(fragment) != 1:
+            fail(f"native GET_PARAM wire contract is missing its exact ABI assertion: {fragment}")
+
+    create_blob = canonical_code(function_body("CtrlQueue::CreateNativeControlBlob", QUEUE_CODE))
+    for fragment in (
+        "command->hdr.type=VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB;",
+        "command->hdr.ctx_id=context_id;",
+        "command->resource_id=resource_id;",
+        "command->blob_mem=VIRTIO_GPU_BLOB_MEM_HOST3D;",
+        "command->blob_flags=VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE;",
+        "command->blob_id=0;",
+        "command->size=VIOGPU_NATIVE_CONTROL_BLOB_SIZE;",
+    ):
+        if create_blob.count(fragment) != 1:
+            fail(f"control blob create must use the exact blob-0 HOST3D contract: {fragment}")
+
+    map_blob = canonical_code(function_body("CtrlQueue::MapNativeControlBlob", QUEUE_CODE))
+    for fragment in (
+        "response->map_info==(VIRTIO_GPU_MAP_INFO_POOL|VIRTIO_GPU_MAP_CACHE_CACHED)",
+        "response->pool_offset!=0",
+        "(response->pool_offset&(PAGE_SIZE-1))==0",
+    ):
+        if map_blob.count(fragment) != 1:
+            fail(f"control blob map must accept only the exact cached named-pool response: {fragment}")
+
+    native_header = canonical_code(VIOGPU_HEADER_CODE)
+    for field in (
+        "UINTControlResourceId;",
+        "ULONGControlPoolOffset;",
+        "ULONGControlBlobSize;",
+        "ULONGLastControlSeqno;",
+        "ULONGLONGControlPoolGeneration;",
+        "BOOLEANControlResourceCreated;",
+        "BOOLEANControlMapped;",
+    ):
+        if native_header.count(field) != 1:
+            fail(f"native owner must retain one control-resource field: {field}")
+    if native_header.count("UINTm_NextNativeResourceId;") != 1:
+        fail("native control resources must use one adapter-owned high-range allocator")
+
+    resource_header = canonical_code(RESOURCE_HEADER_CODE)
+    if resource_header.count("#defineVIOGPU_NATIVE_RESOURCE_ID_START0x80000000") != 1:
+        fail("VirtIO resource IDs must define one exact low/high namespace boundary")
+    idr_header = canonical_code(IDR_HEADER_CODE)
+    for fragment in ("BOOLEANInit(_In_ULONGstart,_In_ULONGend);", "ULONGm_endId;"):
+        if idr_header.count(fragment) != 1:
+            fail(f"legacy resource ID allocator must retain its exclusive upper bound: {fragment}")
+    idr_init = canonical_code(function_body("VioGpuIdr::Init", IDR_CODE))
+    for fragment in (
+        "if(start==0||start>=end){returnFALSE;}",
+        "m_nextId=start;",
+        "m_endId=end;",
+    ):
+        if idr_init.count(fragment) != 1:
+            fail(f"legacy resource ID initialization must validate and publish its bounded range: {fragment}")
+    idr_get = canonical_code(function_body("VioGpuIdr::GetId", IDR_CODE))
+    idr_get_sequence = (
+        idr_get.find("KeAcquireSpinLock(&m_lock,&oldIrql);"),
+        idr_get.find("elseif(m_nextId!=0&&m_nextId<m_endId)"),
+        idr_get.find("id=m_nextId++;"),
+        idr_get.find("KeReleaseSpinLock(&m_lock,oldIrql);"),
+    )
+    if min(idr_get_sequence) < 0 or list(idr_get_sequence) != sorted(idr_get_sequence):
+        fail("legacy resource ID allocation must increment under lock and stop before the native high range")
+    if "ExInterlocked" in IDR_CODE:
+        fail("legacy resource ID list and sequential counter must use one shared locking domain")
+    native_resource_allocator = canonical_code(
+        function_body("VioGpuAdapter::AllocateNativeResourceIdLocked", VIOGPU_CODE)
+    )
+    for fragment in (
+        "UINTresourceId=m_NextNativeResourceId;",
+        "if(resourceId<VIOGPU_NATIVE_RESOURCE_ID_START||resourceId==MAXUINT){return0;}",
+        "++m_NextNativeResourceId;",
+    ):
+        if native_resource_allocator.count(fragment) != 1:
+            fail(f"native resource ID allocation must remain inside the reserved high range: {fragment}")
+    if canonical_code(VIOGPU_CODE).count("m_NextNativeResourceId=VIOGPU_NATIVE_RESOURCE_ID_START;") != 1:
+        fail("native resource ID allocation must begin exactly at the reserved high-range boundary")
+
+    seed = canonical_code(
+        function_body_with_parameters(
+            "VioGpuSeedNativeControlResponse",
+            "_In_ VioGpuAdapter *adapter, _Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ ULONG sequence",
+            VIOGPU_CODE,
+        )
+    )
+    consume = canonical_code(
+        function_body_with_parameters(
+            "VioGpuConsumeNativeControlResponse",
+            "_In_ VioGpuAdapter *adapter, _In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ ULONG sequence, "
+            "_In_ ULONG parameter, _Out_ PULONGLONG value",
+            VIOGPU_CODE,
+        )
+    )
+    for owner, body in (("seed", seed), ("consume", consume)):
+        if body.count("adapter->AcquireDrmHostPoolMapping(&mapping)") != 1 or body.count("mapping.Release();") != 1:
+            fail(f"native response {owner} must own exactly one short named-pool lease")
+        if "KeWaitForSingleObject" in body or "SubmitNativeControl" in body or "PAGED_CODE" in body:
+            fail(f"native response {owner} must remain non-waiting and nonpageable while leased")
+        enter = body.find("KeEnterGuardedRegion();")
+        acquire = body.find("adapter->AcquireDrmHostPoolMapping(&mapping)")
+        release = body.find("mapping.Release();")
+        leave = body.find("KeLeaveGuardedRegion();")
+        if min(enter, acquire, release, leave) < 0 or not enter < acquire < release < leave:
+            fail(f"native response {owner} must keep APCs disabled for the complete short lease")
+    if seed.find("RtlZeroMemory(response,sizeof(*response));") > seed.find(
+        "InterlockedExchange(reinterpret_cast<volatileLONG*>(&response->hdr.len),static_cast<LONG>(sizeof(*response)));"
+    ):
+        fail("native response seed must publish the exact length only after clearing the slot")
+    seed_generation = "owner->ControlPoolGeneration=mapping.GetGeneration();"
+    if seed.count(seed_generation) != 1:
+        fail("native response seed must capture one named-pool generation")
+    consume_sequence = (
+        consume.find("owner->ControlPoolGeneration==mapping.GetGeneration()"),
+        consume.find("VioGpuReadSharedU32(&shmem->base.seqno)==sequence"),
+        consume.find("KeMemoryBarrier();"),
+        consume.find("RtlCopyMemory(&response,sharedResponse,sizeof(response));"),
+        consume.find("response.hdr.len==static_cast<ULONG>(sizeof(response))"),
+    )
+    if min(consume_sequence) < 0 or list(consume_sequence) != sorted(consume_sequence):
+        fail("native response consume must acquire seqno before copying and validating the response")
+
+    query_param = canonical_code(function_body("VioGpuAdapter::QueryNativeContextParameterLocked", VIOGPU_CODE))
+    query_sequence = (
+        query_param.find("VioGpuSeedNativeControlResponse(this,owner,sequence)"),
+        query_param.find("m_CtrlQueue.SubmitNativeControl(owner->ContextId,&request,sizeof(request))"),
+        query_param.find("VioGpuConsumeNativeControlResponse(this,owner,sequence,parameter,value)"),
+    )
+    if min(query_sequence) < 0 or list(query_sequence) != sorted(query_sequence):
+        fail("GET_PARAM must release its seed lease before submit and reacquire only after VirtIO completion")
+    if "AcquireDrmHostPoolMapping" in query_param or query_param.count("m_CtrlQueue.PoisonSynchronousRequests();") != 2:
+        fail("GET_PARAM must not hold a pool lease across submit and must poison malformed shared-memory state")
+    for fragment in (
+        "request.hdr.cmd=MSM_CCMD_IOCTL_SIMPLE;",
+        "request.hdr.len=sizeof(request);",
+        "request.hdr.seqno=sequence;",
+        "request.hdr.rsp_off=0;",
+        "request.ioctl_cmd=DRM_IOCTL_MSM_GET_PARAM;",
+        "request.param.pipe=MSM_PIPE_3D0;",
+        "request.param.param=parameter;",
+    ):
+        if query_param.count(fragment) != 1:
+            fail(f"GET_PARAM request must use its exact 44-byte IOCTL_SIMPLE encoding: {fragment}")
+
     create = canonical_code(function_body("VioGpuAdapter::CreateNativeContext", VIOGPU_CODE))
     registry_insert = create.find("InsertTailList(&m_NativeContextRegistry,&owner->AdapterLink);")
     host_create = create.find("m_CtrlQueue.CreateNativeContext(contextId)")
@@ -1758,21 +1919,34 @@ def check_native_context_ownership() -> None:
         "owner->State=VioGpuNativeContextOwnerLive;"
     ) != 1:
         fail("adapter create must publish one Creating-to-Live Host-owner transition")
-    create_retire = (
-        "if(createResult==VioGpuHostContextNotSubmitted||createResult==VioGpuHostContextRejected)"
-        "{RetireNativeContextOwnerLocked(owner);}"
-        "else{owner->Registration=NULL;}"
+    creation_sequence = (
+        create.find("m_CtrlQueue.CreateNativeContext(contextId)"),
+        create.find("m_CtrlQueue.CreateNativeControlBlob(contextId,resourceId)"),
+        create.find("m_CtrlQueue.MapNativeControlBlob(resourceId,&poolOffset)"),
+        create.find("QueryNativeContextParameterLocked(owner,MSM_PARAM_VA_START,&vaStart)"),
+        create.find("QueryNativeContextParameterLocked(owner,MSM_PARAM_VA_SIZE,&vaSize)"),
+        create.find("context->VaStart=vaStart;"),
+        create.find("context->VaSize=vaSize;"),
+        create.find("context->Registered=TRUE;"),
     )
-    if create.count(create_retire) != 1:
-        fail("adapter create must retain only submitted ownership whose outcome is Unknown")
+    if min(creation_sequence) < 0 or list(creation_sequence) != sorted(creation_sequence):
+        fail("native create must create/map blob-0, query both VA parameters, then publish the live registration")
+    if create.count("owner->Registration=NULL;FailNativeContextAtAnyIrql();") != 1:
+        fail("native create must retain every unresolved Host owner until reset")
+    va_validation = (
+        "vaStart==0||vaSize==0||(vaStart&(PAGE_SIZE-1))!=0||(vaSize&(PAGE_SIZE-1))!=0||"
+        "vaStart>MAXULONGLONG-vaSize"
+    )
+    if create.count(va_validation) != 1:
+        fail("native create must reject zero, unaligned, or overflowing Host VA ranges")
 
-    native_header = canonical_code(VIOGPU_HEADER_CODE)
     for field in ("VaStart", "VaSize"):
         if native_header.count(f"ULONGLONG{field};") != 2:
             fail(f"native registration and protected snapshot must each retain one Host address-space field: {field}")
         assignments = re.findall(rf"\bcontext\s*->\s*{field}\s*=(?!=)\s*([^;]+);", VIOGPU_SOURCE)
-        if [canonical_code(value) for value in assignments] != ["0", "0", "0"]:
-            fail(f"{field} must remain unpublished until the real Host GET_PARAM control path exists")
+        published_value = "vaStart" if field == "VaStart" else "vaSize"
+        if [canonical_code(value) for value in assignments] != ["0", published_value, "0", "0"]:
+            fail(f"{field} must have one success-only Host publisher and three lifecycle clears")
         if canonical_code(VIOGPU_CODE).count(f"snapshot->{field}=context->{field};") != 1:
             fail(f"native-context snapshot must copy {field} once under lifecycle protection")
     if create.count("context->VaStart!=0") != 1 or create.count("context->VaSize!=0") != 1:
@@ -1784,9 +1958,22 @@ def check_native_context_ownership() -> None:
 
     destroy = canonical_code(function_body("VioGpuAdapter::DestroyNativeContext", VIOGPU_CODE))
     mark_destroying = destroy.find("owner->State=VioGpuNativeContextOwnerDestroying;")
-    host_destroy = destroy.find("m_CtrlQueue.DestroyNativeContext(contextId)")
+    host_destroy = destroy.find("DestroyNativeContextHostObjectsLocked(owner)")
     if mark_destroying < 0 or host_destroy < 0 or mark_destroying > host_destroy:
-        fail("adapter must retain and mark Host ownership Destroying before CTX_DESTROY")
+        fail("adapter must retain and mark Host ownership Destroying before resource/context teardown")
+
+    cleanup = canonical_code(function_body("VioGpuAdapter::DestroyNativeContextHostObjectsLocked", VIOGPU_CODE))
+    cleanup_sequence = (
+        cleanup.find("m_CtrlQueue.UnmapNativeControlBlob(owner->ControlResourceId)"),
+        cleanup.find("m_CtrlQueue.UnrefNativeResource(owner->ControlResourceId)"),
+        cleanup.find("m_CtrlQueue.DestroyNativeContext(owner->ContextId)"),
+    )
+    if min(cleanup_sequence) < 0 or list(cleanup_sequence) != sorted(cleanup_sequence):
+        fail("normal native teardown must unmap, unref, then destroy the Host context")
+    if cleanup.count("returnVioGpuHostContextUnknown;") != 4 or cleanup.count(
+        "returnVioGpuHostContextConfirmed;"
+    ) != 1:
+        fail("native teardown must retain ownership after every non-confirmed cleanup stage")
     retire_guard = (
         "if(destroyResult==VioGpuHostContextConfirmed||destroyResult==VioGpuHostContextRejected)"
         "{RetireNativeContextOwnerLocked(owner);}"

@@ -37,6 +37,7 @@
 VioGpuIdr::VioGpuIdr()
 {
     m_nextId = 0;
+    m_endId = 0;
     KeInitializeSpinLock(&m_lock);
     InitializeListHead(&m_freeList);
 }
@@ -46,28 +47,43 @@ VioGpuIdr::~VioGpuIdr()
     Close();
 }
 
-BOOLEAN VioGpuIdr::Init(_In_ ULONG start)
+BOOLEAN VioGpuIdr::Init(_In_ ULONG start, _In_ ULONG end)
 {
-    Close();
-    m_nextId = start;
+    if (start == 0 || start >= end)
+    {
+        return FALSE;
+    }
 
-    return true;
+    Close();
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_lock, &oldIrql);
+    m_nextId = start;
+    m_endId = end;
+    KeReleaseSpinLock(&m_lock, oldIrql);
+
+    return TRUE;
 }
 
 ULONG VioGpuIdr::GetId(VOID)
 {
     ULONG id = 0;
+    FreeId *freeId = NULL;
 
-    FreeId *freeId = reinterpret_cast<FreeId *>(ExInterlockedRemoveHeadList(&m_freeList, &m_lock));
-    if (freeId != NULL)
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_lock, &oldIrql);
+    if (m_endId != 0 && !IsListEmpty(&m_freeList))
     {
+        freeId = CONTAINING_RECORD(RemoveHeadList(&m_freeList), FreeId, list_entry);
         id = freeId->id;
-        delete freeId;
     }
-    else
+    else if (m_nextId != 0 && m_nextId < m_endId)
     {
         id = m_nextId++;
     }
+    KeReleaseSpinLock(&m_lock, oldIrql);
+
+    delete freeId;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("[%s] id = %d\n", __FUNCTION__, id));
 
@@ -77,21 +93,48 @@ ULONG VioGpuIdr::GetId(VOID)
 VOID VioGpuIdr::PutId(_In_ ULONG id)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("[%s] id = %d\n", __FUNCTION__, id));
+    if (id == 0)
+    {
+        return;
+    }
+
     FreeId *freeId = new (NonPagedPoolNx) FreeId;
+    if (freeId == NULL)
+    {
+        return;
+    }
     freeId->id = id;
-    ExInterlockedInsertTailList(&m_freeList, &freeId->list_entry, &m_lock);
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_lock, &oldIrql);
+    if (m_endId == 0 || id >= m_endId)
+    {
+        KeReleaseSpinLock(&m_lock, oldIrql);
+        delete freeId;
+        return;
+    }
+    InsertTailList(&m_freeList, &freeId->list_entry);
+    KeReleaseSpinLock(&m_lock, oldIrql);
 }
 
 VOID VioGpuIdr::Close(VOID)
 {
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_lock, &oldIrql);
+    m_nextId = 0;
+    m_endId = 0;
+    KeReleaseSpinLock(&m_lock, oldIrql);
 
-    FreeId *freeId = NULL;
-    do
+    for (;;)
     {
-        freeId = reinterpret_cast<FreeId *>(ExInterlockedRemoveHeadList(&m_freeList, &m_lock));
-        if (freeId != NULL)
+        KeAcquireSpinLock(&m_lock, &oldIrql);
+        if (IsListEmpty(&m_freeList))
         {
-            delete freeId;
+            KeReleaseSpinLock(&m_lock, oldIrql);
+            return;
         }
-    } while (freeId != NULL);
+        FreeId *freeId = CONTAINING_RECORD(RemoveHeadList(&m_freeList), FreeId, list_entry);
+        KeReleaseSpinLock(&m_lock, oldIrql);
+        delete freeId;
+    }
 }
