@@ -144,8 +144,8 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         fail("client must define each exact product pool name once")
     for token in (
         "VioGpuNamedPoolConnecting",
-        "volatileLONGm_RemovalLatched",
-        "volatileLONGm_PnpState",
+        "mutablevolatileLONGm_RemovalLatched",
+        "mutablevolatileLONGm_PnpState",
     ):
         if token not in header_code:
             fail(f"callback-visible registration state must be atomic: {token}")
@@ -796,7 +796,7 @@ def check_client(source_text: str, header_text: str, interface_text: str) -> Non
         "BOOLEAN m_NotificationRundownCompleted;",
         "BOOLEAN m_DisconnectInProgress;",
         "WORK_QUEUE_ITEM m_PnpCleanupWorkItem;",
-        "KEVENT m_PnpCleanupComplete;",
+        "mutable KEVENT m_PnpCleanupComplete;",
         "KSPIN_LOCK m_PnpCleanupLock;",
         "mutable volatile LONG m_PnpCleanupQueued;",
         "volatile LONG m_PnpCleanupGeneration;",

@@ -124,7 +124,7 @@ class VioGpuNamedPool
     mutable volatile LONG m_Ready;
     mutable DECLSPEC_ALIGN(8) volatile LONG64 m_Generation;
     WORK_QUEUE_ITEM m_PnpCleanupWorkItem;
-    KEVENT m_PnpCleanupComplete;
+    mutable KEVENT m_PnpCleanupComplete;
     KSPIN_LOCK m_PnpCleanupLock;
     mutable volatile LONG m_PnpCleanupQueued;
     volatile LONG m_PnpCleanupGeneration;
@@ -134,8 +134,8 @@ class VioGpuNamedPool
     BOOLEAN m_NotificationRundownCompleted;
     BOOLEAN m_DisconnectInProgress;
     volatile LONG m_ShuttingDown;
-    volatile LONG m_RemovalLatched;
-    volatile LONG m_PnpState;
+    mutable volatile LONG m_RemovalLatched;
+    mutable volatile LONG m_PnpState;
     const CHAR *m_ExpectedName;
     ULONG m_ExpectedNameLength;
     VIOGPU_NAMED_POOL_FAILURE_CALLBACK m_FailureCallback;
