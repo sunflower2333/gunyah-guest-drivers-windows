@@ -1547,6 +1547,91 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
         "    D3DDI_PATCHLOCATIONLIST *patchSnapshot = NULL;",
     ),
     Rewrite(
+        "R147_context_info_bypasses_context_rundown",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(escape->hContext);
+    if (!ExAcquireRundownProtection(&context->Operations))""",
+        """    VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(escape->hContext);
+    if (FALSE && !ExAcquireRundownProtection(&context->Operations))""",
+    ),
+    Rewrite(
+        "R148_context_info_accepts_cross_device_context",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Device != device ||
+        device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || device->Adapter != adapter)""",
+        """    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE ||
+        device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || device->Adapter != adapter)""",
+    ),
+    Rewrite(
+        "R149_context_info_uses_capset_va",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """        snapshotAcquired = TRUE;
+        ULONGLONG vaEnd = snapshot.VaStart + snapshot.VaSize;""",
+        """        snapshotAcquired = TRUE;
+        GPU_CAPSET_DRM capset = {};
+        if (NT_SUCCESS(adapter->QueryNativeContextReadiness(&capset, NULL, NULL, NULL)))
+        {
+            snapshot.VaStart = capset.msm.va_start;
+            snapshot.VaSize = capset.msm.va_size;
+        }
+        ULONGLONG vaEnd = snapshot.VaStart + snapshot.VaSize;""",
+    ),
+    Rewrite(
+        "R150_context_info_accepts_nonzero_output_fields",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (request.Flags != VIOGPU_WDDM_ESCAPE_FLAGS_NONE || request.ExpectedResetGeneration == 0 ||
+        request.VaStart != 0 || request.VaSize != 0 || request.ResetGeneration != 0)""",
+        """    if (request.Flags != VIOGPU_WDDM_ESCAPE_FLAGS_NONE || request.ExpectedResetGeneration == 0)""",
+    ),
+    Rewrite(
+        "R151_context_info_accepts_zero_va",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """        if (snapshot.ResetGeneration != request.ExpectedResetGeneration || snapshot.VaStart == 0 ||
+            snapshot.VaSize == 0 || (snapshot.VaStart & (PAGE_SIZE - 1)) != 0 ||""",
+        """        if (snapshot.ResetGeneration != request.ExpectedResetGeneration ||
+            (snapshot.VaStart & (PAGE_SIZE - 1)) != 0 ||""",
+    ),
+    Rewrite(
+        "R152_destroy_context_leaves_va",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    context->ContextId = 0;
+    context->VaStart = 0;
+    context->VaSize = 0;
+    InterlockedExchange(&context->State, VioGpuNativeContextDead);
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);
+    *released = TRUE;""",
+        """    context->ContextId = 0;
+    InterlockedExchange(&context->State, VioGpuNativeContextDead);
+    KeReleaseSpinLock(&context->BindingLock, oldIrql);
+    *released = TRUE;""",
+    ),
+    Rewrite(
+        "R153_reset_context_leaves_va",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """            context->Registered = FALSE;
+            context->Adapter = NULL;
+            context->Owner = NULL;
+            context->Generation = 0;
+            context->ResetGeneration = 0;
+            context->ContextId = 0;
+            context->VaStart = 0;
+            context->VaSize = 0;
+            InterlockedExchange(&context->State, VioGpuNativeContextDead);""",
+        """            context->Registered = FALSE;
+            context->Adapter = NULL;
+            context->Owner = NULL;
+            context->Generation = 0;
+            context->ResetGeneration = 0;
+            context->ContextId = 0;
+            InterlockedExchange(&context->State, VioGpuNativeContextDead);""",
+    ),
+    Rewrite(
+        "R154_escape_callback_bypasses_wrapper",
+        "viogpu/viogpuwddm/driver_entry.cpp",
+        "    initialData->DxgkDdiEscape = VioGpuWddmEscape;",
+        "    initialData->DxgkDdiEscape = VioGpuDodEscape;",
+    ),
+    Rewrite(
         "S01_pending_comparison_reversed",
         "viogpu/common/viogpu_rdma.cpp",
         "if (status == STATUS_PENDING)",

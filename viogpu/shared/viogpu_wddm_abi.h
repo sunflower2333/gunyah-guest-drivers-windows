@@ -2,8 +2,8 @@
 #define VIOGPU_WDDM_ABI_H
 
 /*
- * Experimental pre-v1 snapshot. Version 1 must not be published until the
- * context VA and allocation IOVA control contracts are implemented.
+ * Experimental pre-v1 snapshot. Version 1 must not be published until the Host
+ * context VA publication and allocation IOVA control are implemented.
  */
 #define VIOGPU_WDDM_ABI_MAGIC              0x504D5644U
 #define VIOGPU_WDDM_ABI_VERSION            0U
@@ -14,6 +14,7 @@
 #define VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE 0x00000002U
 
 #define VIOGPU_WDDM_CONTEXT_FLAGS_NONE     0U
+#define VIOGPU_WDDM_ESCAPE_FLAGS_NONE      0U
 #define VIOGPU_WDDM_RENDER_FLAGS_NONE      0U
 
 #define VIOGPU_WDDM_REFERENCE_READ         0x00000001U
@@ -33,6 +34,11 @@ typedef enum VIOGPU_WDDM_RENDER_OPCODE
 {
     VIOGPU_WDDM_RENDER_NATIVE_SUBMIT = 1,
 } VIOGPU_WDDM_RENDER_OPCODE;
+
+typedef enum VIOGPU_WDDM_ESCAPE_OPCODE
+{
+    VIOGPU_WDDM_ESCAPE_GET_CONTEXT_INFO = 1,
+} VIOGPU_WDDM_ESCAPE_OPCODE;
 
 #pragma pack(push, 4)
 
@@ -89,6 +95,17 @@ typedef struct VIOGPU_WDDM_CONTEXT_CREATE
     VIOGPU_WDDM_UINT32 Flags;
     VIOGPU_WDDM_UINT32 Reserved;
 } VIOGPU_WDDM_CONTEXT_CREATE;
+
+typedef struct VIOGPU_WDDM_CONTEXT_INFO
+{
+    VIOGPU_WDDM_ABI_HEADER Header;
+    VIOGPU_WDDM_UINT32 Opcode;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+    VIOGPU_WDDM_UINT64 VaStart;
+    VIOGPU_WDDM_UINT64 VaSize;
+    VIOGPU_WDDM_UINT64 ResetGeneration;
+} VIOGPU_WDDM_CONTEXT_INFO;
 
 typedef struct VIOGPU_WDDM_RENDER_COMMAND
 {

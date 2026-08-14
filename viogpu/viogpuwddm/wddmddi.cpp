@@ -280,6 +280,105 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
     return STATUS_SUCCESS;
 }
 
+#pragma code_seg(push)
+#pragma code_seg("PAGE")
+
+NTSTATUS QueryContextInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+
+    if (adapter == NULL || escape == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || escape->hDevice == NULL ||
+        escape->hContext == NULL || escape->Flags.Value != 0 || escape->pPrivateDriverData == NULL ||
+        escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_CONTEXT_INFO))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    VIOGPU_WDDM_CONTEXT_INFO request = {};
+    __try
+    {
+        RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return STATUS_INVALID_USER_BUFFER;
+    }
+
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) || request.Opcode != VIOGPU_WDDM_ESCAPE_GET_CONTEXT_INFO)
+    {
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;
+    }
+    if (request.Flags != VIOGPU_WDDM_ESCAPE_FLAGS_NONE || request.ExpectedResetGeneration == 0 ||
+        request.VaStart != 0 || request.VaSize != 0 || request.ResetGeneration != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(escape->hContext);
+    if (!ExAcquireRundownProtection(&context->Operations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    NTSTATUS status = STATUS_SUCCESS;
+    VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+    BOOLEAN snapshotAcquired = FALSE;
+    VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(escape->hDevice);
+    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Device != device ||
+        device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || device->Adapter != adapter)
+    {
+        status = STATUS_INVALID_HANDLE;
+    }
+    else if (!adapter->IsDriverActive())
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else
+    {
+        snapshotAcquired = TRUE;
+        ULONGLONG vaEnd = snapshot.VaStart + snapshot.VaSize;
+        if (snapshot.ResetGeneration != request.ExpectedResetGeneration || snapshot.VaStart == 0 ||
+            snapshot.VaSize == 0 || (snapshot.VaStart & (PAGE_SIZE - 1)) != 0 ||
+            (snapshot.VaSize & (PAGE_SIZE - 1)) != 0 || vaEnd < snapshot.VaStart)
+        {
+            status = STATUS_DEVICE_NOT_READY;
+        }
+    }
+
+    if (NT_SUCCESS(status))
+    {
+        VIOGPU_WDDM_CONTEXT_INFO response = {};
+        InitializeAbiHeader(&response.Header, sizeof(response));
+        response.Opcode = VIOGPU_WDDM_ESCAPE_GET_CONTEXT_INFO;
+        response.Flags = VIOGPU_WDDM_ESCAPE_FLAGS_NONE;
+        response.ExpectedResetGeneration = request.ExpectedResetGeneration;
+        response.VaStart = snapshot.VaStart;
+        response.VaSize = snapshot.VaSize;
+        response.ResetGeneration = snapshot.ResetGeneration;
+        __try
+        {
+            RtlCopyMemory(escape->pPrivateDriverData, &response, sizeof(response));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            status = STATUS_INVALID_USER_BUFFER;
+        }
+    }
+
+    if (snapshotAcquired)
+    {
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+    }
+    ExReleaseRundownProtection(&context->Operations);
+    return status;
+}
+
+#pragma code_seg(pop)
+
 NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_RENDER_COMMAND *header,
                                UINT commandLength,
                                VIOGPU_WDDM_DEVICE *device,
@@ -392,6 +491,27 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
 
     return status;
 }
+
+#pragma code_seg(push)
+#pragma code_seg("PAGE")
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter, CONST DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+
+    if (hAdapter == NULL || escape == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (escape->hContext != NULL || escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_CONTEXT_INFO))
+    {
+        return QueryContextInfo(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
+    }
+    return VioGpuDodEscape(hAdapter, escape);
+}
+
+#pragma code_seg(pop)
 
 _Use_decl_annotations_ NTSTATUS APIENTRY
 VioGpuWddmGetStandardAllocationDriverData(CONST HANDLE hAdapter, DXGKARG_GETSTANDARDALLOCATIONDRIVERDATA *data)

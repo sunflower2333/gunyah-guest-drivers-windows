@@ -114,6 +114,8 @@ struct VIOGPU_NATIVE_CONTEXT_REGISTRATION
     LONG Generation;
     ULONGLONG ResetGeneration;
     UINT ContextId;
+    ULONGLONG VaStart;
+    ULONGLONG VaSize;
     BOOLEAN Registered;
 };
 
@@ -123,6 +125,8 @@ struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT
     LONG Generation;
     ULONGLONG ResetGeneration;
     UINT ContextId;
+    ULONGLONG VaStart;
+    ULONGLONG VaSize;
 };
 
 enum VIOGPU_NATIVE_CONTEXT_STATE : LONG

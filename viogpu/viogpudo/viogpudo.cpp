@@ -3235,7 +3235,8 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
         InterlockedCompareExchange(&context->State,
                                    VioGpuNativeContextAllocated,
                                    VioGpuNativeContextAllocated) != VioGpuNativeContextAllocated ||
-        context->Adapter != NULL || context->Owner != NULL || context->Registered)
+        context->Adapter != NULL || context->Owner != NULL || context->Registered || context->VaStart != 0 ||
+        context->VaSize != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -3323,6 +3324,8 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
         context->Generation = 0;
         context->ResetGeneration = 0;
         context->ContextId = 0;
+        context->VaStart = 0;
+        context->VaSize = 0;
         InterlockedExchange(&context->State, VioGpuNativeContextDead);
         KeReleaseSpinLock(&context->BindingLock, oldIrql);
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
@@ -3413,6 +3416,8 @@ NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIS
     context->Generation = 0;
     context->ResetGeneration = 0;
     context->ContextId = 0;
+    context->VaStart = 0;
+    context->VaSize = 0;
     InterlockedExchange(&context->State, VioGpuNativeContextDead);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
     *released = TRUE;
@@ -3471,6 +3476,8 @@ BOOLEAN VioGpuAdapter::AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEX
         snapshot->Generation = context->Generation;
         snapshot->ResetGeneration = context->ResetGeneration;
         snapshot->ContextId = context->ContextId;
+        snapshot->VaStart = context->VaStart;
+        snapshot->VaSize = context->VaSize;
     }
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
 
@@ -3538,6 +3545,7 @@ BOOLEAN VioGpuAdapter::IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REG
     KeAcquireSpinLock(&context->BindingLock, &oldIrql);
     BOOLEAN released = context->Adapter == NULL && context->Owner == NULL && !context->Registered &&
                        context->Generation == 0 && context->ResetGeneration == 0 && context->ContextId == 0 &&
+                       context->VaStart == 0 && context->VaSize == 0 &&
                        InterlockedCompareExchange(&context->State,
                                                   VioGpuNativeContextDead,
                                                   VioGpuNativeContextDead) == VioGpuNativeContextDead;
@@ -3583,6 +3591,8 @@ void VioGpuAdapter::InvalidateNativeContextRegistrationsLocked(void)
             context->Generation = 0;
             context->ResetGeneration = 0;
             context->ContextId = 0;
+            context->VaStart = 0;
+            context->VaSize = 0;
             InterlockedExchange(&context->State, VioGpuNativeContextDead);
         }
         KeReleaseSpinLock(&context->BindingLock, oldIrql);

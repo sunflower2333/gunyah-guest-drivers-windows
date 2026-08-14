@@ -53,7 +53,7 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
 
     initialData->DxgkDdiSetPointerPosition = VioGpuDodSetPointerPosition;
     initialData->DxgkDdiSetPointerShape = VioGpuDodSetPointerShape;
-    initialData->DxgkDdiEscape = VioGpuDodEscape;
+    initialData->DxgkDdiEscape = VioGpuWddmEscape;
     initialData->DxgkDdiIsSupportedVidPn = VioGpuDodIsSupportedVidPn;
     initialData->DxgkDdiRecommendFunctionalVidPn = VioGpuDodRecommendFunctionalVidPn;
     initialData->DxgkDdiEnumVidPnCofuncModality = VioGpuDodEnumVidPnCofuncModality;

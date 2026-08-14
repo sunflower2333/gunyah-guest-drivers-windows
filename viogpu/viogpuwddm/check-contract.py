@@ -1006,7 +1006,7 @@ def check_callback_table() -> None:
         "DxgkDdiRestartFromTimeout": "VioGpuWddmRestartFromTimeout",
         "DxgkDdiSetPointerPosition": "VioGpuDodSetPointerPosition",
         "DxgkDdiSetPointerShape": "VioGpuDodSetPointerShape",
-        "DxgkDdiEscape": "VioGpuDodEscape",
+        "DxgkDdiEscape": "VioGpuWddmEscape",
         "DxgkDdiIsSupportedVidPn": "VioGpuDodIsSupportedVidPn",
         "DxgkDdiRecommendFunctionalVidPn": "VioGpuDodRecommendFunctionalVidPn",
         "DxgkDdiEnumVidPnCofuncModality": "VioGpuDodEnumVidPnCofuncModality",
@@ -1766,6 +1766,22 @@ def check_native_context_ownership() -> None:
     if create.count(create_retire) != 1:
         fail("adapter create must retain only submitted ownership whose outcome is Unknown")
 
+    native_header = canonical_code(VIOGPU_HEADER_CODE)
+    for field in ("VaStart", "VaSize"):
+        if native_header.count(f"ULONGLONG{field};") != 2:
+            fail(f"native registration and protected snapshot must each retain one Host address-space field: {field}")
+        assignments = re.findall(rf"\bcontext\s*->\s*{field}\s*=(?!=)\s*([^;]+);", VIOGPU_SOURCE)
+        if [canonical_code(value) for value in assignments] != ["0", "0", "0"]:
+            fail(f"{field} must remain unpublished until the real Host GET_PARAM control path exists")
+        if canonical_code(VIOGPU_CODE).count(f"snapshot->{field}=context->{field};") != 1:
+            fail(f"native-context snapshot must copy {field} once under lifecycle protection")
+    if create.count("context->VaStart!=0") != 1 or create.count("context->VaSize!=0") != 1:
+        fail("native context creation must reject stale Host address-space state")
+
+    released = canonical_code(function_body("VioGpuAdapter::IsNativeContextReleased", VIOGPU_CODE))
+    if released.count("context->VaStart==0") != 1 or released.count("context->VaSize==0") != 1:
+        fail("native context release proof must require both Host address-space fields to be cleared")
+
     destroy = canonical_code(function_body("VioGpuAdapter::DestroyNativeContext", VIOGPU_CODE))
     mark_destroying = destroy.find("owner->State=VioGpuNativeContextOwnerDestroying;")
     host_destroy = destroy.find("m_CtrlQueue.DestroyNativeContext(contextId)")
@@ -1809,6 +1825,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_ABI_MAGIC", 0x504D5644, "WDDM private ABI")
     require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_ABI_VERSION", 0, "WDDM private ABI")
     require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_CAPABILITIES_NONE", 0, "WDDM private ABI")
+    require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_ESCAPE_FLAGS_NONE", 0, "WDDM private ABI")
 
     if "Experimental pre-v1 snapshot" not in WDDM_ABI_HEADER_SOURCE or (
         "Version 1 must not be published until the" not in WDDM_ABI_HEADER_SOURCE
@@ -1876,6 +1893,15 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
             VIOGPU_WDDM_UINT32 Flags;
             VIOGPU_WDDM_UINT32 Reserved;
+        """,
+        "VIOGPU_WDDM_CONTEXT_INFO": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            VIOGPU_WDDM_UINT32 Opcode;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+            VIOGPU_WDDM_UINT64 VaStart;
+            VIOGPU_WDDM_UINT64 VaSize;
+            VIOGPU_WDDM_UINT64 ResetGeneration;
         """,
         "VIOGPU_WDDM_RENDER_COMMAND": """
             VIOGPU_WDDM_ABI_HEADER Header;
@@ -1953,6 +1979,16 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     ):
         if manifest_entries.count(width_assertion) != 1:
             fail(f"WDDM private ABI fixture must assert each local integer width exactly once: {width_assertion}")
+    for context_info_assertion in (
+        "ABI_VALUE(escape.opcode.get_context_info, VIOGPU_WDDM_ESCAPE_GET_CONTEXT_INFO, 1);",
+        "ABI_VALUE(escape.flags.none, VIOGPU_WDDM_ESCAPE_FLAGS_NONE, 0);",
+        "ABI_SIZE(size.context_info, VIOGPU_WDDM_CONTEXT_INFO, 56);",
+        "ABI_OFFSET(offset.context_info.va_start, VIOGPU_WDDM_CONTEXT_INFO, VaStart, 32);",
+        "ABI_OFFSET(offset.context_info.va_size, VIOGPU_WDDM_CONTEXT_INFO, VaSize, 40);",
+        "ABI_OFFSET(offset.context_info.reset_generation, VIOGPU_WDDM_CONTEXT_INFO, ResetGeneration, 48);",
+    ):
+        if manifest_entries.count(context_info_assertion) != 1:
+            fail(f"WDDM private ABI fixture must lock the context-info contract: {context_info_assertion}")
     local_runner_path = WDDM_ABI_FIXTURE_DIR / "run-local.sh"
     local_runner = local_runner_path.read_text(encoding="utf-8")
     msvc_runner = (WDDM_ABI_FIXTURE_DIR / "run-msvc.cmd").read_text(encoding="utf-8")
@@ -2005,6 +2041,106 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "returnQueryUmdPrivateInfo(adapter,pQueryAdapterInfo);"
     ) != 1:
         fail("QueryAdapterInfo must dispatch UMDRIVERPRIVATE through the current pre-v1 endpoint")
+
+    if canonical_code(WDDM_DDI_HEADER_CODE).count("DXGKDDI_ESCAPEVioGpuWddmEscape;") != 1:
+        fail("full WDDM must declare one dedicated Escape wrapper")
+    escape_dispatch = canonical_code(function_body("VioGpuWddmEscape", WDDM_DDI_CODE))
+    for fragment in (
+        "hAdapter==NULL",
+        "escape==NULL",
+        "KeGetCurrentIrql()!=PASSIVE_LEVEL",
+        "escape->hContext!=NULL||escape->PrivateDriverDataSize==sizeof(VIOGPU_WDDM_CONTEXT_INFO)",
+        "returnQueryContextInfo(reinterpret_cast<VioGpuDod*>(hAdapter),escape);",
+        "returnVioGpuDodEscape(hAdapter,escape);",
+    ):
+        if escape_dispatch.count(fragment) != 1:
+            fail(f"full WDDM Escape dispatch must keep its context/private fallback boundary: {fragment}")
+
+    context_query_body = function_body("QueryContextInfo", WDDM_DDI_CODE)
+    context_query = canonical_code(context_query_body)
+    query_requirements = (
+        "KeGetCurrentIrql()!=PASSIVE_LEVEL",
+        "escape->hDevice==NULL",
+        "escape->hContext==NULL",
+        "escape->Flags.Value!=0",
+        "escape->pPrivateDriverData==NULL",
+        "escape->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_CONTEXT_INFO)",
+        "RtlCopyMemory(&request,escape->pPrivateDriverData,sizeof(request));",
+        "!IsCurrentAbiHeader(&request.Header,sizeof(request))",
+        "request.Opcode!=VIOGPU_WDDM_ESCAPE_GET_CONTEXT_INFO",
+        "request.Flags!=VIOGPU_WDDM_ESCAPE_FLAGS_NONE",
+        "request.ExpectedResetGeneration==0",
+        "request.VaStart!=0",
+        "request.VaSize!=0",
+        "request.ResetGeneration!=0",
+        "context->Device!=device",
+        "device->Adapter!=adapter",
+        "!adapter->IsDriverActive()",
+        "snapshot.ResetGeneration!=request.ExpectedResetGeneration",
+        "snapshot.VaStart==0",
+        "snapshot.VaSize==0",
+        "(snapshot.VaStart&(PAGE_SIZE-1))!=0",
+        "(snapshot.VaSize&(PAGE_SIZE-1))!=0",
+        "vaEnd<snapshot.VaStart",
+    )
+    for fragment in query_requirements:
+        if context_query.count(fragment) != 1:
+            fail(f"GET_CONTEXT_INFO must enforce its exact context-scoped input/output contract: {fragment}")
+    if any(
+        token in context_query
+        for token in (
+            "QueryNativeContextReadiness",
+            "capset",
+            "ContextId",
+            "ResourceId",
+            "BlobId",
+            "PhysicalAddress",
+        )
+    ):
+        fail("GET_CONTEXT_INFO must not substitute adapter-wide data or expose KMD/transport identities")
+
+    acquire_context = context_query.find("if(!ExAcquireRundownProtection(&context->Operations))")
+    validate_identity = context_query.find("context->Signature!=VIOGPU_WDDM_CONTEXT_SIGNATURE")
+    acquire_snapshot = context_query.find(
+        "VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext,&snapshot)"
+    )
+    validate_va = context_query.find("snapshot.ResetGeneration!=request.ExpectedResetGeneration")
+    publish = context_query.find("RtlCopyMemory(escape->pPrivateDriverData,&response,sizeof(response));")
+    release_snapshot = context_query.find("VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);")
+    release_context = context_query.find("ExReleaseRundownProtection(&context->Operations);")
+    query_sequence = (
+        acquire_context,
+        validate_identity,
+        acquire_snapshot,
+        validate_va,
+        publish,
+        release_snapshot,
+        release_context,
+    )
+    if min(query_sequence) < 0 or list(query_sequence) != sorted(query_sequence):
+        fail("GET_CONTEXT_INFO must hold context and native snapshots through final response publication")
+    if context_query.count("ExAcquireRundownProtection(&context->Operations)") != 1 or context_query.count(
+        "ExReleaseRundownProtection(&context->Operations);"
+    ) != 1:
+        fail("GET_CONTEXT_INFO must use one balanced context rundown interval")
+    if context_query.count("VioGpuAdapter::AcquireNativeContextSnapshot(") != 1 or context_query.count(
+        "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);"
+    ) != 1:
+        fail("GET_CONTEXT_INFO must use one balanced native-context snapshot")
+    response_assignments = (
+        "InitializeAbiHeader(&response.Header,sizeof(response));",
+        "response.Opcode=VIOGPU_WDDM_ESCAPE_GET_CONTEXT_INFO;",
+        "response.Flags=VIOGPU_WDDM_ESCAPE_FLAGS_NONE;",
+        "response.ExpectedResetGeneration=request.ExpectedResetGeneration;",
+        "response.VaStart=snapshot.VaStart;",
+        "response.VaSize=snapshot.VaSize;",
+        "response.ResetGeneration=snapshot.ResetGeneration;",
+    )
+    for fragment in response_assignments:
+        if context_query.count(fragment) != 1:
+            fail(f"GET_CONTEXT_INFO may publish only the exact zero-initialized response: {fragment}")
+    if context_query.count("RtlCopyMemory(escape->pPrivateDriverData,&response,sizeof(response));") != 1:
+        fail("GET_CONTEXT_INFO must publish one immutable local response snapshot")
 
     create = canonical_code(function_body("VioGpuWddmCreateContext", WDDM_DDI_CODE))
     create_requirements = (

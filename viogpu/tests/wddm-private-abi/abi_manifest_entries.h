@@ -7,6 +7,8 @@ ABI_VALUE(format.none, VIOGPU_WDDM_FORMAT_NONE, 0);
 ABI_VALUE(format.b8g8r8a8_unorm, VIOGPU_WDDM_FORMAT_B8G8R8A8_UNORM, 1);
 ABI_VALUE(format.b8g8r8x8_unorm, VIOGPU_WDDM_FORMAT_B8G8R8X8_UNORM, 2);
 ABI_VALUE(context.flags.none, VIOGPU_WDDM_CONTEXT_FLAGS_NONE, 0);
+ABI_VALUE(escape.opcode.get_context_info, VIOGPU_WDDM_ESCAPE_GET_CONTEXT_INFO, 1);
+ABI_VALUE(escape.flags.none, VIOGPU_WDDM_ESCAPE_FLAGS_NONE, 0);
 ABI_VALUE(render.opcode.native_submit, VIOGPU_WDDM_RENDER_NATIVE_SUBMIT, 1);
 ABI_VALUE(render.flags.none, VIOGPU_WDDM_RENDER_FLAGS_NONE, 0);
 ABI_VALUE(reference.flag.read, VIOGPU_WDDM_REFERENCE_READ, 1);
@@ -59,6 +61,15 @@ ABI_OFFSET(offset.context_create.header, VIOGPU_WDDM_CONTEXT_CREATE, Header, 0);
 ABI_OFFSET(offset.context_create.expected_reset_generation, VIOGPU_WDDM_CONTEXT_CREATE, ExpectedResetGeneration, 16);
 ABI_OFFSET(offset.context_create.flags, VIOGPU_WDDM_CONTEXT_CREATE, Flags, 24);
 ABI_OFFSET(offset.context_create.reserved, VIOGPU_WDDM_CONTEXT_CREATE, Reserved, 28);
+
+ABI_SIZE(size.context_info, VIOGPU_WDDM_CONTEXT_INFO, 56);
+ABI_OFFSET(offset.context_info.header, VIOGPU_WDDM_CONTEXT_INFO, Header, 0);
+ABI_OFFSET(offset.context_info.opcode, VIOGPU_WDDM_CONTEXT_INFO, Opcode, 16);
+ABI_OFFSET(offset.context_info.flags, VIOGPU_WDDM_CONTEXT_INFO, Flags, 20);
+ABI_OFFSET(offset.context_info.expected_reset_generation, VIOGPU_WDDM_CONTEXT_INFO, ExpectedResetGeneration, 24);
+ABI_OFFSET(offset.context_info.va_start, VIOGPU_WDDM_CONTEXT_INFO, VaStart, 32);
+ABI_OFFSET(offset.context_info.va_size, VIOGPU_WDDM_CONTEXT_INFO, VaSize, 40);
+ABI_OFFSET(offset.context_info.reset_generation, VIOGPU_WDDM_CONTEXT_INFO, ResetGeneration, 48);
 
 ABI_SIZE(size.render_command, VIOGPU_WDDM_RENDER_COMMAND, 64);
 ABI_OFFSET(offset.render_command.header, VIOGPU_WDDM_RENDER_COMMAND, Header, 0);

@@ -14,49 +14,61 @@ implementation, and is intentionally not installable:
 The current artifact extends the P1 compile-only transport-readiness slice with
 a P2 pre-v1 private-ABI validation scaffold. Its unreachable source path
 negotiates the required VirtIO-GPU features, validates the Native Context
-capset, exposes an exact-revision WDK-independent UMD/KMD snapshot, and
-validates allocation, context, and Render identities against a stable reset
-generation. This still does not implement the product's guest-backed allocation
-or submit data path.
+capset, exposes an exact-revision WDK-independent UMD/KMD snapshot, creates a
+Host Native Context, and validates allocation, context, Escape, and Render
+identities against a stable reset generation. This still does not implement the
+product's guest-backed allocation or submit data path.
 `DriverEntry` remains fail-closed and returns `STATUS_NOT_SUPPORTED`; no
 artifact from this project may be installed or loaded.
 
 The fixture in `viogpu/tests/wddm-private-abi/` locks only the current pre-v1
 snapshot for independent KMD and UMD endpoint regression checks. It does not
-freeze a version-1 ABI. Before version 1 can be published, the contract must add
-a low-frequency, context-scoped `D3DKMTEscape(DRIVERPRIVATE)`
-`GET_CONTEXT_INFO` request that returns the real Host-created `VaStart`,
-`VaSize`, and `ResetGeneration` under context rundown protection. The UMD must
-query and cache that response before selecting any BO IOVA or submitting, then
-discard it when the generation changes. Escape is not a submit path. The ABI
-must also define requested-IOVA bind/unbind/query behavior for an allocation and
-the real guest-backed allocation and teardown lifecycle. Create-time private
-data is UMD-to-KMD input and must not be treated as an output channel. D3DKMT
-allocation and context handles remain the UMD's opaque identities; KMD or
-transport object IDs are not exposed.
+freeze a version-1 ABI. The exact-revision snapshot now defines a low-frequency,
+context-scoped `D3DKMTEscape(DRIVERPRIVATE)` `GET_CONTEXT_INFO` request. The KMD
+requires the exact buffer layout, zero input output fields, matching adapter,
+device, context, and reset generation, and holds both context rundown and the
+protected Native Context snapshot through response publication. It exposes only
+`VaStart`, `VaSize`, and `ResetGeneration`; KMD pointers, Windows handles, and
+VirtIO, resource, blob, or KGSL identifiers remain private.
 
-The current snapshot contains no Windows pointers or handles, physical or IOVA
-addresses, or VirtIO/KGSL object identifiers. `CreateAllocation` retains the
-validated private data and `OpenAllocation` requires an exact byte-for-byte
-match. Every open wrapper holds its owning device through `CloseAllocation`,
-records read-only access, and is rejected if a Render context from another
-device references it. Render ranges are bounded by the logical UMD-declared
-allocation size, not page-aligned VidMm backing padding. Open/close and destroy
-also reject unsupported flags, resource-private data, and duplicate handle
-arrays before releasing objects. `CreateContext` accepts only the single-engine
-affinity mask `1` and a current nonzero reset-generation token. `Render` bounds
-command input to 64 KiB, copies command and patch inputs to nonpaged snapshots,
-validates their shared allocation identity, rejects writes through read-only
-opens and overlapping 8-byte patch slots, rechecks the reset generation, and
-only then publishes its DMA output. UMD-selected patch slot IDs may be nonzero;
-reserved patch bits must be zero.
+The endpoint is not a source of usable VA data yet. Linux obtains each renderer
+context's range through `MSM_PARAM_VA_START` and `MSM_PARAM_VA_SIZE`, but the
+Windows transport has no blob-0/control-ring `GET_PARAM` consumer. The
+registration's `VaStart` and `VaSize` fields are therefore initialized and
+cleared on every failure, destroy, and reset path but have no nonzero publisher.
+`GET_CONTEXT_INFO` consequently returns `STATUS_DEVICE_NOT_READY` instead of
+substituting the adapter-wide capset range. Before version 1 can be published,
+the Host result must populate those fields and the ABI must also define
+requested-IOVA bind/unbind/query behavior plus the real guest-backed allocation
+and teardown lifecycle. The UMD must query and cache the response before
+selecting any BO IOVA or submitting, then discard it when the generation
+changes. Escape is not a submit path. Create-time private data is UMD-to-KMD
+input and must not be treated as an output channel. D3DKMT allocation and
+context handles remain the UMD's opaque identities.
+
+Except for the context-info response fields described above, the snapshot
+contains no Windows pointers or handles, physical or IOVA addresses, or
+VirtIO/KGSL object identifiers. `CreateAllocation` retains the validated private
+data and `OpenAllocation` requires an exact byte-for-byte match. Every open
+wrapper holds its owning device through `CloseAllocation`, records read-only
+access, and is rejected if a Render context from another device references it.
+Render ranges are bounded by the logical UMD-declared allocation size, not
+page-aligned VidMm backing padding. Open/close and destroy also reject
+unsupported flags, resource-private data, and duplicate handle arrays before
+releasing objects. `CreateContext` accepts only the single-engine affinity mask
+`1` and a current nonzero reset-generation token. `Render` bounds command input
+to 64 KiB, copies command and patch inputs to nonpaged snapshots, validates their
+shared allocation identity, rejects writes through read-only opens and
+overlapping 8-byte patch slots, rechecks the reset generation, and only then
+publishes its DMA output. UMD-selected patch slot IDs may be nonzero; reserved
+patch bits must be zero.
 
 `Patch` deliberately returns `STATUS_NOT_SUPPORTED`. A VidMm segment physical
-address is not a Turnip per-context IOVA, and the KMD has no context-info/BO
-transport that could provide the real address yet. `SubmitCommand` likewise
-remains fail-closed until Host GPU retirement and WDDM fence completion are
-implemented. The validation slice must not be described as a working Render,
-Patch, or submit pipeline.
+address is not a Turnip per-context IOVA, and the KMD has no Host VA publisher
+or BO transport that could provide the real address yet. `SubmitCommand`
+likewise remains fail-closed until Host GPU retirement and WDDM fence completion
+are implemented. The validation slice must not be described as a working
+Render, Patch, or submit pipeline.
 
 The product baseline is `udmabuf=true` with independent `drm-host` and
 `gpu-guest` boot pools. The product transport must fail closed unless
