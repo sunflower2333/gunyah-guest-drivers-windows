@@ -94,6 +94,7 @@ struct VIOGPU_NATIVE_CONTEXT_OWNER
     LONG Generation;
     ULONGLONG ResetGeneration;
     UINT ContextId;
+    volatile LONG AllocationCount;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     UINT ControlResourceId;
     ULONG ControlPoolOffset;
@@ -125,12 +126,16 @@ struct VIOGPU_NATIVE_CONTEXT_REGISTRATION
     UINT ContextId;
     ULONGLONG VaStart;
     ULONGLONG VaSize;
+    ULONG AllocationReferences;
+    LIST_ENTRY AllocationRanges;
     BOOLEAN Registered;
 };
 
 struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT
 {
     VioGpuAdapter *Adapter;
+    VIOGPU_NATIVE_CONTEXT_OWNER *Owner;
+    VIOGPU_NATIVE_CONTEXT_REGISTRATION *Registration;
     LONG Generation;
     ULONGLONG ResetGeneration;
     UINT ContextId;
@@ -223,6 +228,22 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     BOOLEAN AcquireDrmHostPoolMapping(_Out_ VioGpuDrmHostPoolMapping *mapping) const;
+    BOOLEAN AcquireGpuGuestPoolMapping(_Out_ VioGpuGuestPoolMapping *mapping) const;
+    UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
+    VIOGPU_HOST_CONTEXT_RESULT CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
+                                                           _In_ UINT resourceId,
+                                                           _In_ UINT blobId,
+                                                           _In_ ULONGLONG logicalSize,
+                                                           _In_ SIZE_T backingSize,
+                                                           _In_ ULONGLONG requestedIova,
+                                                           _In_ ULONGLONG segmentOffset,
+                                                           _In_ ULONGLONG poolGeneration,
+                                                           _In_ UINT msmFlags,
+                                                           _In_ UINT blobFlags,
+                                                           _Out_ BOOLEAN *ownershipRetained);
+    VIOGPU_HOST_CONTEXT_RESULT DestroyNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
+                                                            _In_ UINT resourceId,
+                                                            _Out_ BOOLEAN *released);
 #endif
     BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                         _Out_opt_ UINT *capsetVersion,
@@ -233,6 +254,16 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released);
     static BOOLEAN AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
                                                 _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
+    BOOLEAN AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requestedIova,
+                                                      _In_ SIZE_T backingSize,
+                                                      _In_ ULONGLONG expectedResetGeneration,
+                                                      _In_ UINT expectedContextId,
+                                                      _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
+    static BOOLEAN ReferenceNativeContextAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
+                                                    _Out_ VIOGPU_NATIVE_CONTEXT_REGISTRATION **registration);
+    static BOOLEAN DereferenceNativeContextAllocation(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
+    static BOOLEAN IsNativeContextAllocationBindingRetired(
+        _Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
     static void ReleaseNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
     static VioGpuAdapter *ReferenceNativeContextAdapter(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
     static void DereferenceNativeContextAdapter(_In_ VioGpuAdapter *adapter);
@@ -540,6 +571,15 @@ class VioGpuDod
         return &m_DxgkInterface;
     }
     BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    BOOLEAN AcquireGpuGuestPoolMapping(_Out_ VioGpuGuestPoolMapping *mapping) const;
+    UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
+    BOOLEAN AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requestedIova,
+                                                      _In_ SIZE_T backingSize,
+                                                      _In_ ULONGLONG expectedResetGeneration,
+                                                      _In_ UINT expectedContextId,
+                                                      _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot) const;
+#endif
     BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                         _Out_opt_ UINT *capsetVersion,
                                         _Out_opt_ UINT *capsetSize,

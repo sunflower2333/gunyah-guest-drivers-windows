@@ -17,6 +17,8 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
 struct VIOGPU_WDDM_KMD_DMA_PRIVATE
 {
     ULONG Signature;
+    USHORT Version;
+    USHORT Kind;
     PVOID DmaBuffer;
     UINT DmaBufferSize;
     UINT CommandLength;
@@ -24,18 +26,115 @@ struct VIOGPU_WDDM_KMD_DMA_PRIVATE
     LONG Generation;
     ULONGLONG ResetGeneration;
     UINT Flags;
+    PVOID Packet;
+    UINT PacketLength;
+    UINT Reserved;
 };
+
+enum : USHORT
+{
+    VioGpuWddmDmaPrivateVersion = 1,
+    VioGpuWddmDmaKindRender = 1,
+    VioGpuWddmDmaKindPaging = 2,
+};
+
+enum : UINT
+{
+    VioGpuWddmPagingFlagPageIn = 1U << 0,
+    VioGpuWddmPagingFlagPageOut = 1U << 1,
+    VioGpuWddmPagingFlagFill = 1U << 2,
+    VioGpuWddmPagingFlagDiscard = 1U << 3,
+    VioGpuWddmPagingFlagTransferStart = 1U << 4,
+    VioGpuWddmPagingFlagTransferEnd = 1U << 5,
+    VioGpuWddmPagingFlagAllocationIdle = 1U << 6,
+    VioGpuWddmPagingFlagSoftwareCompleted = 1U << 7,
+};
+
+struct VIOGPU_WDDM_PAGING_DMA_PACKET
+{
+    ULONG Signature;
+    USHORT Version;
+    USHORT Size;
+    UINT Operation;
+    UINT Flags;
+    UINT ResourceId;
+    UINT ContextId;
+    LONG ContextGeneration;
+    UINT Reserved;
+    ULONGLONG ResetGeneration;
+    ULONGLONG PlacementOffset;
+    ULONGLONG PoolGeneration;
+    ULONGLONG TransferOffset;
+    ULONGLONG TransferSize;
+};
+
+static_assert(sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) == 64, "unexpected WDDM DMA private size");
+static_assert(sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET) == 72, "unexpected WDDM paging packet size");
 
 struct VIOGPU_WDDM_RESOURCE
 {
     ULONG Signature;
+    VioGpuDod *Adapter;
+    volatile LONG AllocationCount;
+};
+
+struct VIOGPU_WDDM_ALLOCATION_RANGE
+{
+    LIST_ENTRY Link;
+    VIOGPU_NATIVE_CONTEXT_REGISTRATION *Registration;
+    ULONGLONG Iova;
+    SIZE_T Length;
+    BOOLEAN Linked;
+};
+
+struct VIOGPU_WDDM_PAGING_RANGE
+{
+    LIST_ENTRY Link;
+    SIZE_T Offset;
+    SIZE_T Length;
+};
+
+enum VIOGPU_WDDM_ALLOCATION_HOST_STATE : LONG
+{
+    VioGpuWddmAllocationHostNone = 0,
+    VioGpuWddmAllocationHostLive,
+    VioGpuWddmAllocationHostUnknown,
+};
+
+enum VIOGPU_WDDM_ALLOCATION_PAGING_STATE : LONG
+{
+    VioGpuWddmAllocationPagingIdle = 0,
+    VioGpuWddmAllocationPagingIn,
+    VioGpuWddmAllocationPagingOut,
 };
 
 struct VIOGPU_WDDM_ALLOCATION
 {
     ULONG Signature;
+    KMUTEX LifecycleMutex;
+    VioGpuDod *Adapter;
+    VIOGPU_WDDM_RESOURCE *Resource;
+    VIOGPU_NATIVE_CONTEXT_REGISTRATION *NativeContext;
+    LONG ContextGeneration;
+    ULONGLONG ContextResetGeneration;
+    UINT ContextId;
     VIOGPU_WDDM_ALLOCATION_INFO PrivateData;
     SIZE_T BackingSize;
+    VIOGPU_WDDM_ALLOCATION_RANGE *ContextRange;
+    UINT ResourceId;
+    UINT BlobId;
+    ULONGLONG PlacementOffset;
+    ULONGLONG PoolGeneration;
+    VIOGPU_WDDM_ALLOCATION_HOST_STATE HostState;
+    LONG BoundGeneration;
+    ULONGLONG BoundResetGeneration;
+    UINT BoundContextId;
+    BOOLEAN PlacementValid;
+    VIOGPU_WDDM_ALLOCATION_PAGING_STATE PagingState;
+    ULONGLONG PagingPlacementOffset;
+    ULONGLONG PagingPoolGeneration;
+    LIST_ENTRY PagingRanges;
+    SIZE_T PagingCoveredBytes;
     UINT Pitch;
     UINT Width;
     UINT Height;

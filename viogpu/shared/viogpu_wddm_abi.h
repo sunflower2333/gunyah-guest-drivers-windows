@@ -2,8 +2,8 @@
 #define VIOGPU_WDDM_ABI_H
 
 /*
- * Experimental pre-v1 snapshot. Version 1 must not be published until the Host
- * context VA publication and allocation IOVA control are implemented.
+ * Experimental pre-v1 snapshot. Version 1 must not be published until the
+ * guest-backed allocation, submit, and retirement contracts are complete.
  */
 #define VIOGPU_WDDM_ABI_MAGIC              0x504D5644U
 #define VIOGPU_WDDM_ABI_VERSION            0U
@@ -12,6 +12,8 @@
 
 #define VIOGPU_WDDM_ALLOCATION_PRIMARY     0x00000001U
 #define VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE 0x00000002U
+#define VIOGPU_WDDM_ALLOCATION_NATIVE      0x00000004U
+#define VIOGPU_WDDM_ALLOCATION_GPU_READ_ONLY 0x00000008U
 
 #define VIOGPU_WDDM_CONTEXT_FLAGS_NONE     0U
 #define VIOGPU_WDDM_ESCAPE_FLAGS_NONE      0U
@@ -78,6 +80,8 @@ typedef struct VIOGPU_WDDM_ALLOCATION_INFO
     VIOGPU_WDDM_ABI_HEADER Header;
     VIOGPU_WDDM_UINT64 Size;
     VIOGPU_WDDM_UINT64 Alignment;
+    VIOGPU_WDDM_UINT64 RequestedIova;
+    VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
     VIOGPU_WDDM_UINT32 Flags;
     VIOGPU_WDDM_UINT32 Format;
     VIOGPU_WDDM_UINT32 Width;
@@ -85,7 +89,8 @@ typedef struct VIOGPU_WDDM_ALLOCATION_INFO
     VIOGPU_WDDM_UINT32 Pitch;
     VIOGPU_WDDM_UINT32 RefreshRateNumerator;
     VIOGPU_WDDM_UINT32 RefreshRateDenominator;
-    VIOGPU_WDDM_UINT32 Reserved;
+    /* Exact revision 0 binds each native allocation to one context. */
+    VIOGPU_WDDM_UINT32 ContextId;
 } VIOGPU_WDDM_ALLOCATION_INFO;
 
 typedef struct VIOGPU_WDDM_CONTEXT_CREATE
@@ -105,6 +110,7 @@ typedef struct VIOGPU_WDDM_CONTEXT_INFO
     VIOGPU_WDDM_UINT64 VaStart;
     VIOGPU_WDDM_UINT64 VaSize;
     VIOGPU_WDDM_UINT64 ResetGeneration;
+    VIOGPU_WDDM_UINT32 ContextId;
 } VIOGPU_WDDM_CONTEXT_INFO;
 
 typedef struct VIOGPU_WDDM_RENDER_COMMAND

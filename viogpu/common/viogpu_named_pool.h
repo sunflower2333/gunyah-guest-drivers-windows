@@ -162,3 +162,4 @@ class VioGpuGuestPool final : public VioGpuNamedPool
 };
 
 typedef VioGpuNamedPoolMapping VioGpuDrmHostPoolMapping;
+typedef VioGpuNamedPoolMapping VioGpuGuestPoolMapping;

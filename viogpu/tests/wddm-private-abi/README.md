@@ -10,8 +10,9 @@ query, requested allocation IOVA, guest-backed allocation, and teardown
 semantics.
 
 The ABI contains no pointers, Windows handles, physical addresses, GPA values,
-VirtIO identifiers, KGSL identifiers, or KMD context identifiers. Reserved
-fields must be zero. The only accepted revision is the current pre-v1 revision.
+VirtIO identifiers, or KGSL identifiers. Native allocation/context IDs are
+explicit revision-0 identity fields; all remaining reserved fields must be
+zero. The only accepted revision is the current pre-v1 revision.
 
 Run the local GCC and Clang checks with:
 

@@ -901,10 +901,10 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
         "full WDDM must publish gpu_guest while stable Display-Only retains restricted-DMA provenance",
     )
 
-    if adapter_text.count("AcquireDrmHostPoolMapping") != 3 or adapter_header_text.count(
+    if adapter_text.count("AcquireDrmHostPoolMapping") != 4 or adapter_header_text.count(
         "AcquireDrmHostPoolMapping"
     ) != 1:
-        fail("native control responses must use exactly two short mapping leases plus one adapter wrapper")
+        fail("native control access must use exactly three short mapping leases plus one adapter wrapper")
 
     seed = compact(
         function_body_with_parameters(
@@ -921,7 +921,14 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
             adapter,
         )
     )
-    for owner, body in (("seed", seed), ("consume", consume)):
+    faults_clear = compact(
+        function_body_with_parameters(
+            "VioGpuNativeControlFaultsClear",
+            "_In_ VioGpuAdapter *adapter, _In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner",
+            adapter,
+        )
+    )
+    for owner, body in (("seed", seed), ("consume", consume), ("fault snapshot", faults_clear)):
         if body.count("adapter->AcquireDrmHostPoolMapping(&mapping)") != 1 or body.count("mapping.Release();") != 1:
             fail(f"native response {owner} must hold exactly one mapping lease")
         if "KeWaitForSingleObject" in body or "SubmitNativeControl" in body or "PAGED_CODE" in body:
@@ -936,6 +943,13 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
         "owner->ControlPoolGeneration==mapping.GetGeneration()"
     ) != 1:
         fail("native response leases must capture and revalidate one exact named-pool generation")
+    for fragment in (
+        "owner->ControlPoolGeneration==mapping.GetGeneration()",
+        "VioGpuReadSharedU32(&shmem->async_error)==0",
+        "VioGpuReadSharedU32(&shmem->global_faults)==0",
+    ):
+        if faults_clear.count(fragment) != 1:
+            fail(f"native fault snapshot must validate its exact short-lease state: {fragment}")
 
     guarded_header = compact(adapter_header_text)
     require_once(

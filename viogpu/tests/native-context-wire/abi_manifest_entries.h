@@ -34,6 +34,9 @@ ABI_VALUE(virtio.blob_flag.create_guest_handle, VIRTIO_GPU_BLOB_FLAG_CREATE_GUES
 ABI_VALUE(virtio.map.cache_cached, VIRTIO_GPU_MAP_CACHE_CACHED, 1);
 ABI_VALUE(virtio.map.pool, VIRTIO_GPU_MAP_INFO_POOL, 2147483648ULL);
 
+ABI_VALUE(msm.flag.scanout, MSM_BO_SCANOUT, 1);
+ABI_VALUE(msm.flag.gpu_read_only, MSM_BO_GPU_READONLY, 2);
+ABI_VALUE(msm.flag.cached_coherent, MSM_BO_CACHED_COHERENT, 524288);
 ABI_VALUE(msm.flag.guest_alloc, MSM_BO_GUEST_ALLOC, 2147483648ULL);
 ABI_VALUE(msm.pipe.pipe_3d0, MSM_PIPE_3D0, 16);
 ABI_VALUE(msm.param.va_start, MSM_PARAM_VA_START, 14);

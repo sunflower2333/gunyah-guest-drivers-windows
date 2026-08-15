@@ -28,9 +28,10 @@ freeze a version-1 ABI. The exact-revision snapshot now defines a low-frequency,
 context-scoped `D3DKMTEscape(DRIVERPRIVATE)` `GET_CONTEXT_INFO` request. The KMD
 requires the exact buffer layout, zero input output fields, matching adapter,
 device, context, and reset generation, and holds both context rundown and the
-protected Native Context snapshot through response publication. It exposes only
-`VaStart`, `VaSize`, and `ResetGeneration`; KMD pointers, Windows handles, and
-VirtIO, resource, blob, or KGSL identifiers remain private.
+protected Native Context snapshot through response publication. It exposes
+`VaStart`, `VaSize`, `ResetGeneration`, and an opaque per-context `ContextId`
+token that the UMD must echo in native allocation private data; KMD pointers,
+Windows handles, and VirtIO, resource, blob, or KGSL identifiers remain private.
 
 The source path now obtains each renderer context's range through exact
 `MSM_PARAM_VA_START` and `MSM_PARAM_VA_SIZE` requests. It creates a 16 KiB
@@ -52,7 +53,9 @@ context handles remain the UMD's opaque identities.
 
 Except for the context-info response fields described above, the snapshot
 contains no Windows pointers or handles, physical or IOVA addresses, or
-VirtIO/KGSL object identifiers. `CreateAllocation` retains the validated private
+VirtIO/KGSL object identifiers. Native allocation creation requires the
+context token and reserves a non-overlapping requested-IOVA interval for that
+registration. `CreateAllocation` retains the validated private
 data and `OpenAllocation` requires an exact byte-for-byte match. Every open
 wrapper holds its owning device through `CloseAllocation`, records read-only
 access, and is rejected if a Render context from another device references it.
