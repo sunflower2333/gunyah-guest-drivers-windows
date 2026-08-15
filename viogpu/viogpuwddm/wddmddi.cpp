@@ -137,7 +137,8 @@ NTSTATUS ValidateAllocationPrivate(const VIOGPU_WDDM_ALLOCATION_INFO *privateDat
     if (privateData == NULL || alignedSize == NULL || !IsCurrentAbiHeader(&privateData->Header, sizeof(*privateData)) ||
         (privateData->Flags & ~validFlags) != 0 || privateData->Size == 0 ||
         privateData->Size > (ULONGLONG)(MAXULONG_PTR - (PAGE_SIZE - 1)) || privateData->Alignment != PAGE_SIZE ||
-        privateData->Reserved != 0)
+        privateData->ContextId != 0 &&
+        (privateData->Flags & VIOGPU_WDDM_ALLOCATION_NATIVE) == 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -280,7 +281,8 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
     VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration = allocation->NativeContext;
     KIRQL oldIrql;
     KeAcquireSpinLock(&registration->BindingLock, &oldIrql);
-    BOOLEAN valid = registration->Adapter == allocation->Adapter && registration->Owner != NULL &&
+    BOOLEAN valid = registration->Adapter != NULL && registration->Adapter->GetVioGpu() == allocation->Adapter &&
+                    registration->Owner != NULL &&
                     registration->Registered && registration->Generation == allocation->ContextGeneration &&
                     registration->ResetGeneration == allocation->ContextResetGeneration &&
                     registration->ContextId == allocation->ContextId &&
@@ -642,7 +644,10 @@ NTSTATUS FillNativePlacement(VIOGPU_WDDM_ALLOCATION *allocation,
     if (valid)
     {
         PVOID segmentAddress = static_cast<PUCHAR>(mapping.GetBaseAddress()) + (SIZE_T)segmentOffset;
-        RtlFillMemoryUlong(segmentAddress, fillSize, pattern);
+        for (SIZE_T offset = 0; offset < fillSize; offset += sizeof(pattern))
+        {
+            RtlCopyMemory(static_cast<PUCHAR>(segmentAddress) + offset, &pattern, sizeof(pattern));
+        }
         *poolGeneration = mapping.GetGeneration();
     }
     mapping.Release();
