@@ -109,7 +109,7 @@ enum VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP : LONG
 {
     VioGpuNativePassiveWorkNotQueued = 0,
     VioGpuNativePassiveWorkRemoved,
-    VioGpuNativePassiveWorkWorkerOwned,
+    VioGpuNativePassiveOwnershipWorkerOwned,
 };
 
 struct VIOGPU_NATIVE_PASSIVE_WORK

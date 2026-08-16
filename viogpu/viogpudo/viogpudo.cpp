@@ -805,8 +805,8 @@ void VioGpuDod::NotifyNativeSoftwareCompletion(_In_ UINT fenceId, _In_ UINT node
 
 BOOLEAN VioGpuDod::QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work)
 {
-    if (work == NULL || work->Routine == NULL || work->Context == NULL ||
-        work->Link.Flink != &work->Link || work->Link.Blink != &work->Link ||
+    if (work == NULL || work->Routine == NULL || work->Context == NULL || work->Link.Flink != &work->Link ||
+        work->Link.Blink != &work->Link ||
         InterlockedCompareExchange(&work->State, 0, 0) != VioGpuNativePassiveWorkIdle ||
         InterlockedCompareExchange(&work->Retired, 0, 0) != 0)
     {
@@ -878,7 +878,7 @@ VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP VioGpuDod::CancelNativePassiveWork(_Inout_ 
     }
     else if (state == VioGpuNativePassiveWorkWorkerOwned)
     {
-        ownership = VioGpuNativePassiveWorkWorkerOwned;
+        ownership = VioGpuNativePassiveOwnershipWorkerOwned;
     }
     KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
     return ownership;
@@ -3849,9 +3849,7 @@ BOOLEAN VioGpuAdapter::BeginNativeContextInitialization(void)
 #if defined(VIOGPU_WDDM_CI_ONLY)
     if (!ReinitializeNativeSubmitRundown())
     {
-        InterlockedCompareExchange(&m_NativeContextState,
-                                   VioGpuNativeContextOffline,
-                                   VioGpuNativeContextStarting);
+        InterlockedCompareExchange(&m_NativeContextState, VioGpuNativeContextOffline, VioGpuNativeContextStarting);
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
         return FALSE;
     }
@@ -4095,8 +4093,7 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         snapshot->Owner->ContextId != snapshot->ContextId || ReadNativeAllocationCount(snapshot->Owner) == MAXLONG ||
         snapshot->ResetGeneration == 0 || snapshot->VaStart == 0 || snapshot->VaSize == 0 ||
         resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || blobId == 0 || resourceId != blobId || logicalSize == 0 ||
-        backingSize == 0 ||
-        logicalSize > backingSize || backingSize < PAGE_SIZE || backingSize > MAXULONG ||
+        backingSize == 0 || logicalSize > backingSize || backingSize < PAGE_SIZE || backingSize > MAXULONG ||
         (backingSize & (PAGE_SIZE - 1)) != 0 || logicalSize <= (ULONGLONG)backingSize - PAGE_SIZE ||
         (ULONGLONG)backingSize > snapshot->VaSize || requestedIova == 0 || (requestedIova & (PAGE_SIZE - 1)) != 0 ||
         requestedIova > MAXULONGLONG - (backingSize - 1) || segmentOffset > MAXULONGLONG - (backingSize - 1) ||

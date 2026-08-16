@@ -2375,8 +2375,7 @@ NTSTATUS ExecutePagingTransaction""",
     Rewrite(
         "R222_paging_batch_offset_uses_uint",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        """    ULONGLONG candidate = static_cast<ULONGLONG>(base) +
-                          static_cast<ULONGLONG>(index) * static_cast<ULONGLONG>(stride);""",
+        """    ULONGLONG candidate = static_cast<ULONGLONG>(base) + static_cast<ULONGLONG>(index) * static_cast<ULONGLONG>(stride);""",
         """    UINT candidate = base + index * static_cast<UINT>(stride);""",
     ),
     Rewrite(

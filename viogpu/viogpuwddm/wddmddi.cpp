@@ -68,14 +68,13 @@ LONG ReadResourceAllocationCount(_In_ const VIOGPU_WDDM_RESOURCE *resource)
 BOOLEAN ValidatePagingDmaPacket(_In_ const VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData,
                                 _In_ const VIOGPU_WDDM_PAGING_DMA_PACKET *packet)
 {
-    const VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate =
-        privateData == NULL ? NULL : reinterpret_cast<const VIOGPU_WDDM_PAGING_PRIVATE *>(privateData);
-    const VIOGPU_WDDM_PAGING_TRANSACTION *transaction = pagingPrivate == NULL
-                                                            ? NULL
-                                                            : &pagingPrivate->Transaction;
-    LONG transactionState = transaction == NULL
-                                ? VioGpuWddmPagingTransactionInvalid
-                                : InterlockedCompareExchange(const_cast<volatile LONG *>(&transaction->State), 0, 0);
+    const VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = privateData == NULL ? NULL
+                                                                          : reinterpret_cast<const VIOGPU_WDDM_PAGING_PRIVATE *>(privateData);
+    const VIOGPU_WDDM_PAGING_TRANSACTION *transaction = pagingPrivate == NULL ? NULL : &pagingPrivate->Transaction;
+    LONG transactionState = transaction == NULL ? VioGpuWddmPagingTransactionInvalid
+                                                : InterlockedCompareExchange(const_cast<volatile LONG *>(&transaction->State),
+                                                                             0,
+                                                                             0);
     if (privateData == NULL || packet == NULL || privateData->Signature != VIOGPU_WDDM_DMA_SIGNATURE ||
         privateData->Version != VioGpuWddmDmaPrivateVersion || privateData->Kind != VioGpuWddmDmaKindPaging ||
         privateData->DmaBuffer == NULL || privateData->DmaBufferSize < sizeof(*packet) ||
@@ -97,30 +96,26 @@ BOOLEAN ValidatePagingDmaPacket(_In_ const VIOGPU_WDDM_KMD_DMA_PRIVATE *privateD
          !transaction->TransferDataComplete) ||
         transaction->PlacementOffset != packet->PlacementOffset ||
         transaction->PoolGeneration != packet->PoolGeneration ||
-        transaction->TransferOffset != packet->TransferOffset ||
-        transaction->TransferSize != packet->TransferSize ||
-        packet->Signature != VIOGPU_WDDM_PAGING_DMA_SIGNATURE ||
-        packet->Version != VioGpuWddmDmaPrivateVersion || packet->Size != sizeof(*packet) ||
-        packet->Flags != privateData->Flags || packet->ContextId != privateData->ContextId ||
-        packet->ContextGeneration != privateData->Generation || packet->ResetGeneration != privateData->ResetGeneration ||
-        packet->Reserved != 0 || packet->ResourceId < VIOGPU_NATIVE_RESOURCE_ID_START ||
-        packet->ResourceId == MAXUINT || packet->PoolGeneration == 0 || packet->TransferOffset > MAXUINT ||
-        packet->TransferSize > MAXULONG ||
+        transaction->TransferOffset != packet->TransferOffset || transaction->TransferSize != packet->TransferSize ||
+        packet->Signature != VIOGPU_WDDM_PAGING_DMA_SIGNATURE || packet->Version != VioGpuWddmDmaPrivateVersion ||
+        packet->Size != sizeof(*packet) || packet->Flags != privateData->Flags ||
+        packet->ContextId != privateData->ContextId || packet->ContextGeneration != privateData->Generation ||
+        packet->ResetGeneration != privateData->ResetGeneration || packet->Reserved != 0 ||
+        packet->ResourceId < VIOGPU_NATIVE_RESOURCE_ID_START || packet->ResourceId == MAXUINT ||
+        packet->PoolGeneration == 0 || packet->TransferOffset > MAXUINT || packet->TransferSize > MAXULONG ||
         (packet->PlacementOffset & (PAGE_SIZE - 1)) != 0)
     {
         return FALSE;
     }
 
-    const UINT allowedFlags = VioGpuWddmPagingFlagPageIn | VioGpuWddmPagingFlagPageOut |
-                              VioGpuWddmPagingFlagFill | VioGpuWddmPagingFlagDiscard |
-                              VioGpuWddmPagingFlagTransferStart | VioGpuWddmPagingFlagTransferEnd |
-                              VioGpuWddmPagingFlagAllocationIdle | VioGpuWddmPagingFlagSoftwareCompleted;
+    const UINT allowedFlags = VioGpuWddmPagingFlagPageIn | VioGpuWddmPagingFlagPageOut | VioGpuWddmPagingFlagFill |
+                              VioGpuWddmPagingFlagDiscard | VioGpuWddmPagingFlagTransferStart |
+                              VioGpuWddmPagingFlagTransferEnd | VioGpuWddmPagingFlagAllocationIdle |
+                              VioGpuWddmPagingFlagSoftwareCompleted;
     const UINT operationFlags = packet->Flags & (VioGpuWddmPagingFlagPageIn | VioGpuWddmPagingFlagPageOut |
-                                                  VioGpuWddmPagingFlagFill | VioGpuWddmPagingFlagDiscard);
-    const UINT transferFlags = packet->Flags & (VioGpuWddmPagingFlagTransferStart |
-                                                 VioGpuWddmPagingFlagTransferEnd);
-    if ((packet->Flags & ~allowedFlags) != 0 ||
-        (packet->Flags & VioGpuWddmPagingFlagSoftwareCompleted) == 0)
+                                                 VioGpuWddmPagingFlagFill | VioGpuWddmPagingFlagDiscard);
+    const UINT transferFlags = packet->Flags & (VioGpuWddmPagingFlagTransferStart | VioGpuWddmPagingFlagTransferEnd);
+    if ((packet->Flags & ~allowedFlags) != 0 || (packet->Flags & VioGpuWddmPagingFlagSoftwareCompleted) == 0)
     {
         return FALSE;
     }
@@ -150,15 +145,14 @@ BOOLEAN ValidatePagingDmaPacket(_In_ const VIOGPU_WDDM_KMD_DMA_PRIVATE *privateD
     if (packet->Operation == DXGK_OPERATION_FILL)
     {
         return operationFlags == VioGpuWddmPagingFlagFill && transferFlags == 0 &&
-               (packet->Flags & VioGpuWddmPagingFlagAllocationIdle) == 0 && hasContext &&
-               packet->TransferOffset == 0 && packet->TransferSize != 0 &&
-               packet->TransferSize - 1 <= MAXULONGLONG - packet->PlacementOffset;
+               (packet->Flags & VioGpuWddmPagingFlagAllocationIdle) == 0 && hasContext && packet->TransferOffset == 0 &&
+               packet->TransferSize != 0 && packet->TransferSize - 1 <= MAXULONGLONG - packet->PlacementOffset;
     }
 
     if (packet->Operation == DXGK_OPERATION_DISCARD_CONTENT)
     {
-        return operationFlags == VioGpuWddmPagingFlagDiscard && transferFlags == 0 &&
-               packet->TransferOffset == 0 && packet->TransferSize == 0;
+        return operationFlags == VioGpuWddmPagingFlagDiscard && transferFlags == 0 && packet->TransferOffset == 0 &&
+               packet->TransferSize == 0;
     }
 
     return FALSE;
@@ -498,8 +492,8 @@ BOOLEAN ValidateNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
     KeAcquireSpinLock(&registration->BindingLock, &oldIrql);
     VIOGPU_WDDM_ALLOCATION_RANGE *range = allocation->ContextRange;
     BOOLEAN valid = allocation->NativeContext == registration && range != NULL && range->Linked &&
-                    range->Registration == registration &&
-                    range->Iova == allocation->PrivateData.RequestedIova && range->Length == allocation->BackingSize;
+                    range->Registration == registration && range->Iova == allocation->PrivateData.RequestedIova &&
+                    range->Length == allocation->BackingSize;
     if (valid)
     {
         valid = FALSE;
@@ -1354,8 +1348,7 @@ NTSTATUS CopyNativePlacement(VIOGPU_WDDM_ALLOCATION *allocation,
                              ULONGLONG *poolGeneration)
 {
     if (allocation == NULL || allocation->Adapter == NULL || systemAddress == NULL || snapshot == NULL ||
-        poolGeneration == NULL ||
-        transferSize == 0 || allocationOffset > allocation->BackingSize ||
+        poolGeneration == NULL || transferSize == 0 || allocationOffset > allocation->BackingSize ||
         transferSize > allocation->BackingSize - allocationOffset || segmentOffset > MAXULONG_PTR)
     {
         return STATUS_INVALID_PARAMETER;
@@ -1396,8 +1389,8 @@ NTSTATUS FillNativePlacement(VIOGPU_WDDM_ALLOCATION *allocation,
                              ULONGLONG *poolGeneration)
 {
     if (allocation == NULL || allocation->Adapter == NULL || snapshot == NULL || poolGeneration == NULL ||
-        segmentOffset > MAXULONG_PTR ||
-        fillSize == 0 || fillSize > allocation->BackingSize || (fillSize & (sizeof(ULONG) - 1)) != 0)
+        segmentOffset > MAXULONG_PTR || fillSize == 0 || fillSize > allocation->BackingSize ||
+        (fillSize & (sizeof(ULONG) - 1)) != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -2675,8 +2668,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
 
 BOOLEAN ValidateTransferMdlRange(_In_ PMDL mdl, _In_ UINT mdlOffset, _In_ SIZE_T transferSize)
 {
-    if (mdl == NULL || transferSize == 0 || MmGetMdlByteOffset(mdl) != 0 ||
-        mdlOffset > (MAXULONG_PTR >> PAGE_SHIFT))
+    if (mdl == NULL || transferSize == 0 || MmGetMdlByteOffset(mdl) != 0 || mdlOffset > (MAXULONG_PTR >> PAGE_SHIFT))
     {
         return FALSE;
     }
@@ -2701,7 +2693,8 @@ BOOLEAN QueryNativePlacementPoolGeneration(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
     KeEnterGuardedRegion();
     BOOLEAN acquired = AcquireNativeGuestPoolMapping(snapshot, &mapping);
     BOOLEAN valid = acquired && mapping.GetBaseAddress() != NULL && mapping.GetGeneration() != 0 &&
-                    placementOffset <= mapping.GetSize() && backingSize <= mapping.GetSize() - static_cast<SIZE_T>(placementOffset);
+                    placementOffset <= mapping.GetSize() &&
+                    backingSize <= mapping.GetSize() - static_cast<SIZE_T>(placementOffset);
     if (valid)
     {
         *poolGeneration = mapping.GetGeneration();
@@ -2738,7 +2731,8 @@ NTSTATUS ExecutePagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transa
 {
     if (transaction == NULL || transaction->Signature != VIOGPU_WDDM_PAGING_TRANSACTION_SIGNATURE ||
         InterlockedCompareExchange(&transaction->State, 0, 0) != VioGpuWddmPagingTransactionExecuting ||
-        transaction->Adapter == NULL || transaction->Allocation == NULL || transaction->Adapter->IsHardwareResetRequested())
+        transaction->Adapter == NULL || transaction->Allocation == NULL ||
+        transaction->Adapter->IsHardwareResetRequested())
     {
         return STATUS_DEVICE_NOT_READY;
     }
@@ -2747,7 +2741,8 @@ NTSTATUS ExecutePagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transa
     VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
     BOOLEAN snapshotAcquired = AcquireAllocationNativeContextSnapshot(allocation, &snapshot);
     if (!snapshotAcquired || snapshot.ContextId != transaction->ContextId ||
-        snapshot.Generation != transaction->ContextGeneration || snapshot.ResetGeneration != transaction->ResetGeneration)
+        snapshot.Generation != transaction->ContextGeneration ||
+        snapshot.ResetGeneration != transaction->ResetGeneration)
     {
         if (snapshotAcquired)
         {
@@ -2787,8 +2782,7 @@ NTSTATUS ExecutePagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transa
         BOOLEAN continuingPageIn = allocation->PagingState == VioGpuWddmAllocationPagingIn &&
                                    allocation->PagingPlacementOffset == transaction->PlacementOffset &&
                                    allocation->PagingPoolGeneration == transaction->PoolGeneration &&
-                                   allocation->HostState == VioGpuWddmAllocationHostNone &&
-                                   !allocation->PlacementValid;
+                                   allocation->HostState == VioGpuWddmAllocationHostNone && !allocation->PlacementValid;
         if (transferStart)
         {
             if (continuingPageIn)
@@ -2818,10 +2812,7 @@ NTSTATUS ExecutePagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transa
         ULONGLONG observedPoolGeneration = 0;
         if (NT_SUCCESS(status))
         {
-            status = AddPagingRange(allocation,
-                                    transaction->TransferOffset,
-                                    transaction->TransferSize,
-                                    &pagingRange);
+            status = AddPagingRange(allocation, transaction->TransferOffset, transaction->TransferSize, &pagingRange);
         }
         if (NT_SUCCESS(status))
         {
@@ -2829,8 +2820,8 @@ NTSTATUS ExecutePagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transa
                                                         transaction->PlacementOffset,
                                                         allocation->BackingSize,
                                                         &observedPoolGeneration)
-                         ? STATUS_SUCCESS
-                         : STATUS_DEVICE_NOT_READY;
+                                                                                                                         ? STATUS_SUCCESS
+                                                                                                                         : STATUS_DEVICE_NOT_READY;
         }
         if (!NT_SUCCESS(status) && pagingRange != NULL)
         {
@@ -2984,10 +2975,7 @@ NTSTATUS ExecutePagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transa
         ULONGLONG observedPoolGeneration = 0;
         if (NT_SUCCESS(status))
         {
-            status = AddPagingRange(allocation,
-                                    transaction->TransferOffset,
-                                    transaction->TransferSize,
-                                    &pagingRange);
+            status = AddPagingRange(allocation, transaction->TransferOffset, transaction->TransferSize, &pagingRange);
         }
         if (NT_SUCCESS(status))
         {
@@ -2995,8 +2983,8 @@ NTSTATUS ExecutePagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transa
                                                         transaction->PlacementOffset,
                                                         allocation->BackingSize,
                                                         &observedPoolGeneration)
-                         ? STATUS_SUCCESS
-                         : STATUS_DEVICE_NOT_READY;
+                                                                                                                         ? STATUS_SUCCESS
+                                                                                                                         : STATUS_DEVICE_NOT_READY;
         }
         if (!NT_SUCCESS(status) && pagingRange != NULL)
         {
@@ -3187,13 +3175,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
         return NT_SUCCESS(resetStatus) ? STATUS_SUCCESS : STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
-    if ((transfer && (!ValidateTransferMdlRange(transferMdl, mdlOffset, transferSize) ||
-                      transferOffset > allocation->BackingSize ||
-                      transferSize > allocation->BackingSize - transferOffset)) ||
+    if ((transfer &&
+         (!ValidateTransferMdlRange(transferMdl, mdlOffset, transferSize) || transferOffset > allocation->BackingSize ||
+          transferSize > allocation->BackingSize - transferOffset)) ||
         ((packetFlags & VioGpuWddmPagingFlagFill) != 0 &&
          (transferSize != allocation->BackingSize || (transferSize & (sizeof(ULONG) - 1)) != 0)) ||
-        ((packetFlags & VioGpuWddmPagingFlagPageOut) != 0 &&
-         (packetFlags & VioGpuWddmPagingFlagAllocationIdle) == 0))
+        ((packetFlags & VioGpuWddmPagingFlagPageOut) != 0 && (packetFlags & VioGpuWddmPagingFlagAllocationIdle) == 0))
     {
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
@@ -3231,8 +3218,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
                                                         placementOffset,
                                                         allocation->BackingSize,
                                                         &poolGeneration)
-                         ? STATUS_SUCCESS
-                         : STATUS_DEVICE_NOT_READY;
+                                                                                                                         ? STATUS_SUCCESS
+                                                                                                                         : STATUS_DEVICE_NOT_READY;
         }
         else if (!allocation->PlacementValid || allocation->PlacementOffset != placementOffset ||
                  allocation->PoolGeneration == 0)
@@ -3250,8 +3237,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
         allocationReference = NT_SUCCESS(status);
     }
     BOOLEAN transferDataComplete = FALSE;
-    if (NT_SUCCESS(status) && ((packetFlags & VioGpuWddmPagingFlagPageIn) != 0 ||
-                               (packetFlags & VioGpuWddmPagingFlagPageOut) != 0))
+    if (NT_SUCCESS(status) &&
+        ((packetFlags & VioGpuWddmPagingFlagPageIn) != 0 || (packetFlags & VioGpuWddmPagingFlagPageOut) != 0))
     {
         PVOID systemAddress = NULL;
         status = ResolveTransferMdlAddress(transferMdl, mdlOffset, transferSize, &systemAddress);
@@ -3366,8 +3353,7 @@ BOOLEAN ResolvePagingBatchOffset(_In_ UINT base,
     {
         return FALSE;
     }
-    ULONGLONG candidate = static_cast<ULONGLONG>(base) +
-                          static_cast<ULONGLONG>(index) * static_cast<ULONGLONG>(stride);
+    ULONGLONG candidate = static_cast<ULONGLONG>(base) + static_cast<ULONGLONG>(index) * static_cast<ULONGLONG>(stride);
     if (candidate > static_cast<ULONGLONG>(limit) || candidate > MAXUINT)
     {
         return FALSE;
@@ -3376,7 +3362,7 @@ BOOLEAN ResolvePagingBatchOffset(_In_ UINT base,
     return TRUE;
 }
 
-BOOLEAN ResolvePagingBatch(_In_ PVOID dmaBuffer,
+BOOLEAN ResolvePagingBatch(_In_opt_ PVOID dmaBuffer,
                            _In_ UINT dmaBufferSize,
                            _In_ UINT dmaStart,
                            _In_ UINT dmaEnd,
@@ -3389,8 +3375,8 @@ BOOLEAN ResolvePagingBatch(_In_ PVOID dmaBuffer,
                            _Out_ VIOGPU_WDDM_PAGING_PRIVATE **firstPrivate,
                            _Out_ UINT *recordCount)
 {
-    if (dmaBuffer == NULL || privateBuffer == NULL || adapter == NULL || firstPrivate == NULL || recordCount == NULL ||
-        dmaStart >= dmaEnd || dmaEnd > dmaBufferSize || privateStart >= privateEnd || privateEnd > privateBufferSize)
+    if (privateBuffer == NULL || adapter == NULL || firstPrivate == NULL || recordCount == NULL || dmaStart >= dmaEnd ||
+        dmaEnd > dmaBufferSize || privateStart >= privateEnd || privateEnd > privateBufferSize)
     {
         return FALSE;
     }
@@ -3415,10 +3401,10 @@ BOOLEAN ResolvePagingBatch(_In_ PVOID dmaBuffer,
         UINT packetOffset = 0;
         UINT recordOffset = 0;
         if (!ResolvePagingBatchOffset(dmaStart,
-                                       index,
-                                       sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET),
-                                       dmaEnd - sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET),
-                                       &packetOffset) ||
+                                      index,
+                                      sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET),
+                                      dmaEnd - sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET),
+                                      &packetOffset) ||
             !ResolvePagingBatchOffset(privateStart,
                                       index,
                                       sizeof(VIOGPU_WDDM_PAGING_PRIVATE),
@@ -3427,22 +3413,21 @@ BOOLEAN ResolvePagingBatch(_In_ PVOID dmaBuffer,
         {
             return FALSE;
         }
-        VIOGPU_WDDM_PAGING_DMA_PACKET *packet = reinterpret_cast<VIOGPU_WDDM_PAGING_DMA_PACKET *>(
-            static_cast<BYTE *>(dmaBuffer) + packetOffset);
-        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-            static_cast<BYTE *>(privateBuffer) + recordOffset);
+        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(privateBuffer) +
+                                                                                                   recordOffset);
         VIOGPU_WDDM_KMD_DMA_PRIVATE *header = &pagingPrivate->Header;
+        VIOGPU_WDDM_PAGING_DMA_PACKET *packet = dmaBuffer == NULL ? static_cast<VIOGPU_WDDM_PAGING_DMA_PACKET *>(header->Packet)
+                                                                  : reinterpret_cast<VIOGPU_WDDM_PAGING_DMA_PACKET *>(static_cast<BYTE *>(dmaBuffer) +
+                                                                                                                      packetOffset);
         VIOGPU_WDDM_PAGING_TRANSACTION *transaction = &pagingPrivate->Transaction;
         BOOLEAN packetValid = ValidatePagingDmaPacket(header, packet);
         LONG transactionState = InterlockedCompareExchange(&transaction->State, 0, 0);
-        BOOLEAN stateMatches = expectedState == VioGpuWddmPagingTransactionAny
-                                    ? transactionState != VioGpuWddmPagingTransactionInvalid
-                                    : transactionState == expectedState;
+        BOOLEAN stateMatches = expectedState == VioGpuWddmPagingTransactionAny ? transactionState != VioGpuWddmPagingTransactionInvalid
+                                                                               : transactionState == expectedState;
         BOOLEAN workLinkAvailable = pagingPrivate->Work.Link.Flink == &pagingPrivate->Work.Link &&
                                     pagingPrivate->Work.Link.Blink == &pagingPrivate->Work.Link;
         if (header->DmaBuffer != packet || header->DmaBufferSize != dmaBufferSize - packetOffset ||
-            header->Submission != pagingPrivate || transaction->Adapter != adapter ||
-            !stateMatches ||
+            header->Submission != pagingPrivate || transaction->Adapter != adapter || !stateMatches ||
             pagingPrivate->Work.Routine != NativePagingBatchWorker || pagingPrivate->Work.Context != pagingPrivate ||
             (expectedState != VioGpuWddmPagingTransactionAny && !workLinkAvailable) || !packetValid)
         {
@@ -3474,8 +3459,7 @@ VOID RollbackCancelledPagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *
                              allocation->PagingState == VioGpuWddmAllocationPagingIn;
     BOOLEAN matchingPageOut = (transaction->Flags & VioGpuWddmPagingFlagPageOut) != 0 &&
                               allocation->PagingState == VioGpuWddmAllocationPagingOut;
-    if ((matchingPageIn || matchingPageOut) &&
-        allocation->PagingPlacementOffset == transaction->PlacementOffset &&
+    if ((matchingPageIn || matchingPageOut) && allocation->PagingPlacementOffset == transaction->PlacementOffset &&
         allocation->PagingPoolGeneration == transaction->PoolGeneration)
     {
         ClearNativePagingState(allocation);
@@ -3506,8 +3490,8 @@ VOID RollbackPagingBatch(_In_ PVOID privateBuffer,
         {
             break;
         }
-        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-            static_cast<BYTE *>(privateBuffer) + recordOffset);
+        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(privateBuffer) +
+                                                                                                   recordOffset);
         RollbackCancelledPagingTransaction(&pagingPrivate->Transaction);
     }
 }
@@ -3531,12 +3515,9 @@ BOOLEAN CancelPagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transact
         {
             /* A second cancel callback, or a callback racing completion, has
              * still identified a valid owner. */
-            return state == VioGpuWddmPagingTransactionCancelled ||
-                   state == VioGpuWddmPagingTransactionFinished;
+            return state == VioGpuWddmPagingTransactionCancelled || state == VioGpuWddmPagingTransactionFinished;
         }
-        LONG observed = InterlockedCompareExchange(&transaction->State,
-                                                   VioGpuWddmPagingTransactionCancelled,
-                                                   state);
+        LONG observed = InterlockedCompareExchange(&transaction->State, VioGpuWddmPagingTransactionCancelled, state);
         if (observed == state)
         {
             RollbackCancelledPagingTransaction(transaction);
@@ -3579,9 +3560,8 @@ _Use_decl_annotations_ VOID NativePagingBatchWorker(PVOID callbackContext)
         status = STATUS_INVALID_PARAMETER;
     }
 
-    UINT recordLimit = privateEnd >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
-                           ? privateEnd - sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
-                           : 0;
+    UINT recordLimit = privateEnd >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE) ? privateEnd - sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
+                                                                        : 0;
     for (UINT index = 0; NT_SUCCESS(status) && index < count; ++index)
     {
         UINT recordOffset = 0;
@@ -3594,11 +3574,10 @@ _Use_decl_annotations_ VOID NativePagingBatchWorker(PVOID callbackContext)
             status = STATUS_INVALID_PARAMETER;
             break;
         }
-        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-            static_cast<BYTE *>(privateBuffer) + recordOffset);
-        BOOLEAN packetValid = ValidatePagingDmaPacket(
-            &pagingPrivate->Header,
-            static_cast<VIOGPU_WDDM_PAGING_DMA_PACKET *>(pagingPrivate->Header.Packet));
+        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(privateBuffer) +
+                                                                                                   recordOffset);
+        BOOLEAN packetValid = ValidatePagingDmaPacket(&pagingPrivate->Header,
+                                                      static_cast<VIOGPU_WDDM_PAGING_DMA_PACKET *>(pagingPrivate->Header.Packet));
         if (pagingPrivate->Transaction.Adapter != adapter ||
             InterlockedCompareExchange(&pagingPrivate->Transaction.State, 0, 0) != VioGpuWddmPagingTransactionQueued ||
             !packetValid)
@@ -3656,8 +3635,8 @@ _Use_decl_annotations_ VOID NativePagingBatchWorker(PVOID callbackContext)
             status = STATUS_INVALID_DEVICE_STATE;
             continue;
         }
-        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-            static_cast<BYTE *>(privateBuffer) + recordOffset);
+        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(privateBuffer) +
+                                                                                                   recordOffset);
         LONG transactionState = InterlockedCompareExchange(&pagingPrivate->Transaction.State, 0, 0);
         if (transactionState == VioGpuWddmPagingTransactionBuilt ||
             transactionState == VioGpuWddmPagingTransactionQueued)
@@ -3686,8 +3665,8 @@ _Use_decl_annotations_ VOID NativePagingBatchWorker(PVOID callbackContext)
             status = STATUS_INVALID_DEVICE_STATE;
             continue;
         }
-        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-            static_cast<BYTE *>(privateBuffer) + recordOffset);
+        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(privateBuffer) +
+                                                                                                   recordOffset);
         ReleasePagingTransactionReference(&pagingPrivate->Transaction);
     }
 
@@ -3989,17 +3968,17 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                         patchArguments->PatchLocationListSubmissionStart == 0 &&
                         patchArguments->PatchLocationListSubmissionLength == 0 &&
                         ResolvePagingBatch(patchArguments->pDmaBuffer,
-                                            patchArguments->DmaBufferSize,
-                                            patchArguments->DmaBufferSubmissionStartOffset,
-                                            patchArguments->DmaBufferSubmissionEndOffset,
-                                            patchArguments->pDmaBufferPrivateData,
-                                            patchArguments->DmaBufferPrivateDataSize,
-                                            patchArguments->DmaBufferPrivateDataSubmissionStartOffset,
-                                            patchArguments->DmaBufferPrivateDataSubmissionEndOffset,
-                                            adapter,
-                                            VioGpuWddmPagingTransactionBuilt,
-                                            &firstPrivate,
-                                            &recordCount);
+                                           patchArguments->DmaBufferSize,
+                                           patchArguments->DmaBufferSubmissionStartOffset,
+                                           patchArguments->DmaBufferSubmissionEndOffset,
+                                           patchArguments->pDmaBufferPrivateData,
+                                           patchArguments->DmaBufferPrivateDataSize,
+                                           patchArguments->DmaBufferPrivateDataSubmissionStartOffset,
+                                           patchArguments->DmaBufferPrivateDataSubmissionEndOffset,
+                                           adapter,
+                                           VioGpuWddmPagingTransactionBuilt,
+                                           &firstPrivate,
+                                           &recordCount);
         UNREFERENCED_PARAMETER(firstPrivate);
         UNREFERENCED_PARAMETER(recordCount);
         return exact ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
@@ -4198,22 +4177,21 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
     {
         VIOGPU_WDDM_PAGING_PRIVATE *firstPrivate = NULL;
         UINT recordCount = 0;
-        UINT recordLimit = privateEnd >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
-                               ? privateEnd - sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
-                               : 0;
+        UINT recordLimit = privateEnd >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE) ? privateEnd - sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
+                                                                            : 0;
         BOOLEAN valid = submitCommand->hContext == NULL && submitCommand->Flags.Value == 1 &&
-                        ResolvePagingBatch(submitCommand->pDmaBuffer,
-                                            submitCommand->DmaBufferSize,
-                                            submitCommand->DmaBufferSubmissionStartOffset,
-                                            submitCommand->DmaBufferSubmissionEndOffset,
-                                            submitCommand->pDmaBufferPrivateData,
-                                            submitCommand->DmaBufferPrivateDataSize,
-                                            privateStart,
-                                            privateEnd,
-                                            adapter,
-                                            VioGpuWddmPagingTransactionBuilt,
-                                            &firstPrivate,
-                                            &recordCount);
+                        ResolvePagingBatch(NULL,
+                                           submitCommand->DmaBufferSize,
+                                           submitCommand->DmaBufferSubmissionStartOffset,
+                                           submitCommand->DmaBufferSubmissionEndOffset,
+                                           submitCommand->pDmaBufferPrivateData,
+                                           submitCommand->DmaBufferPrivateDataSize,
+                                           privateStart,
+                                           privateEnd,
+                                           adapter,
+                                           VioGpuWddmPagingTransactionBuilt,
+                                           &firstPrivate,
+                                           &recordCount);
         if (valid)
         {
             for (UINT index = 0; index < recordCount; ++index)
@@ -4228,13 +4206,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                     valid = FALSE;
                     break;
                 }
-                VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-                    static_cast<BYTE *>(submitCommand->pDmaBufferPrivateData) + recordOffset);
-                VIOGPU_WDDM_PAGING_DMA_PACKET *packet = static_cast<VIOGPU_WDDM_PAGING_DMA_PACKET *>(
-                    pagingPrivate->Header.Packet);
+                VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(submitCommand->pDmaBufferPrivateData) +
+                                                                                                           recordOffset);
+                VIOGPU_WDDM_PAGING_DMA_PACKET *packet = static_cast<VIOGPU_WDDM_PAGING_DMA_PACKET *>(pagingPrivate->Header.Packet);
                 if (packet->ContextId == 0 ||
-                    !adapter->IsNativeContextGenerationCurrent(packet->ContextGeneration,
-                                                               packet->ResetGeneration))
+                    !adapter->IsNativeContextGenerationCurrent(packet->ContextGeneration, packet->ResetGeneration))
                 {
                     valid = FALSE;
                     break;
@@ -4255,8 +4231,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                     valid = FALSE;
                     break;
                 }
-                VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-                    static_cast<BYTE *>(submitCommand->pDmaBufferPrivateData) + recordOffset);
+                VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(submitCommand->pDmaBufferPrivateData) +
+                                                                                                           recordOffset);
                 if (InterlockedCompareExchange(&pagingPrivate->Transaction.State,
                                                VioGpuWddmPagingTransactionQueued,
                                                VioGpuWddmPagingTransactionBuilt) != VioGpuWddmPagingTransactionBuilt)
@@ -4302,8 +4278,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
             {
                 continue;
             }
-            VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-                static_cast<BYTE *>(submitCommand->pDmaBufferPrivateData) + recordOffset);
+            VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(submitCommand->pDmaBufferPrivateData) +
+                                                                                                       recordOffset);
             CancelPagingTransaction(&pagingPrivate->Transaction);
         }
         if (recorded)
@@ -4409,13 +4385,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hAdapter,
-                                                                  CONST DXGKARG_CANCELCOMMAND *cancelCommand)
+                                                                 CONST DXGKARG_CANCELCOMMAND *cancelCommand)
 {
     VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
     BOOLEAN cleaned = FALSE;
     if (adapter != NULL && cancelCommand != NULL && cancelCommand->pDmaBufferPrivateData != NULL &&
-        cancelCommand->DmaBufferPrivateDataSubmissionStartOffset <=
-            cancelCommand->DmaBufferPrivateDataSubmissionEndOffset &&
+        cancelCommand->DmaBufferPrivateDataSubmissionStartOffset <= cancelCommand->DmaBufferPrivateDataSubmissionEndOffset &&
         cancelCommand->DmaBufferPrivateDataSubmissionEndOffset <= cancelCommand->DmaBufferPrivateDataSize)
     {
         UINT privateStart = cancelCommand->DmaBufferPrivateDataSubmissionStartOffset;
@@ -4440,13 +4415,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
                                    &firstPrivate,
                                    &recordCount))
             {
-                VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP ownership =
-                    adapter->CancelNativePassiveWork(&firstPrivate->Work);
-                if (ownership != VioGpuNativePassiveWorkWorkerOwned)
+                VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP ownership = adapter->CancelNativePassiveWork(&firstPrivate->Work);
+                if (ownership != VioGpuNativePassiveOwnershipWorkerOwned)
                 {
-                    UINT recordLimit = privateEnd >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
-                                           ? privateEnd - sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
-                                           : 0;
+                    UINT recordLimit = privateEnd >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE) ? privateEnd - sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
+                                                                                        : 0;
                     for (UINT index = 0; index < recordCount; ++index)
                     {
                         UINT recordOffset = 0;
@@ -4458,9 +4431,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
                         {
                             continue;
                         }
-                        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate =
-                            reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-                                static_cast<BYTE *>(cancelCommand->pDmaBufferPrivateData) + recordOffset);
+                        VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(cancelCommand->pDmaBufferPrivateData) +
+                                                                                                                   recordOffset);
                         cleaned = CancelPagingTransaction(&pagingPrivate->Transaction) || cleaned;
                     }
                 }
@@ -4474,17 +4446,15 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
             else if ((privateLength % sizeof(VIOGPU_WDDM_PAGING_PRIVATE)) == 0)
             {
                 UINT recordCountFallback = privateLength / sizeof(VIOGPU_WDDM_PAGING_PRIVATE);
-                UINT recordLimit = privateEnd >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
-                                       ? privateEnd - sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
-                                       : 0;
-                VIOGPU_WDDM_PAGING_PRIVATE *firstPrivate =
-                    reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-                        static_cast<BYTE *>(cancelCommand->pDmaBufferPrivateData) + privateStart);
+                UINT recordLimit = privateEnd >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE) ? privateEnd - sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
+                                                                                    : 0;
+                VIOGPU_WDDM_PAGING_PRIVATE *fallbackFirstPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(cancelCommand->pDmaBufferPrivateData) +
+                                                                                                                  privateStart);
                 VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP ownership = VioGpuNativePassiveWorkNotQueued;
-                if (recordCountFallback != 0 && firstPrivate->Header.Kind == VioGpuWddmDmaKindPaging &&
-                    firstPrivate->Transaction.Adapter == adapter)
+                if (recordCountFallback != 0 && fallbackFirstPrivate->Header.Kind == VioGpuWddmDmaKindPaging &&
+                    fallbackFirstPrivate->Transaction.Adapter == adapter)
                 {
-                    ownership = adapter->CancelNativePassiveWork(&firstPrivate->Work);
+                    ownership = adapter->CancelNativePassiveWork(&fallbackFirstPrivate->Work);
                 }
                 for (UINT index = 0; index < recordCountFallback; ++index)
                 {
@@ -4497,9 +4467,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
                     {
                         continue;
                     }
-                    VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(
-                        static_cast<BYTE *>(cancelCommand->pDmaBufferPrivateData) + recordOffset);
-                    if (ownership != VioGpuNativePassiveWorkWorkerOwned &&
+                    VIOGPU_WDDM_PAGING_PRIVATE *pagingPrivate = reinterpret_cast<VIOGPU_WDDM_PAGING_PRIVATE *>(static_cast<BYTE *>(cancelCommand->pDmaBufferPrivateData) +
+                                                                                                               recordOffset);
+                    if (ownership != VioGpuNativePassiveOwnershipWorkerOwned &&
                         pagingPrivate->Header.Kind == VioGpuWddmDmaKindPaging &&
                         pagingPrivate->Transaction.Adapter == adapter)
                     {
@@ -4510,8 +4480,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
         }
         else if (cancelCommand->hContext != NULL && privateLength == sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE))
         {
-            VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData = reinterpret_cast<VIOGPU_WDDM_KMD_DMA_PRIVATE *>(
-                static_cast<BYTE *>(cancelCommand->pDmaBufferPrivateData) + privateStart);
+            VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData = reinterpret_cast<VIOGPU_WDDM_KMD_DMA_PRIVATE *>(static_cast<BYTE *>(cancelCommand->pDmaBufferPrivateData) +
+                                                                                                       privateStart);
             if (privateData->Kind == VioGpuWddmDmaKindRender)
             {
                 VIOGPU_WDDM_SUBMISSION *submission = NULL;

@@ -2685,7 +2685,7 @@ def check_wddm_paging_transaction_gate() -> None:
     for fragment in (
         "CancelPagingTransaction(&pagingPrivate->Transaction)",
         "adapter->CancelNativePassiveWork(&firstPrivate->Work)",
-        "ownership!=VioGpuNativePassiveWorkWorkerOwned",
+        "ownership!=VioGpuNativePassiveOwnershipWorkerOwned",
         "ReleasePreparedSubmission(submission)",
         "returnSTATUS_SUCCESS;",
     ):
@@ -2752,7 +2752,7 @@ def check_wddm_paging_transaction_gate() -> None:
     resolve = canonical_code(
         function_body_with_parameters(
             "ResolvePagingBatch",
-            "_In_ PVOID dmaBuffer, _In_ UINT dmaBufferSize, _In_ UINT dmaStart, _In_ UINT dmaEnd, "
+            "_In_opt_ PVOID dmaBuffer, _In_ UINT dmaBufferSize, _In_ UINT dmaStart, _In_ UINT dmaEnd, "
             "_In_ PVOID privateBuffer, _In_ UINT privateBufferSize, _In_ UINT privateStart, "
             "_In_ UINT privateEnd, _In_ VioGpuDod *adapter, "
             "_In_ VIOGPU_WDDM_PAGING_TRANSACTION_STATE expectedState, "
@@ -2771,9 +2771,13 @@ def check_wddm_paging_transaction_gate() -> None:
         fail("paging batch offsets must use checked wide arithmetic for DMA and private records")
     if "expectedState==VioGpuWddmPagingTransactionAny" not in resolve:
         fail("CancelCommand must be able to resolve a batch across ownership-state races")
+    if "dmaBuffer==NULL?static_cast<VIOGPU_WDDM_PAGING_DMA_PACKET*>(header->Packet)" not in resolve:
+        fail("SubmitCommand paging resolution must use private packet ownership without a CPU DMA pointer")
+    if "ResolvePagingBatch(NULL,submitCommand->DmaBufferSize" not in submit:
+        fail("SubmitCommand must not read a nonexistent pDmaBuffer member")
     if "VioGpuWddmPagingTransactionAny" not in cancel:
         fail("CancelCommand must resolve both Built and Queued paging records")
-    if cancel.count("ownership!=VioGpuNativePassiveWorkWorkerOwned") != 2:
+    if cancel.count("ownership!=VioGpuNativePassiveOwnershipWorkerOwned") != 2:
         fail("CancelCommand must transfer worker ownership in both exact and fallback paging resolution")
 
     passive_header = canonical_code(VIOGPU_HEADER_CODE)
@@ -2797,7 +2801,7 @@ def check_wddm_paging_transaction_gate() -> None:
         "InterlockedExchange(&work->Retired,1);",
         "RemoveEntryList(&work->Link);",
         "ownership=VioGpuNativePassiveWorkRemoved;",
-        "ownership=VioGpuNativePassiveWorkWorkerOwned;",
+        "ownership=VioGpuNativePassiveOwnershipWorkerOwned;",
     ):
         if fragment not in passive_cancel:
             fail(f"passive cancellation must remove queued work or transfer worker ownership: {fragment}")
