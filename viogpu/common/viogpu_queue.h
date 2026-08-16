@@ -57,6 +57,22 @@ typedef struct virtio_gpu_vbuffer
     void (*complete_cb)(void *ctx);
     void *complete_ctx;
 
+    /* Invoked when an in-flight buffer is reclaimed by queue reset/close.
+     * The queue owns the buffer in this path, so the callback must release
+     * only the higher-level command ownership and must not call FreeBuf(). */
+    void (*cancel_cb)(void *ctx);
+    void *cancel_ctx;
+
+    /* Invoked if a prepared native submit encounters a permanent enqueue
+     * failure while being drained from the software backlog. */
+    void (*queue_error_cb)(void *ctx);
+    void *queue_error_ctx;
+
+    /* A native submit may wait in the software backlog while the control
+     * virtqueue has no free descriptor.  This link is owned by CtrlQueue,
+     * not by VioGpuBuf's in-use/free lists. */
+    LIST_ENTRY native_submit_link;
+
     bool auto_release;
     KEVENT completion_event;
     UINT response_size;
@@ -260,6 +276,8 @@ class CtrlQueue : public VioGpuQueue
         m_FenceIdr = 0;
         KeInitializeMutex(&m_SynchronousMutex, 0);
         m_SynchronousEpochState = VioGpuSynchronousOffline;
+        KeInitializeSpinLock(&m_NativeSubmitLock);
+        InitializeListHead(&m_NativeSubmitBacklog);
     };
 
     PVOID AllocCmd(PGPU_VBUFFER *buf, int sz);
@@ -271,6 +289,8 @@ class CtrlQueue : public VioGpuQueue
     PGPU_VBUFFER PrepareNativeSubmit(UINT context_id, const void *command, UINT command_size);
     BOOLEAN RefreshNativeSubmit(PGPU_VBUFFER buf, const void *command, UINT command_size);
     int QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id);
+    void DrainNativeSubmitBacklog(void);
+    void DetachNativeSubmitBacklog(void);
     BOOLEAN QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info);
     BOOLEAN QueryCapset(UINT capset_id, UINT capset_version, UINT capset_size, PGPU_CAPSET_DRM capset);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeContext(UINT context_id);
@@ -311,6 +331,8 @@ class CtrlQueue : public VioGpuQueue
     KMUTEX m_SynchronousMutex;
     DECLSPEC_ALIGN(8) volatile LONG64 m_SynchronousEpochState;
     volatile LONG m_FenceIdr;
+    KSPIN_LOCK m_NativeSubmitLock;
+    LIST_ENTRY m_NativeSubmitBacklog;
 };
 
 class CrsrQueue : public VioGpuQueue

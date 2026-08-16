@@ -174,6 +174,7 @@ IDR_CODE = strip_cpp_comments_and_literals(IDR_SOURCE_PATH.read_text(encoding="u
 IDR_HEADER_CODE = strip_cpp_comments_and_literals(IDR_HEADER_PATH.read_text(encoding="utf-8"))
 WDDM_ABI_HEADER_SOURCE = WDDM_ABI_HEADER_PATH.read_text(encoding="utf-8")
 WDDM_ABI_HEADER_CODE = strip_cpp_comments_and_literals(WDDM_ABI_HEADER_SOURCE)
+QUEUE_HEADER_CODE = strip_cpp_comments_and_literals(QUEUE_HEADER_SOURCE)
 QUEUE_CODE = strip_cpp_comments_and_literals(QUEUE_SOURCE_PATH.read_text(encoding="utf-8"))
 RDMA_CODE = strip_cpp_comments_and_literals(RDMA_SOURCE)
 RDMA_HEADER_CODE = strip_cpp_comments_and_literals(RDMA_HEADER_SOURCE)
@@ -2023,25 +2024,6 @@ def check_native_context_ownership() -> None:
     if destroy.count(failure_guard) != 1:
         fail("adapter destroy must fail the transport while retaining NotSubmitted or Unknown ownership")
 
-    submit = canonical_code(function_body("VioGpuWddmSubmitCommand", WDDM_DDI_CODE))
-    expected_submit = (
-        "UNREFERENCED_PARAMETER(hAdapter);"
-        "UNREFERENCED_PARAMETER(submitCommand);"
-        "returnSTATUS_NOT_SUPPORTED;"
-    )
-    if submit != expected_submit:
-        fail("SubmitCommand must remain an exact fail-closed stub until GPU retirement exists")
-
-    patch = canonical_code(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))
-    expected_patch = (
-        "UNREFERENCED_PARAMETER(hAdapter);"
-        "UNREFERENCED_PARAMETER(patchArguments);"
-        "returnSTATUS_NOT_SUPPORTED;"
-    )
-    if patch != expected_patch:
-        fail("Patch must remain an exact fail-closed stub until real per-context IOVA transport exists")
-
-
 def check_wddm_private_abi(root: ET.Element) -> None:
     abi = canonical_code(WDDM_ABI_HEADER_CODE)
     require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_ABI_MAGIC", 0x504D5644, "WDDM private ABI")
@@ -3285,17 +3267,417 @@ def check_wddm_context_lifetime() -> None:
         fail("Render must fail closed on rundown acquisition and release it after a bad signature")
     if render.count("VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);") != 1:
         fail("Render must release its native-context snapshot exactly once through unified cleanup")
-    if render.count("ExReleaseRundownProtection(&context->Operations);") != 3:
+    if render.count("ExReleaseRundownProtection(&context->Operations);") != 4:
         fail("Render must release context operations on both acquisition failures and unified cleanup")
     cleanup_start = render.find("NTSTATUSstatus=STATUS_SUCCESS;")
     render_cleanup = (
+        "if(allocationSubmissionReferences!=0){"
+        "ReleaseRenderAllocationReferences(validatedCommand,render->pAllocationList,render->AllocationListSize,"
+        "allocationSubmissionReferences);}"
+        "if(contextSubmissionReference){ReleaseContextSubmissionReference(context);}"
         "delete[]patchSnapshot;"
         "delete[]commandSnapshot;"
         "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);"
+        "if(hardwareOperation){context->Device->Adapter->ReleaseNativeSubmissionOperation();}"
         "ExReleaseRundownProtection(&context->Operations);returnstatus;"
     )
     if cleanup_start < acquire or render[cleanup_start:].count("return") != 1 or not render.endswith(render_cleanup):
         fail("Render must free both snapshots and release both lifetime guards through one tail path")
+
+
+def check_wddm_submission_lifetime() -> None:
+    def require_order(code: str, fragments: tuple[str, ...], message: str) -> None:
+        offsets = [code.find(fragment) for fragment in fragments]
+        if min(offsets) < 0 or offsets != sorted(offsets):
+            fail(message)
+
+    allocation_matches = re.findall(
+        r"\bstruct\s+VIOGPU_WDDM_ALLOCATION\s*\{(.*?)\}\s*;", WDDM_DDI_HEADER_CODE, re.DOTALL
+    )
+    context_matches = re.findall(
+        r"\bstruct\s+VIOGPU_WDDM_CONTEXT\s*\{(.*?)\}\s*;", WDDM_DDI_HEADER_CODE, re.DOTALL
+    )
+    submission_matches = re.findall(
+        r"\bstruct\s+VIOGPU_WDDM_SUBMISSION\s*\{(.*?)\}\s*;", WDDM_DDI_HEADER_CODE, re.DOTALL
+    )
+    allocation_header = canonical_code(allocation_matches[0]) if len(allocation_matches) == 1 else ""
+    context_header = canonical_code(context_matches[0]) if len(context_matches) == 1 else ""
+    submission_header = canonical_code(submission_matches[0]) if len(submission_matches) == 1 else ""
+    for field in (
+        "KSPIN_LOCKSubmissionLock;",
+        "volatileLONGSubmissionReferences;",
+        "volatileLONGOpenReferences;",
+        "BOOLEANDestroying;",
+    ):
+        if allocation_header.count(field) != 1:
+            fail(f"allocation lifetime must retain exactly one internal ownership field: {field}")
+    for field in (
+        "KSPIN_LOCKSubmissionLock;",
+        "volatileLONGSubmissionReferences;",
+        "BOOLEANSubmissionClosing;",
+        "LIST_ENTRYPendingSubmissions;",
+    ):
+        if context_header.count(field) != 1:
+            fail(f"context lifetime must retain exactly one internal submission field: {field}")
+    for field in (
+        "ULONGSignature;",
+        "LIST_ENTRYContextLink;",
+        "VIOGPU_WDDM_CONTEXT*Context;",
+        "PVOIDDmaBuffer;",
+        "PVOIDDmaPrivateData;",
+        "UINTContextId;",
+        "LONGGeneration;",
+        "ULONGLONGResetGeneration;",
+        "ULONGLONGFenceId;",
+        "PGPU_VBUFFERVirtioBuffer;",
+        "VioGpuDod*Adapter;",
+        "PVOIDCommandStream;",
+        "BOOLEANPatchApplied;",
+        "volatileLONGState;",
+        "VIOGPU_WDDM_ALLOCATION*Allocations[VioGpuWddmSubmissionAllocationLimit];",
+        "VIOGPU_WDDM_SUBMISSION_REFERENCEReferences[VioGpuWddmSubmissionAllocationLimit];",
+    ):
+        if submission_header.count(field) != 1:
+            fail(f"submission record must retain exactly one nonpaged ownership field: {field}")
+    header = canonical_code(WDDM_DDI_HEADER_CODE)
+    if header.count("VioGpuWddmSubmissionAllocationLimit=128,") != 1:
+        fail("submission record must use the bounded allocation-reference limit")
+    if WDDM_DDI_SOURCE.count("const ULONG VIOGPU_WDDM_SUBMISSION_SIGNATURE = 'sWGV';") != 1:
+        fail("submission record must have one private signature")
+
+    queue_header = canonical_code(QUEUE_HEADER_CODE)
+    for field in (
+        "void(*cancel_cb)(void*ctx);",
+        "void*cancel_ctx;",
+        "void(*queue_error_cb)(void*ctx);",
+        "void*queue_error_ctx;",
+        "LIST_ENTRYnative_submit_link;",
+    ):
+        if queue_header.count(field) != 1:
+            fail(f"native queue buffer must retain one reset/backlog ownership field: {field}")
+
+    create_allocation = canonical_code(function_body("VioGpuWddmCreateAllocation", WDDM_DDI_CODE))
+    require_order(
+        create_allocation,
+        (
+            "KeInitializeMutex(&allocation->LifecycleMutex,0);",
+            "KeInitializeSpinLock(&allocation->SubmissionLock);",
+            "allocation->SubmissionReferences=0;",
+            "allocation->OpenReferences=0;",
+            "allocation->Destroying=FALSE;",
+        ),
+        "CreateAllocation must initialize internal ownership before publishing the allocation",
+    )
+    create_context = canonical_code(function_body("VioGpuWddmCreateContext", WDDM_DDI_CODE))
+    require_order(
+        create_context,
+        (
+            "ExInitializeRundownProtection(&context->Operations);",
+            "KeInitializeSpinLock(&context->SubmissionLock);",
+            "context->SubmissionReferences=0;",
+            "context->SubmissionClosing=FALSE;",
+            "InitializeListHead(&context->PendingSubmissions);",
+        ),
+        "CreateContext must initialize submission ownership before Host context creation",
+    )
+
+    acquire_context = canonical_code(function_body("AcquireContextSubmissionReference", WDDM_DDI_CODE))
+    if acquire_context.count("!context->SubmissionClosing") != 1 or acquire_context.count(
+        "++context->SubmissionReferences;"
+    ) != 1:
+        fail("Render context ownership must reject closing and increment exactly once")
+    begin_context = canonical_code(function_body("BeginContextSubmissionRundown", WDDM_DDI_CODE))
+    if "context->SubmissionClosing=TRUE;" not in begin_context or "context->SubmissionReferences!=0" not in begin_context:
+        fail("context destruction must close publication before rejecting live submissions")
+    acquire_allocation = canonical_code(function_body("AcquireAllocationSubmissionReference", WDDM_DDI_CODE))
+    for fragment in (
+        "allocation->Adapter==adapter",
+        "!allocation->Destroying",
+        "++allocation->SubmissionReferences;",
+    ):
+        if acquire_allocation.count(fragment) != 1:
+            fail(f"allocation submission acquisition must retain its destroy gate: {fragment}")
+    begin_allocation = canonical_code(function_body("BeginAllocationDestroy", WDDM_DDI_CODE))
+    require_order(
+        begin_allocation,
+        ("allocation->Destroying=TRUE;", "allocation->SubmissionReferences!=0||allocation->OpenReferences!=0"),
+        "allocation destruction must close new references before reporting busy",
+    )
+
+    open_allocation = canonical_code(function_body("VioGpuWddmOpenAllocation", WDDM_DDI_CODE))
+    require_order(
+        open_allocation,
+        (
+            "status=AcquireAllocationLifecycle(allocation);",
+            "status=ReferenceAllocationOpen(allocation,device->Adapter);",
+            "KeReleaseMutex(&allocation->LifecycleMutex,FALSE);",
+            "openInfo->hDeviceSpecificAllocation=deviceAllocation;",
+        ),
+        "OpenAllocation must acquire a serialized strong reference before publishing its wrapper",
+    )
+    close_allocation = canonical_code(function_body("VioGpuWddmCloseAllocation", WDDM_DDI_CODE))
+    require_order(
+        close_allocation,
+        ("ReleaseAllocationOpen(deviceAllocation->Allocation);", "DereferenceDevice(deviceAllocation->Device);"),
+        "CloseAllocation must release allocation ownership before device ownership",
+    )
+    destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
+    require_order(
+        destroy_allocation,
+        (
+            "status=BeginAllocationDestroy(allocation);",
+            "status=ReleaseAllocationHostOwnership(allocation,&snapshot,snapshotAcquired);",
+        ),
+        "DestroyAllocation must reserve ownership before Host teardown",
+    )
+    if "CancelAllocationDestroy(" in destroy_allocation:
+        fail("DestroyAllocation must keep its close gate after busy or unknown teardown")
+    destroy_context = canonical_code(function_body("VioGpuWddmDestroyContext", WDDM_DDI_CODE))
+    require_order(
+        destroy_context,
+        (
+            "BeginContextSubmissionRundown(context);",
+            "!IsListEmpty(&context->PendingSubmissions)",
+            "if(!context->OperationsRundownCompleted)",
+        ),
+        "DestroyContext must close submissions before draining callback operations",
+    )
+
+    publish = canonical_code(function_body("PublishPreparedSubmission", WDDM_DDI_CODE))
+    require_order(
+        publish,
+        (
+            "RtlZeroMemory(submission,sizeof(*submission));",
+            "submission->Signature=VIOGPU_WDDM_SUBMISSION_SIGNATURE;",
+            "submission->State=VioGpuWddmSubmissionPrepared;",
+            "for(UINTindex=0;index<allocationCount;++index)",
+            "KeAcquireSpinLock(&context->SubmissionLock,&oldIrql);",
+            "privateData->Submission=submission;",
+            "virtioBuffer->complete_cb=NativeSubmissionComplete;",
+            "virtioBuffer->cancel_cb=NativeSubmissionCancelled;",
+            "virtioBuffer->queue_error_cb=NativeSubmissionQueueFailed;",
+            "virtioBuffer->auto_release=FALSE;",
+            "InsertTailList(&context->PendingSubmissions,&submission->ContextLink);",
+        ),
+        "prepared submission must publish private-data identity and all callbacks under the context lock",
+    )
+    quarantine = canonical_code(
+        function_body_with_parameters(
+            "QuarantineSubmission",
+            "VIOGPU_WDDM_SUBMISSION *submission, LONG expectedState, BOOLEAN releaseBuffer",
+            WDDM_DDI_CODE,
+        )
+    )
+    require_order(
+        quarantine,
+        (
+            "InterlockedCompareExchange(&submission->State,expectedState,expectedState)",
+            "RemoveEntryList(&submission->ContextLink);",
+            "InterlockedExchange(&submission->State,VioGpuWddmSubmissionQuarantined);",
+            "virtioBuffer->complete_cb=NULL;",
+            "virtioBuffer->cancel_cb=NULL;",
+            "virtioBuffer->queue_error_cb=NULL;",
+            "ReleaseAllocationSubmissionReference(submission->Allocations[index]);",
+            "ReleaseContextSubmissionReference(context);",
+            "privateData->Submission=NULL;",
+            "submission->Signature=0;",
+            "deletesubmission;",
+        ),
+        "submission quarantine must detach callbacks before releasing retained objects",
+    )
+
+    validate_packet = canonical_code(function_body("ValidateNativeSubmitPacket", WDDM_DDI_CODE))
+    for fragment in (
+        "request->hdr.cmd!=MSM_CCMD_GEM_SUBMIT",
+        "request->hdr.len!=header->CommandStreamSize",
+        "request->nr_bos!=header->AllocationReferenceCount",
+        "expectedSize!=header->CommandStreamSize",
+        "bos[index].Handle!=allocation->ResourceId",
+        "bos[index].Presumed!=0",
+        "command->SubmitIndex>=request->nr_bos",
+        "command->RelocationCount!=0",
+        "command->Iova!=0",
+        "command->Size>allocation->PrivateData.Size-command->SubmitOffset",
+    ):
+        if fragment not in validate_packet:
+            fail(f"Render must validate the exact bounded MSM GEM_SUBMIT packet: {fragment}")
+
+    acquire_render = canonical_code(function_body("AcquireRenderAllocationReferences", WDDM_DDI_CODE))
+    require_order(
+        acquire_render,
+        (
+            "status=AcquireAllocationLifecycle(allocation);",
+            "status=AcquireAllocationSubmissionReference(allocation,device->Adapter);",
+            "KeReleaseMutex(&allocation->LifecycleMutex,FALSE);",
+        ),
+        "Render allocation references must serialize against allocation destruction",
+    )
+    render = canonical_code(function_body("VioGpuWddmRender", WDDM_DDI_CODE))
+    require_order(
+        render,
+        (
+            "ValidateNativeSubmitPacket(command,context->Device,render->pAllocationList,render->AllocationListSize)",
+            "!snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation,snapshot.ResetGeneration)",
+            "status=AcquireContextSubmissionReference(context);",
+            "status=AcquireRenderAllocationReferences(validatedCommand,",
+            "PrepareNativeSubmit(snapshot.ContextId,commandStream,validatedCommand->CommandStreamSize)",
+            "submission=new(NonPagedPoolNx)VIOGPU_WDDM_SUBMISSION;",
+            "RtlCopyMemory(dmaBuffer,commandSnapshot,render->CommandLength);",
+            "status=PublishPreparedSubmission(submission,",
+            "submissionPublished=TRUE;",
+            "submission=NULL;virtioBuffer=NULL;allocationSubmissionReferences=0;contextSubmissionReference=FALSE;",
+        ),
+        "Render must validate, retain, prepare and publish one asynchronously owned submission",
+    )
+    for cleanup in (
+        "ReleasePreparedSubmission(submission);",
+        "ReleaseNativeSubmitBuffer(virtioBuffer);",
+        "ReleaseRenderAllocationReferences(validatedCommand,",
+        "ReleaseContextSubmissionReference(context);",
+        "ReleaseNativeContextSnapshot(&snapshot);",
+        "ReleaseNativeSubmissionOperation();",
+    ):
+        if cleanup not in render:
+            fail(f"Render unified cleanup must release every untransferred owner: {cleanup}")
+
+    patch = canonical_code(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))
+    require_order(
+        patch,
+        (
+            "ResolveSubmissionPrivateData(",
+            "patch->PatchOffset!=submission->CommandStreamOffset+reference->PatchOffset",
+            "allocation->PrivateData.RequestedIova<=MAXULONGLONG-reference->AllocationOffset",
+            "patchedIovas[index]=allocation->PrivateData.RequestedIova+reference->AllocationOffset;",
+            "RtlCopyMemory(patchAddress,&patchedIovas[index],sizeof(patchedIovas[index]));",
+            "adapter->RefreshNativeSubmit(submission->VirtioBuffer,submission->CommandStream,submission->CommandStreamSize)",
+            "submission->FenceId=patchArguments->SubmissionFenceId;",
+            "KeMemoryBarrier();",
+            "submission->PatchApplied=TRUE;",
+        ),
+        "Patch must validate placement, write requested IOVAs, refresh payload and publish the WDDM fence",
+    )
+    if "ReleasePreparedSubmission(submission);" not in patch:
+        fail("Patch failure must quarantine the prepared submission")
+
+    submit_body = function_body("VioGpuWddmSubmitCommand", WDDM_DDI_CODE)
+    submit = canonical_code(submit_body)
+    if "KeGetCurrentIrql()!=DISPATCH_LEVEL" not in submit:
+        fail("SubmitCommand must enforce its DISPATCH_LEVEL contract")
+    for forbidden in ("KeWaitForSingleObject", "PAGED_CODE", "new(", "ExAllocatePool"):
+        if forbidden in submit_body:
+            fail(f"SubmitCommand must not wait or allocate pageable state at DISPATCH_LEVEL: {forbidden}")
+    require_order(
+        submit,
+        (
+            "status=ResolveSubmissionPrivateData(",
+            "submission->PatchApplied",
+            "InterlockedCompareExchange(&submission->State,VioGpuWddmSubmissionQueued,VioGpuWddmSubmissionPrepared)",
+            "adapter->RecordNativeSubmissionFence(fenceId)",
+            "adapter->QueueNativeSubmit(buffer,fenceId)",
+        ),
+        "SubmitCommand must resolve exact private data before Prepared-to-Queued publication and enqueue",
+    )
+    for fragment in (
+        "privateData->Kind==VioGpuWddmDmaKindPaging",
+        "VioGpuWddmPagingFlagSoftwareCompleted",
+        "adapter->RecordNativeSubmissionFence(submitCommand->SubmissionFenceId)",
+        "adapter->NotifyNativeSoftwareCompletion(",
+        "ReleaseQueuedSubmission(submission,TRUE);",
+        "adapter->NotifyNativeSubmissionFault(",
+    ):
+        if fragment not in submit:
+            fail(f"SubmitCommand must retain paging/render completion and fault semantics: {fragment}")
+    if not submit.endswith("returnSTATUS_SUCCESS;") or "returnSTATUS_NOT_SUPPORTED;" in submit:
+        fail("SubmitCommand must convert post-validation scheduler failures into fault notification plus success")
+
+    complete = canonical_code(function_body("NativeSubmissionComplete", WDDM_DDI_CODE))
+    for fragment in (
+        "response->type==VIRTIO_GPU_RESP_OK_NODATA",
+        "response->flags==expectedFlags",
+        "response->fence_id==submission->FenceId",
+        "response->ctx_id==submission->ContextId",
+        "response->ring_idx==1",
+        "adapter->IsNativeContextGenerationCurrent(submission->Generation,submission->ResetGeneration)",
+        "ReleaseQueuedSubmission(submission,TRUE)",
+        "adapter->NotifyNativeSubmissionCompletion(fenceId,nodeOrdinal,engineOrdinal,FALSE);",
+        "adapter->NotifyNativeSubmissionFault(",
+    ):
+        if fragment not in complete:
+            fail(f"native completion must validate Host retirement before VidSch notification: {fragment}")
+    cancelled = canonical_code(function_body("NativeSubmissionCancelled", WDDM_DDI_CODE))
+    if "QuarantineSubmission(submission,VioGpuWddmSubmissionQueued,FALSE);" not in cancelled or (
+        "NotifyNativeSubmissionCompletion" in cancelled
+    ):
+        fail("reset cancellation must release ownership without fabricating a completed fence")
+    queue_failed = canonical_code(function_body("NativeSubmissionQueueFailed", WDDM_DDI_CODE))
+    require_order(
+        queue_failed,
+        ("ReleaseQueuedSubmission(submission,FALSE)", "adapter->NotifyNativeSubmissionFault("),
+        "permanent backlog enqueue failure must release ownership and fault the scheduler",
+    )
+
+    tracker_header = canonical_code(VIOGPU_HEADER_CODE)
+    for field in (
+        "VioGpuNativeFenceTrackerCapacity=4096,",
+        "KSPIN_LOCKm_NativeFenceLock;",
+        "UINTm_NativeFenceHead;",
+        "UINTm_NativeFenceCount;",
+        "VIOGPU_NATIVE_FENCE_ENTRYm_NativeFences[VioGpuNativeFenceTrackerCapacity];",
+    ):
+        if tracker_header.count(field) != 1:
+            fail(f"node fence retirement must retain one bounded ordered tracker field: {field}")
+    record_fence = canonical_code(function_body("VioGpuDod::RecordNativeSubmissionFence", VIOGPU_CODE))
+    for fragment in (
+        "m_NativeFenceCount<VioGpuNativeFenceTrackerCapacity",
+        "m_NativeFences[index].FenceId==fenceId",
+        "m_NativeFences[tail].State=VioGpuNativeFencePending;",
+        "++m_NativeFenceCount;",
+    ):
+        if fragment not in record_fence:
+            fail(f"fence publication must reject duplicates and preserve submit order: {fragment}")
+    retire_fence = canonical_code(function_body("VioGpuDod::RetireNativeSubmissionFence", VIOGPU_CODE))
+    require_order(
+        retire_fence,
+        (
+            "match->State=VioGpuNativeFenceRetired;",
+            "m_NativeFences[m_NativeFenceHead].State==VioGpuNativeFenceRetired",
+            "*completedFence=head->FenceId;",
+            "--m_NativeFenceCount;",
+            "InterlockedExchange(reinterpret_cast<PLONG>(&m_NativeCompletedFence),static_cast<LONG>(*completedFence));",
+        ),
+        "completed fence publication must drain only the contiguous retired prefix",
+    )
+    notify = canonical_code(function_body("VioGpuDod::NotifyNativeSchedulerInterrupt", VIOGPU_CODE))
+    if "DxgkCbSynchronizeExecution(" not in notify or "DxgkCbNotifyInterrupt(" in notify:
+        fail("DPC/Submit completion must synchronize the actual interrupt notification to DIRQL")
+    dirql = canonical_code(function_body("VioGpuNotifyNativeSchedulerAtDirql", VIOGPU_CODE))
+    if dirql.count("DxgkCbNotifyInterrupt(") != 1:
+        fail("the synchronized DIRQL callback must own the only native scheduler interrupt call")
+    current_fence = canonical_code(function_body("VioGpuWddmQueryCurrentFence", WDDM_DDI_CODE))
+    if "currentFence->CurrentFence=adapter->QueryNativeCompletedFence();" not in current_fence:
+        fail("QueryCurrentFence must return the contiguous Host-retired node fence")
+
+    queue_submit = canonical_code(function_body("CtrlQueue::QueueNativeSubmit", QUEUE_CODE))
+    if queue_submit.count("result==-ENOSPC") != 1 or "if(result<0)" in queue_submit:
+        fail("native submit may backlog only transient virtqueue ENOSPC")
+    drain = canonical_code(function_body("CtrlQueue::DrainNativeSubmitBacklog", QUEUE_CODE))
+    require_order(
+        drain,
+        (
+            "if(result==-ENOSPC)",
+            "InsertHeadList(&m_NativeSubmitBacklog,&buffer->native_submit_link);",
+            "if(result<0)",
+            "errorCallback(errorContext);",
+            "ReleaseBuffer(failedBuffer);",
+        ),
+        "backlog drain must preserve ENOSPC order and surface permanent enqueue failure",
+    )
+    stop = canonical_code(function_body("VioGpuAdapter::StopNativeContextTransportLocked", VIOGPU_CODE))
+    require_order(
+        stop,
+        ("m_CtrlQueue.Close();", "m_CtrlQueue.DetachNativeSubmitBacklog();", "m_GpuBuf.Close();"),
+        "teardown must detach software backlog links before buffer cancellation",
+    )
 
 
 def check_dpc_completion_semantics() -> None:
@@ -4738,6 +5120,7 @@ def main() -> None:
     check_wddm_private_abi(root)
     check_wddm_guest_allocation_lifecycle()
     check_wddm_context_lifetime()
+    check_wddm_submission_lifetime()
     check_dpc_completion_semantics()
     check_segment_failure_semantics()
     check_pci_resource_lifetime()

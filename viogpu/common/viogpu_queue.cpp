@@ -1304,6 +1304,7 @@ PGPU_VBUFFER CtrlQueue::PrepareNativeSubmit(UINT context_id, const void *command
     submit->hdr.ctx_id = context_id;
     submit->size = command_size;
     RtlCopyMemory(payload, command, command_size);
+    InitializeListHead(&vbuf->native_submit_link);
     vbuf->data_buf = payload;
     vbuf->data_size = command_size;
     return vbuf;
@@ -1344,7 +1345,83 @@ int CtrlQueue::QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id)
     submit->hdr.flags = VIRTIO_GPU_FLAG_FENCE | VIRTIO_GPU_FLAG_INFO_RING_IDX;
     submit->hdr.fence_id = fence_id;
     submit->hdr.ring_idx = 1;
-    return QueueBuffer(buf);
+
+    /* DxgkDdiSubmitCommand is not allowed to return a transient queue-full
+     * error: Dxgkrnl treats any error as a scheduler bugcheck.  Preserve
+     * submission order and retain the already prepared nonpaged buffer until
+     * a completed descriptor makes room. */
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeSubmitLock, &oldIrql);
+    if (!IsListEmpty(&m_NativeSubmitBacklog))
+    {
+        InsertTailList(&m_NativeSubmitBacklog, &buf->native_submit_link);
+        KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
+        return 0;
+    }
+
+    int result = QueueBuffer(buf);
+    if (result == -ENOSPC)
+    {
+        InsertTailList(&m_NativeSubmitBacklog, &buf->native_submit_link);
+        result = 0;
+    }
+    KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
+    return result;
+}
+
+void CtrlQueue::DrainNativeSubmitBacklog(void)
+{
+    PGPU_VBUFFER failedBuffer = NULL;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeSubmitLock, &oldIrql);
+    while (!IsListEmpty(&m_NativeSubmitBacklog))
+    {
+        PLIST_ENTRY entry = RemoveHeadList(&m_NativeSubmitBacklog);
+        PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, native_submit_link);
+        InitializeListHead(&buffer->native_submit_link);
+
+        /* Do not touch buffer after a successful QueueBuffer call: the host
+         * may retire it and run the completion callback on another CPU before
+         * this routine returns. */
+        int result = QueueBuffer(buffer);
+        if (result == -ENOSPC)
+        {
+            InsertHeadList(&m_NativeSubmitBacklog, &buffer->native_submit_link);
+            break;
+        }
+        if (result < 0)
+        {
+            failedBuffer = buffer;
+            break;
+        }
+    }
+    KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
+
+    if (failedBuffer != NULL)
+    {
+        void (*errorCallback)(void *) = failedBuffer->queue_error_cb;
+        void *errorContext = failedBuffer->queue_error_ctx;
+        failedBuffer->queue_error_cb = NULL;
+        failedBuffer->queue_error_ctx = NULL;
+        if (errorCallback != NULL)
+        {
+            errorCallback(errorContext);
+        }
+        ReleaseBuffer(failedBuffer);
+    }
+}
+
+void CtrlQueue::DetachNativeSubmitBacklog(void)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeSubmitLock, &oldIrql);
+    while (!IsListEmpty(&m_NativeSubmitBacklog))
+    {
+        PLIST_ENTRY entry = RemoveHeadList(&m_NativeSubmitBacklog);
+        PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, native_submit_link);
+        InitializeListHead(&buffer->native_submit_link);
+    }
+    KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
 }
 
 void CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, UINT x, UINT y)
@@ -1566,6 +1643,16 @@ void VioGpuBuf::Close(void)
     {
         LIST_ENTRY *entry = RemoveHeadList(&buffers);
         PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
+        void (*cancelCallback)(void *) = buffer->cancel_cb;
+        void *cancelContext = buffer->cancel_ctx;
+        buffer->cancel_cb = NULL;
+        buffer->cancel_ctx = NULL;
+        buffer->queue_error_cb = NULL;
+        buffer->queue_error_ctx = NULL;
+        if (cancelCallback != NULL)
+        {
+            cancelCallback(cancelContext);
+        }
         if (buffer->resp_buf != NULL && buffer->resp_size > MAX_INLINE_RESP_SIZE)
         {
             FreeMemory(buffer->resp_buf);
@@ -1705,6 +1792,10 @@ void VioGpuBuf::FreeBuf(_In_ PGPU_VBUFFER pbuf)
 
     if (found)
     {
+        pbuf->cancel_cb = NULL;
+        pbuf->cancel_ctx = NULL;
+        pbuf->queue_error_cb = NULL;
+        pbuf->queue_error_ctx = NULL;
         if (pbuf->resp_buf != NULL && pbuf->resp_size > MAX_INLINE_RESP_SIZE)
         {
             response = pbuf->resp_buf;
@@ -1779,6 +1870,16 @@ void VioGpuBuf::ReclaimBuffers(void)
     {
         LIST_ENTRY *entry = RemoveHeadList(&reclaimed);
         PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
+        void (*cancelCallback)(void *) = buffer->cancel_cb;
+        void *cancelContext = buffer->cancel_ctx;
+        buffer->cancel_cb = NULL;
+        buffer->cancel_ctx = NULL;
+        buffer->queue_error_cb = NULL;
+        buffer->queue_error_ctx = NULL;
+        if (cancelCallback != NULL)
+        {
+            cancelCallback(cancelContext);
+        }
         if (buffer->resp_buf != NULL && buffer->resp_size > MAX_INLINE_RESP_SIZE)
         {
             FreeMemory(buffer->resp_buf);

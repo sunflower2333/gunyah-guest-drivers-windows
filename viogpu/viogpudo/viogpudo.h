@@ -76,6 +76,26 @@ typedef struct _CURRENT_MODE
 } CURRENT_MODE;
 
 class VioGpuDod;
+
+#if defined(VIOGPU_WDDM_CI_ONLY)
+enum : UINT
+{
+    VioGpuNativeFenceTrackerCapacity = 4096,
+};
+
+enum VIOGPU_NATIVE_FENCE_STATE : LONG
+{
+    VioGpuNativeFenceFree = 0,
+    VioGpuNativeFencePending,
+    VioGpuNativeFenceRetired,
+};
+
+struct VIOGPU_NATIVE_FENCE_ENTRY
+{
+    UINT FenceId;
+    VIOGPU_NATIVE_FENCE_STATE State;
+};
+#endif
 class VioGpuAdapter;
 struct VIOGPU_NATIVE_CONTEXT_REGISTRATION;
 
@@ -262,13 +282,44 @@ class VioGpuAdapter : IVioGpuPCI
     static BOOLEAN ReferenceNativeContextAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
                                                     _Out_ VIOGPU_NATIVE_CONTEXT_REGISTRATION **registration);
     static BOOLEAN DereferenceNativeContextAllocation(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
-    static BOOLEAN IsNativeContextAllocationBindingRetired(
-        _Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
+    static BOOLEAN IsNativeContextAllocationBindingRetired(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
     static void ReleaseNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
     static VioGpuAdapter *ReferenceNativeContextAdapter(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
     static void DereferenceNativeContextAdapter(_In_ VioGpuAdapter *adapter);
     static BOOLEAN IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
     BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration);
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize)
+    {
+        return m_CtrlQueue.PrepareNativeSubmit(contextId, command, commandSize);
+    }
+    BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize)
+    {
+        return m_CtrlQueue.RefreshNativeSubmit(buffer, command, commandSize);
+    }
+    int QueueNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ ULONGLONG fenceId)
+    {
+        return m_CtrlQueue.QueueNativeSubmit(buffer, fenceId);
+    }
+    void ReleaseNativeSubmitBuffer(_In_ PGPU_VBUFFER buffer)
+    {
+        m_CtrlQueue.ReleaseBuffer(buffer);
+    }
+    BOOLEAN QueryNativeSubmitInterruptMessage(_Out_ ULONG *messageNumber)
+    {
+        if (messageNumber == NULL || !m_PciResources.HasKnownInterruptMessageCount())
+        {
+            return FALSE;
+        }
+        ULONG selected = m_PciResources.IsMSIEnabled() ? 1U : 0U;
+        if (selected >= m_PciResources.GetInterruptMessageCount())
+        {
+            return FALSE;
+        }
+        *messageNumber = selected;
+        return TRUE;
+    }
+#endif
 
     PVIDEO_MODE_INFORMATION GetModeInfo(UINT idx)
     {
@@ -428,6 +479,14 @@ class VioGpuDod
     mutable EX_RUNDOWN_REF m_HardwareOperations;
     BOOLEAN m_HardwareRundownCompleted;
     mutable volatile LONG m_HardwareResetState;
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    KSPIN_LOCK m_NativeFenceLock;
+    UINT m_NativeFenceHead;
+    UINT m_NativeFenceCount;
+    VIOGPU_NATIVE_FENCE_ENTRY m_NativeFences[VioGpuNativeFenceTrackerCapacity];
+    volatile ULONG m_NativeSubmittedFence;
+    volatile ULONG m_NativeCompletedFence;
+#endif
 
     USHORT m_PersistentDispMode0Width;
     USHORT m_PersistentDispMode0Height;
@@ -573,6 +632,11 @@ class VioGpuDod
     BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     BOOLEAN AcquireGpuGuestPoolMapping(_Out_ VioGpuGuestPoolMapping *mapping) const;
+    PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
+    BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize);
+    int QueueNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ ULONGLONG fenceId);
+    void ReleaseNativeSubmitBuffer(_In_ PGPU_VBUFFER buffer);
+    BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration) const;
     UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
     BOOLEAN AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requestedIova,
                                                       _In_ SIZE_T backingSize,
@@ -601,6 +665,31 @@ class VioGpuDod
         LONG state = InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareActive);
         return state == VioGpuHardwareActive || state == VioGpuHardwareRecovering;
     }
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    BOOLEAN AcquireNativeSubmissionOperation(void) const;
+    void ReleaseNativeSubmissionOperation(void) const;
+    void NotifyNativeSubmissionCompletion(_In_ UINT fenceId,
+                                          _In_ UINT nodeOrdinal,
+                                          _In_ UINT engineOrdinal,
+                                          _In_ BOOLEAN queueDpc);
+    void NotifyNativeSubmissionFault(_In_ UINT fenceId,
+                                     _In_ NTSTATUS status,
+                                     _In_ UINT nodeOrdinal,
+                                     _In_ UINT engineOrdinal,
+                                     _In_ BOOLEAN queueDpc);
+    void NotifyNativeSoftwareCompletion(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal);
+    BOOLEAN NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
+                                           _In_ BOOLEAN queueDpc);
+    BOOLEAN RecordNativeSubmissionFence(_In_ UINT fenceId);
+    BOOLEAN RetireNativeSubmissionFence(_In_ UINT fenceId, _Out_ UINT *completedFence);
+    void ResetNativeFenceTracker(void);
+    UINT QueryNativeCompletedFence(void) const
+    {
+        return InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(const_cast<volatile ULONG *>(&m_NativeCompletedFence)),
+                                          0,
+                                          0);
+    }
+#endif
 
   private:
     BOOLEAN CheckHardware();
