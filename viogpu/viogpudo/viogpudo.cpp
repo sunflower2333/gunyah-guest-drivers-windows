@@ -668,6 +668,15 @@ BOOLEAN VioGpuDod::RetireNativeSubmissionFence(_In_ UINT fenceId, _Out_ UINT *co
     return match != NULL;
 }
 
+BOOLEAN VioGpuDod::IsNativeFenceQueueEmpty(void)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
+    BOOLEAN empty = m_NativeFenceCount == 0;
+    KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
+    return empty;
+}
+
 void VioGpuDod::ResetNativeFenceTracker(void)
 {
     KIRQL oldIrql;
@@ -677,6 +686,31 @@ void VioGpuDod::ResetNativeFenceTracker(void)
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
     InterlockedExchange(&m_NativeSubmittedFence, 0);
     InterlockedExchange(&m_NativeCompletedFence, 0);
+    KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
+}
+
+void VioGpuDod::InvalidateNativeFenceTracker(void)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
+    m_NativeFenceHead = 0;
+    m_NativeFenceCount = 0;
+    RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
+    /* Keep the submitted/completed endpoints.  An adapter-wide reset must
+     * later advance completed to the last submitted fence instead of making
+     * the scheduler observe a backwards fence. */
+    KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
+}
+
+void VioGpuDod::CompleteNativeFenceReset(void)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
+    UINT submitted = static_cast<UINT>(InterlockedCompareExchange(&m_NativeSubmittedFence, 0, 0));
+    m_NativeFenceHead = 0;
+    m_NativeFenceCount = 0;
+    RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
+    InterlockedExchange(&m_NativeCompletedFence, static_cast<LONG>(submitted));
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
 }
 
@@ -775,9 +809,9 @@ void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fenceId,
 #if defined(VIOGPU_WDDM_CI_ONLY)
     /* A fault invalidates every pending fence in this transport generation.
      * Do not leave failed submissions occupying the bounded tracker while
-     * the scheduler is being driven into reset.  This does not publish a
-     * completion value; the next D0 generation starts from an empty tracker. */
-    ResetNativeFenceTracker();
+     * the scheduler is being driven into reset.  Preserve the submitted
+     * endpoint so ResetFromTimeout can publish the adapter-wide reset fence. */
+    InvalidateNativeFenceTracker();
 #endif
     if (ExAcquireRundownProtection(&m_HardwareOperations))
     {
@@ -1157,6 +1191,9 @@ NTSTATUS VioGpuDod::SetPowerState(_In_ ULONG HardwareUid,
                 {
                     return STATUS_DEVICE_NOT_READY;
                 }
+#if defined(VIOGPU_WDDM_CI_ONLY)
+                CompleteNativeFenceReset();
+#endif
             }
             else if (InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareActive) !=
                      VioGpuHardwareActive)
@@ -1171,6 +1208,70 @@ NTSTATUS VioGpuDod::SetPowerState(_In_ ULONG HardwareUid,
         return Status;
     }
     return STATUS_SUCCESS;
+}
+
+NTSTATUS VioGpuDod::ResetFromTimeout(void)
+{
+    PAGED_CODE();
+
+    /* TDR is an adapter-wide barrier.  Close the native transport before
+     * publishing any new fence endpoint; StopNativeContextTransport also
+     * invalidates every context/allocation generation and drains the queue. */
+    InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (adapter == NULL)
+    {
+        ExReleaseRundownProtection(&m_HardwareOperations);
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    adapter->ResetDevice();
+    NTSTATUS status = adapter->SetPowerState(&m_DeviceInfo, PowerDeviceD3, &m_CurrentMode);
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    /* StopNativeContextTransport has now drained every submitter that could
+     * append to the tracker.  Discard pending entries only after that barrier. */
+    InvalidateNativeFenceTracker();
+#endif
+    if (NT_SUCCESS(status))
+    {
+        m_AdapterPowerState = PowerDeviceD3;
+#if defined(VIOGPU_WDDM_CI_ONLY)
+        /* Only a completed hardware reset may advance the scheduler fence. */
+        CompleteNativeFenceReset();
+#endif
+    }
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return status;
+}
+
+NTSTATUS VioGpuDod::RestartFromTimeout(void)
+{
+    PAGED_CODE();
+
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    if (m_pHWDevice == NULL)
+    {
+        ExReleaseRundownProtection(&m_HardwareOperations);
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    NTSTATUS status = SetPowerState(DISPLAY_ADAPTER_HW_ID, PowerDeviceD0, PowerActionNone);
+    if (!NT_SUCCESS(status))
+    {
+        /* Keep all later DDI entry points fail-closed so a partial restart
+         * cannot be mistaken for an Active transport generation. */
+        InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
+    }
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return status;
 }
 
 NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) DXGK_CHILD_DESCRIPTOR *pChildRelations,

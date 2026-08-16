@@ -2449,6 +2449,90 @@ NTSTATUS ExecutePagingTransaction""",
         *released = TRUE;""",
     ),
     Rewrite(
+        "R241_fault_resets_submitted_endpoint",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    InvalidateNativeFenceTracker();
+#endif
+    if (ExAcquireRundownProtection(&m_HardwareOperations))""",
+        """    ResetNativeFenceTracker();
+#endif
+    if (ExAcquireRundownProtection(&m_HardwareOperations))""",
+    ),
+    Rewrite(
+        "R242_reset_publishes_before_stop",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    NTSTATUS status = adapter->SetPowerState(&m_DeviceInfo, PowerDeviceD3, &m_CurrentMode);
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    /* StopNativeContextTransport has now drained every submitter that could
+     * append to the tracker.  Discard pending entries only after that barrier. */
+    InvalidateNativeFenceTracker();
+#endif
+    if (NT_SUCCESS(status))
+    {
+        m_AdapterPowerState = PowerDeviceD3;
+#if defined(VIOGPU_WDDM_CI_ONLY)
+        /* Only a completed hardware reset may advance the scheduler fence. */
+        CompleteNativeFenceReset();
+#endif
+    }""",
+        """#if defined(VIOGPU_WDDM_CI_ONLY)
+    InvalidateNativeFenceTracker();
+    CompleteNativeFenceReset();
+#endif
+    NTSTATUS status = adapter->SetPowerState(&m_DeviceInfo, PowerDeviceD3, &m_CurrentMode);
+    if (NT_SUCCESS(status))
+    {
+        m_AdapterPowerState = PowerDeviceD3;
+    }""",
+    ),
+    Rewrite(
+        "R243_preempt_allows_inflight_queue",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "!adapter->IsNativeFenceQueueEmpty()",
+        "adapter->IsNativeFenceQueueEmpty()",
+    ),
+    Rewrite(
+        "R244_preempt_notify_failure_continues",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    if (!adapter->NotifyNativeSchedulerInterrupt(&notify, TRUE))
+    {
+        adapter->ResetDevice();
+    }""",
+        """    if (!adapter->NotifyNativeSchedulerInterrupt(&notify, TRUE))
+    {
+        UNREFERENCED_PARAMETER(notify);
+    }""",
+    ),
+    Rewrite(
+        "R245_restart_skips_d0_recovery",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "NTSTATUS status = SetPowerState(DISPLAY_ADAPTER_HW_ID, PowerDeviceD0, PowerActionNone);",
+        "NTSTATUS status = STATUS_SUCCESS;",
+    ),
+    Rewrite(
+        "R246_invalidate_clears_completed_endpoint",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """    RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
+    /* Keep the submitted/completed endpoints.  An adapter-wide reset must""",
+        """    RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
+    InterlockedExchange(&m_NativeCompletedFence, 0);
+    /* Keep the submitted/completed endpoints.  An adapter-wide reset must""",
+    ),
+    Rewrite(
+        "R247_d0_recovery_skips_fence_publish",
+        "viogpu/viogpudo/viogpudo.cpp",
+        """#if defined(VIOGPU_WDDM_CI_ONLY)
+                CompleteNativeFenceReset();
+#endif
+            }
+            else if (InterlockedCompareExchange""",
+        """#if defined(VIOGPU_WDDM_CI_ONLY)
+                /* reset fence publication removed */
+#endif
+            }
+            else if (InterlockedCompareExchange""",
+    ),
+    Rewrite(
         "S01_pending_comparison_reversed",
         "viogpu/common/viogpu_rdma.cpp",
         "if (status == STATUS_PENDING)",

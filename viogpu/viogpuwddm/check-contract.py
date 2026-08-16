@@ -3871,8 +3871,119 @@ def check_wddm_submission_lifetime() -> None:
         "permanent backlog enqueue failure must release ownership and fault the scheduler",
     )
     fault = canonical_code(function_body("VioGpuDod::NotifyNativeSubmissionFault", VIOGPU_CODE))
-    if "ResetNativeFenceTracker();" not in fault:
-        fail("a native submission fault must clear the bounded fence tracker without publishing completion")
+    if "InvalidateNativeFenceTracker();" not in fault or "ResetNativeFenceTracker();" in fault:
+        fail("a native submission fault must clear pending fences while preserving the submitted reset endpoint")
+
+    invalidate = canonical_code(function_body("VioGpuDod::InvalidateNativeFenceTracker", VIOGPU_CODE))
+    if (
+        "m_NativeFenceHead=0;" not in invalidate
+        or "m_NativeFenceCount=0;" not in invalidate
+        or "RtlZeroMemory(m_NativeFences,sizeof(m_NativeFences));" not in invalidate
+        or "m_NativeSubmittedFence" in invalidate
+        or "m_NativeCompletedFence" in invalidate
+    ):
+        fail("fault invalidation must discard pending entries without publishing a fence endpoint")
+
+    complete_reset = canonical_code(function_body("VioGpuDod::CompleteNativeFenceReset", VIOGPU_CODE))
+    require_order(
+        complete_reset,
+        (
+            "submitted=static_cast<UINT>(InterlockedCompareExchange(&m_NativeSubmittedFence,0,0));",
+            "m_NativeFenceCount=0;",
+            "InterlockedExchange(&m_NativeCompletedFence,static_cast<LONG>(submitted));",
+        ),
+        "a successful adapter reset must advance completed fence to the last submitted endpoint",
+    )
+
+    preempt = canonical_code(function_body("VioGpuWddmPreemptCommand", WDDM_DDI_CODE))
+    if "returnSTATUS_NOT_SUPPORTED;" in preempt or not preempt.endswith("returnSTATUS_SUCCESS;"):
+        fail("PreemptCommand must remain a non-failing scheduler callback")
+    require_order(
+        preempt,
+        (
+            "preemptCommand->PreemptionFenceId!=0",
+            "adapter->IsNativeFenceQueueEmpty()",
+            "adapter->ResetDevice();",
+            "notify.InterruptType=DXGK_INTERRUPT_DMA_PREEMPTED;",
+            "notify.DmaPreempted.PreemptionFenceId=preemptCommand->PreemptionFenceId;",
+            "notify.DmaPreempted.LastCompletedFenceId=adapter->QueryNativeCompletedFence();",
+            "adapter->NotifyNativeSchedulerInterrupt(&notify,TRUE)",
+        ),
+        "preemption must reset on an in-flight native queue and notify only an idle queue",
+    )
+    if "preemptCommand->Flags.Value==0" not in preempt:
+        fail("PreemptCommand must reject reserved preemption flags without returning an error")
+    preempt_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(function_body("VioGpuWddmPreemptCommand", WDDM_DDI_CODE))
+        if "!adapter->IsNativeFenceQueueEmpty()" in canonical_code(condition)
+    ]
+    if len(preempt_blocks) != 1 or "adapter->ResetDevice();" not in preempt_blocks[0]:
+        fail("an in-flight preemption request must gate the adapter before TDR")
+    notify_failure_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(function_body("VioGpuWddmPreemptCommand", WDDM_DDI_CODE))
+        if "!adapter->NotifyNativeSchedulerInterrupt(&notify,TRUE)" in canonical_code(condition)
+    ]
+    if len(notify_failure_blocks) != 1 or "adapter->ResetDevice();" not in notify_failure_blocks[0]:
+        fail("a failed preemption interrupt notification must gate the adapter for TDR")
+    driver_caps = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
+    if driver_caps.count("driverCaps->SchedulingCaps.PreemptionAware=0;") != 1:
+        fail("the reset-only Native Context path must not advertise Windows 8 hardware preemption")
+
+    reset_timeout = canonical_code(function_body("VioGpuDod::ResetFromTimeout", VIOGPU_CODE))
+    require_order(
+        reset_timeout,
+        (
+            "InterlockedExchange(&m_HardwareResetState,VioGpuHardwareResetRequested);",
+            "ExAcquireRundownProtection(&m_HardwareOperations)",
+            "adapter->ResetDevice();",
+            "adapter->SetPowerState(&m_DeviceInfo,PowerDeviceD3,&m_CurrentMode);",
+            "InvalidateNativeFenceTracker();",
+            "CompleteNativeFenceReset();",
+        ),
+        "ResetFromTimeout must gate, drain submitters, tear down, and publish the reset fence only after transport stop",
+    )
+    reset_success_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(function_body("VioGpuDod::ResetFromTimeout", VIOGPU_CODE))
+        if is_success_condition(condition, "status")
+    ]
+    if len(reset_success_blocks) != 1 or "CompleteNativeFenceReset();" not in reset_success_blocks[0]:
+        fail("ResetFromTimeout may publish the reset fence only on a successful transport stop")
+    d0_recovery_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(function_body("VioGpuDod::SetPowerState", VIOGPU_CODE))
+        if canonical_code(condition) == "resetRecovery"
+    ]
+    if len(d0_recovery_blocks) != 1 or "CompleteNativeFenceReset();" not in d0_recovery_blocks[0]:
+        fail("the existing D0 recovery path must publish the reset fence after claiming Active")
+    d0_recovery = d0_recovery_blocks[0]
+    if d0_recovery.find("InterlockedCompareExchange(&m_HardwareResetState,VioGpuHardwareActive,") > d0_recovery.find(
+        "CompleteNativeFenceReset();"
+    ):
+        fail("D0 recovery must claim Active before publishing the reset fence endpoint")
+    restart_timeout = canonical_code(function_body("VioGpuDod::RestartFromTimeout", VIOGPU_CODE))
+    if "SetPowerState(DISPLAY_ADAPTER_HW_ID,PowerDeviceD0,PowerActionNone)" not in restart_timeout:
+        fail("RestartFromTimeout must reuse the checked D0 recovery state machine")
+    if "ExAcquireRundownProtection(&m_HardwareOperations)" not in restart_timeout:
+        fail("RestartFromTimeout must hold hardware rundown while recovering the adapter")
+    if "InterlockedExchange(&m_HardwareResetState,VioGpuHardwareResetRequested);" not in restart_timeout:
+        fail("failed TDR restart must remain fail-closed")
+    reset_ddi = canonical_code(function_body("VioGpuWddmResetFromTimeout", WDDM_DDI_CODE))
+    restart_ddi = canonical_code(function_body("VioGpuWddmRestartFromTimeout", WDDM_DDI_CODE))
+    if (
+        "PAGED_CODE();" not in reset_ddi
+        or "adapter->ResetFromTimeout()" not in reset_ddi
+        or "STATUS_NOT_SUPPORTED" in reset_ddi
+    ):
+        fail("the pageable reset DDI must dispatch to the adapter-wide TDR teardown")
+    if (
+        "PAGED_CODE();" not in restart_ddi
+        or "adapter->RestartFromTimeout()" not in restart_ddi
+        or "STATUS_NOT_SUPPORTED" in restart_ddi
+    ):
+        fail("the pageable restart DDI must dispatch to the checked D0 recovery path")
 
     tracker_header = canonical_code(VIOGPU_HEADER_CODE)
     for field in (

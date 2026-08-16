@@ -625,6 +625,8 @@ class VioGpuDod
                          _Out_ ULONG *pNumberOfChildren);
     NTSTATUS StopDevice(VOID);
     VOID ResetDevice(VOID);
+    NTSTATUS ResetFromTimeout(void);
+    NTSTATUS RestartFromTimeout(void);
     NTSTATUS DispatchIoRequest(_In_ ULONG VidPnSourceId, _In_ VIDEO_REQUEST_PACKET *pVideoRequestPacket);
     NTSTATUS SetPowerState(_In_ ULONG HardwareUid,
                            _In_ DEVICE_POWER_STATE DevicePowerState,
@@ -723,7 +725,10 @@ class VioGpuDod
                                            _In_ BOOLEAN queueDpc);
     BOOLEAN RecordNativeSubmissionFence(_In_ UINT fenceId);
     BOOLEAN RetireNativeSubmissionFence(_In_ UINT fenceId, _Out_ UINT *completedFence);
+    BOOLEAN IsNativeFenceQueueEmpty(void);
     void ResetNativeFenceTracker(void);
+    void InvalidateNativeFenceTracker(void);
+    void CompleteNativeFenceReset(void);
     BOOLEAN QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
     VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP CancelNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
     UINT QueryNativeCompletedFence(void) const

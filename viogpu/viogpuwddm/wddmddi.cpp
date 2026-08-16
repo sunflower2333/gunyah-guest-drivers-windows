@@ -4513,9 +4513,36 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPreemptCommand(CONST HANDLE hAdapter,
                                                                   CONST DXGKARG_PREEMPTCOMMAND *preemptCommand)
 {
-    UNREFERENCED_PARAMETER(hAdapter);
-    UNREFERENCED_PARAMETER(preemptCommand);
-    return STATUS_NOT_SUPPORTED;
+    VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    if (adapter == NULL)
+    {
+        /* Dxgkrnl bugchecks on a PreemptCommand error return. */
+        return STATUS_SUCCESS;
+    }
+
+    BOOLEAN valid = preemptCommand != NULL && preemptCommand->PreemptionFenceId != 0 &&
+                    preemptCommand->NodeOrdinal == 0 && preemptCommand->EngineOrdinal == 0 &&
+                    preemptCommand->Flags.Value == 0;
+    if (!valid || adapter->IsHardwareResetRequested() || !adapter->IsNativeFenceQueueEmpty())
+    {
+        /* Native Context has no Host cancellation primitive.  Do not fabricate
+         * a preemption while a command may still access guest memory; gate the
+         * transport and let the scheduler enter adapter-wide TDR. */
+        adapter->ResetDevice();
+        return STATUS_SUCCESS;
+    }
+
+    DXGKARGCB_NOTIFY_INTERRUPT_DATA notify = {};
+    notify.InterruptType = DXGK_INTERRUPT_DMA_PREEMPTED;
+    notify.DmaPreempted.PreemptionFenceId = preemptCommand->PreemptionFenceId;
+    notify.DmaPreempted.LastCompletedFenceId = adapter->QueryNativeCompletedFence();
+    notify.DmaPreempted.NodeOrdinal = preemptCommand->NodeOrdinal;
+    notify.DmaPreempted.EngineOrdinal = preemptCommand->EngineOrdinal;
+    if (!adapter->NotifyNativeSchedulerInterrupt(&notify, TRUE))
+    {
+        adapter->ResetDevice();
+    }
+    return STATUS_SUCCESS;
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryCurrentFence(CONST HANDLE hAdapter,
@@ -4530,17 +4557,26 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryCurrentFence(CONST HANDL
     return STATUS_SUCCESS;
 }
 
+#pragma code_seg(push)
+#pragma code_seg("PAGE")
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmResetFromTimeout(CONST HANDLE hAdapter)
 {
-    UNREFERENCED_PARAMETER(hAdapter);
-    return STATUS_NOT_SUPPORTED;
+    PAGED_CODE();
+
+    VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    return adapter == NULL ? STATUS_SUCCESS : adapter->ResetFromTimeout();
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRestartFromTimeout(CONST HANDLE hAdapter)
 {
-    UNREFERENCED_PARAMETER(hAdapter);
-    return STATUS_NOT_SUPPORTED;
+    PAGED_CODE();
+
+    VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    return adapter == NULL ? STATUS_SUCCESS : adapter->RestartFromTimeout();
 }
+
+#pragma code_seg(pop)
 
 _Use_decl_annotations_ NTSTATUS APIENTRY
 VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOURCEADDRESS *setVidPnSourceAddress)

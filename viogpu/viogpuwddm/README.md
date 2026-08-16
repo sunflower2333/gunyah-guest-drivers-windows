@@ -7,7 +7,9 @@ implementation, and is intentionally not installable:
 - `DriverEntry` returns `STATUS_NOT_SUPPORTED` without calling the registration
   helper.
 - There is no INF, package target, or signing input.
-- VirtIO submission fences, preemption, and TDR recovery are not connected.
+- Native ring-1 fence retirement and reset-generation/TDR source contracts are
+  wired, but the target still does not advertise hardware preemption and is not
+  a product-grade recovery implementation.
 
 ## Native Context scope
 
@@ -201,12 +203,19 @@ The callback table intentionally leaves these DDI slots unset:
 
 It also does not register the KMDOD-only `DxgkDdiPresentDisplayOnly` callback.
 
-Present, preemption, timeout reset/restart, and VidPN source-address
-programming remain fail-stop skeletons. Render patch/submit and paging now use
+Present and VidPN source-address programming remain fail-stop skeletons. The
+preemption callback validates the single node/engine contract, reports
+`DXGK_INTERRUPT_DMA_PREEMPTED` only when the native fence queue is already
+empty, and gates the adapter for TDR when work is in flight or the interrupt
+notification cannot be synchronized. `PreemptionAware` deliberately remains
+zero because Native Context has no Host cancellation/preemption primitive.
+`DxgkDdiResetFromTimeout` performs the adapter-wide D3 transport teardown and
+advances the reset fence only after teardown succeeds; restart reuses the
+checked D0 recovery state machine. Render patch/submit and paging now use
 bounded private records; paging transfers consume their MDL during
 `DxgkDdiBuildPagingBuffer`, then a cancellable passive worker publishes guest
 pool placement and host BO ownership. These paths are compile-only and do not
-prove product-grade ring-1 retirement, TDR recovery, or Present behavior.
+prove runtime preemption, TDR, or Present behavior.
 Mandatory full-graphics WDDM
 1.2 semantics that are absent or unproven include video-memory offer/reclaim,
 GPU preemption and FlipOnVSyncMmIo, per-engine TDR, optimized rotation, direct
