@@ -278,6 +278,7 @@ class CtrlQueue : public VioGpuQueue
         m_SynchronousEpochState = VioGpuSynchronousOffline;
         KeInitializeSpinLock(&m_NativeSubmitLock);
         InitializeListHead(&m_NativeSubmitBacklog);
+        m_NativeSubmitBacklogPoisoned = 0;
     };
 
     PVOID AllocCmd(PGPU_VBUFFER *buf, int sz);
@@ -290,7 +291,14 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN RefreshNativeSubmit(PGPU_VBUFFER buf, const void *command, UINT command_size);
     int QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id);
     void DrainNativeSubmitBacklog(void);
+    /* Close the current transport generation to new submitters and wait for
+     * any caller already inside QueueNativeSubmit/DrainNativeSubmitBacklog to
+     * leave the software-queue critical section. */
+    void PoisonNativeSubmitBacklog(void);
     void DetachNativeSubmitBacklog(void);
+    /* Arm a newly initialized virtqueue after the previous generation was
+     * detached.  A poisoned backlog must never silently carry into D0. */
+    BOOLEAN ResetNativeSubmitBacklog(void);
     BOOLEAN QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info);
     BOOLEAN QueryCapset(UINT capset_id, UINT capset_version, UINT capset_size, PGPU_CAPSET_DRM capset);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeContext(UINT context_id);
@@ -333,6 +341,7 @@ class CtrlQueue : public VioGpuQueue
     volatile LONG m_FenceIdr;
     KSPIN_LOCK m_NativeSubmitLock;
     LIST_ENTRY m_NativeSubmitBacklog;
+    volatile LONG m_NativeSubmitBacklogPoisoned;
 };
 
 class CrsrQueue : public VioGpuQueue

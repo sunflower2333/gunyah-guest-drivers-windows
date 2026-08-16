@@ -1007,6 +1007,7 @@ def check_callback_table() -> None:
         "DxgkDdiPresent": "VioGpuWddmPresent",
         "DxgkDdiPatch": "VioGpuWddmPatch",
         "DxgkDdiSubmitCommand": "VioGpuWddmSubmitCommand",
+        "DxgkDdiCancelCommand": "VioGpuWddmCancelCommand",
         "DxgkDdiPreemptCommand": "VioGpuWddmPreemptCommand",
         "DxgkDdiQueryCurrentFence": "VioGpuWddmQueryCurrentFence",
         "DxgkDdiResetFromTimeout": "VioGpuWddmResetFromTimeout",
@@ -2637,6 +2638,180 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         fail("Render must validate and retain the exact context reset generation")
 
 
+def check_wddm_paging_transaction_gate() -> None:
+    """Native paging is reachable only through an owned, cancellable transaction."""
+    create = canonical_code(function_body("VioGpuWddmCreateAllocation", WDDM_DDI_CODE))
+    gate = "if((privateData.Flags&VIOGPU_WDDM_ALLOCATION_NATIVE)!=0){status=STATUS_GRAPHICS_DRIVER_MISMATCH;break;}"
+    if gate in create:
+        fail("CreateAllocation must not retain the old native paging gate after transaction ownership exists")
+    if "AcquireNativeContextSnapshotForAllocation(" not in create:
+        fail("CreateAllocation must retain native context ownership after removing the paging gate")
+    paging_header = canonical_code(WDDM_DDI_HEADER_CODE)
+    for fragment in (
+        "VIOGPU_WDDM_PAGING_TRANSACTION_STATE",
+        "VIOGPU_WDDM_PAGING_TRANSACTION",
+        "VIOGPU_WDDM_PAGING_PRIVATE",
+        "VioGpuWddmPagingTransactionBuilt",
+        "VioGpuWddmPagingTransactionQueued",
+        "VioGpuWddmPagingTransactionExecuting",
+        "volatileLONGReferenceHeld;",
+        "volatileLONGExecutionStarted;",
+        "volatileLONGCancelRequested;",
+    ):
+        if fragment not in paging_header:
+            fail(f"paging transaction ABI must expose {fragment}")
+    build = canonical_code(function_body("VioGpuWddmBuildPagingBuffer", WDDM_DDI_CODE))
+    if "AcquireAllocationSubmissionReference(allocation,adapter)" not in build:
+        fail("BuildPagingBuffer must retain an allocation submission reference")
+    if "InterlockedExchange(&transaction->State,VioGpuWddmPagingTransactionBuilt);" not in build:
+        fail("BuildPagingBuffer must publish the Built transaction state only after initialization")
+    build_state_sequence = (
+        build.find("InterlockedExchange(&transaction->ReferenceHeld,1);"),
+        build.find("InterlockedExchange(&transaction->ExecutionStarted,0);"),
+        build.find("InterlockedExchange(&transaction->CancelRequested,0);"),
+        build.find("InterlockedExchange(&transaction->State,VioGpuWddmPagingTransactionBuilt);"),
+    )
+    if min(build_state_sequence) < 0 or list(build_state_sequence) != sorted(build_state_sequence):
+        fail("BuildPagingBuffer must initialize ownership and cancellation before publishing Built")
+    if "NativePagingBatchWorker" not in build:
+        fail("BuildPagingBuffer must initialize the passive paging worker owner")
+    build_copy = build.find("CopyNativePlacement(allocation,")
+    build_publish = build.find("InterlockedExchange(&transaction->State,VioGpuWddmPagingTransactionBuilt);")
+    if min(build_copy, build_publish) < 0 or build_copy > build_publish:
+        fail("BuildPagingBuffer must consume the transfer MDL before publishing Built")
+    if "ResolveTransferMdlAddress(" in canonical_code(function_body("ExecutePagingTransaction", WDDM_DDI_CODE)):
+        fail("passive paging execution must not dereference a BuildPagingBuffer-owned MDL")
+    cancel = canonical_code(function_body("VioGpuWddmCancelCommand", WDDM_DDI_CODE))
+    for fragment in (
+        "CancelPagingTransaction(&pagingPrivate->Transaction)",
+        "adapter->CancelNativePassiveWork(&firstPrivate->Work)",
+        "ownership!=VioGpuNativePassiveWorkWorkerOwned",
+        "ReleasePreparedSubmission(submission)",
+        "returnSTATUS_SUCCESS;",
+    ):
+        if fragment not in cancel:
+            fail(f"CancelCommand must retain safe cleanup and success semantics: {fragment}")
+    submit = canonical_code(function_body("VioGpuWddmSubmitCommand", WDDM_DDI_CODE))
+    for fragment in (
+        "ResolvePagingBatch(",
+        "InterlockedCompareExchange(&pagingPrivate->Transaction.State,VioGpuWddmPagingTransactionQueued,VioGpuWddmPagingTransactionBuilt)",
+        "adapter->QueueNativePassiveWork(&firstPrivate->Work)",
+        "CancelPagingTransaction(&pagingPrivate->Transaction)",
+    ):
+        if fragment not in submit:
+            fail(f"SubmitCommand must transfer paging ownership to a passive worker: {fragment}")
+    if "CancelCommandAware=0" in canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE)):
+        fail("driver caps must advertise CancelCommandAware once paging owners are cancellable")
+
+    finish = canonical_code(
+        function_body_with_parameters(
+            "FinishPagingTransaction",
+            "_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transaction, "
+            "_In_ VIOGPU_WDDM_PAGING_TRANSACTION_STATE expectedState, "
+            "_In_ VIOGPU_WDDM_PAGING_TRANSACTION_STATE finalState",
+            WDDM_DDI_CODE,
+        )
+    )
+    if "ReleasePagingTransactionReference(" in finish:
+        fail("an executed paging record must retain its allocation reference until batch rollback is impossible")
+    release = canonical_code(function_body("ReleasePagingTransactionReference", WDDM_DDI_CODE))
+    if "InterlockedCompareExchange(&transaction->ReferenceHeld,0,1)==1" not in release:
+        fail("paging terminal paths must converge on one allocation-reference release")
+    cancel_transaction = canonical_code(function_body("CancelPagingTransaction", WDDM_DDI_CODE))
+    for fragment in (
+        "state==VioGpuWddmPagingTransactionExecuting",
+        "InterlockedExchange(&transaction->CancelRequested,1);",
+        "state!=VioGpuWddmPagingTransactionBuilt&&state!=VioGpuWddmPagingTransactionQueued",
+        "ReleasePagingTransactionReference(transaction);",
+    ):
+        if fragment not in cancel_transaction:
+            fail(f"paging cancellation must cover built, queued, and executing ownership: {fragment}")
+
+    batch_worker = canonical_code(function_body("NativePagingBatchWorker", WDDM_DDI_CODE))
+    for fragment in (
+        "VioGpuWddmPagingTransactionExecuting,VioGpuWddmPagingTransactionQueued",
+        "InterlockedExchange(&pagingPrivate->Transaction.ExecutionStarted,1);",
+        "VioGpuWddmPagingTransactionExecuting,VioGpuWddmPagingTransactionCancelled",
+        "VioGpuWddmPagingTransactionExecuting,VioGpuWddmPagingTransactionFinished",
+        "RollbackPagingBatch(",
+        "ReleasePagingTransactionReference(&pagingPrivate->Transaction);",
+    ):
+        if fragment not in batch_worker:
+            fail(f"paging worker must retain claim, rollback, and terminal ownership: {fragment}")
+    worker_claim = batch_worker.find(
+        "VioGpuWddmPagingTransactionExecuting,VioGpuWddmPagingTransactionQueued"
+    )
+    worker_execute = batch_worker.find("status=ExecutePagingTransaction(&pagingPrivate->Transaction);")
+    worker_rollback = batch_worker.find("RollbackPagingBatch(")
+    worker_release = batch_worker.find("ReleasePagingTransactionReference(&pagingPrivate->Transaction);")
+    if min(worker_claim, worker_execute, worker_rollback, worker_release) < 0 or not (
+        worker_claim < worker_execute < worker_rollback < worker_release
+    ):
+        fail("paging worker must claim before execution and retain references through failure rollback")
+
+    resolve = canonical_code(
+        function_body_with_parameters(
+            "ResolvePagingBatch",
+            "_In_ PVOID dmaBuffer, _In_ UINT dmaBufferSize, _In_ UINT dmaStart, _In_ UINT dmaEnd, "
+            "_In_ PVOID privateBuffer, _In_ UINT privateBufferSize, _In_ UINT privateStart, "
+            "_In_ UINT privateEnd, _In_ VioGpuDod *adapter, "
+            "_In_ VIOGPU_WDDM_PAGING_TRANSACTION_STATE expectedState, "
+            "_Out_ VIOGPU_WDDM_PAGING_PRIVATE **firstPrivate, _Out_ UINT *recordCount",
+            WDDM_DDI_CODE,
+        )
+    )
+    resolve_offset = canonical_code(
+        function_body_with_parameters(
+            "ResolvePagingBatchOffset",
+            "_In_ UINT base, _In_ UINT index, _In_ SIZE_T stride, _In_ UINT limit, _Out_ UINT *offset",
+            WDDM_DDI_CODE,
+        )
+    )
+    if resolve.count("ResolvePagingBatchOffset(") != 2 or "ULONGLONGcandidate=" not in resolve_offset:
+        fail("paging batch offsets must use checked wide arithmetic for DMA and private records")
+    if "expectedState==VioGpuWddmPagingTransactionAny" not in resolve:
+        fail("CancelCommand must be able to resolve a batch across ownership-state races")
+    if "VioGpuWddmPagingTransactionAny" not in cancel:
+        fail("CancelCommand must resolve both Built and Queued paging records")
+    if cancel.count("ownership!=VioGpuNativePassiveWorkWorkerOwned") != 2:
+        fail("CancelCommand must transfer worker ownership in both exact and fallback paging resolution")
+
+    passive_header = canonical_code(VIOGPU_HEADER_CODE)
+    for fragment in (
+        "volatileLONGState;",
+        "volatileLONGRetired;",
+        "VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIPCancelNativePassiveWork",
+    ):
+        if fragment not in passive_header:
+            fail(f"passive work ownership ABI must expose {fragment}")
+    passive_queue = canonical_code(function_body("QueueNativePassiveWork", VIOGPU_CODE))
+    passive_cancel = canonical_code(function_body("CancelNativePassiveWork", VIOGPU_CODE))
+    passive_worker = canonical_code(function_body("RunNativePassiveWorker", VIOGPU_CODE))
+    for fragment in (
+        "InterlockedExchange(&work->State,VioGpuNativePassiveWorkQueued);",
+        "InterlockedCompareExchange(&work->Retired,0,0)==0",
+    ):
+        if fragment not in passive_queue:
+            fail(f"passive queueing must retain retirement ownership: {fragment}")
+    for fragment in (
+        "InterlockedExchange(&work->Retired,1);",
+        "RemoveEntryList(&work->Link);",
+        "ownership=VioGpuNativePassiveWorkRemoved;",
+        "ownership=VioGpuNativePassiveWorkWorkerOwned;",
+    ):
+        if fragment not in passive_cancel:
+            fail(f"passive cancellation must remove queued work or transfer worker ownership: {fragment}")
+    if "InterlockedExchange(&work->State,VioGpuNativePassiveWorkWorkerOwned);" not in passive_worker:
+        fail("passive worker dequeue must publish worker ownership before callback execution")
+
+    validation = create.find("status=ValidateAllocationPrivate(&privateData,&alignedSize);")
+    native_lookup = create.find("AcquireNativeContextSnapshotForAllocation(")
+    if min(validation, native_lookup) < 0 or not validation < native_lookup:
+        fail("native allocation context ownership must follow private-data validation")
+    if "DestroyCreatedAllocations(createAllocation->pAllocationInfo,createdCount);" not in create:
+        fail("CreateAllocation must retain batch rollback for earlier allocations")
+
+
 def check_wddm_guest_allocation_lifecycle() -> None:
     allocation_matches = re.findall(
         r"\bstruct\s+VIOGPU_WDDM_ALLOCATION\s*\{(.*?)\}\s*;",
@@ -2818,7 +2993,10 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     if min(host_sequence) < 0 or list(host_sequence) != sorted(host_sequence):
         fail("guest-backed BO creation must bind GEM_NEW ownership before creating its guest-memory blob")
     for fragment in (
+        "resourceId!=blobId",
         "backingSize>MAXULONG",
+        "backingSize<PAGE_SIZE",
+        "logicalSize<=(ULONGLONG)backingSize-PAGE_SIZE",
         "capset.msm.has_cached_coherent==0",
         "(msmFlags&MSM_BO_CACHED_COHERENT)==0",
         "(blobFlags&VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE)==0",
@@ -2856,6 +3034,8 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         fail("failed blob creation must attempt exactly one GEM_NEW resource rollback")
     if "rollback==VioGpuHostContextRejected" in create_host:
         fail("INVALID_RESOURCE_ID cannot prove that an unattached GEM_NEW blob object was released")
+    if "baseAddress.QuadPart&(PAGE_SIZE-1)" not in create_host:
+        fail("guest-backed SG entry must prove that the named-pool physical base is page aligned")
 
     destroy_host = canonical_code(function_body("VioGpuAdapter::DestroyNativeGuestAllocation", VIOGPU_CODE))
     if "result==VioGpuHostContextConfirmed||result==VioGpuHostContextRejected" in destroy_host:
@@ -2892,48 +3072,73 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         fail("BuildPagingBuffer must accept VidMm sub-transfers instead of requiring a whole allocation")
     for fragment in (
         "transferOffset=pagingBuffer->Transfer.TransferOffset;",
-        "transferStart=pagingBuffer->Transfer.Flags.TransferStart;",
-        "transferEnd=pagingBuffer->Transfer.Flags.TransferEnd;",
-        "transferSize>allocation->BackingSize-transferOffset",
-        "allocation->PagingState=VioGpuWddmAllocationPagingIn;",
-        "allocation->PagingState=VioGpuWddmAllocationPagingOut;",
-        "status=AllocationResetRetired(allocation)?STATUS_SUCCESS:STATUS_GRAPHICS_ALLOCATION_BUSY;",
+        "transferMdl=pagingBuffer->Transfer.Source.pMdl;",
+        "transferSize=pagingBuffer->Transfer.TransferSize;",
+        "transferOffset>allocation->BackingSize",
+        "AcquireAllocationSubmissionReference(allocation,adapter)",
+        "ResolveTransferMdlAddress(transferMdl,mdlOffset,transferSize,&systemAddress);",
+        "CopyNativePlacement(allocation,",
+        "transaction->TransferDataComplete=transferDataComplete;",
+        "transaction->PoolGeneration=poolGeneration;",
     ):
-        if paging.count(fragment) != 1:
-            fail(f"BuildPagingBuffer must retain exact partial/reset transfer state: {fragment}")
-    if paging.count("pagingBuffer->Fill.FillSize!=allocation->BackingSize") != 1:
-        fail("BuildPagingBuffer must not publish a full BO after a partial fill")
-    if paging.count("pageOut&&!pagingBuffer->Transfer.Flags.AllocationIsIdle") != 1:
-        fail("page-out must prove allocation idle for every callback that copies or unreferences it")
-    if paging.count("AddPagingRange(allocation,transferOffset,transferSize,&pagingRange)") != 2 or paging.count(
-        "allocation->PagingCoveredBytes!=allocation->BackingSize"
-    ) != 2:
-        fail("partial paging must reject duplicate or incomplete transfer coverage")
-    if paging.count("STATUS_GRAPHICS_ALLOCATION_BUSY") != 3 or "STATUS_DEVICE_BUSY" in paging:
-        fail("BuildPagingBuffer must use only the VidMm allocation-busy retry status for idle transitions")
+        if fragment not in paging:
+            fail(f"BuildPagingBuffer must retain exact deferred transfer state: {fragment}")
+    if "AddPagingRange(" in paging or "CreateNativeGuestAllocation(" in paging:
+        fail("BuildPagingBuffer must not publish paging progress or host ownership before SubmitCommand")
+    worker = canonical_code(function_body("ExecutePagingTransaction", WDDM_DDI_CODE))
+    for fragment in (
+        "AddPagingRange(allocation,",
+        "QueryNativePlacementPoolGeneration(&snapshot,",
+        "!transaction->TransferDataComplete",
+        "FillNativePlacement(allocation,",
+        "snapshot.Adapter->CreateNativeGuestAllocation(",
+        "ReleaseAllocationHostOwnership(allocation,&snapshot,TRUE)",
+        "ClearNativePagingState(allocation)",
+    ):
+        if fragment not in worker:
+            fail(f"passive paging execution must retain the operation: {fragment}")
+    for fragment in (
+        "BOOLEANcontinuingPageIn=",
+        "if(continuingPageIn)",
+        "elseif(!continuingPageIn)",
+        "BOOLEANcontinuingPageOut=",
+        "if(continuingPageOut)",
+        "elseif(!continuingPageOut)",
+    ):
+        if fragment not in worker:
+            fail(f"paging execution must accept repeated TransferStart only for the active transfer: {fragment}")
 
-    zero_transfer = paging.find("if((pageIn||pageOut)&&pagingBuffer->Transfer.TransferSize==0)")
-    mdl_validation = paging.find("transferMdl==NULL")
-    snapshot_lookup = paging.find("AcquireAllocationNativeContextSnapshot(allocation,&snapshot)")
-    if min(zero_transfer, mdl_validation, snapshot_lookup) < 0 or not zero_transfer < mdl_validation < snapshot_lookup:
-        fail("zero-size reset eviction must retire state before MDL and live-context requirements")
-
-    first_copy = paging.find("status=CopyNativePlacement(")
-    create_guest = paging.find("snapshot.Adapter->CreateNativeGuestAllocation(", first_copy)
-    transfer_end = paging.find("if(NT_SUCCESS(status)&&transferEnd)", first_copy)
-    pageout_blocks = [
-        canonical_code(body)
-        for condition, body, _, _ in if_blocks(function_body("VioGpuWddmBuildPagingBuffer", WDDM_DDI_CODE))
-        if canonical_code(condition) == "pageOut"
-    ]
-    pageout = pageout_blocks[0] if len(pageout_blocks) == 1 else ""
-    last_copy = pageout.find("status=CopyNativePlacement(")
-    unref = pageout.find("status=ReleaseAllocationHostOwnership(allocation,&snapshot,snapshotAcquired);")
-    clear_placement = pageout.find("ClearNativePlacement(allocation);", unref)
-    if min(first_copy, transfer_end, create_guest) < 0 or not first_copy < transfer_end < create_guest:
-        fail("page-in must copy every sub-transfer and defer Host BO creation until TransferEnd")
-    if min(last_copy, unref, clear_placement) < 0 or not last_copy < unref < clear_placement:
-        fail("page-out must copy back the final sub-transfer before unref and placement release")
+    pool_mapping = canonical_code(function_body("AcquireNativeGuestPoolMapping", WDDM_DDI_CODE))
+    if "snapshot->Adapter->AcquireGpuGuestPoolMapping(mapping)" not in pool_mapping:
+        fail("paging pool access must use the snapshot-owned adapter lease directly")
+    for helper_name in (
+        "CopyNativePlacement",
+        "FillNativePlacement",
+        "QueryNativePlacementPoolGeneration",
+    ):
+        helper = canonical_code(function_body(helper_name, WDDM_DDI_CODE))
+        if "AcquireNativeGuestPoolMapping(snapshot,&mapping)" not in helper:
+            fail(f"{helper_name} must preserve native-context then pool-lease lock ordering")
+        if "allocation->Adapter->AcquireGpuGuestPoolMapping" in helper or "adapter->AcquireGpuGuestPoolMapping" in helper:
+            fail(f"{helper_name} must not re-enter VioGpuDod hardware rundown under a context snapshot")
+    if "pagingBuffer->MultipassOffset!=0" in paging or "pagingBuffer->MultipassOffset=" in paging:
+        fail("atomic paging markers must leave MultipassOffset unchanged")
+    capacity = paging.find(
+        "if(dmaSize<sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET)||dmaPrivateSize<sizeof(VIOGPU_WDDM_PAGING_PRIVATE))"
+    )
+    if capacity < 0:
+        fail("BuildPagingBuffer must snapshot and check both DMA capacities")
+    publication = paging.find("RtlZeroMemory(packet,sizeof(*packet));")
+    private_publication = paging.find("RtlZeroMemory(pagingPrivate,sizeof(*pagingPrivate));", publication)
+    cursor_publication = paging.find("pagingBuffer->pDmaBuffer=static_cast<BYTE*>(dmaBuffer)+sizeof(*packet);", private_publication)
+    private_cursor = paging.find(
+        "pagingBuffer->pDmaBufferPrivateData=static_cast<BYTE*>(dmaPrivateBuffer)+sizeof(*pagingPrivate);",
+        cursor_publication,
+    )
+    if min(publication, private_publication, cursor_publication, private_cursor) < 0:
+        fail("BuildPagingBuffer must publish one packet/private record and advance both cursors")
+    if not (capacity < publication < private_publication < cursor_publication < private_cursor):
+        fail("BuildPagingBuffer must publish metadata only after ownership acquisition")
 
     private_matches = re.findall(
         r"\bstruct\s+VIOGPU_WDDM_KMD_DMA_PRIVATE\s*\{(.*?)\}\s*;",
@@ -2992,30 +3197,48 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         if canonical_code(WDDM_DDI_HEADER_CODE).count(fragment) != 1:
             fail(f"paging DMA contract must expose one fixed revision/kind marker: {fragment}")
 
+    paging_validator = canonical_code(function_body("ValidatePagingDmaPacket", WDDM_DDI_CODE))
+    for fragment in (
+        "privateData->Kind!=VioGpuWddmDmaKindPaging",
+        "privateData->Packet!=privateData->DmaBuffer",
+        "privateData->Submission!=pagingPrivate",
+        "packet->ResourceId<VIOGPU_NATIVE_RESOURCE_ID_START",
+        "packet->ResourceId==MAXUINT",
+        "packet->PoolGeneration==0",
+        "packet->TransferOffset>MAXUINT",
+        "packet->TransferSize>MAXULONG",
+        "(packet->PlacementOffset&(PAGE_SIZE-1))!=0",
+        "(packet->Flags&~allowedFlags)!=0",
+        "(packet->Flags&VioGpuWddmPagingFlagSoftwareCompleted)==0",
+        "packet->Operation==DXGK_OPERATION_TRANSFER",
+        "operationFlags==VioGpuWddmPagingFlagPageIn",
+        "operationFlags==VioGpuWddmPagingFlagPageOut",
+        "pageOut&&(packet->Flags&VioGpuWddmPagingFlagAllocationIdle)==0",
+        "packet->Operation==DXGK_OPERATION_FILL",
+        "operationFlags==VioGpuWddmPagingFlagFill",
+        "packet->Operation==DXGK_OPERATION_DISCARD_CONTENT",
+        "operationFlags==VioGpuWddmPagingFlagDiscard",
+        "packet->TransferOffset>MAXULONGLONG-packet->TransferSize",
+        "packet->PlacementOffset>MAXULONGLONG-packet->TransferOffset",
+    ):
+        if fragment not in paging_validator:
+            fail(f"paging DMA validation must reject stale or malformed packet state: {fragment}")
+    if paging_validator.count("packet->TransferSize-1<=MAXULONGLONG-") != 2:
+        fail("paging DMA validation must bound both transfer and fill placement extents")
+
     if "pagingBuffer->MultipassOffset!=0" in paging or "pagingBuffer->MultipassOffset=" in paging:
         fail("atomic paging markers must leave MultipassOffset unchanged")
     capacity = paging.find(
         "if(dmaSize<sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET)||"
-        "dmaPrivateSize<sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE))"
+        "dmaPrivateSize<sizeof(VIOGPU_WDDM_PAGING_PRIVATE))"
     )
     if capacity < 0:
         fail("BuildPagingBuffer must snapshot and check both DMA capacities")
-    side_effects = [
-        paging.find("AcquireAllocationNativeContextSnapshot(allocation,&snapshot)"),
-        paging.find("AcquireAllocationLifecycle(allocation)"),
-        paging.find("AddPagingRange(allocation,transferOffset,transferSize,&pagingRange)"),
-        paging.find("CopyNativePlacement(allocation,"),
-        paging.find("FillNativePlacement(allocation,"),
-        paging.find("CreateNativeGuestAllocation("),
-        paging.find("ReleaseAllocationHostOwnership(allocation,&snapshot,snapshotAcquired)"),
-    ]
-    if any(offset < 0 or capacity > offset for offset in side_effects):
-        fail("BuildPagingBuffer must prove DMA/private capacity before any paging side effect")
     publication = paging.find("RtlZeroMemory(packet,sizeof(*packet));")
-    private_publication = paging.find("RtlZeroMemory(privateData,sizeof(*privateData));", publication)
+    private_publication = paging.find("RtlZeroMemory(pagingPrivate,sizeof(*pagingPrivate));", publication)
     cursor_publication = paging.find("pagingBuffer->pDmaBuffer=static_cast<BYTE*>(dmaBuffer)+sizeof(*packet);", private_publication)
     private_cursor = paging.find(
-        "pagingBuffer->pDmaBufferPrivateData=static_cast<BYTE*>(dmaPrivateBuffer)+sizeof(*privateData);",
+        "pagingBuffer->pDmaBufferPrivateData=static_cast<BYTE*>(dmaPrivateBuffer)+sizeof(*pagingPrivate);",
         cursor_publication,
     )
     if min(publication, private_publication, cursor_publication, private_cursor) < 0:
@@ -3035,7 +3258,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "privateData->PacketLength=sizeof(*packet);",
         "privateData->Reserved=0;",
         "pagingBuffer->DmaSize=dmaSize-sizeof(*packet);",
-        "pagingBuffer->DmaBufferPrivateDataSize=dmaPrivateSize-sizeof(*privateData);",
+        "pagingBuffer->DmaBufferPrivateDataSize=dmaPrivateSize-sizeof(*pagingPrivate);",
     ):
         if paging.count(fragment) != 1:
             fail(f"BuildPagingBuffer packet publication must retain exact metadata/cursors: {fragment}")
@@ -3541,6 +3764,30 @@ def check_wddm_submission_lifetime() -> None:
             fail(f"Render unified cleanup must release every untransferred owner: {cleanup}")
 
     patch = canonical_code(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))
+    paging_patch_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))
+        if canonical_code(condition) == "patchArguments->Flags.Value==1"
+    ]
+    if len(paging_patch_blocks) != 1:
+        fail("Patch must expose one exact paging no-op branch")
+    paging_patch = paging_patch_blocks[0]
+    for fragment in (
+        "patchArguments->hContext==NULL",
+        "patchArguments->pAllocationList==NULL",
+        "patchArguments->AllocationListSize==0",
+        "patchArguments->pPatchLocationList==NULL",
+        "patchArguments->PatchLocationListSize==0",
+        "patchArguments->PatchLocationListSubmissionStart==0",
+        "patchArguments->PatchLocationListSubmissionLength==0",
+        "ResolvePagingBatch(",
+        "VioGpuWddmPagingTransactionBuilt",
+        "returnexact?STATUS_SUCCESS:STATUS_INVALID_PARAMETER;",
+    ):
+        if fragment not in paging_patch:
+            fail(f"paging Patch must validate one exact no-op submission range: {fragment}")
+    if "AcquireNativeSubmissionOperation" in paging_patch or "RecordNativeSubmissionFence" in paging_patch:
+        fail("paging Patch must remain a validation-only no-op")
     require_order(
         patch,
         (
@@ -3563,6 +3810,8 @@ def check_wddm_submission_lifetime() -> None:
     submit = canonical_code(submit_body)
     if "KeGetCurrentIrql()!=DISPATCH_LEVEL" not in submit:
         fail("SubmitCommand must enforce its DISPATCH_LEVEL contract")
+    if "submitCommand->SubmissionFenceId>MAXUINT" not in submit:
+        fail("SubmitCommand must reject fence values that the bounded tracker cannot represent")
     for forbidden in ("KeWaitForSingleObject", "PAGED_CODE", "new(", "ExAllocatePool"):
         if forbidden in submit_body:
             fail(f"SubmitCommand must not wait or allocate pageable state at DISPATCH_LEVEL: {forbidden}")
@@ -3577,15 +3826,17 @@ def check_wddm_submission_lifetime() -> None:
         ),
         "SubmitCommand must resolve exact private data before Prepared-to-Queued publication and enqueue",
     )
+    paging_worker = canonical_code(function_body("NativePagingBatchWorker", WDDM_DDI_CODE))
     for fragment in (
         "privateData->Kind==VioGpuWddmDmaKindPaging",
-        "VioGpuWddmPagingFlagSoftwareCompleted",
+        "ResolvePagingBatch(",
+        "packet->ContextId==0||!adapter->IsNativeContextGenerationCurrent(packet->ContextGeneration,packet->ResetGeneration)",
         "adapter->RecordNativeSubmissionFence(submitCommand->SubmissionFenceId)",
         "adapter->NotifyNativeSoftwareCompletion(",
         "ReleaseQueuedSubmission(submission,TRUE);",
         "adapter->NotifyNativeSubmissionFault(",
     ):
-        if fragment not in submit:
+        if fragment not in submit and fragment not in paging_worker:
             fail(f"SubmitCommand must retain paging/render completion and fault semantics: {fragment}")
     if not submit.endswith("returnSTATUS_SUCCESS;") or "returnSTATUS_NOT_SUPPORTED;" in submit:
         fail("SubmitCommand must convert post-validation scheduler failures into fault notification plus success")
@@ -3615,6 +3866,9 @@ def check_wddm_submission_lifetime() -> None:
         ("ReleaseQueuedSubmission(submission,FALSE)", "adapter->NotifyNativeSubmissionFault("),
         "permanent backlog enqueue failure must release ownership and fault the scheduler",
     )
+    fault = canonical_code(function_body("VioGpuDod::NotifyNativeSubmissionFault", VIOGPU_CODE))
+    if "ResetNativeFenceTracker();" not in fault:
+        fail("a native submission fault must clear the bounded fence tracker without publishing completion")
 
     tracker_header = canonical_code(VIOGPU_HEADER_CODE)
     for field in (
@@ -3663,25 +3917,95 @@ def check_wddm_submission_lifetime() -> None:
         fail("QueryCurrentFence must return the contiguous Host-retired node fence")
 
     queue_submit = canonical_code(function_body("CtrlQueue::QueueNativeSubmit", QUEUE_CODE))
-    if queue_submit.count("result==-ENOSPC") != 1 or "if(result<0)" in queue_submit:
+    if queue_submit.count("result==-ENOSPC") != 1 or "InsertTailList(&m_NativeSubmitBacklog,&buf->native_submit_link);" not in queue_submit:
         fail("native submit may backlog only transient virtqueue ENOSPC")
+    if "elseif(result<0)" not in queue_submit or "InterlockedExchange(&m_NativeSubmitBacklogPoisoned,1);" not in queue_submit:
+        fail("permanent direct enqueue failure must poison the native submit generation")
     drain = canonical_code(function_body("CtrlQueue::DrainNativeSubmitBacklog", QUEUE_CODE))
     require_order(
         drain,
         (
+            "if(InterlockedCompareExchange(&m_NativeSubmitBacklogPoisoned,0,0)!=0)",
+            "KeReleaseSpinLock(&m_NativeSubmitLock,oldIrql);return;",
+            "while(!IsListEmpty(&m_NativeSubmitBacklog))",
             "if(result==-ENOSPC)",
             "InsertHeadList(&m_NativeSubmitBacklog,&buffer->native_submit_link);",
             "if(result<0)",
+            "InterlockedExchange(&m_NativeSubmitBacklogPoisoned,1);",
+            "while(!IsListEmpty(&m_NativeSubmitBacklog)){PLIST_ENTRYremaining=RemoveHeadList(&m_NativeSubmitBacklog);",
+            "while(!IsListEmpty(&quarantined))",
             "errorCallback(errorContext);",
             "ReleaseBuffer(failedBuffer);",
         ),
-        "backlog drain must preserve ENOSPC order and surface permanent enqueue failure",
+        "backlog drain must preserve ENOSPC order and quarantine every permanent enqueue failure",
     )
+    adapter_submit_acquire = canonical_code(function_body("VioGpuAdapter::AcquireNativeSubmitOperation", VIOGPU_CODE))
+    if (
+        "KeAcquireSpinLock(&m_NativeSubmitRundownLock,&oldIrql);" not in adapter_submit_acquire
+        or "!m_NativeSubmitClosing" not in adapter_submit_acquire
+        or "ExAcquireRundownProtection(&m_NativeSubmitRundown)" not in adapter_submit_acquire
+        or "KeReleaseSpinLock(&m_NativeSubmitRundownLock,oldIrql);" not in adapter_submit_acquire
+    ):
+        fail("native submit acquisition must gate rundown admission under the closing lock")
+    adapter_submit_release = canonical_code(function_body("VioGpuAdapter::ReleaseNativeSubmitOperation", VIOGPU_CODE))
+    if adapter_submit_release.count("ExReleaseRundownProtection(&m_NativeSubmitRundown)") != 1:
+        fail("native submit release must drop the independent adapter rundown")
+    complete_submit = canonical_code(function_body("VioGpuAdapter::CompleteNativeSubmitRundown", VIOGPU_CODE))
+    require_order(
+        complete_submit,
+        (
+            "m_NativeSubmitClosing=TRUE;",
+            "ExWaitForRundownProtectionRelease(&m_NativeSubmitRundown);",
+            "ExRundownCompleted(&m_NativeSubmitRundown);",
+            "m_NativeSubmitRundownCompleted=TRUE;",
+        ),
+        "transport teardown must close and drain the independent native submit rundown",
+    )
+    reinit_submit = canonical_code(function_body("VioGpuAdapter::ReinitializeNativeSubmitRundown", VIOGPU_CODE))
+    require_order(
+        reinit_submit,
+        (
+            "ExReInitializeRundownProtection(&m_NativeSubmitRundown);",
+            "m_NativeSubmitRundownCompleted=FALSE;",
+            "m_NativeSubmitClosing=FALSE;",
+        ),
+        "a new transport generation must reinitialize native submit rundown admission",
+    )
+    dod_submit_acquire = canonical_code(function_body("VioGpuDod::AcquireNativeSubmissionOperation", VIOGPU_CODE))
+    if "adapter->AcquireNativeSubmitOperation()" not in dod_submit_acquire:
+        fail("WDDM native operations must acquire the adapter submit rundown after hardware lifetime")
+    dod_submit_release = canonical_code(function_body("VioGpuDod::ReleaseNativeSubmissionOperation", VIOGPU_CODE))
+    if "adapter->ReleaseNativeSubmitOperation()" not in dod_submit_release:
+        fail("WDDM native operations must release the adapter submit rundown before hardware lifetime")
+    begin = canonical_code(function_body("VioGpuAdapter::BeginNativeContextInitialization", VIOGPU_CODE))
+    if "ReinitializeNativeSubmitRundown()" not in begin:
+        fail("transport initialization must reinitialize native submit rundown admission")
     stop = canonical_code(function_body("VioGpuAdapter::StopNativeContextTransportLocked", VIOGPU_CODE))
+    poison = canonical_code(function_body("CtrlQueue::PoisonNativeSubmitBacklog", QUEUE_CODE))
+    require_order(
+        poison,
+        (
+            "KeAcquireSpinLock(&m_NativeSubmitLock,&oldIrql);",
+            "InterlockedExchange(&m_NativeSubmitBacklogPoisoned,1);",
+            "KeReleaseSpinLock(&m_NativeSubmitLock,oldIrql);",
+        ),
+        "transport submit poison must synchronize with active queue/backlog publication",
+    )
     require_order(
         stop,
-        ("m_CtrlQueue.Close();", "m_CtrlQueue.DetachNativeSubmitBacklog();", "m_GpuBuf.Close();"),
-        "teardown must detach software backlog links before buffer cancellation",
+        (
+            "m_CtrlQueue.PoisonNativeSubmitBacklog();",
+            "CompleteNativeSubmitRundown();",
+            "InvalidateNativeContextRegistrationsLocked();",
+            "virtio_device_reset_checked(&m_VioDev)",
+            "virtio_delete_queues(&m_VioDev);",
+        ),
+        "teardown must close native submit publication before context and virtqueue teardown",
+    )
+    require_order(
+        stop,
+        ("m_CtrlQueue.DetachNativeSubmitBacklog();", "m_CtrlQueue.Close();", "m_GpuBuf.Close();"),
+        "teardown must detach software backlog links before buffer cancellation and backing-pool close",
     )
 
 
@@ -5123,6 +5447,7 @@ def main() -> None:
     check_queue_failure_semantics()
     check_native_context_ownership()
     check_wddm_private_abi(root)
+    check_wddm_paging_transaction_gate()
     check_wddm_guest_allocation_lifecycle()
     check_wddm_context_lifetime()
     check_wddm_submission_lifetime()

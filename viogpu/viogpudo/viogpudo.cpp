@@ -146,6 +146,10 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
     m_NativeSubmittedFence = 0;
     m_NativeCompletedFence = 0;
+    KeInitializeSpinLock(&m_NativePassiveLock);
+    InitializeListHead(&m_NativePassiveQueue);
+    ExInitializeWorkItem(&m_NativePassiveWorkItem, NativePassiveWorker, this);
+    m_NativePassiveWorkerQueued = FALSE;
 #endif
     m_PersistentDispMode0Width = 0;
     m_PersistentDispMode0Height = 0;
@@ -170,6 +174,10 @@ VioGpuDod::~VioGpuDod(void)
     // Every path that owns a hardware adapter must complete HWClose before
     // deleting this outer object. Do not bypass its final interrupt barrier.
     NT_ASSERT(m_pHWDevice == NULL);
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    NT_ASSERT(IsListEmpty(&m_NativePassiveQueue));
+    NT_ASSERT(!m_NativePassiveWorkerQueued);
+#endif
 }
 
 BOOLEAN VioGpuDod::CheckHardware()
@@ -476,6 +484,8 @@ BOOLEAN VioGpuDod::QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *
 }
 
 #if defined(VIOGPU_WDDM_CI_ONLY)
+#pragma code_seg(push)
+#pragma code_seg()
 BOOLEAN VioGpuDod::AcquireGpuGuestPoolMapping(_Out_ VioGpuGuestPoolMapping *mapping) const
 {
     if (mapping == NULL || !ExAcquireRundownProtection(&m_HardwareOperations))
@@ -567,7 +577,8 @@ BOOLEAN VioGpuDod::AcquireNativeSubmissionOperation(void) const
     {
         return FALSE;
     }
-    if (IsHardwareResetRequested() || m_pHWDevice == NULL)
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (IsHardwareResetRequested() || adapter == NULL || !adapter->AcquireNativeSubmitOperation())
     {
         ExReleaseRundownProtection(&m_HardwareOperations);
         return FALSE;
@@ -577,6 +588,11 @@ BOOLEAN VioGpuDod::AcquireNativeSubmissionOperation(void) const
 
 void VioGpuDod::ReleaseNativeSubmissionOperation(void) const
 {
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (adapter != NULL)
+    {
+        adapter->ReleaseNativeSubmitOperation();
+    }
     ExReleaseRundownProtection(&m_HardwareOperations);
 }
 
@@ -756,6 +772,13 @@ void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fenceId,
     }
 
     RequestHardwareResetAtAnyIrql();
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    /* A fault invalidates every pending fence in this transport generation.
+     * Do not leave failed submissions occupying the bounded tracker while
+     * the scheduler is being driven into reset.  This does not publish a
+     * completion value; the next D0 generation starts from an empty tracker. */
+    ResetNativeFenceTracker();
+#endif
     if (ExAcquireRundownProtection(&m_HardwareOperations))
     {
         VioGpuAdapter *adapter = m_pHWDevice;
@@ -780,6 +803,130 @@ void VioGpuDod::NotifyNativeSoftwareCompletion(_In_ UINT fenceId, _In_ UINT node
     NotifyNativeSubmissionCompletion(fenceId, nodeOrdinal, engineOrdinal, TRUE);
 }
 
+BOOLEAN VioGpuDod::QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work)
+{
+    if (work == NULL || work->Routine == NULL || work->Context == NULL ||
+        work->Link.Flink != &work->Link || work->Link.Blink != &work->Link ||
+        InterlockedCompareExchange(&work->State, 0, 0) != VioGpuNativePassiveWorkIdle ||
+        InterlockedCompareExchange(&work->Retired, 0, 0) != 0)
+    {
+        return FALSE;
+    }
+
+    BOOLEAN queueWorker = FALSE;
+    BOOLEAN inserted = FALSE;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativePassiveLock, &oldIrql);
+    if (work->Link.Flink == &work->Link && work->Link.Blink == &work->Link &&
+        InterlockedCompareExchange(&work->State, 0, 0) == VioGpuNativePassiveWorkIdle &&
+        InterlockedCompareExchange(&work->Retired, 0, 0) == 0)
+    {
+        InsertTailList(&m_NativePassiveQueue, &work->Link);
+        inserted = TRUE;
+        if (!m_NativePassiveWorkerQueued)
+        {
+            if (ExAcquireRundownProtection(&m_HardwareOperations))
+            {
+                m_NativePassiveWorkerQueued = TRUE;
+                queueWorker = TRUE;
+            }
+            else
+            {
+                RemoveEntryList(&work->Link);
+                InitializeListHead(&work->Link);
+                InterlockedExchange(&work->State, VioGpuNativePassiveWorkIdle);
+                inserted = FALSE;
+                work = NULL;
+            }
+        }
+        if (inserted)
+        {
+            InterlockedExchange(&work->State, VioGpuNativePassiveWorkQueued);
+        }
+    }
+    else
+    {
+        work = NULL;
+    }
+    KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
+
+    if (queueWorker)
+    {
+        ExQueueWorkItem(&m_NativePassiveWorkItem, DelayedWorkQueue);
+    }
+    return work != NULL;
+}
+
+VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP VioGpuDod::CancelNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work)
+{
+    VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP ownership = VioGpuNativePassiveWorkNotQueued;
+    if (work == NULL)
+    {
+        return ownership;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativePassiveLock, &oldIrql);
+    InterlockedExchange(&work->Retired, 1);
+    LONG state = InterlockedCompareExchange(&work->State, 0, 0);
+    if (state == VioGpuNativePassiveWorkQueued)
+    {
+        RemoveEntryList(&work->Link);
+        InitializeListHead(&work->Link);
+        InterlockedExchange(&work->State, VioGpuNativePassiveWorkIdle);
+        ownership = VioGpuNativePassiveWorkRemoved;
+    }
+    else if (state == VioGpuNativePassiveWorkWorkerOwned)
+    {
+        ownership = VioGpuNativePassiveWorkWorkerOwned;
+    }
+    KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
+    return ownership;
+}
+
+_Use_decl_annotations_ VOID VioGpuDod::NativePassiveWorker(PVOID context)
+{
+    VioGpuDod *adapter = static_cast<VioGpuDod *>(context);
+    if (adapter != NULL)
+    {
+        adapter->RunNativePassiveWorker();
+    }
+}
+
+VOID VioGpuDod::RunNativePassiveWorker(void)
+{
+    for (;;)
+    {
+        VIOGPU_NATIVE_PASSIVE_WORK *work = NULL;
+        BOOLEAN releaseWorkerReference = FALSE;
+        KIRQL oldIrql;
+        KeAcquireSpinLock(&m_NativePassiveLock, &oldIrql);
+        if (IsListEmpty(&m_NativePassiveQueue))
+        {
+            m_NativePassiveWorkerQueued = FALSE;
+            releaseWorkerReference = TRUE;
+        }
+        else
+        {
+            PLIST_ENTRY entry = RemoveHeadList(&m_NativePassiveQueue);
+            InitializeListHead(entry);
+            work = CONTAINING_RECORD(entry, VIOGPU_NATIVE_PASSIVE_WORK, Link);
+            InterlockedExchange(&work->State, VioGpuNativePassiveWorkWorkerOwned);
+        }
+        KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
+
+        if (work == NULL)
+        {
+            if (releaseWorkerReference)
+            {
+                ExReleaseRundownProtection(&m_HardwareOperations);
+            }
+            return;
+        }
+        work->Routine(work->Context);
+    }
+}
+
 UINT VioGpuDod::AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration)
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))
@@ -793,6 +940,7 @@ UINT VioGpuDod::AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration)
     ExReleaseRundownProtection(&m_HardwareOperations);
     return resourceId;
 }
+#pragma code_seg(pop)
 
 BOOLEAN VioGpuDod::AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requestedIova,
                                                              _In_ SIZE_T backingSize,
@@ -3272,6 +3420,10 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_NextNativeContextId = 1;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     m_NextNativeResourceId = VIOGPU_NATIVE_RESOURCE_ID_START;
+    KeInitializeSpinLock(&m_NativeSubmitRundownLock);
+    ExInitializeRundownProtection(&m_NativeSubmitRundown);
+    m_NativeSubmitClosing = FALSE;
+    m_NativeSubmitRundownCompleted = FALSE;
 #endif
     m_NativeContextState = VioGpuNativeContextOffline;
     m_NativeContextGeneration = 0;
@@ -3467,6 +3619,14 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
             VioGpuDbgBreak();
             break;
         }
+        if (!m_CtrlQueue.ResetNativeSubmitBacklog())
+        {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu native submit: stale backlog survived transport teardown\n");
+            status = STATUS_DEVICE_NOT_READY;
+            break;
+        }
 
         virtio_get_config(&m_VioDev,
                           FIELD_OFFSET(GPU_CONFIG, num_scanouts),
@@ -3578,6 +3738,70 @@ NTSTATUS VioGpuAdapter::SetPowerState(DXGK_DEVICE_INFO *pDeviceInfo,
     return STATUS_SUCCESS;
 }
 
+#if defined(VIOGPU_WDDM_CI_ONLY)
+BOOLEAN VioGpuAdapter::AcquireNativeSubmitOperation(void) const
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeSubmitRundownLock, &oldIrql);
+    BOOLEAN acquired = !m_NativeSubmitClosing && ExAcquireRundownProtection(&m_NativeSubmitRundown);
+    KeReleaseSpinLock(&m_NativeSubmitRundownLock, oldIrql);
+    return acquired;
+}
+
+void VioGpuAdapter::ReleaseNativeSubmitOperation(void) const
+{
+    ExReleaseRundownProtection(&m_NativeSubmitRundown);
+}
+
+void VioGpuAdapter::CompleteNativeSubmitRundown(void)
+{
+    PAGED_CODE();
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeSubmitRundownLock, &oldIrql);
+    if (m_NativeSubmitRundownCompleted)
+    {
+        KeReleaseSpinLock(&m_NativeSubmitRundownLock, oldIrql);
+        return;
+    }
+    m_NativeSubmitClosing = TRUE;
+    KeReleaseSpinLock(&m_NativeSubmitRundownLock, oldIrql);
+
+    ExWaitForRundownProtectionRelease(&m_NativeSubmitRundown);
+    ExRundownCompleted(&m_NativeSubmitRundown);
+
+    KeAcquireSpinLock(&m_NativeSubmitRundownLock, &oldIrql);
+    m_NativeSubmitRundownCompleted = TRUE;
+    KeReleaseSpinLock(&m_NativeSubmitRundownLock, oldIrql);
+}
+
+BOOLEAN VioGpuAdapter::ReinitializeNativeSubmitRundown(void)
+{
+    PAGED_CODE();
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeSubmitRundownLock, &oldIrql);
+    BOOLEAN completed = m_NativeSubmitRundownCompleted;
+    BOOLEAN closing = m_NativeSubmitClosing;
+    KeReleaseSpinLock(&m_NativeSubmitRundownLock, oldIrql);
+
+    if (!completed)
+    {
+        return !closing;
+    }
+
+    /* The previous generation has drained and called ExRundownCompleted;
+     * reinitialization is therefore legal.  Keep the closing bit set until
+     * the new rundown object is ready so no submitter can enter the gap. */
+    ExReInitializeRundownProtection(&m_NativeSubmitRundown);
+    KeAcquireSpinLock(&m_NativeSubmitRundownLock, &oldIrql);
+    m_NativeSubmitRundownCompleted = FALSE;
+    m_NativeSubmitClosing = FALSE;
+    KeReleaseSpinLock(&m_NativeSubmitRundownLock, oldIrql);
+    return TRUE;
+}
+#endif
+
 BOOLEAN VioGpuAdapter::AckFeature(UINT64 Feature)
 {
     PAGED_CODE();
@@ -3621,6 +3845,17 @@ BOOLEAN VioGpuAdapter::BeginNativeContextInitialization(void)
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
         return FALSE;
     }
+
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    if (!ReinitializeNativeSubmitRundown())
+    {
+        InterlockedCompareExchange(&m_NativeContextState,
+                                   VioGpuNativeContextOffline,
+                                   VioGpuNativeContextStarting);
+        KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        return FALSE;
+    }
+#endif
 
     ClearNativeContextReadiness();
     InterlockedIncrement(&m_NativeContextGeneration);
@@ -3848,6 +4083,10 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
     *ownershipRetained = FALSE;
     GPU_CAPSET_DRM capset = {};
     ULONGLONG readyResetGeneration = 0;
+    /* drm2kgsl rounds GEM_NEW.size to pages before matching the subsequent
+     * HOST3D_GUEST blob.  Reject a mismatched logical extent before taking
+     * host ownership; this path deliberately pairs the KMD resource and blob
+     * identities so rollback cannot target an unrelated resource. */
     if (snapshot == NULL || snapshot->Adapter != this || snapshot->Owner == NULL || snapshot->Registration == NULL ||
         snapshot->Owner->Registration != snapshot->Registration || snapshot->ContextId == 0 ||
         snapshot->Generation <= 0 || snapshot->Owner->State != VioGpuNativeContextOwnerLive ||
@@ -3855,8 +4094,10 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         snapshot->Owner->ResetGeneration != snapshot->ResetGeneration ||
         snapshot->Owner->ContextId != snapshot->ContextId || ReadNativeAllocationCount(snapshot->Owner) == MAXLONG ||
         snapshot->ResetGeneration == 0 || snapshot->VaStart == 0 || snapshot->VaSize == 0 ||
-        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || blobId == 0 || logicalSize == 0 || backingSize == 0 ||
-        logicalSize > backingSize || backingSize > MAXULONG || (backingSize & (PAGE_SIZE - 1)) != 0 ||
+        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || blobId == 0 || resourceId != blobId || logicalSize == 0 ||
+        backingSize == 0 ||
+        logicalSize > backingSize || backingSize < PAGE_SIZE || backingSize > MAXULONG ||
+        (backingSize & (PAGE_SIZE - 1)) != 0 || logicalSize <= (ULONGLONG)backingSize - PAGE_SIZE ||
         (ULONGLONG)backingSize > snapshot->VaSize || requestedIova == 0 || (requestedIova & (PAGE_SIZE - 1)) != 0 ||
         requestedIova > MAXULONGLONG - (backingSize - 1) || segmentOffset > MAXULONGLONG - (backingSize - 1) ||
         (segmentOffset & (PAGE_SIZE - 1)) != 0 || poolGeneration == 0 || (msmFlags & MSM_BO_CACHED_COHERENT) == 0 ||
@@ -3881,7 +4122,8 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         segmentOffset <= (ULONGLONG)mapping.GetSize() && backingSize <= mapping.GetSize() - (SIZE_T)segmentOffset)
     {
         PHYSICAL_ADDRESS baseAddress = mapping.GetPhysicalAddress();
-        if (baseAddress.QuadPart >= 0 && (ULONGLONG)baseAddress.QuadPart <= MAXULONGLONG - segmentOffset &&
+        if (baseAddress.QuadPart >= 0 && (baseAddress.QuadPart & (PAGE_SIZE - 1)) == 0 &&
+            (ULONGLONG)baseAddress.QuadPart <= MAXULONGLONG - segmentOffset &&
             (ULONGLONG)baseAddress.QuadPart + segmentOffset <= MAXULONGLONG - (backingSize - 1))
         {
             entry.addr = (ULONGLONG)baseAddress.QuadPart + segmentOffset;
@@ -6391,6 +6633,15 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
         state = observed;
     }
 
+    /* D-state and partial-start teardown do not complete the outer adapter
+     * rundown used by SubmitCommand.  Close this transport generation under
+     * the same lock as QueueNativeSubmit before resetting or deleting its
+     * virtqueues.  A submitter already in that critical section has left it
+     * when this call returns; later submitters fail closed. */
+    m_CtrlQueue.PoisonNativeSubmitBacklog();
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    CompleteNativeSubmitRundown();
+#endif
     InvalidateNativeContextRegistrationsLocked();
 
     NTSTATUS status = m_CtrlQueue.QuiesceSynchronousRequests();
@@ -6452,12 +6703,14 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     {
         InterlockedExchange((PLONG)&m_PendingWorks, 0);
         virtio_delete_queues(&m_VioDev);
+        /* Backlog links are separate from VioGpuBuf's ownership lists.  Drop
+         * them while every GPU_VBUFFER is still owned by VioGpuBuf.  Close()
+         * invokes cancellation callbacks and may free those buffers, so doing
+         * this afterwards would traverse LIST_ENTRY nodes embedded in freed
+         * memory. */
+        m_CtrlQueue.DetachNativeSubmitBacklog();
         m_CtrlQueue.Close();
         m_CursorQueue.Close();
-        /* Backlog links are separate from VioGpuBuf's ownership lists.  Drop
-         * them before the buffer owner invokes cancellation callbacks and
-         * frees the backing records. */
-        m_CtrlQueue.DetachNativeSubmitBacklog();
         m_bQueuesInitialized = FALSE;
     }
     else if (m_bVirtioInitialized)

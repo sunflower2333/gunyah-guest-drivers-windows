@@ -1331,21 +1331,10 @@ BOOLEAN CtrlQueue::RefreshNativeSubmit(PGPU_VBUFFER buf, const void *command, UI
 
 int CtrlQueue::QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id)
 {
-    if (buf == NULL || fence_id == 0 || buf->size != sizeof(GPU_CMD_SUBMIT_3D))
+    if (buf == NULL)
     {
         return -1;
     }
-
-    PGPU_CMD_SUBMIT_3D submit = reinterpret_cast<PGPU_CMD_SUBMIT_3D>(buf->buf);
-    if (submit->hdr.type != VIRTIO_GPU_CMD_SUBMIT_3D || submit->hdr.ctx_id == 0 || submit->size == 0 ||
-        submit->size != buf->data_size)
-    {
-        return -1;
-    }
-
-    submit->hdr.flags = VIRTIO_GPU_FLAG_FENCE | VIRTIO_GPU_FLAG_INFO_RING_IDX;
-    submit->hdr.fence_id = fence_id;
-    submit->hdr.ring_idx = 1;
 
     /* DxgkDdiSubmitCommand is not allowed to return a transient queue-full
      * error: Dxgkrnl treats any error as a scheduler bugcheck.  Preserve
@@ -1353,6 +1342,32 @@ int CtrlQueue::QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id)
      * a completed descriptor makes room. */
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeSubmitLock, &oldIrql);
+    if (InterlockedCompareExchange(&m_NativeSubmitBacklogPoisoned, 0, 0) != 0)
+    {
+        KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
+        return -1;
+    }
+    /* Keep all buffer inspection and command-header publication inside the
+     * same gate used by teardown.  Otherwise a D3/failed-start teardown could
+     * reclaim this VioGpuBuf after the caller entered the function but before
+     * it acquired m_NativeSubmitLock. */
+    if (fence_id == 0 || fence_id > MAXUINT || buf->size != sizeof(GPU_CMD_SUBMIT_3D))
+    {
+        KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
+        return -1;
+    }
+    PGPU_CMD_SUBMIT_3D submit = reinterpret_cast<PGPU_CMD_SUBMIT_3D>(buf->buf);
+    if (submit->hdr.type != VIRTIO_GPU_CMD_SUBMIT_3D || submit->hdr.ctx_id == 0 || submit->size == 0 ||
+        submit->size != buf->data_size)
+    {
+        KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
+        return -1;
+    }
+
+    submit->hdr.flags = VIRTIO_GPU_FLAG_FENCE | VIRTIO_GPU_FLAG_INFO_RING_IDX;
+    submit->hdr.fence_id = fence_id;
+    submit->hdr.ring_idx = 1;
+
     if (!IsListEmpty(&m_NativeSubmitBacklog))
     {
         InsertTailList(&m_NativeSubmitBacklog, &buf->native_submit_link);
@@ -1366,15 +1381,29 @@ int CtrlQueue::QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id)
         InsertTailList(&m_NativeSubmitBacklog, &buf->native_submit_link);
         result = 0;
     }
+    else if (result < 0)
+    {
+        /* QueueBuffer has proved that this transport generation cannot
+         * accept this prepared command.  Do not let a concurrent caller
+         * continue feeding the same broken queue while the adapter reports
+         * the scheduler fault and begins reset. */
+        InterlockedExchange(&m_NativeSubmitBacklogPoisoned, 1);
+    }
     KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
     return result;
 }
 
 void CtrlQueue::DrainNativeSubmitBacklog(void)
 {
-    PGPU_VBUFFER failedBuffer = NULL;
+    LIST_ENTRY quarantined;
+    InitializeListHead(&quarantined);
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeSubmitLock, &oldIrql);
+    if (InterlockedCompareExchange(&m_NativeSubmitBacklogPoisoned, 0, 0) != 0)
+    {
+        KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
+        return;
+    }
     while (!IsListEmpty(&m_NativeSubmitBacklog))
     {
         PLIST_ENTRY entry = RemoveHeadList(&m_NativeSubmitBacklog);
@@ -1392,14 +1421,28 @@ void CtrlQueue::DrainNativeSubmitBacklog(void)
         }
         if (result < 0)
         {
-            failedBuffer = buffer;
+            /* A non-ENOSPC result is a permanent enqueue failure for this
+             * transport generation.  Poison the software queue and move the
+             * failed entry plus every remaining entry to a local quarantine
+             * list.  They remain VioGpuBuf-owned until callbacks have
+             * released their higher-level submission records below. */
+            InterlockedExchange(&m_NativeSubmitBacklogPoisoned, 1);
+            InsertTailList(&quarantined, &buffer->native_submit_link);
+            while (!IsListEmpty(&m_NativeSubmitBacklog))
+            {
+                PLIST_ENTRY remaining = RemoveHeadList(&m_NativeSubmitBacklog);
+                InsertTailList(&quarantined, remaining);
+            }
             break;
         }
     }
     KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
 
-    if (failedBuffer != NULL)
+    while (!IsListEmpty(&quarantined))
     {
+        PLIST_ENTRY entry = RemoveHeadList(&quarantined);
+        PGPU_VBUFFER failedBuffer = CONTAINING_RECORD(entry, GPU_VBUFFER, native_submit_link);
+        InitializeListHead(&failedBuffer->native_submit_link);
         void (*errorCallback)(void *) = failedBuffer->queue_error_cb;
         void *errorContext = failedBuffer->queue_error_ctx;
         failedBuffer->queue_error_cb = NULL;
@@ -1412,10 +1455,19 @@ void CtrlQueue::DrainNativeSubmitBacklog(void)
     }
 }
 
+void CtrlQueue::PoisonNativeSubmitBacklog(void)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeSubmitLock, &oldIrql);
+    InterlockedExchange(&m_NativeSubmitBacklogPoisoned, 1);
+    KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
+}
+
 void CtrlQueue::DetachNativeSubmitBacklog(void)
 {
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeSubmitLock, &oldIrql);
+    InterlockedExchange(&m_NativeSubmitBacklogPoisoned, 1);
     while (!IsListEmpty(&m_NativeSubmitBacklog))
     {
         PLIST_ENTRY entry = RemoveHeadList(&m_NativeSubmitBacklog);
@@ -1423,6 +1475,19 @@ void CtrlQueue::DetachNativeSubmitBacklog(void)
         InitializeListHead(&buffer->native_submit_link);
     }
     KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
+}
+
+BOOLEAN CtrlQueue::ResetNativeSubmitBacklog(void)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeSubmitLock, &oldIrql);
+    BOOLEAN empty = IsListEmpty(&m_NativeSubmitBacklog);
+    if (empty)
+    {
+        InterlockedExchange(&m_NativeSubmitBacklogPoisoned, 0);
+    }
+    KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
+    return empty;
 }
 
 void CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, UINT x, UINT y)

@@ -95,6 +95,31 @@ struct VIOGPU_NATIVE_FENCE_ENTRY
     UINT FenceId;
     VIOGPU_NATIVE_FENCE_STATE State;
 };
+
+typedef VOID (*VIOGPU_NATIVE_PASSIVE_ROUTINE)(_In_ PVOID context);
+
+enum VIOGPU_NATIVE_PASSIVE_WORK_STATE : LONG
+{
+    VioGpuNativePassiveWorkIdle = 0,
+    VioGpuNativePassiveWorkQueued,
+    VioGpuNativePassiveWorkWorkerOwned,
+};
+
+enum VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP : LONG
+{
+    VioGpuNativePassiveWorkNotQueued = 0,
+    VioGpuNativePassiveWorkRemoved,
+    VioGpuNativePassiveWorkWorkerOwned,
+};
+
+struct VIOGPU_NATIVE_PASSIVE_WORK
+{
+    LIST_ENTRY Link;
+    VIOGPU_NATIVE_PASSIVE_ROUTINE Routine;
+    PVOID Context;
+    volatile LONG State;
+    volatile LONG Retired;
+};
 #endif
 class VioGpuAdapter;
 struct VIOGPU_NATIVE_CONTEXT_REGISTRATION;
@@ -249,6 +274,13 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN IsRestrictedDmaActive(void);
     BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
 #if defined(VIOGPU_WDDM_CI_ONLY)
+    /* Independent from the outer device rundown: D-state transitions keep
+     * m_HardwareOperations open, but must still quiesce every WDDM native
+     * submitter before the transport resets/deletes its virtqueues. */
+    BOOLEAN AcquireNativeSubmitOperation(void) const;
+    void ReleaseNativeSubmitOperation(void) const;
+    void CompleteNativeSubmitRundown(void);
+    BOOLEAN ReinitializeNativeSubmitRundown(void);
     BOOLEAN AcquireDrmHostPoolMapping(_Out_ VioGpuDrmHostPoolMapping *mapping) const;
     BOOLEAN AcquireGpuGuestPoolMapping(_Out_ VioGpuGuestPoolMapping *mapping) const;
     UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
@@ -436,6 +468,10 @@ class VioGpuAdapter : IVioGpuPCI
     UINT m_NextNativeContextId;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     UINT m_NextNativeResourceId;
+    mutable KSPIN_LOCK m_NativeSubmitRundownLock;
+    mutable EX_RUNDOWN_REF m_NativeSubmitRundown;
+    BOOLEAN m_NativeSubmitClosing;
+    BOOLEAN m_NativeSubmitRundownCompleted;
 #endif
     volatile LONG m_NativeContextState;
     volatile LONG m_NativeContextGeneration;
@@ -487,6 +523,10 @@ class VioGpuDod
     VIOGPU_NATIVE_FENCE_ENTRY m_NativeFences[VioGpuNativeFenceTrackerCapacity];
     volatile LONG m_NativeSubmittedFence;
     volatile LONG m_NativeCompletedFence;
+    KSPIN_LOCK m_NativePassiveLock;
+    LIST_ENTRY m_NativePassiveQueue;
+    WORK_QUEUE_ITEM m_NativePassiveWorkItem;
+    BOOLEAN m_NativePassiveWorkerQueued;
 #endif
 
     USHORT m_PersistentDispMode0Width;
@@ -684,6 +724,8 @@ class VioGpuDod
     BOOLEAN RecordNativeSubmissionFence(_In_ UINT fenceId);
     BOOLEAN RetireNativeSubmissionFence(_In_ UINT fenceId, _Out_ UINT *completedFence);
     void ResetNativeFenceTracker(void);
+    BOOLEAN QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
+    VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP CancelNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
     UINT QueryNativeCompletedFence(void) const
     {
         return static_cast<UINT>(InterlockedCompareExchange(const_cast<volatile LONG *>(&m_NativeCompletedFence),
@@ -693,6 +735,10 @@ class VioGpuDod
 #endif
 
   private:
+#if defined(VIOGPU_WDDM_CI_ONLY)
+    static VOID NativePassiveWorker(_In_opt_ PVOID context);
+    VOID RunNativePassiveWorker(void);
+#endif
     BOOLEAN CheckHardware();
     NTSTATUS UnwindFailedStart(_In_ NTSTATUS failureStatus);
     NTSTATUS WriteRegistryString(_In_ HANDLE DevInstRegKeyHandle, _In_ PCWSTR pszwValueName, _In_ PCSTR pszValue);

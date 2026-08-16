@@ -150,6 +150,58 @@ struct VIOGPU_WDDM_ALLOCATION
     UINT RefreshRateDenominator;
 };
 
+enum VIOGPU_WDDM_PAGING_TRANSACTION_STATE : LONG
+{
+    VioGpuWddmPagingTransactionAny = -1,
+    VioGpuWddmPagingTransactionInvalid = 0,
+    VioGpuWddmPagingTransactionBuilt,
+    VioGpuWddmPagingTransactionQueued,
+    VioGpuWddmPagingTransactionExecuting,
+    VioGpuWddmPagingTransactionFinished,
+    VioGpuWddmPagingTransactionCancelled,
+};
+
+struct VIOGPU_WDDM_PAGING_TRANSACTION
+{
+    ULONG Signature;
+    volatile LONG State;
+    volatile LONG ReferenceHeld;
+    volatile LONG ExecutionStarted;
+    volatile LONG CancelRequested;
+    VioGpuDod *Adapter;
+    VIOGPU_WDDM_ALLOCATION *Allocation;
+    UINT FillPattern;
+    UINT Operation;
+    UINT Flags;
+    SIZE_T TransferOffset;
+    SIZE_T TransferSize;
+    ULONGLONG PlacementOffset;
+    ULONGLONG PoolGeneration;
+    UINT ResourceId;
+    UINT ContextId;
+    LONG ContextGeneration;
+    ULONGLONG ResetGeneration;
+    BOOLEAN TransferDataComplete;
+};
+
+struct VIOGPU_WDDM_PAGING_PRIVATE
+{
+    VIOGPU_WDDM_KMD_DMA_PRIVATE Header;
+    VIOGPU_WDDM_PAGING_TRANSACTION Transaction;
+    VIOGPU_NATIVE_PASSIVE_WORK Work;
+    PVOID BatchPrivateData;
+    UINT BatchPrivateDataSize;
+    UINT BatchPrivateStart;
+    UINT BatchPrivateEnd;
+    UINT BatchFenceId;
+    UINT BatchNodeOrdinal;
+    UINT BatchEngineOrdinal;
+};
+
+static_assert(FIELD_OFFSET(VIOGPU_WDDM_PAGING_PRIVATE, Header) == 0,
+              "paging header must remain the private record prefix");
+static_assert(sizeof(VIOGPU_WDDM_PAGING_PRIVATE) <= PAGE_SIZE, "paging private record must fit one paging buffer");
+
 struct VIOGPU_WDDM_DEVICE
 {
     ULONG Signature;
@@ -243,6 +295,7 @@ DXGKDDI_RENDER VioGpuWddmRender;
 DXGKDDI_PRESENT VioGpuWddmPresent;
 DXGKDDI_PATCH VioGpuWddmPatch;
 DXGKDDI_SUBMITCOMMAND VioGpuWddmSubmitCommand;
+DXGKDDI_CANCELCOMMAND VioGpuWddmCancelCommand;
 DXGKDDI_PREEMPTCOMMAND VioGpuWddmPreemptCommand;
 DXGKDDI_QUERYCURRENTFENCE VioGpuWddmQueryCurrentFence;
 DXGKDDI_RESETFROMTIMEOUT VioGpuWddmResetFromTimeout;

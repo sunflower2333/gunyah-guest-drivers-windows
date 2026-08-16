@@ -2181,16 +2181,92 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
     Rewrite(
         "R209_create_guest_drops_ulong_backing_gate",
         "viogpu/viogpudo/viogpudo.cpp",
-        """        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || blobId == 0 || logicalSize == 0 || backingSize == 0 ||
-        logicalSize > backingSize || backingSize > MAXULONG || (backingSize & (PAGE_SIZE - 1)) != 0 ||""",
-        """        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || blobId == 0 || logicalSize == 0 || backingSize == 0 ||
-        logicalSize > backingSize || (backingSize & (PAGE_SIZE - 1)) != 0 ||""",
+        """        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || blobId == 0 || resourceId != blobId || logicalSize == 0 ||
+        backingSize == 0 ||
+        logicalSize > backingSize || backingSize < PAGE_SIZE || backingSize > MAXULONG ||
+        (backingSize & (PAGE_SIZE - 1)) != 0 || logicalSize <= (ULONGLONG)backingSize - PAGE_SIZE ||""",
+        """        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || blobId == 0 || resourceId != blobId || logicalSize == 0 ||
+        backingSize == 0 ||
+        logicalSize > backingSize || backingSize < PAGE_SIZE ||
+        (backingSize & (PAGE_SIZE - 1)) != 0 || logicalSize <= (ULONGLONG)backingSize - PAGE_SIZE ||""",
     ),
     Rewrite(
         "R210_gem_new_drops_guest_alloc",
         "viogpu/viogpudo/viogpudo.cpp",
         "    request.flags = msmFlags | MSM_BO_GUEST_ALLOC;",
         "    request.flags = msmFlags;",
+    ),
+    Rewrite(
+        "R232_create_guest_accepts_subpage_backing",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "        logicalSize > backingSize || backingSize < PAGE_SIZE || backingSize > MAXULONG ||",
+        "        logicalSize > backingSize || backingSize > MAXULONG ||",
+    ),
+    Rewrite(
+        "R233_create_guest_accepts_unaligned_logical_size",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "        (backingSize & (PAGE_SIZE - 1)) != 0 || logicalSize <= (ULONGLONG)backingSize - PAGE_SIZE ||",
+        "        (backingSize & (PAGE_SIZE - 1)) != 0 ||",
+    ),
+    Rewrite(
+        "R234_create_guest_accepts_id_mismatch",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "resourceId != blobId ||",
+        "FALSE ||",
+    ),
+    Rewrite(
+        "R235_create_guest_accepts_unaligned_pool_base",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "(baseAddress.QuadPart & (PAGE_SIZE - 1)) == 0 &&",
+        "TRUE &&",
+    ),
+    Rewrite(
+        "R236_paging_reenters_dod_rundown",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """    BOOLEAN acquired = AcquireNativeGuestPoolMapping(snapshot, &mapping);
+    BOOLEAN valid = acquired && mapping.GetBaseAddress() != NULL && mapping.GetGeneration() != 0 &&
+                    (expectedPoolGeneration == 0 || mapping.GetGeneration() == expectedPoolGeneration) &&
+                    segmentOffset <= (ULONGLONG)mapping.GetSize() &&
+                    allocation->BackingSize <= mapping.GetSize() - (SIZE_T)segmentOffset;""",
+        """    BOOLEAN acquired = allocation->Adapter->AcquireGpuGuestPoolMapping(&mapping);
+    BOOLEAN valid = acquired && mapping.GetBaseAddress() != NULL && mapping.GetGeneration() != 0 &&
+                    (expectedPoolGeneration == 0 || mapping.GetGeneration() == expectedPoolGeneration) &&
+                    segmentOffset <= (ULONGLONG)mapping.GetSize() &&
+                    allocation->BackingSize <= mapping.GetSize() - (SIZE_T)segmentOffset;""",
+    ),
+    Rewrite(
+        "R237_paging_defers_mdl_lifetime",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """            status = CopyNativePlacement(allocation,
+                                         placementOffset,
+                                         transferOffset,
+                                         transferSize,
+                                         poolGeneration,
+                                         systemAddress,
+                                         (packetFlags & VioGpuWddmPagingFlagPageIn) != 0,
+                                         &snapshot,
+                                         &observedPoolGeneration);""",
+        """            UNREFERENCED_PARAMETER(systemAddress);
+            UNREFERENCED_PARAMETER(observedPoolGeneration);
+            status = STATUS_SUCCESS;""",
+    ),
+    Rewrite(
+        "R238_passive_cancel_leaves_queued_work",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "ownership = VioGpuNativePassiveWorkRemoved;",
+        "ownership = VioGpuNativePassiveWorkNotQueued;",
+    ),
+    Rewrite(
+        "R239_passive_queue_ignores_retirement",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "InterlockedCompareExchange(&work->Retired, 0, 0) == 0)",
+        "TRUE)",
+    ),
+    Rewrite(
+        "R240_worker_ownership_not_published",
+        "viogpu/viogpudo/viogpudo.cpp",
+        "InterlockedExchange(&work->State, VioGpuNativePassiveWorkWorkerOwned);",
+        "InterlockedExchange(&work->State, VioGpuNativePassiveWorkIdle);",
     ),
     Rewrite(
         "R211_blob_drops_guest_handle",
@@ -2216,259 +2292,61 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
         """    PGPU_MEM_ENTRY ownedEntry = const_cast<PGPU_MEM_ENTRY>(entry);""",
     ),
     Rewrite(
-        "R213_paging_rejects_partial_transfer",
+        "R213_paging_worker_skips_executing_claim",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        """    if ((pageIn || pageOut) &&
-        (transferMdl == NULL || transferSize == 0 || transferOffset > allocation->BackingSize ||
-         transferSize > allocation->BackingSize - transferOffset))""",
-        """    if ((pageIn || pageOut) &&
-        (pagingBuffer->Transfer.TransferOffset != 0 ||
-         pagingBuffer->Transfer.TransferSize != allocation->BackingSize || transferMdl == NULL ||
-         transferSize == 0 || transferOffset > allocation->BackingSize ||
-         transferSize > allocation->BackingSize - transferOffset))""",
+        """        if (InterlockedCompareExchange(&pagingPrivate->Transaction.State,
+                                       VioGpuWddmPagingTransactionExecuting,
+                                       VioGpuWddmPagingTransactionQueued) != VioGpuWddmPagingTransactionQueued)""",
+        """        if (InterlockedCompareExchange(&pagingPrivate->Transaction.State,
+                                       VioGpuWddmPagingTransactionFinished,
+                                       VioGpuWddmPagingTransactionQueued) != VioGpuWddmPagingTransactionQueued)""",
     ),
     Rewrite(
-        "R214_page_out_unrefs_before_copy",
+        "R214_paging_releases_before_batch_rollback",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        """    else if (pageOut)
-    {
-        BOOLEAN pagingStarted = FALSE;
-        if (transferStart)
-        {
-            if (allocation->PagingState != VioGpuWddmAllocationPagingIdle ||
-                allocation->HostState != VioGpuWddmAllocationHostLive || !allocation->PlacementValid ||
-                allocation->PlacementOffset != placementOffset || allocation->PoolGeneration == 0)
-            {
-                status = STATUS_INVALID_DEVICE_STATE;
-            }
-            else
-            {
-                ClearPagingRanges(allocation);
-                allocation->PagingState = VioGpuWddmAllocationPagingOut;
-                allocation->PagingPlacementOffset = placementOffset;
-                allocation->PagingPoolGeneration = allocation->PoolGeneration;
-                pagingStarted = TRUE;
-            }
-        }
-        else if (allocation->PagingState != VioGpuWddmAllocationPagingOut ||
-                 allocation->PagingPlacementOffset != placementOffset ||
-                 allocation->HostState != VioGpuWddmAllocationHostLive || !allocation->PlacementValid ||
-                 allocation->PlacementOffset != placementOffset ||
-                 allocation->PagingPoolGeneration != allocation->PoolGeneration)
-        {
-            status = STATUS_INVALID_DEVICE_STATE;
-        }
+        """    }
+    return TRUE;
+}
 
-        if (NT_SUCCESS(status))
-        {
-            VIOGPU_WDDM_PAGING_RANGE *pagingRange = NULL;
-            status = AddPagingRange(allocation, transferOffset, transferSize, &pagingRange);
-            ULONGLONG observedPoolGeneration = 0;
-            if (NT_SUCCESS(status))
-            {
-                status = CopyNativePlacement(allocation,
-                                             placementOffset,
-                                             transferOffset,
-                                             transferSize,
-                                             allocation->PagingPoolGeneration,
-                                             systemAddress,
-                                             FALSE,
-                                             &observedPoolGeneration);
-            }
-            if (!NT_SUCCESS(status) && pagingRange != NULL)
-            {
-                RemovePagingRange(allocation, pagingRange);
-            }
-            if (NT_SUCCESS(status) && observedPoolGeneration != allocation->PagingPoolGeneration)
-            {
-                if (pagingRange != NULL)
-                {
-                    RemovePagingRange(allocation, pagingRange);
-                }
-                status = STATUS_DEVICE_NOT_READY;
-            }
-            if (NT_SUCCESS(status) && transferEnd && allocation->PagingCoveredBytes != allocation->BackingSize)
-            {
-                status = STATUS_INVALID_PARAMETER;
-            }
-            if (NT_SUCCESS(status) && transferEnd)
-            {
-                status = ReleaseAllocationHostOwnership(allocation, &snapshot, snapshotAcquired);
-                if (NT_SUCCESS(status))
-                {
-                    ClearNativePlacement(allocation);
-                    ClearNativePagingState(allocation);
-                }
-                else
-                {
-                    ClearNativePagingState(allocation);
-                }
-            }
-            else if (!NT_SUCCESS(status))
-            {
-                ClearNativePagingState(allocation);
-            }
-        }
-    }
-    else
-    {
-        if (allocation->PagingState != VioGpuWddmAllocationPagingIdle || !allocation->PlacementValid ||
-            allocation->PlacementOffset != placementOffset)
-        {
-            status = STATUS_INVALID_PARAMETER;
-        }
-        else if (discard && !pagingBuffer->DiscardContent.Flags.AllocationIsIdle &&
-                 allocation->HostState != VioGpuWddmAllocationHostNone)
-        {
-            status = STATUS_GRAPHICS_ALLOCATION_BUSY;
-        }
-        else
-        {
-            status = ReleaseAllocationHostOwnership(allocation, &snapshot, snapshotAcquired);
-            if (NT_SUCCESS(status))
-            {
-                ClearNativePlacement(allocation);
-                ClearNativePagingState(allocation);
-            }
-        }
-    }""",
-        """    else if (pageOut)
-    {
-        BOOLEAN pagingStarted = FALSE;
-        if (transferStart)
-        {
-            if (allocation->PagingState != VioGpuWddmAllocationPagingIdle ||
-                allocation->HostState != VioGpuWddmAllocationHostLive || !allocation->PlacementValid ||
-                allocation->PlacementOffset != placementOffset || allocation->PoolGeneration == 0)
-            {
-                status = STATUS_INVALID_DEVICE_STATE;
-            }
-            else
-            {
-                ClearPagingRanges(allocation);
-                allocation->PagingState = VioGpuWddmAllocationPagingOut;
-                allocation->PagingPlacementOffset = placementOffset;
-                allocation->PagingPoolGeneration = allocation->PoolGeneration;
-                pagingStarted = TRUE;
-            }
-        }
-        else if (allocation->PagingState != VioGpuWddmAllocationPagingOut ||
-                 allocation->PagingPlacementOffset != placementOffset ||
-                 allocation->HostState != VioGpuWddmAllocationHostLive || !allocation->PlacementValid ||
-                 allocation->PlacementOffset != placementOffset ||
-                 allocation->PagingPoolGeneration != allocation->PoolGeneration)
-        {
-            status = STATUS_INVALID_DEVICE_STATE;
-        }
+NTSTATUS ExecutePagingTransaction""",
+        """    }
+    ReleasePagingTransactionReference(transaction);
+    return TRUE;
+}
 
-        if (NT_SUCCESS(status))
-        {
-            VIOGPU_WDDM_PAGING_RANGE *pagingRange = NULL;
-            if (transferEnd)
-            {
-                status = ReleaseAllocationHostOwnership(allocation, &snapshot, snapshotAcquired);
-            }
-            status = NT_SUCCESS(status) ? AddPagingRange(allocation, transferOffset, transferSize, &pagingRange) : status;
-            ULONGLONG observedPoolGeneration = 0;
-            if (NT_SUCCESS(status))
-            {
-                status = CopyNativePlacement(allocation,
-                                             placementOffset,
-                                             transferOffset,
-                                             transferSize,
-                                             allocation->PagingPoolGeneration,
-                                             systemAddress,
-                                             FALSE,
-                                             &observedPoolGeneration);
-            }
-            if (!NT_SUCCESS(status) && pagingRange != NULL)
-            {
-                RemovePagingRange(allocation, pagingRange);
-            }
-            if (NT_SUCCESS(status) && observedPoolGeneration != allocation->PagingPoolGeneration)
-            {
-                if (pagingRange != NULL)
-                {
-                    RemovePagingRange(allocation, pagingRange);
-                }
-                status = STATUS_DEVICE_NOT_READY;
-            }
-            if (NT_SUCCESS(status) && transferEnd && allocation->PagingCoveredBytes != allocation->BackingSize)
-            {
-                status = STATUS_INVALID_PARAMETER;
-            }
-            if (NT_SUCCESS(status) && transferEnd)
-            {
-                if (NT_SUCCESS(status))
-                {
-                    ClearNativePlacement(allocation);
-                    ClearNativePagingState(allocation);
-                }
-                else
-                {
-                    ClearNativePagingState(allocation);
-                }
-            }
-            else if (!NT_SUCCESS(status))
-            {
-                ClearNativePagingState(allocation);
-            }
-        }
-    }
-    else
-    {
-        if (allocation->PagingState != VioGpuWddmAllocationPagingIdle || !allocation->PlacementValid ||
-            allocation->PlacementOffset != placementOffset)
-        {
-            status = STATUS_INVALID_PARAMETER;
-        }
-        else if (discard && !pagingBuffer->DiscardContent.Flags.AllocationIsIdle &&
-                 allocation->HostState != VioGpuWddmAllocationHostNone)
-        {
-            status = STATUS_GRAPHICS_ALLOCATION_BUSY;
-        }
-        else
-        {
-            status = (ReleaseAllocationHostOwnership)(allocation, &snapshot, snapshotAcquired);
-            if (NT_SUCCESS(status))
-            {
-                ClearNativePlacement(allocation);
-                ClearNativePagingState(allocation);
-            }
-        }
-    }""",
+NTSTATUS ExecutePagingTransaction""",
     ),
     Rewrite(
-        "R215_page_out_uses_device_busy",
+        "R215_paging_cancel_rejects_queued",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        """    if (pageOut && !pagingBuffer->Transfer.Flags.AllocationIsIdle)
-    {
-        return STATUS_GRAPHICS_ALLOCATION_BUSY;
-    }""",
-        """    if (pageOut && !pagingBuffer->Transfer.Flags.AllocationIsIdle)
-    {
-        return STATUS_DEVICE_BUSY;
-    }""",
+        "state != VioGpuWddmPagingTransactionBuilt && state != VioGpuWddmPagingTransactionQueued",
+        "state != VioGpuWddmPagingTransactionBuilt",
     ),
     Rewrite(
-        "R216_zero_size_requires_mdl",
+        "R216_paging_cancel_ignores_executing",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        "    if ((pageIn || pageOut) && pagingBuffer->Transfer.TransferSize == 0)",
-        "    if ((pageIn || pageOut) && pagingBuffer->Transfer.TransferSize == 0 && transferMdl != NULL)",
+        """        if (state == VioGpuWddmPagingTransactionExecuting)
+        {
+            InterlockedExchange(&transaction->CancelRequested, 1);
+            return TRUE;
+        }""",
+        """        if (state == VioGpuWddmPagingTransactionExecuting)
+        {
+            return FALSE;
+        }""",
     ),
     Rewrite(
-        "R217_zero_size_requires_live_context",
+        "R217_paging_worker_drops_execution_marker",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        "    if ((pageIn || pageOut) && pagingBuffer->Transfer.TransferSize == 0)",
-        """    if ((pageIn || pageOut) && pagingBuffer->Transfer.TransferSize == 0 &&
-        allocation->Adapter->IsNativeContextGenerationCurrent(allocation->ContextGeneration,
-                                                              allocation->ContextResetGeneration))""",
+        "InterlockedExchange(&pagingPrivate->Transaction.ExecutionStarted, 1);",
+        "InterlockedExchange(&pagingPrivate->Transaction.ExecutionStarted, 0);",
     ),
     Rewrite(
         "R218_context_lookup_ignores_identity",
         "viogpu/viogpudo/viogpudo.cpp",
-        "owner->ResetGeneration != resetGeneration || owner->ContextId == 0 || owner->ContextId != expectedContextId)",
-        "owner->ResetGeneration != resetGeneration || owner->ContextId == 0)",
+        """owner->ResetGeneration != resetGeneration || owner->ContextId == 0 ||
+                owner->ContextId != expectedContextId)""",
+        """owner->ResetGeneration != resetGeneration || owner->ContextId == 0)""",
     ),
     Rewrite(
         "R219_context_range_allows_overlap",
@@ -2477,22 +2355,29 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
         "if (FALSE)",
     ),
     Rewrite(
-        "R220_paging_accepts_incomplete_coverage",
+        "R220_paging_worker_skips_batch_rollback",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        "            if (NT_SUCCESS(status) && allocation->PagingPoolGeneration != 0 &&\n                poolGeneration != allocation->PagingPoolGeneration)\n            {\n                if (pagingRange != NULL)\n                {\n                    RemovePagingRange(allocation, pagingRange);\n                }\n                status = STATUS_DEVICE_NOT_READY;\n            }\n            if (NT_SUCCESS(status))\n            {\n                allocation->PagingPoolGeneration = poolGeneration;\n            }\n            if (NT_SUCCESS(status) && transferEnd && allocation->PagingCoveredBytes != allocation->BackingSize)",
-        "            if (NT_SUCCESS(status) && allocation->PagingPoolGeneration != 0 &&\n                poolGeneration != allocation->PagingPoolGeneration)\n            {\n                if (pagingRange != NULL)\n                {\n                    RemovePagingRange(allocation, pagingRange);\n                }\n                status = STATUS_DEVICE_NOT_READY;\n            }\n            if (NT_SUCCESS(status))\n            {\n                allocation->PagingPoolGeneration = poolGeneration;\n            }\n            if (FALSE)",
+        """    if (!NT_SUCCESS(status))
+    {
+        RollbackPagingBatch(privateBuffer, privateBufferSize, privateStart, privateEnd, count);
+    }""",
+        """    if (!NT_SUCCESS(status))
+    {
+        UNREFERENCED_PARAMETER(privateBuffer);
+    }""",
     ),
     Rewrite(
-        "R221_fill_publishes_partial_backing",
+        "R221_paging_rejects_repeated_transfer_start",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        "pagingBuffer->Fill.FillSize != allocation->BackingSize",
-        "FALSE",
+        "if (continuingPageIn)",
+        "if (FALSE && continuingPageIn)",
     ),
     Rewrite(
-        "R222_pageout_checks_idle_only_at_start",
+        "R222_paging_batch_offset_uses_uint",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        "if (pageOut && !pagingBuffer->Transfer.Flags.AllocationIsIdle)",
-        "if (pageOut && transferStart && !pagingBuffer->Transfer.Flags.AllocationIsIdle)",
+        """    ULONGLONG candidate = static_cast<ULONGLONG>(base) +
+                          static_cast<ULONGLONG>(index) * static_cast<ULONGLONG>(stride);""",
+        """    UINT candidate = base + index * static_cast<UINT>(stride);""",
     ),
     Rewrite(
         "R223_destroy_leaves_context_range",
@@ -2515,7 +2400,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
     Rewrite(
         "R226_paging_skips_capacity_gate",
         "viogpu/viogpuwddm/wddmddi.cpp",
-        "if (dmaSize < sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET) || dmaPrivateSize < sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE))",
+        "if (dmaSize < sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET) || dmaPrivateSize < sizeof(VIOGPU_WDDM_PAGING_PRIVATE))",
         "if (FALSE)",
     ),
     Rewrite(

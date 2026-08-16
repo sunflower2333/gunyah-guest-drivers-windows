@@ -46,6 +46,7 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiPresent = VioGpuWddmPresent;
     initialData->DxgkDdiPatch = VioGpuWddmPatch;
     initialData->DxgkDdiSubmitCommand = VioGpuWddmSubmitCommand;
+    initialData->DxgkDdiCancelCommand = VioGpuWddmCancelCommand;
     initialData->DxgkDdiPreemptCommand = VioGpuWddmPreemptCommand;
     initialData->DxgkDdiQueryCurrentFence = VioGpuWddmQueryCurrentFence;
     initialData->DxgkDdiResetFromTimeout = VioGpuWddmResetFromTimeout;

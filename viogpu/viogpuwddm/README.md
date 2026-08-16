@@ -195,16 +195,19 @@ The callback table intentionally leaves these DDI slots unset:
 - `DxgkDdiSetPalette`, `DxgkDdiGetScanLine`, and `DxgkDdiControlInterrupt`.
 - `DxgkDdiQueryDependentEngineGroup`, `DxgkDdiQueryEngineStatus`, and
   `DxgkDdiResetEngine`.
-- `DxgkDdiCancelCommand` and `DxgkDdiGetChildContainerId`.
+- `DxgkDdiGetChildContainerId`.
 - `DxgkDdiSetPowerComponentFState` and
   `DxgkDdiPowerRuntimeControlRequest`.
 
 It also does not register the KMDOD-only `DxgkDdiPresentDisplayOnly` callback.
 
-Several callbacks that are registered are still skeletons. Patch, Present,
-submit, preempt, current-fence query, timeout reset/restart, and VidPN
-source-address programming return `STATUS_NOT_SUPPORTED`; paging implements
-only discard. No real Host-retirement completion is implemented. Mandatory full-graphics WDDM
+Present, preemption, timeout reset/restart, and VidPN source-address
+programming remain fail-stop skeletons. Render patch/submit and paging now use
+bounded private records; paging transfers consume their MDL during
+`DxgkDdiBuildPagingBuffer`, then a cancellable passive worker publishes guest
+pool placement and host BO ownership. These paths are compile-only and do not
+prove product-grade ring-1 retirement, TDR recovery, or Present behavior.
+Mandatory full-graphics WDDM
 1.2 semantics that are absent or unproven include video-memory offer/reclaim,
 GPU preemption and FlipOnVSyncMmIo, per-engine TDR, optimized rotation, direct
 flip, GDI hardware acceleration, seamless state transitions/PnP, and display
