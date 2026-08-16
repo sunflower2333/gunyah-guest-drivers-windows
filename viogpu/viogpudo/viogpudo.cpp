@@ -605,7 +605,7 @@ BOOLEAN VioGpuDod::RecordNativeSubmissionFence(_In_ UINT fenceId)
         m_NativeFences[tail].FenceId = fenceId;
         m_NativeFences[tail].State = VioGpuNativeFencePending;
         ++m_NativeFenceCount;
-        InterlockedExchange(reinterpret_cast<PLONG>(&m_NativeSubmittedFence), static_cast<LONG>(fenceId));
+        InterlockedExchange(&m_NativeSubmittedFence, static_cast<LONG>(fenceId));
     }
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
     return valid;
@@ -645,7 +645,7 @@ BOOLEAN VioGpuDod::RetireNativeSubmissionFence(_In_ UINT fenceId, _Out_ UINT *co
         }
         if (*completedFence != 0)
         {
-            InterlockedExchange(reinterpret_cast<PLONG>(&m_NativeCompletedFence), static_cast<LONG>(*completedFence));
+            InterlockedExchange(&m_NativeCompletedFence, static_cast<LONG>(*completedFence));
         }
     }
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
@@ -659,8 +659,8 @@ void VioGpuDod::ResetNativeFenceTracker(void)
     m_NativeFenceHead = 0;
     m_NativeFenceCount = 0;
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
-    InterlockedExchange(reinterpret_cast<PLONG>(&m_NativeSubmittedFence), 0);
-    InterlockedExchange(reinterpret_cast<PLONG>(&m_NativeCompletedFence), 0);
+    InterlockedExchange(&m_NativeSubmittedFence, 0);
+    InterlockedExchange(&m_NativeCompletedFence, 0);
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
 }
 

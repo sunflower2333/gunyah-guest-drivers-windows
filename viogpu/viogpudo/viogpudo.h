@@ -223,6 +223,8 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS SetPointerPosition(_In_ CONST DXGKARG_SETPOINTERPOSITION *pSetPointerPosition,
                                 _In_ CONST CURRENT_MODE *pModeCur);
     NTSTATUS Escape(_In_ CONST DXGKARG_ESCAPE *pEscap);
+    /* May be called by the display-only transport completion path at any IRQL. */
+    void FailNativeContextAtAnyIrql(void);
     CPciResources *GetPciResources(void)
     {
         return &m_PciResources;
@@ -368,7 +370,6 @@ class VioGpuAdapter : IVioGpuPCI
 #endif
     BOOLEAN BeginNativeContextInitialization(void);
     BOOLEAN CompleteNativeContextInitialization(void);
-    void FailNativeContextAtAnyIrql(void);
     NTSTATUS NegotiateNativeContextFeatures(void);
     NTSTATUS ProbeNativeContextReadiness(void);
     NTSTATUS ConnectRestrictedDma(void);
@@ -484,8 +485,8 @@ class VioGpuDod
     UINT m_NativeFenceHead;
     UINT m_NativeFenceCount;
     VIOGPU_NATIVE_FENCE_ENTRY m_NativeFences[VioGpuNativeFenceTrackerCapacity];
-    volatile ULONG m_NativeSubmittedFence;
-    volatile ULONG m_NativeCompletedFence;
+    volatile LONG m_NativeSubmittedFence;
+    volatile LONG m_NativeCompletedFence;
 #endif
 
     USHORT m_PersistentDispMode0Width;
@@ -685,9 +686,9 @@ class VioGpuDod
     void ResetNativeFenceTracker(void);
     UINT QueryNativeCompletedFence(void) const
     {
-        return InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(const_cast<volatile ULONG *>(&m_NativeCompletedFence)),
-                                          0,
-                                          0);
+        return static_cast<UINT>(InterlockedCompareExchange(const_cast<volatile LONG *>(&m_NativeCompletedFence),
+                                                            0,
+                                                            0));
     }
 #endif
 

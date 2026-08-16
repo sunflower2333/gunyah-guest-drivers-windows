@@ -29,6 +29,7 @@
 
 #include "viogpu_queue.h"
 #include "baseobj.h"
+#include "../../VirtIO/osdep.h"
 #if !DBG
 #include "viogpu_queue.tmh"
 #endif

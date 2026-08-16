@@ -3643,10 +3643,15 @@ def check_wddm_submission_lifetime() -> None:
             "m_NativeFences[m_NativeFenceHead].State==VioGpuNativeFenceRetired",
             "*completedFence=head->FenceId;",
             "--m_NativeFenceCount;",
-            "InterlockedExchange(reinterpret_cast<PLONG>(&m_NativeCompletedFence),static_cast<LONG>(*completedFence));",
         ),
         "completed fence publication must drain only the contiguous retired prefix",
     )
+    if (
+        "InterlockedExchange(&m_NativeCompletedFence,static_cast<LONG>(*completedFence));" not in retire_fence
+        and "InterlockedExchange(reinterpret_cast<PLONG>(&m_NativeCompletedFence),static_cast<LONG>(*completedFence));"
+        not in retire_fence
+    ):
+        fail("completed fence publication must use an atomic store after draining the contiguous retired prefix")
     notify = canonical_code(function_body("VioGpuDod::NotifyNativeSchedulerInterrupt", VIOGPU_CODE))
     if "DxgkCbSynchronizeExecution(" not in notify or "DxgkCbNotifyInterrupt(" in notify:
         fail("DPC/Submit completion must synchronize the actual interrupt notification to DIRQL")
