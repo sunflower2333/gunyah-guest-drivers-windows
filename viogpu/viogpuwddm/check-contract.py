@@ -3719,8 +3719,9 @@ def check_wddm_submission_lifetime() -> None:
         "request->hdr.len!=header->CommandStreamSize",
         "request->nr_bos!=header->AllocationReferenceCount",
         "expectedSize!=header->CommandStreamSize",
-        "bos[index].Handle!=allocation->ResourceId",
+        "bos[index].Handle!=0",
         "bos[index].Presumed!=0",
+        "previousOpen->Allocation==allocation",
         "command->SubmitIndex>=request->nr_bos",
         "command->RelocationCount!=0",
         "command->Iova!=0",
@@ -3728,6 +3729,8 @@ def check_wddm_submission_lifetime() -> None:
     ):
         if fragment not in validate_packet:
             fail(f"Render must validate the exact bounded MSM GEM_SUBMIT packet: {fragment}")
+    if "bos[index].Handle!=allocation->ResourceId" in validate_packet:
+        fail("Render must not require the UMD to know a KMD-owned native resource ID")
 
     acquire_render = canonical_code(function_body("AcquireRenderAllocationReferences", WDDM_DDI_CODE))
     require_order(
@@ -3798,14 +3801,16 @@ def check_wddm_submission_lifetime() -> None:
             "ResolveSubmissionPrivateData(",
             "patch->PatchOffset!=submission->CommandStreamOffset+reference->PatchOffset",
             "allocation->PrivateData.RequestedIova<=MAXULONGLONG-reference->AllocationOffset",
+            "patchedResourceIds[index]=allocation->ResourceId;",
             "patchedIovas[index]=allocation->PrivateData.RequestedIova+reference->AllocationOffset;",
+            "RtlCopyMemory(&submitBo->Handle,&patchedResourceIds[index],sizeof(patchedResourceIds[index]));",
             "RtlCopyMemory(patchAddress,&patchedIovas[index],sizeof(patchedIovas[index]));",
             "adapter->RefreshNativeSubmit(submission->VirtioBuffer,submission->CommandStream,submission->CommandStreamSize)",
             "submission->FenceId=patchArguments->SubmissionFenceId;",
             "KeMemoryBarrier();",
             "submission->PatchApplied=TRUE;",
         ),
-        "Patch must validate placement, write requested IOVAs, refresh payload and publish the WDDM fence",
+        "Patch must validate placement, write resource IDs and requested IOVAs, refresh payload and publish the WDDM fence",
     )
     if "ReleasePreparedSubmission(submission);" not in patch:
         fail("Patch failure must quarantine the prepared submission")

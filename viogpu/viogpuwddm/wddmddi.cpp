@@ -1799,7 +1799,7 @@ NTSTATUS ValidateNativeSubmitPacket(const VIOGPU_WDDM_RENDER_COMMAND *header,
                                                      (ULONGLONG)index * sizeof(VIOGPU_WDDM_MSM_SUBMIT_BO) +
                                                      FIELD_OFFSET(VIOGPU_WDDM_MSM_SUBMIT_BO, Presumed));
         if (allocation == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
-            allocation->Adapter != device->Adapter || bos[index].Handle != allocation->ResourceId ||
+            allocation->Adapter != device->Adapter || bos[index].Handle != 0 ||
             bos[index].Presumed != 0 || bos[index].Flags == 0 || (bos[index].Flags & ~validBoFlags) != 0 ||
             (bos[index].Flags & (VIOGPU_WDDM_MSM_SUBMIT_BO_READ | VIOGPU_WDDM_MSM_SUBMIT_BO_WRITE)) != expectedAccess ||
             reference->PatchOffset != expectedPatchOffset)
@@ -1808,7 +1808,10 @@ NTSTATUS ValidateNativeSubmitPacket(const VIOGPU_WDDM_RENDER_COMMAND *header,
         }
         for (UINT previous = 0; previous < index; ++previous)
         {
-            if (bos[previous].Handle == bos[index].Handle)
+            const VIOGPU_WDDM_ALLOCATION_REFERENCE *previousReference = &references[previous];
+            VIOGPU_WDDM_OPEN_ALLOCATION *previousOpen = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(
+                allocationList[previousReference->AllocationIndex].hDeviceSpecificAllocation);
+            if (previousOpen != NULL && previousOpen->Allocation == allocation)
             {
                 return STATUS_INVALID_PARAMETER;
             }
@@ -4029,6 +4032,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         }
     }
 
+    UINT patchedResourceIds[VioGpuWddmSubmissionAllocationLimit] = {};
     ULONGLONG patchedIovas[VioGpuWddmSubmissionAllocationLimit] = {};
     if (NT_SUCCESS(status))
     {
@@ -4063,7 +4067,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                             allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
                             allocation->Adapter == adapter && !allocation->Destroying &&
                             allocation->HostState == VioGpuWddmAllocationHostLive && allocation->PlacementValid &&
-                            allocation->PoolGeneration != 0 && allocation->ContextId == submission->ContextId &&
+                            allocation->PoolGeneration != 0 &&
+                            allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START && allocation->BlobId != 0 &&
+                            allocation->ContextId == submission->ContextId &&
                             allocation->ContextGeneration == submission->Generation &&
                             allocation->ContextResetGeneration == submission->ResetGeneration &&
                             allocation->BoundContextId == submission->ContextId &&
@@ -4081,6 +4087,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                             allocation->PrivateData.RequestedIova <= MAXULONGLONG - reference->AllocationOffset;
             if (valid)
             {
+                patchedResourceIds[index] = allocation->ResourceId;
                 patchedIovas[index] = allocation->PrivateData.RequestedIova + reference->AllocationOffset;
             }
             KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
@@ -4097,7 +4104,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         for (UINT index = 0; index < submission->AllocationCount; ++index)
         {
             const VIOGPU_WDDM_SUBMISSION_REFERENCE *reference = &submission->References[index];
+            VIOGPU_WDDM_MSM_SUBMIT_BO *submitBo = reinterpret_cast<VIOGPU_WDDM_MSM_SUBMIT_BO *>(
+                static_cast<BYTE *>(submission->CommandStream) + sizeof(MSM_CCMD_GEM_SUBMIT_REQ) +
+                (SIZE_T)index * sizeof(VIOGPU_WDDM_MSM_SUBMIT_BO));
             PVOID patchAddress = static_cast<BYTE *>(submission->CommandStream) + reference->PatchOffset;
+            RtlCopyMemory(&submitBo->Handle, &patchedResourceIds[index], sizeof(patchedResourceIds[index]));
             RtlCopyMemory(patchAddress, &patchedIovas[index], sizeof(patchedIovas[index]));
         }
         if (!adapter->RefreshNativeSubmit(submission->VirtioBuffer,

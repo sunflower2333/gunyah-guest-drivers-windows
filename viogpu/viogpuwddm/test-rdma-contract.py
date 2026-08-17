@@ -2533,6 +2533,20 @@ NTSTATUS ExecutePagingTransaction""",
             else if (InterlockedCompareExchange""",
     ),
     Rewrite(
+        "R248_render_accepts_umd_resource_id",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        """            allocation->Adapter != device->Adapter || bos[index].Handle != 0 ||
+            bos[index].Presumed != 0 ||""",
+        """            allocation->Adapter != device->Adapter ||
+            bos[index].Presumed != 0 ||""",
+    ),
+    Rewrite(
+        "R249_patch_skips_resource_id",
+        "viogpu/viogpuwddm/wddmddi.cpp",
+        "            RtlCopyMemory(&submitBo->Handle, &patchedResourceIds[index], sizeof(patchedResourceIds[index]));",
+        "            UNREFERENCED_PARAMETER(patchedResourceIds[index]);",
+    ),
+    Rewrite(
         "S01_pending_comparison_reversed",
         "viogpu/common/viogpu_rdma.cpp",
         "if (status == STATUS_PENDING)",
