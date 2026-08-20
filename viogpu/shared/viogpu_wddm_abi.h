@@ -40,6 +40,7 @@ typedef enum VIOGPU_WDDM_RENDER_OPCODE
 typedef enum VIOGPU_WDDM_ESCAPE_OPCODE
 {
     VIOGPU_WDDM_ESCAPE_GET_CONTEXT_INFO = 1,
+    VIOGPU_WDDM_ESCAPE_GET_COMPLETED_FENCE = 2,
 } VIOGPU_WDDM_ESCAPE_OPCODE;
 
 #pragma pack(push, 4)
@@ -113,6 +114,20 @@ typedef struct VIOGPU_WDDM_CONTEXT_INFO
     VIOGPU_WDDM_UINT32 ContextId;
     VIOGPU_WDDM_UINT32 SubmitQueueId;
 } VIOGPU_WDDM_CONTEXT_INFO;
+
+/* Context-scoped completion snapshot. CompletedFence is the UMD submit
+ * sequence endpoint, not the opaque VidSch fence id. */
+typedef struct VIOGPU_WDDM_FENCE_INFO
+{
+    VIOGPU_WDDM_ABI_HEADER Header;
+    VIOGPU_WDDM_UINT32 Opcode;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+    VIOGPU_WDDM_UINT64 CompletedFence;
+    VIOGPU_WDDM_UINT64 ResetGeneration;
+    VIOGPU_WDDM_UINT32 ContextId;
+    VIOGPU_WDDM_UINT32 Reserved;
+} VIOGPU_WDDM_FENCE_INFO;
 
 typedef struct VIOGPU_WDDM_RENDER_COMMAND
 {

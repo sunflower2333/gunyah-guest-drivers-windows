@@ -1992,6 +1992,16 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT32 ContextId;
             VIOGPU_WDDM_UINT32 SubmitQueueId;
         """,
+        "VIOGPU_WDDM_FENCE_INFO": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            VIOGPU_WDDM_UINT32 Opcode;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+            VIOGPU_WDDM_UINT64 CompletedFence;
+            VIOGPU_WDDM_UINT64 ResetGeneration;
+            VIOGPU_WDDM_UINT32 ContextId;
+            VIOGPU_WDDM_UINT32 Reserved;
+        """,
         "VIOGPU_WDDM_RENDER_COMMAND": """
             VIOGPU_WDDM_ABI_HEADER Header;
             VIOGPU_WDDM_UINT32 Opcode;
@@ -2079,6 +2089,15 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     ):
         if manifest_entries.count(context_info_assertion) != 1:
             fail(f"WDDM private ABI fixture must lock the context-info contract: {context_info_assertion}")
+    for fence_info_assertion in (
+        "ABI_VALUE(escape.opcode.get_completed_fence, VIOGPU_WDDM_ESCAPE_GET_COMPLETED_FENCE, 2);",
+        "ABI_SIZE(size.fence_info, VIOGPU_WDDM_FENCE_INFO, 56);",
+        "ABI_OFFSET(offset.fence_info.completed_fence, VIOGPU_WDDM_FENCE_INFO, CompletedFence, 32);",
+        "ABI_OFFSET(offset.fence_info.reset_generation, VIOGPU_WDDM_FENCE_INFO, ResetGeneration, 40);",
+        "ABI_OFFSET(offset.fence_info.context_id, VIOGPU_WDDM_FENCE_INFO, ContextId, 48);",
+    ):
+        if manifest_entries.count(fence_info_assertion) != 1:
+            fail(f"WDDM private ABI fixture must lock the fence-info contract: {fence_info_assertion}")
     local_runner_path = WDDM_ABI_FIXTURE_DIR / "run-local.sh"
     local_runner = local_runner_path.read_text(encoding="utf-8")
     msvc_runner = (WDDM_ABI_FIXTURE_DIR / "run-msvc.cmd").read_text(encoding="utf-8")
@@ -2145,6 +2164,46 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     ):
         if escape_dispatch.count(fragment) != 1:
             fail(f"full WDDM Escape dispatch must keep its context/private fallback boundary: {fragment}")
+    for fragment in (
+        "escape->PrivateDriverDataSize==sizeof(VIOGPU_WDDM_FENCE_INFO)",
+        "returnQueryCompletedFenceInfo(reinterpret_cast<VioGpuDod*>(hAdapter),escape);",
+    ):
+        if escape_dispatch.count(fragment) != 1:
+            fail(f"Escape must dispatch the exact context completion endpoint: {fragment}")
+    completed_fence_query = canonical_code(function_body("QueryCompletedFenceInfo", WDDM_DDI_CODE))
+    for fragment in (
+        "escape->hDevice==NULL",
+        "escape->hContext==NULL",
+        "escape->Flags.Value!=0",
+        "escape->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_FENCE_INFO)",
+        "RtlCopyMemory(&request,escape->pPrivateDriverData,sizeof(request));",
+        "request.Opcode!=VIOGPU_WDDM_ESCAPE_GET_COMPLETED_FENCE",
+        "request.CompletedFence!=0",
+        "request.ResetGeneration!=0",
+        "request.ContextId!=0",
+        "!ExAcquireRundownProtection(&context->Operations)",
+        "context->Device!=device",
+        "!adapter->IsDriverActive()",
+        "VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext,&snapshot)",
+        "snapshot.ResetGeneration!=request.ExpectedResetGeneration",
+        "response.CompletedFence=QueryContextCompletedUmdFence(context);",
+        "RtlCopyMemory(escape->pPrivateDriverData,&response,sizeof(response));",
+        "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);",
+        "ExReleaseRundownProtection(&context->Operations);",
+    ):
+        if fragment not in completed_fence_query:
+            fail(f"completed-fence Escape must keep its exact context/generation contract: {fragment}")
+    completion_order = (
+        "ExAcquireRundownProtection(&context->Operations)",
+        "VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext,&snapshot)",
+        "response.CompletedFence=QueryContextCompletedUmdFence(context);",
+        "RtlCopyMemory(escape->pPrivateDriverData,&response,sizeof(response));",
+        "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);",
+        "ExReleaseRundownProtection(&context->Operations);",
+    )
+    completion_positions = [completed_fence_query.find(fragment) for fragment in completion_order]
+    if any(position < 0 for position in completion_positions) or completion_positions != sorted(completion_positions):
+        fail("completed-fence query must publish only while context and Native Context ownership are held")
 
     context_query_body = function_body("QueryContextInfo", WDDM_DDI_CODE)
     context_query = canonical_code(context_query_body)
@@ -3425,6 +3484,9 @@ def check_wddm_submission_lifetime() -> None:
         "volatileLONGSubmissionReferences;",
         "BOOLEANSubmissionClosing;",
         "LIST_ENTRYPendingSubmissions;",
+        "UINTUmdFenceHead;",
+        "UINTUmdFenceCount;",
+        "VIOGPU_WDDM_CONTEXT_FENCE_ENTRYUmdFences[VioGpuWddmContextFenceTrackerCapacity];",
     ):
         if context_header.count(field) != 1:
             fail(f"context lifetime must retain exactly one internal submission field: {field}")
@@ -3498,6 +3560,49 @@ def check_wddm_submission_lifetime() -> None:
     begin_context = canonical_code(function_body("BeginContextSubmissionRundown", WDDM_DDI_CODE))
     if "context->SubmissionClosing=TRUE;" not in begin_context or "context->SubmissionReferences!=0" not in begin_context:
         fail("context destruction must close publication before rejecting live submissions")
+    context_header = canonical_code(WDDM_DDI_HEADER_CODE)
+    for field in ("volatileLONGSubmittedUmdFence;", "volatileLONGCompletedUmdFence;"):
+        if context_header.count(field) != 1:
+            fail(f"each Native Context must retain one UMD fence endpoint: {field}")
+    record_context_fence = canonical_code(function_body("RecordContextUmdFence", WDDM_DDI_CODE))
+    for fragment in (
+        "fenceId==0",
+        "KeAcquireSpinLock(&context->SubmissionLock,&oldIrql);",
+        "!context->SubmissionClosing",
+        "static_cast<LONG>(fenceId-submitted)>0",
+        "InterlockedExchange(&context->SubmittedUmdFence,static_cast<LONG>(fenceId));",
+    ):
+        if fragment not in record_context_fence:
+            fail(f"UMD submit fence recording must be context-scoped and monotonic: {fragment}")
+    retire_context_fence = canonical_code(function_body("RetireContextUmdFence", WDDM_DDI_CODE))
+    require_order(
+        retire_context_fence,
+        (
+            "KeAcquireSpinLock(&context->SubmissionLock,&oldIrql);",
+            "context->UmdFenceCount!=0",
+            "context->UmdFences[index].State==VioGpuWddmContextFencePending",
+            "match->State=VioGpuWddmContextFenceRetired;",
+            "context->UmdFences[context->UmdFenceHead].State==VioGpuWddmContextFenceRetired",
+            "--context->UmdFenceCount;",
+            "InterlockedExchange(&context->CompletedUmdFence,static_cast<LONG>(completed));",
+            "KeReleaseSpinLock(&context->SubmissionLock,oldIrql);",
+        ),
+        "UMD completion must retire only tracked context fences and publish a contiguous prefix",
+    )
+    query_context_fence = canonical_code(function_body("QueryContextCompletedUmdFence", WDDM_DDI_CODE))
+    if "context->Signature==VIOGPU_WDDM_CONTEXT_SIGNATURE" not in query_context_fence or "context->CompletedUmdFence" not in query_context_fence:
+        fail("completed-fence query must read the context-owned endpoint under its lock")
+    invalidate_context_fence = canonical_code(function_body("InvalidateContextUmdFenceTracker", WDDM_DDI_CODE))
+    require_order(
+        invalidate_context_fence,
+        (
+            "context->UmdFenceHead=0;",
+            "context->UmdFenceCount=0;",
+            "RtlZeroMemory(context->UmdFences,sizeof(context->UmdFences));",
+            "InterlockedExchange(&context->SubmittedUmdFence,static_cast<LONG>(completed));",
+        ),
+        "a failed native enqueue must invalidate unaccepted context UMD fences without publishing completion",
+    )
     acquire_allocation = canonical_code(function_body("AcquireAllocationSubmissionReference", WDDM_DDI_CODE))
     for fragment in (
         "allocation->Adapter==adapter",
@@ -3570,6 +3675,13 @@ def check_wddm_submission_lifetime() -> None:
         ),
         "prepared submission must publish private-data identity and all callbacks under the context lock",
     )
+    for fragment in (
+        "header->CommandStreamSize<sizeof(MSM_CCMD_GEM_SUBMIT_REQ)",
+        "submission->UmdFenceId=submitRequest->fence;",
+        "submission->UmdFenceId==0",
+    ):
+        if fragment not in publish:
+            fail(f"prepared Native submission must retain its validated UMD fence token: {fragment}")
     quarantine = canonical_code(
         function_body_with_parameters(
             "QuarantineSubmission",
@@ -3714,7 +3826,9 @@ def check_wddm_submission_lifetime() -> None:
             "submission->PatchApplied",
             "InterlockedCompareExchange(&submission->State,VioGpuWddmSubmissionQueued,VioGpuWddmSubmissionPrepared)",
             "adapter->RecordNativeSubmissionFence(fenceId)",
+            "RecordContextUmdFence(submission->Context,submission->UmdFenceId)",
             "adapter->QueueNativeSubmit(buffer,fenceId)",
+            "InvalidateContextUmdFenceTracker(submission->Context)",
         ),
         "SubmitCommand must resolve exact private data before Prepared-to-Queued publication and enqueue",
     )
@@ -3741,6 +3855,7 @@ def check_wddm_submission_lifetime() -> None:
         "response->ctx_id==submission->ContextId",
         "response->ring_idx==1",
         "adapter->IsNativeContextGenerationCurrent(submission->Generation,submission->ResetGeneration)",
+        "RetireContextUmdFence(context,submission->UmdFenceId)",
         "ReleaseQueuedSubmission(submission,TRUE)",
         "adapter->NotifyNativeSubmissionCompletion(fenceId,nodeOrdinal,engineOrdinal,FALSE);",
         "adapter->NotifyNativeSubmissionFault(",

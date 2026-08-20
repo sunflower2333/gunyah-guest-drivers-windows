@@ -674,6 +674,127 @@ BOOLEAN ReleaseContextSubmissionReference(VIOGPU_WDDM_CONTEXT *context)
     return released;
 }
 
+BOOLEAN RecordContextUmdFence(VIOGPU_WDDM_CONTEXT *context, UINT fenceId)
+{
+    if (context == NULL || fenceId == 0)
+    {
+        return FALSE;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
+    UINT submitted = static_cast<UINT>(context->SubmittedUmdFence);
+    BOOLEAN valid = context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE && !context->SubmissionClosing &&
+                    context->UmdFenceCount < VioGpuWddmContextFenceTrackerCapacity &&
+                    (submitted == 0 || static_cast<LONG>(fenceId - submitted) > 0);
+    for (UINT offset = 0; valid && offset < context->UmdFenceCount; ++offset)
+    {
+        UINT index = (context->UmdFenceHead + offset) % VioGpuWddmContextFenceTrackerCapacity;
+        if (context->UmdFences[index].State != VioGpuWddmContextFenceFree &&
+            context->UmdFences[index].FenceId == fenceId)
+        {
+            valid = FALSE;
+        }
+    }
+    if (valid)
+    {
+        UINT tail = (context->UmdFenceHead + context->UmdFenceCount) % VioGpuWddmContextFenceTrackerCapacity;
+        context->UmdFences[tail].FenceId = fenceId;
+        context->UmdFences[tail].State = VioGpuWddmContextFencePending;
+        ++context->UmdFenceCount;
+        InterlockedExchange(&context->SubmittedUmdFence, static_cast<LONG>(fenceId));
+    }
+    KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
+    return valid;
+}
+
+BOOLEAN RetireContextUmdFence(VIOGPU_WDDM_CONTEXT *context, UINT fenceId)
+{
+    if (context == NULL || fenceId == 0)
+    {
+        return FALSE;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
+    BOOLEAN valid = context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE && context->UmdFenceCount != 0;
+    VIOGPU_WDDM_CONTEXT_FENCE_ENTRY *match = NULL;
+    if (valid)
+    {
+        for (UINT offset = 0; offset < context->UmdFenceCount; ++offset)
+        {
+            UINT index = (context->UmdFenceHead + offset) % VioGpuWddmContextFenceTrackerCapacity;
+            if (context->UmdFences[index].State == VioGpuWddmContextFencePending &&
+                context->UmdFences[index].FenceId == fenceId)
+            {
+                match = &context->UmdFences[index];
+                break;
+            }
+        }
+    }
+    if (match != NULL)
+    {
+        match->State = VioGpuWddmContextFenceRetired;
+        UINT completed = 0;
+        while (context->UmdFenceCount != 0 &&
+               context->UmdFences[context->UmdFenceHead].State == VioGpuWddmContextFenceRetired)
+        {
+            VIOGPU_WDDM_CONTEXT_FENCE_ENTRY *head = &context->UmdFences[context->UmdFenceHead];
+            completed = head->FenceId;
+            head->FenceId = 0;
+            head->State = VioGpuWddmContextFenceFree;
+            context->UmdFenceHead = (context->UmdFenceHead + 1) % VioGpuWddmContextFenceTrackerCapacity;
+            --context->UmdFenceCount;
+        }
+        if (completed != 0)
+        {
+            InterlockedExchange(&context->CompletedUmdFence, static_cast<LONG>(completed));
+        }
+    }
+    KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
+    return match != NULL;
+}
+
+/* A permanent queue failure begins adapter reset.  Any UMD fences which were
+ * published before the queue rejected the command must be removed from this
+ * context, otherwise a later GET_COMPLETED_FENCE could expose a completion
+ * endpoint for work that never entered the Host queue. */
+VOID InvalidateContextUmdFenceTracker(VIOGPU_WDDM_CONTEXT *context)
+{
+    if (context == NULL)
+    {
+        return;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
+    if (context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE)
+    {
+        UINT completed = static_cast<UINT>(context->CompletedUmdFence);
+        context->UmdFenceHead = 0;
+        context->UmdFenceCount = 0;
+        RtlZeroMemory(context->UmdFences, sizeof(context->UmdFences));
+        InterlockedExchange(&context->SubmittedUmdFence, static_cast<LONG>(completed));
+    }
+    KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
+}
+
+UINT QueryContextCompletedUmdFence(VIOGPU_WDDM_CONTEXT *context)
+{
+    if (context == NULL)
+    {
+        return 0;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
+    UINT completed = context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE
+                         ? static_cast<UINT>(context->CompletedUmdFence)
+                         : 0;
+    KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
+    return completed;
+}
+
 NTSTATUS BeginContextSubmissionRundown(VIOGPU_WDDM_CONTEXT *context)
 {
     if (context == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
@@ -889,7 +1010,8 @@ NTSTATUS PublishPreparedSubmission(VIOGPU_WDDM_SUBMISSION *submission,
         allocationCount > VioGpuWddmSubmissionAllocationLimit || allocationCount != header->AllocationReferenceCount ||
         dmaBuffer == NULL || dmaBufferSize < commandLength || dmaPrivateData == NULL ||
         dmaPrivateDataSize < sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) || commandLength == 0 ||
-        header->CommandStreamSize == 0 || header->CommandStreamOffset >= commandLength ||
+        header->CommandStreamSize < sizeof(MSM_CCMD_GEM_SUBMIT_REQ) ||
+        header->CommandStreamOffset >= commandLength ||
         header->CommandStreamSize > commandLength - header->CommandStreamOffset || virtioBuffer == NULL ||
         snapshot->ContextId == 0 || snapshot->Generation <= 0 || snapshot->ResetGeneration == 0 ||
         !snapshot->Adapter->IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration))
@@ -910,6 +1032,14 @@ NTSTATUS PublishPreparedSubmission(VIOGPU_WDDM_SUBMISSION *submission,
     submission->Generation = snapshot->Generation;
     submission->ResetGeneration = snapshot->ResetGeneration;
     submission->FenceId = 0;
+    const MSM_CCMD_GEM_SUBMIT_REQ *submitRequest = reinterpret_cast<const MSM_CCMD_GEM_SUBMIT_REQ *>(
+        static_cast<const BYTE *>(dmaBuffer) + header->CommandStreamOffset);
+    submission->UmdFenceId = submitRequest->fence;
+    if (submission->UmdFenceId == 0)
+    {
+        submission->Signature = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
     submission->VirtioBuffer = virtioBuffer;
     submission->Adapter = device->Adapter;
     submission->CommandStream = static_cast<BYTE *>(dmaBuffer) + header->CommandStreamOffset;
@@ -1096,6 +1226,11 @@ VOID NativeSubmissionComplete(_In_opt_ PVOID callbackContext)
                     response->padding[2] == 0 &&
                     adapter->IsNativeContextGenerationCurrent(submission->Generation, submission->ResetGeneration);
 
+    if (valid)
+    {
+        valid = RetireContextUmdFence(context, submission->UmdFenceId);
+    }
+
     if (!ReleaseQueuedSubmission(submission, TRUE))
     {
         return;
@@ -1125,6 +1260,7 @@ VOID NativeSubmissionCancelled(_In_opt_ PVOID callbackContext)
 
     /* Reset/close owns the GPU_VBUFFER in this path.  Release only the WDDM
      * context/allocation record, and never fabricate scheduler completion. */
+    InvalidateContextUmdFenceTracker(submission->Context);
     if (!QuarantineSubmission(submission, VioGpuWddmSubmissionPrepared, FALSE))
     {
         QuarantineSubmission(submission, VioGpuWddmSubmissionQueued, FALSE);
@@ -1145,6 +1281,7 @@ VOID NativeSubmissionQueueFailed(_In_opt_ PVOID callbackContext)
     UINT fenceId = static_cast<UINT>(submission->FenceId);
     UINT nodeOrdinal = submission->Context->NodeOrdinal;
     UINT engineOrdinal = 0;
+    InvalidateContextUmdFenceTracker(submission->Context);
     if (ReleaseQueuedSubmission(submission, FALSE))
     {
         adapter->NotifyNativeSubmissionFault(fenceId,
@@ -1622,6 +1759,99 @@ NTSTATUS QueryContextInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
     return status;
 }
 
+NTSTATUS QueryCompletedFenceInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+
+    if (adapter == NULL || escape == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || escape->hDevice == NULL ||
+        escape->hContext == NULL || escape->Flags.Value != 0 || escape->pPrivateDriverData == NULL ||
+        escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_FENCE_INFO))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    VIOGPU_WDDM_FENCE_INFO request = {};
+    __try
+    {
+        RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return STATUS_INVALID_USER_BUFFER;
+    }
+
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
+        request.Opcode != VIOGPU_WDDM_ESCAPE_GET_COMPLETED_FENCE)
+    {
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;
+    }
+    if (request.Flags != VIOGPU_WDDM_ESCAPE_FLAGS_NONE || request.ExpectedResetGeneration == 0 ||
+        request.CompletedFence != 0 || request.ResetGeneration != 0 || request.ContextId != 0 ||
+        request.Reserved != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(escape->hContext);
+    if (!ExAcquireRundownProtection(&context->Operations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    NTSTATUS status = STATUS_SUCCESS;
+    VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+    BOOLEAN snapshotAcquired = FALSE;
+    VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(escape->hDevice);
+    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Device != device ||
+        device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || device->Adapter != adapter)
+    {
+        status = STATUS_INVALID_HANDLE;
+    }
+    else if (!adapter->IsDriverActive())
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else
+    {
+        snapshotAcquired = TRUE;
+        if (snapshot.ResetGeneration != request.ExpectedResetGeneration || snapshot.ContextId == 0)
+        {
+            status = STATUS_DEVICE_NOT_READY;
+        }
+    }
+
+    if (NT_SUCCESS(status))
+    {
+        VIOGPU_WDDM_FENCE_INFO response = {};
+        InitializeAbiHeader(&response.Header, sizeof(response));
+        response.Opcode = VIOGPU_WDDM_ESCAPE_GET_COMPLETED_FENCE;
+        response.Flags = VIOGPU_WDDM_ESCAPE_FLAGS_NONE;
+        response.ExpectedResetGeneration = request.ExpectedResetGeneration;
+        response.CompletedFence = QueryContextCompletedUmdFence(context);
+        response.ResetGeneration = snapshot.ResetGeneration;
+        response.ContextId = snapshot.ContextId;
+        __try
+        {
+            RtlCopyMemory(escape->pPrivateDriverData, &response, sizeof(response));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            status = STATUS_INVALID_USER_BUFFER;
+        }
+    }
+
+    if (snapshotAcquired)
+    {
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+    }
+    ExReleaseRundownProtection(&context->Operations);
+    return status;
+}
+
 #pragma code_seg(pop)
 
 NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_RENDER_COMMAND *header,
@@ -1892,6 +2122,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
         return STATUS_INVALID_PARAMETER;
     }
 
+    if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_FENCE_INFO))
+    {
+        return QueryCompletedFenceInfo(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
+    }
     if (escape->hContext != NULL || escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_CONTEXT_INFO))
     {
         return QueryContextInfo(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
@@ -2591,6 +2825,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
     KeInitializeSpinLock(&context->SubmissionLock);
     context->SubmissionReferences = 0;
     context->SubmissionClosing = FALSE;
+    context->UmdFenceHead = 0;
+    context->UmdFenceCount = 0;
+    RtlZeroMemory(context->UmdFences, sizeof(context->UmdFences));
+    context->SubmittedUmdFence = 0;
+    context->CompletedUmdFence = 0;
     context->Device = device;
     context->RuntimeContext = NULL;
     context->NodeOrdinal = createContext->NodeOrdinal;
@@ -4368,12 +4607,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
         PGPU_VBUFFER buffer = submission->VirtioBuffer;
         UINT fenceId = submitCommand->SubmissionFenceId;
         BOOLEAN recorded = adapter->RecordNativeSubmissionFence(fenceId);
-        int queueResult = recorded ? adapter->QueueNativeSubmit(buffer, fenceId) : -1;
-        if (!recorded || queueResult < 0)
+        BOOLEAN umdFenceRecorded = recorded && RecordContextUmdFence(submission->Context, submission->UmdFenceId);
+        int queueResult = umdFenceRecorded ? adapter->QueueNativeSubmit(buffer, fenceId) : -1;
+        if (!recorded || !umdFenceRecorded || queueResult < 0)
         {
+            InvalidateContextUmdFenceTracker(submission->Context);
             ReleaseQueuedSubmission(submission, TRUE);
             adapter->NotifyNativeSubmissionFault(fenceId,
-                                                 recorded ? STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE
+                                                 recorded && umdFenceRecorded ? STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE
                                                           : STATUS_INSUFFICIENT_RESOURCES,
                                                  submitCommand->NodeOrdinal,
                                                  submitCommand->EngineOrdinal,

@@ -42,6 +42,10 @@ enum : USHORT
 enum : UINT
 {
     VioGpuWddmSubmissionAllocationLimit = 128,
+    /* Keep the context-scoped UMD fence queue bounded at the same order of
+     * magnitude as the Host scheduler tracker.  A full queue fails closed
+     * instead of allowing an untracked completion endpoint. */
+    VioGpuWddmContextFenceTrackerCapacity = 4096,
     VioGpuWddmPagingFlagPageIn = 1U << 0,
     VioGpuWddmPagingFlagPageOut = 1U << 1,
     VioGpuWddmPagingFlagFill = 1U << 2,
@@ -202,6 +206,21 @@ static_assert(FIELD_OFFSET(VIOGPU_WDDM_PAGING_PRIVATE, Header) == 0,
               "paging header must remain the private record prefix");
 static_assert(sizeof(VIOGPU_WDDM_PAGING_PRIVATE) <= PAGE_SIZE, "paging private record must fit one paging buffer");
 
+enum VIOGPU_WDDM_CONTEXT_FENCE_STATE : LONG
+{
+    VioGpuWddmContextFenceFree = 0,
+    VioGpuWddmContextFencePending,
+    VioGpuWddmContextFenceRetired,
+};
+
+struct VIOGPU_WDDM_CONTEXT_FENCE_ENTRY
+{
+    UINT FenceId;
+    VIOGPU_WDDM_CONTEXT_FENCE_STATE State;
+};
+
+static_assert(sizeof(VIOGPU_WDDM_CONTEXT_FENCE_ENTRY) == 8, "unexpected context fence entry size");
+
 struct VIOGPU_WDDM_DEVICE
 {
     ULONG Signature;
@@ -219,6 +238,11 @@ struct VIOGPU_WDDM_CONTEXT
     volatile LONG SubmissionReferences;
     BOOLEAN SubmissionClosing;
     LIST_ENTRY PendingSubmissions;
+    UINT UmdFenceHead;
+    UINT UmdFenceCount;
+    VIOGPU_WDDM_CONTEXT_FENCE_ENTRY UmdFences[VioGpuWddmContextFenceTrackerCapacity];
+    volatile LONG SubmittedUmdFence;
+    volatile LONG CompletedUmdFence;
     VIOGPU_WDDM_DEVICE *Device;
     HANDLE RuntimeContext;
     UINT NodeOrdinal;
@@ -258,6 +282,7 @@ struct VIOGPU_WDDM_SUBMISSION
     LONG Generation;
     ULONGLONG ResetGeneration;
     ULONGLONG FenceId;
+    UINT UmdFenceId;
     PGPU_VBUFFER VirtioBuffer;
     VioGpuDod *Adapter;
     PVOID CommandStream;
