@@ -909,15 +909,16 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
     seed = compact(
         function_body_with_parameters(
             "VioGpuSeedNativeControlResponse",
-            "_In_ VioGpuAdapter *adapter, _Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ ULONG sequence",
+            "_In_ VioGpuAdapter *adapter, _Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ ULONG sequence, "
+            "_In_ ULONG responseSize",
             adapter,
         )
     )
-    consume = compact(
+    copy = compact(
         function_body_with_parameters(
-            "VioGpuConsumeNativeControlResponse",
+            "VioGpuCopyNativeControlResponse",
             "_In_ VioGpuAdapter *adapter, _In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ ULONG sequence, "
-            "_In_ ULONG parameter, _Out_ PULONGLONG value",
+            "_Out_ PVOID response, _In_ ULONG responseSize",
             adapter,
         )
     )
@@ -928,7 +929,7 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
             adapter,
         )
     )
-    for owner, body in (("seed", seed), ("consume", consume), ("fault snapshot", faults_clear)):
+    for owner, body in (("seed", seed), ("copy", copy), ("fault snapshot", faults_clear)):
         if body.count("adapter->AcquireDrmHostPoolMapping(&mapping)") != 1 or body.count("mapping.Release();") != 1:
             fail(f"native response {owner} must hold exactly one mapping lease")
         if "KeWaitForSingleObject" in body or "SubmitNativeControl" in body or "PAGED_CODE" in body:
@@ -939,7 +940,7 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
         leave = body.find("KeLeaveGuardedRegion();")
         if min(enter, acquire_mapping, release_mapping, leave) < 0 or not enter < acquire_mapping < release_mapping < leave:
             fail(f"native response {owner} must keep APCs disabled across the complete mapping lease")
-    if seed.count("owner->ControlPoolGeneration=mapping.GetGeneration();") != 1 or consume.count(
+    if seed.count("owner->ControlPoolGeneration=mapping.GetGeneration();") != 1 or copy.count(
         "owner->ControlPoolGeneration==mapping.GetGeneration()"
     ) != 1:
         fail("native response leases must capture and revalidate one exact named-pool generation")

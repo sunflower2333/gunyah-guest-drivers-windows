@@ -1631,6 +1631,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
             context->ContextId = 0;
             context->VaStart = 0;
             context->VaSize = 0;
+            context->SubmitQueueId = 0;
             InterlockedExchange(&context->State, VioGpuNativeContextDead);""",
         """            context->Registered = FALSE;
             context->Adapter = NULL;
@@ -1638,6 +1639,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
             context->Generation = 0;
             context->ResetGeneration = 0;
             context->ContextId = 0;
+            context->SubmitQueueId = 0;
             InterlockedExchange(&context->State, VioGpuNativeContextDead);""",
     ),
     Rewrite(
@@ -1653,12 +1655,18 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
     KeEnterGuardedRegion();
     BOOLEAN acquired = adapter->AcquireDrmHostPoolMapping(&mapping);
     PMSM_SHMEM shmem = NULL;
-    PMSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP response = NULL;""",
+    PUCHAR response = NULL;
+    ULONG responseCapacity = 0;
+    BOOLEAN valid = acquired &&
+                    (owner->ControlPoolGeneration == 0 || owner->ControlPoolGeneration == mapping.GetGeneration()) &&""",
         """    VioGpuDrmHostPoolMapping mapping;
     KeEnterCriticalRegion();
     BOOLEAN acquired = adapter->AcquireDrmHostPoolMapping(&mapping);
     PMSM_SHMEM shmem = NULL;
-    PMSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP response = NULL;""",
+    PUCHAR response = NULL;
+    ULONG responseCapacity = 0;
+    BOOLEAN valid = acquired &&
+                    (owner->ControlPoolGeneration == 0 || owner->ControlPoolGeneration == mapping.GetGeneration()) &&""",
     ),
     Rewrite(
         "R156_control_consume_allows_special_apc",
@@ -1667,12 +1675,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation""",
     KeEnterGuardedRegion();
     BOOLEAN acquired = adapter->AcquireDrmHostPoolMapping(&mapping);
     PMSM_SHMEM shmem = NULL;
-    PMSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP sharedResponse = NULL;""",
+    PUCHAR sharedResponse = NULL;
+    ULONG responseCapacity = 0;""",
         """    VioGpuDrmHostPoolMapping mapping;
     KeEnterCriticalRegion();
     BOOLEAN acquired = adapter->AcquireDrmHostPoolMapping(&mapping);
     PMSM_SHMEM shmem = NULL;
-        PMSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP sharedResponse = NULL;""",
+    PUCHAR sharedResponse = NULL;
+    ULONG responseCapacity = 0;""",
     ),
     Rewrite(
         "R157_legacy_resource_ids_enter_native_range",
