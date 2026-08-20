@@ -146,8 +146,10 @@ struct VIOGPU_NATIVE_CONTEXT_OWNER
     ULONG ControlBlobSize;
     ULONG LastControlSeqno;
     ULONGLONG ControlPoolGeneration;
+    UINT SubmitQueueId;
     BOOLEAN ControlResourceCreated;
     BOOLEAN ControlMapped;
+    BOOLEAN SubmitQueueCreated;
 #endif
 };
 
@@ -171,6 +173,7 @@ struct VIOGPU_NATIVE_CONTEXT_REGISTRATION
     UINT ContextId;
     ULONGLONG VaStart;
     ULONGLONG VaSize;
+    UINT SubmitQueueId;
     ULONG AllocationReferences;
     LIST_ENTRY AllocationRanges;
     BOOLEAN Registered;
@@ -186,6 +189,7 @@ struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT
     UINT ContextId;
     ULONGLONG VaStart;
     ULONGLONG VaSize;
+    UINT SubmitQueueId;
 };
 
 enum VIOGPU_NATIVE_CONTEXT_STATE : LONG
@@ -398,6 +402,9 @@ class VioGpuAdapter : IVioGpuPCI
     VIOGPU_HOST_CONTEXT_RESULT QueryNativeContextParameterLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner,
                                                                  _In_ ULONG parameter,
                                                                  _Out_ PULONGLONG value);
+    VIOGPU_HOST_CONTEXT_RESULT CreateNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner,
+                                                             _Out_ PUINT queueId);
+    VIOGPU_HOST_CONTEXT_RESULT CloseNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner);
     VIOGPU_HOST_CONTEXT_RESULT DestroyNativeContextHostObjectsLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner);
 #endif
     BOOLEAN BeginNativeContextInitialization(void);

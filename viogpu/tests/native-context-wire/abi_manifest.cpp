@@ -14,12 +14,16 @@
 #define VIOGPU_WIRE_I32 int32_t
 #define VIOGPU_WIRE_U64 uint64_t
 #include "viogpu_3d_wire.h"
-#define ABI_CAPSET         struct virgl_renderer_capset_drm
-#define ABI_CAPSET_MSM     msm
-#define ABI_CAPSET_PADDING padding
-#define ABI_CAPSET_ID      VIRTIO_GPU_CAPSET_DRM
-#define ABI_GET_PARAM_REQ  struct msm_ccmd_ioctl_simple_get_param_req
-#define ABI_GET_PARAM_RSP  struct msm_ccmd_ioctl_simple_get_param_rsp
+#define ABI_CAPSET                struct virgl_renderer_capset_drm
+#define ABI_CAPSET_MSM            msm
+#define ABI_CAPSET_PADDING        padding
+#define ABI_CAPSET_ID             VIRTIO_GPU_CAPSET_DRM
+#define ABI_GET_PARAM_REQ         struct msm_ccmd_ioctl_simple_get_param_req
+#define ABI_GET_PARAM_RSP         struct msm_ccmd_ioctl_simple_get_param_rsp
+#define ABI_SUBMITQUEUE_NEW_REQ   struct msm_ccmd_ioctl_simple_submitqueue_new_req
+#define ABI_SUBMITQUEUE_NEW_RSP   struct msm_ccmd_ioctl_simple_submitqueue_new_rsp
+#define ABI_SUBMITQUEUE_CLOSE_REQ struct msm_ccmd_ioctl_simple_submitqueue_close_req
+#define ABI_SUBMITQUEUE_CLOSE_RSP struct msm_ccmd_ioctl_simple_submitqueue_close_rsp
 #else
 #include <linux/virtio_gpu.h>
 
@@ -54,10 +58,41 @@ struct abi_msm_ccmd_ioctl_simple_get_param_rsp
     int32_t ret;
     struct drm_msm_param param;
 };
+
+struct abi_msm_ccmd_ioctl_simple_submitqueue_new_req
+{
+    struct vdrm_ccmd_req hdr;
+    uint32_t ioctl_cmd;
+    struct drm_msm_submitqueue submitqueue;
+};
+
+struct abi_msm_ccmd_ioctl_simple_submitqueue_new_rsp
+{
+    struct vdrm_ccmd_rsp hdr;
+    int32_t ret;
+    struct drm_msm_submitqueue submitqueue;
+};
+
+struct abi_msm_ccmd_ioctl_simple_submitqueue_close_req
+{
+    struct vdrm_ccmd_req hdr;
+    uint32_t ioctl_cmd;
+    uint32_t queue_id;
+};
+
+struct abi_msm_ccmd_ioctl_simple_submitqueue_close_rsp
+{
+    struct vdrm_ccmd_rsp hdr;
+    int32_t ret;
+};
 #pragma pack(pop)
 
-#define ABI_GET_PARAM_REQ struct abi_msm_ccmd_ioctl_simple_get_param_req
-#define ABI_GET_PARAM_RSP struct abi_msm_ccmd_ioctl_simple_get_param_rsp
+#define ABI_GET_PARAM_REQ         struct abi_msm_ccmd_ioctl_simple_get_param_req
+#define ABI_GET_PARAM_RSP         struct abi_msm_ccmd_ioctl_simple_get_param_rsp
+#define ABI_SUBMITQUEUE_NEW_REQ   struct abi_msm_ccmd_ioctl_simple_submitqueue_new_req
+#define ABI_SUBMITQUEUE_NEW_RSP   struct abi_msm_ccmd_ioctl_simple_submitqueue_new_rsp
+#define ABI_SUBMITQUEUE_CLOSE_REQ struct abi_msm_ccmd_ioctl_simple_submitqueue_close_req
+#define ABI_SUBMITQUEUE_CLOSE_RSP struct abi_msm_ccmd_ioctl_simple_submitqueue_close_rsp
 #endif
 
 /*

@@ -1551,7 +1551,8 @@ NTSTATUS QueryContextInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
     if (request.Flags != VIOGPU_WDDM_ESCAPE_FLAGS_NONE || request.ExpectedResetGeneration == 0 ||
-        request.VaStart != 0 || request.VaSize != 0 || request.ResetGeneration != 0 || request.ContextId != 0)
+        request.VaStart != 0 || request.VaSize != 0 || request.ResetGeneration != 0 || request.ContextId != 0 ||
+        request.SubmitQueueId != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -1585,7 +1586,7 @@ NTSTATUS QueryContextInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
         ULONGLONG vaEnd = snapshot.VaStart + snapshot.VaSize;
         if (snapshot.ResetGeneration != request.ExpectedResetGeneration || snapshot.VaStart == 0 ||
             snapshot.VaSize == 0 || (snapshot.VaStart & (PAGE_SIZE - 1)) != 0 ||
-            (snapshot.VaSize & (PAGE_SIZE - 1)) != 0 || vaEnd < snapshot.VaStart)
+            (snapshot.VaSize & (PAGE_SIZE - 1)) != 0 || vaEnd < snapshot.VaStart || snapshot.SubmitQueueId == 0)
         {
             status = STATUS_DEVICE_NOT_READY;
         }
@@ -1602,6 +1603,7 @@ NTSTATUS QueryContextInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
         response.VaSize = snapshot.VaSize;
         response.ResetGeneration = snapshot.ResetGeneration;
         response.ContextId = snapshot.ContextId;
+        response.SubmitQueueId = snapshot.SubmitQueueId;
         __try
         {
             RtlCopyMemory(escape->pPrivateDriverData, &response, sizeof(response));
@@ -1739,10 +1741,11 @@ NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_RENDER_COMMAND *header,
 NTSTATUS ValidateNativeSubmitPacket(const VIOGPU_WDDM_RENDER_COMMAND *header,
                                     VIOGPU_WDDM_DEVICE *device,
                                     const DXGK_ALLOCATIONLIST *allocationList,
-                                    UINT allocationListSize)
+                                    UINT allocationListSize,
+                                    const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *nativeContext)
 {
-    if (header == NULL || device == NULL || allocationList == NULL ||
-        header->CommandStreamSize < sizeof(MSM_CCMD_GEM_SUBMIT_REQ) ||
+    if (header == NULL || device == NULL || allocationList == NULL || nativeContext == NULL ||
+        nativeContext->SubmitQueueId == 0 || header->CommandStreamSize < sizeof(MSM_CCMD_GEM_SUBMIT_REQ) ||
         (header->CommandStreamSize & (sizeof(UINT) - 1)) != 0)
     {
         return STATUS_ILLEGAL_INSTRUCTION;
@@ -1754,8 +1757,9 @@ NTSTATUS ValidateNativeSubmitPacket(const VIOGPU_WDDM_RENDER_COMMAND *header,
     if (request->hdr.cmd != MSM_CCMD_GEM_SUBMIT || request->hdr.len != header->CommandStreamSize ||
         request->hdr.seqno == 0 || request->hdr.rsp_off != 0 || request->flags == 0 ||
         (request->flags & ~validSubmitFlags) != 0 || (request->flags & MSM_PIPE_3D0) != MSM_PIPE_3D0 ||
-        request->queue_id == 0 || request->fence == 0 || request->nr_bos != header->AllocationReferenceCount ||
-        request->nr_bos == 0 || request->nr_bos > VioGpuWddmSubmissionAllocationLimit || request->nr_cmds == 0)
+        request->queue_id != nativeContext->SubmitQueueId || request->fence == 0 ||
+        request->nr_bos != header->AllocationReferenceCount || request->nr_bos == 0 ||
+        request->nr_bos > VioGpuWddmSubmissionAllocationLimit || request->nr_cmds == 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -3790,7 +3794,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
                 status = ValidateNativeSubmitPacket(command,
                                                     context->Device,
                                                     render->pAllocationList,
-                                                    render->AllocationListSize);
+                                                    render->AllocationListSize,
+                                                    &snapshot);
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)

@@ -108,6 +108,9 @@ enum virtio_gpu_ctrl_type
 #define MSM_PARAM_VA_START                       0x0eU
 #define MSM_PARAM_VA_SIZE                        0x0fU
 #define DRM_IOCTL_MSM_GET_PARAM                  0xc0186440U
+#define MSM_SUBMITQUEUE_ALLOW_PREEMPT            0x00000001U
+#define DRM_IOCTL_MSM_SUBMITQUEUE_NEW            0xc00c644aU
+#define DRM_IOCTL_MSM_SUBMITQUEUE_CLOSE          0x4004644bU
 
 #if defined(_MSC_VER)
 #pragma warning(push)
@@ -229,6 +232,40 @@ typedef struct msm_ccmd_ioctl_simple_get_param_rsp
     VIOGPU_WIRE_I32 ret;
     DRM_MSM_PARAM param;
 } MSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP, *PMSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP;
+
+typedef struct drm_msm_submitqueue
+{
+    VIOGPU_WIRE_U32 flags;
+    VIOGPU_WIRE_U32 prio;
+    VIOGPU_WIRE_U32 id;
+} DRM_MSM_SUBMITQUEUE, *PDRM_MSM_SUBMITQUEUE;
+
+typedef struct msm_ccmd_ioctl_simple_submitqueue_new_req
+{
+    VDRM_CCMD_REQ hdr;
+    VIOGPU_WIRE_U32 ioctl_cmd;
+    DRM_MSM_SUBMITQUEUE submitqueue;
+} MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_NEW_REQ, *PMSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_NEW_REQ;
+
+typedef struct msm_ccmd_ioctl_simple_submitqueue_new_rsp
+{
+    VDRM_CCMD_RSP hdr;
+    VIOGPU_WIRE_I32 ret;
+    DRM_MSM_SUBMITQUEUE submitqueue;
+} MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_NEW_RSP, *PMSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_NEW_RSP;
+
+typedef struct msm_ccmd_ioctl_simple_submitqueue_close_req
+{
+    VDRM_CCMD_REQ hdr;
+    VIOGPU_WIRE_U32 ioctl_cmd;
+    VIOGPU_WIRE_U32 queue_id;
+} MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_REQ, *PMSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_REQ;
+
+typedef struct msm_ccmd_ioctl_simple_submitqueue_close_rsp
+{
+    VDRM_CCMD_RSP hdr;
+    VIOGPU_WIRE_I32 ret;
+} MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP, *PMSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP;
 
 typedef struct msm_ccmd_gem_new_req
 {
@@ -377,6 +414,9 @@ VIOGPU_WIRE_ASSERT_VALUE(MSM_PIPE_3D0, 0x10);
 VIOGPU_WIRE_ASSERT_VALUE(MSM_PARAM_VA_START, 0x0e);
 VIOGPU_WIRE_ASSERT_VALUE(MSM_PARAM_VA_SIZE, 0x0f);
 VIOGPU_WIRE_ASSERT_VALUE(DRM_IOCTL_MSM_GET_PARAM, 0xc0186440ULL);
+VIOGPU_WIRE_ASSERT_VALUE(MSM_SUBMITQUEUE_ALLOW_PREEMPT, 1);
+VIOGPU_WIRE_ASSERT_VALUE(DRM_IOCTL_MSM_SUBMITQUEUE_NEW, 0xc00c644aULL);
+VIOGPU_WIRE_ASSERT_VALUE(DRM_IOCTL_MSM_SUBMITQUEUE_CLOSE, 0x4004644bULL);
 VIOGPU_WIRE_ASSERT_VALUE(MSM_CCMD_NOP, 1);
 VIOGPU_WIRE_ASSERT_VALUE(MSM_CCMD_IOCTL_SIMPLE, 2);
 VIOGPU_WIRE_ASSERT_VALUE(MSM_CCMD_GEM_NEW, 3);
@@ -434,6 +474,21 @@ VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_ioctl_simple_get_param_req, param, 20);
 VIOGPU_WIRE_ASSERT_SIZE(msm_ccmd_ioctl_simple_get_param_rsp, 32);
 VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_ioctl_simple_get_param_rsp, ret, 4);
 VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_ioctl_simple_get_param_rsp, param, 8);
+VIOGPU_WIRE_ASSERT_SIZE(drm_msm_submitqueue, 12);
+VIOGPU_WIRE_ASSERT_OFFSET(drm_msm_submitqueue, flags, 0);
+VIOGPU_WIRE_ASSERT_OFFSET(drm_msm_submitqueue, prio, 4);
+VIOGPU_WIRE_ASSERT_OFFSET(drm_msm_submitqueue, id, 8);
+VIOGPU_WIRE_ASSERT_SIZE(msm_ccmd_ioctl_simple_submitqueue_new_req, 32);
+VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_ioctl_simple_submitqueue_new_req, ioctl_cmd, 16);
+VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_ioctl_simple_submitqueue_new_req, submitqueue, 20);
+VIOGPU_WIRE_ASSERT_SIZE(msm_ccmd_ioctl_simple_submitqueue_new_rsp, 20);
+VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_ioctl_simple_submitqueue_new_rsp, ret, 4);
+VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_ioctl_simple_submitqueue_new_rsp, submitqueue, 8);
+VIOGPU_WIRE_ASSERT_SIZE(msm_ccmd_ioctl_simple_submitqueue_close_req, 24);
+VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_ioctl_simple_submitqueue_close_req, ioctl_cmd, 16);
+VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_ioctl_simple_submitqueue_close_req, queue_id, 20);
+VIOGPU_WIRE_ASSERT_SIZE(msm_ccmd_ioctl_simple_submitqueue_close_rsp, 8);
+VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_ioctl_simple_submitqueue_close_rsp, ret, 4);
 VIOGPU_WIRE_ASSERT_SIZE(msm_ccmd_gem_new_req, 40);
 VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_gem_new_req, iova, 16);
 VIOGPU_WIRE_ASSERT_OFFSET(msm_ccmd_gem_new_req, size, 24);
