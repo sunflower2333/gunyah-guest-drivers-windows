@@ -29,7 +29,6 @@
 #include "ParaNdis6.h"
 #include "kdebugprint.h"
 #include "ParaNdis_DebugHistory.h"
-#include "ParaNdis_RdmaPool.h"
 #include "Trace.h"
 #ifdef NETKVM_WPP_ENABLED
 #include "ParaNdis6_Impl.tmh"
@@ -113,19 +112,6 @@ BOOLEAN ParaNdis_InitialAllocatePhysicalMemory(PARANDIS_ADAPTER *pContext,
         return false;
     }
 #endif
-    /* Protected VM: RX/control DMA memory must come from the restricted pool. */
-    if (pContext->RdmaPoolActive)
-    {
-        pAddresses->Virtual = ParaNdis_RdmaPoolAllocate(pContext, ulSize, &pAddresses->Physical);
-        if (pAddresses->Virtual != NULL)
-        {
-            pAddresses->size = ulSize;
-            pContext->extraStatistics.allocatedSharedMemory += ulSize;
-            return TRUE;
-        }
-        return FALSE;
-    }
-
     NdisMAllocateSharedMemory(pContext->MiniportHandle, ulSize, TRUE, &pAddresses->Virtual, &pAddresses->Physical);
     if (pAddresses->Virtual != NULL)
     {
@@ -145,32 +131,9 @@ Parameters:
             about the allocation (size, addresses, cacheability etc)
             filled by ParaNdis_InitialAllocatePhysicalMemory
 ***********************************************************/
-NTSTATUS ParaNdis_FreePhysicalMemory(PARANDIS_ADAPTER *pContext, tCompletePhysicalAddress *pAddresses)
+VOID ParaNdis_FreePhysicalMemory(PARANDIS_ADAPTER *pContext, tCompletePhysicalAddress *pAddresses)
 {
-    NTSTATUS status;
-
-    if (pAddresses == NULL || pAddresses->Virtual == NULL || pAddresses->size == 0)
-    {
-        return STATUS_INVALID_PARAMETER;
-    }
-
-    status = ParaNdis_RdmaPoolFree(pContext, pAddresses->Virtual, pAddresses->size);
-    if (status != STATUS_NOT_FOUND)
-    {
-        if (NT_SUCCESS(status))
-        {
-            pAddresses->Virtual = NULL;
-            pAddresses->Physical.QuadPart = 0;
-            pAddresses->size = 0;
-        }
-        return status;
-    }
-
     NdisMFreeSharedMemory(pContext->MiniportHandle, pAddresses->size, TRUE, pAddresses->Virtual, pAddresses->Physical);
-    pAddresses->Virtual = NULL;
-    pAddresses->Physical.QuadPart = 0;
-    pAddresses->size = 0;
-    return STATUS_SUCCESS;
 }
 
 #if (NDIS_SUPPORT_NDIS620)

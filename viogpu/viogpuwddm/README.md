@@ -103,16 +103,16 @@ compile/link success here does not provide that behavior.
 
 The compile-only target now discovers exactly one `drm2kgsl_host` provider and
 one `gpu_guest` provider through the same versioned direct interface. It connects
-restricted DMA, `drm2kgsl_host`, and `gpu_guest`, in that order, before VirtIO
-initialization. Readiness and generation checks require both named pools. The
-discovery IOCTL exposes only name, GPA, and size. Provider and client rundown
-protection make a pool's kernel VA valid only inside a successful
+`drm2kgsl_host` and `gpu_guest`, in that order, before VirtIO initialization.
+Readiness and generation checks require both named pools. The discovery IOCTL
+exposes only name, GPA, and size. Provider and client rundown protection make a
+pool's kernel VA valid only inside a successful
 `AcquireMapping`/`ReleaseMapping` interval, and provider `ReleaseHardware` waits
 for those intervals before unmapping.
 
 The full target's single CPU-visible VidMm segment is published from the exact
 `gpu_guest` physical range. The stable Display-Only target retains its existing
-restricted-DMA fallback. This establishes only segment provenance; VidMm
+nonpaged/contiguous fallback. This establishes only segment provenance; VidMm
 placement, guest-backed blob creation, requested IOVA, and allocation teardown
 remain unimplemented.
 
@@ -158,16 +158,13 @@ releases its seed lease before the VirtIO wait, then reacquires and validates th
 same generation and sequence. General ring traffic remains blocked until its own
 release/acquire publication points and bounded access path are implemented.
 
-The current initialization transport tears down fail-closed. It releases every
-tracked control/display suballocation before issuing the RDMA arena FREE, clears
-the connection only after the provider confirms success, and retains the
-adapter plus cached failure after an error or timeout. It never retries an
-outcome-uncertain FREE. This avoids freeing potentially device-owned DMA, but it
-is not a complete removal contract: `DxgkDdiRemoveDevice` is required to free
-the miniport context, while the current failure path must retain that context
-because the inner adapter can still reference it. This conflict remains an
-explicit registration blocker, alongside the missing P2 guest-backed BO
-teardown implementation.
+The compile-only Native Context target uses ordinary contiguous/nonpaged
+fallback storage for VirtIO bookkeeping and does not acknowledge
+`VIRTIO_F_ACCESS_PLATFORM`. Its `gpu_guest`/`drm2kgsl_host` named-pool path
+remains compile-only until a product DMA mapping contract is proven. The target
+still tears down fail-closed and retains its adapter on ownership proof
+failure. This remains an explicit registration blocker alongside the missing
+P2 guest-backed BO teardown implementation.
 
 `VioGpuWddmBuildInitializationData` wires the existing display adapter,
 interrupt, power, cursor, EDID, and VidPN lifecycle into a full-miniport

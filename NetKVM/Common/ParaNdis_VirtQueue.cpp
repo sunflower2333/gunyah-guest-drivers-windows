@@ -52,8 +52,7 @@ bool CVirtQueue::Create(UINT Index, VirtIODevice *IODevice, NDIS_HANDLE DrvHandl
     m_Index = Index;
     m_IODevice = IODevice;
 
-    /* Pass the adapter so vring memory can come from the restricted DMA pool. */
-    m_SharedMemory.Initialize(DrvHandle, (PARANDIS_ADAPTER *)IODevice->DeviceContext);
+    m_SharedMemory.Initialize(DrvHandle);
 
     NETKVM_ASSERT(m_VirtQueue == nullptr);
 
@@ -107,8 +106,7 @@ bool CTXVirtQueue::PrepareBuffers()
                              m_SGTable,
                              SGTableCapacity,
                              m_Context->bUseIndirect ? true : false,
-                             m_Context->bAnyLayout ? true : false,
-                             m_Context))
+                             m_Context->bAnyLayout ? true : false))
         {
             CTXDescriptor::Destroy(TXDescr, m_Context->MiniportHandle);
             break;

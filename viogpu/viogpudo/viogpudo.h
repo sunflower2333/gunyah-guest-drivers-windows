@@ -31,7 +31,6 @@
 
 #include "viogpu.h"
 #include "viogpu_queue.h"
-#include "viogpu_rdma.h"
 #if defined(VIOGPU_WDDM_CI_ONLY)
 #include "viogpu_named_pool.h"
 #endif
@@ -48,8 +47,7 @@ typedef struct
     UINT FlexResolution : 1;
     UINT UsePhysicalMemory : 1;
     UINT UsePresentProgress : 1;
-    UINT RequireRestrictedDma : 1;
-    UINT Unused : 24;
+    UINT Unused : 25;
 } DRIVER_STATUS_FLAG;
 
 #pragma pack(pop)
@@ -272,10 +270,6 @@ class VioGpuAdapter : IVioGpuPCI
         return m_FrameSegment.GetSize();
     }
     PDXGKRNL_INTERFACE GetDxgkInterface(void);
-    PVOID AllocateDmaMemory(SIZE_T size, SIZE_T alignment);
-    void FreeDmaMemory(PVOID address);
-    PHYSICAL_ADDRESS GetDmaPhysicalAddress(PVOID address);
-    BOOLEAN IsRestrictedDmaActive(void);
     BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     /* Independent from the outer device rundown: D-state transitions keep
@@ -411,7 +405,6 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN CompleteNativeContextInitialization(void);
     NTSTATUS NegotiateNativeContextFeatures(void);
     NTSTATUS ProbeNativeContextReadiness(void);
-    NTSTATUS ConnectRestrictedDma(void);
 #if defined(VIOGPU_WDDM_CI_ONLY)
     NTSTATUS ConnectDrmHostPool(void);
     NTSTATUS ConnectGpuGuestPool(void);
@@ -458,7 +451,6 @@ class VioGpuAdapter : IVioGpuPCI
 
     VirtIODevice m_VioDev;
     CPciResources m_PciResources;
-    VioGpuRdmaPool m_RdmaPool;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     VioGpuDrmHostPool m_DrmHostPool;
     VioGpuGuestPool m_GpuGuestPool;
@@ -595,14 +587,6 @@ class VioGpuDod
     void SetUsePresentProgress(BOOLEAN enable)
     {
         m_Flags.UsePresentProgress = enable;
-    }
-    BOOLEAN IsRestrictedDmaRequired() const
-    {
-        return m_Flags.RequireRestrictedDma;
-    }
-    void SetRestrictedDmaRequired(BOOLEAN required)
-    {
-        m_Flags.RequireRestrictedDma = required;
     }
     void SetPersistentDispMode0Width(USHORT res)
     {

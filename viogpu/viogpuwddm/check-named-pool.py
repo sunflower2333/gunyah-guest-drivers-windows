@@ -828,12 +828,11 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
     stop = compact(function_body("VioGpuAdapter::StopNativeContextTransportLocked", adapter))
     destructor = compact(function_body("VioGpuAdapter::~VioGpuAdapter", adapter))
 
-    rdma = start.find("status=ConnectRestrictedDma();")
     host = start.find("status=ConnectDrmHostPool();")
     guest = start.find("status=ConnectGpuGuestPool();")
     virtio = start.find("status=VioGpuAdapterInit(pDispInfo);")
-    if min(rdma, host, guest, virtio) < 0 or not rdma < host < guest < virtio:
-        fail("adapter must connect restricted DMA, drm2kgsl_host, and gpu_guest before VirtIO initialization")
+    if min(host, guest, virtio) < 0 or not host < guest < virtio:
+        fail("adapter must connect drm2kgsl_host and gpu_guest before VirtIO initialization")
     require_once(
         connect_host,
         "returnConnectNamedPoolWithRetry(&m_DrmHostPool);",
@@ -872,12 +871,11 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
     guest_failure = stop.find("if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", guest_close)
     host_close = stop.find("status=m_DrmHostPool.Disconnect();")
     host_failure = stop.find("if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", host_close)
-    rdma_close = stop.find("status=m_RdmaPool.Disconnect();")
     offline = stop.find("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline);")
-    if min(guest_close, guest_failure, host_close, host_failure, rdma_close, offline) < 0 or not (
-        guest_close < guest_failure < host_close < host_failure < rdma_close < offline
+    if min(guest_close, guest_failure, host_close, host_failure, offline) < 0 or not (
+        guest_close < guest_failure < host_close < host_failure < offline
     ):
-        fail("teardown must release gpu_guest then drm2kgsl_host before RDMA and Offline publication")
+        fail("teardown must release gpu_guest then drm2kgsl_host before Offline publication")
     for member in ("m_DrmHostPool", "m_GpuGuestPool"):
         if destructor.count(f"{member}.HasConnectionOwner()") != 2:
             fail("destructor must detect and then assert release of both named-pool owners")
@@ -891,14 +889,15 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
         "#ifdefined(VIOGPU_WDDM_CI_ONLY)"
         "returnm_GpuGuestPool.QueryPhysicalRange(physicalAddress,size);"
         "#else"
-        "PVOIDbaseAddress=NULL;"
-        "returnm_RdmaPool.QueryVidMmSegment(&baseAddress,physicalAddress,size);"
+        "UNREFERENCED_PARAMETER(physicalAddress);"
+        "UNREFERENCED_PARAMETER(size);"
+        "returnFALSE;"
         "#endif"
     )
     require_once(
         query_segment,
         segment_branches,
-        "full WDDM must publish gpu_guest while stable Display-Only retains restricted-DMA provenance",
+        "full WDDM must publish gpu_guest while the Display-Only path has no pool provider dependency",
     )
 
     if adapter_text.count("AcquireDrmHostPoolMapping") != 4 or adapter_header_text.count(

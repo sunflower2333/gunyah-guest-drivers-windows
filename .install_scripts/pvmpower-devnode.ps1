@@ -4,9 +4,7 @@
 # sits in the PnP tree and receives system power IRPs. INF staging (pnputil
 # /add-driver, DISM /Add-Driver) does NOT create devnodes, so this script:
 #   1. creates the ROOT\PVMPOWER devnode via SetupAPI if it does not exist,
-#   2. removes the stale UpperFilters value on ACPI\RDMA0000 left behind by the
-#      short-lived filter-driver packaging of pvmpower (no-op normally),
-#   3. runs pnputil /scan-devices so PnP binds the staged driver to the devnode.
+#   2. runs pnputil /scan-devices so PnP binds the staged driver to the devnode.
 # Used by install-drivers.ps1 and by the image builder's first-boot flow.
 $ErrorActionPreference='Continue'
 
@@ -18,12 +16,8 @@ public static class PvmDevNode {
     public struct SP_DEVINFO_DATA { public uint cbSize; public Guid ClassGuid; public uint DevInst; public IntPtr Reserved; }
     [DllImport("setupapi.dll", SetLastError=true)]
     public static extern IntPtr SetupDiCreateDeviceInfoList(ref Guid ClassGuid, IntPtr hwndParent);
-    [DllImport("setupapi.dll", EntryPoint="SetupDiCreateDeviceInfoList", SetLastError=true)]
-    public static extern IntPtr SetupDiCreateDeviceInfoListNoClass(IntPtr ClassGuid, IntPtr hwndParent);
     [DllImport("setupapi.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern bool SetupDiCreateDeviceInfoW(IntPtr DeviceInfoSet, string DeviceName, ref Guid ClassGuid, string DeviceDescription, IntPtr hwndParent, uint CreationFlags, ref SP_DEVINFO_DATA DeviceInfoData);
-    [DllImport("setupapi.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-    public static extern bool SetupDiOpenDeviceInfoW(IntPtr DeviceInfoSet, string DeviceInstanceId, IntPtr hwndParent, uint OpenFlags, ref SP_DEVINFO_DATA DeviceInfoData);
     [DllImport("setupapi.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     public static extern bool SetupDiSetDeviceRegistryPropertyW(IntPtr DeviceInfoSet, ref SP_DEVINFO_DATA DeviceInfoData, uint Property, byte[] PropertyBuffer, uint PropertyBufferSize);
     [DllImport("setupapi.dll", SetLastError=true)]
@@ -32,7 +26,7 @@ public static class PvmDevNode {
     public static extern bool SetupDiDestroyDeviceInfoList(IntPtr DeviceInfoSet);
 }
 "@
-$DICD_GENERATE_ID = 1; $SPDRP_HARDWAREID = 1; $SPDRP_UPPERFILTERS = 0x11; $DIF_REGISTERDEVICE = 0x19
+$DICD_GENERATE_ID = 1; $SPDRP_HARDWAREID = 1; $DIF_REGISTERDEVICE = 0x19
 
 # --- 1. create ROOT\PVMPOWER devnode (persists across boots) ---
 $have = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'ROOT\PVMPOWER\*' }
@@ -66,28 +60,5 @@ if ($have) {
   }
 }
 
-# --- 2. drop the stale pvmpower UpperFilters value on ACPI\RDMA0000 (filter-era leftover) ---
-Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'ACPI\RDMA0000\*' } | ForEach-Object {
-  $iid = $_.InstanceId
-  $uf = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Enum\$iid" -Name UpperFilters -ErrorAction SilentlyContinue).UpperFilters
-  if ($uf -and ($uf -contains 'pvmpower')) {
-    Write-Host "removing stale UpperFilters=pvmpower from $iid"
-    $set2 = [PvmDevNode]::SetupDiCreateDeviceInfoListNoClass([IntPtr]::Zero, [IntPtr]::Zero)
-    if ($set2 -ne [IntPtr]::Zero -and $set2 -ne [IntPtr](-1)) {
-      try {
-        $dev2 = New-Object PvmDevNode+SP_DEVINFO_DATA
-        $dev2.cbSize = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][PvmDevNode+SP_DEVINFO_DATA])
-        if ([PvmDevNode]::SetupDiOpenDeviceInfoW($set2, $iid, [IntPtr]::Zero, 0, [ref]$dev2)) {
-          if (-not [PvmDevNode]::SetupDiSetDeviceRegistryPropertyW($set2, [ref]$dev2, $SPDRP_UPPERFILTERS, $null, 0)) {
-            Write-Host "  delete UpperFilters failed ($([Runtime.InteropServices.Marshal]::GetLastWin32Error()))" -ForegroundColor Red
-          }
-        }
-      } finally {
-        [void][PvmDevNode]::SetupDiDestroyDeviceInfoList($set2)
-      }
-    }
-  }
-}
-
-# --- 3. let PnP bind whatever is staged in the driver store to the new devnode ---
+# --- 2. let PnP bind whatever is staged in the driver store to the new devnode ---
 pnputil /scan-devices | Out-Null

@@ -365,6 +365,10 @@ VOID SetGuestFeatures(IN PVOID DeviceExtension)
     {
         guestFeatures |= (1ULL << VIRTIO_F_ANY_LAYOUT);
     }
+    if (CHECKBIT(adaptExt->features, VIRTIO_F_ACCESS_PLATFORM))
+    {
+        guestFeatures |= (1ULL << VIRTIO_F_ACCESS_PLATFORM);
+    }
     if (CHECKBIT(adaptExt->features, VIRTIO_RING_F_EVENT_IDX))
     {
         guestFeatures |= (1ULL << VIRTIO_RING_F_EVENT_IDX);

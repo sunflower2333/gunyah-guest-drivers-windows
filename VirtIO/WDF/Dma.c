@@ -34,313 +34,9 @@
 #include "VirtIOWdf.h"
 #include "private.h"
 #include <devpropdef.h>
-#include "rdmapool_interface.h"
 
 static EVT_WDF_OBJECT_CONTEXT_DESTROY OnDmaTransactionDestroy;
 static EVT_WDF_PROGRAM_DMA OnDmaTransactionProgramDma;
-
-/* Helper: check if a VA falls within the rdmapool region */
-static BOOLEAN IsRdmaPoolAddress(PVIRTIO_WDF_DRIVER pWdfDriver, PVOID va)
-{
-    ULONG_PTR addr;
-    ULONG_PTR base;
-
-    if (pWdfDriver->RdmaPoolBaseVA == NULL) {
-        return FALSE;
-    }
-    addr = (ULONG_PTR)va;
-    base = (ULONG_PTR)pWdfDriver->RdmaPoolBaseVA;
-    return addr >= base && (ULONG64)(addr - base) < pWdfDriver->RdmaPoolSize;
-}
-
-/* Tracking entry for rdmapool allocations */
-typedef struct _RDMAPOOL_ALLOC_ENTRY {
-    LIST_ENTRY ListEntry;
-    PVOID VirtualAddress;
-    ULONG NumPages;
-    ULONG64 AllocationToken;
-    ULONG GroupTag;
-    BOOLEAN FreeAttempted;
-    NTSTATUS FreeStatus;
-} RDMAPOOL_ALLOC_ENTRY, *PRDMAPOOL_ALLOC_ENTRY;
-
-#define RDMAPOOL_ALLOC_TAG 'ARDR'
-
-typedef struct _RDMAPOOL_IOCTL_RESULT {
-    NTSTATUS Status;
-    ULONG_PTR Information;
-    BOOLEAN Submitted;
-} RDMAPOOL_IOCTL_RESULT;
-
-static RDMAPOOL_IOCTL_RESULT RdmaPoolIoctl(PVIRTIO_WDF_DRIVER pWdfDriver, ULONG controlCode,
-                                           PVOID inputBuffer, ULONG inputLength, PVOID outputBuffer,
-                                           ULONG outputLength)
-{
-    RDMAPOOL_IOCTL_RESULT result = { STATUS_INSUFFICIENT_RESOURCES, 0, FALSE };
-    KEVENT event;
-    IO_STATUS_BLOCK iosb;
-    PIRP irp;
-    PIO_STACK_LOCATION irpStack;
-    NTSTATUS status;
-
-    KeInitializeEvent(&event, NotificationEvent, FALSE);
-    RtlZeroMemory(&iosb, sizeof(iosb));
-
-    irp = IoBuildDeviceIoControlRequest(controlCode, pWdfDriver->RdmaPoolDeviceObject, inputBuffer,
-                                        inputLength, outputBuffer, outputLength, FALSE, &event,
-                                        &iosb);
-
-    if (irp == NULL) {
-        return result;
-    }
-
-    irpStack = IoGetNextIrpStackLocation(irp);
-    irpStack->FileObject = pWdfDriver->RdmaPoolFileObject;
-
-    result.Submitted = TRUE;
-    status = IoCallDriver(pWdfDriver->RdmaPoolDeviceObject, irp);
-    if (status == STATUS_PENDING) {
-        status = KeWaitForSingleObject(&event, Executive, KernelMode, FALSE, NULL);
-        if (NT_SUCCESS(status)) {
-            status = iosb.Status;
-        }
-    }
-    result.Status = status;
-    result.Information = iosb.Information;
-    return result;
-}
-
-static BOOLEAN ValidateRdmaPoolAllocation(PVIRTIO_WDF_DRIVER pWdfDriver,
-                                          const RDMAPOOL_ALLOCATE_OUTPUT *output,
-                                          ULONG expectedPages)
-{
-    ULONG_PTR baseVa = (ULONG_PTR)pWdfDriver->RdmaPoolBaseVA;
-    ULONG_PTR allocationVa = (ULONG_PTR)output->VirtualAddress;
-    ULONG64 basePa = (ULONG64)pWdfDriver->RdmaPoolBasePA.QuadPart;
-    ULONG64 allocationPa;
-    ULONG64 allocationSize = (ULONG64)expectedPages * PAGE_SIZE;
-    ULONG64 vaOffset;
-    ULONG64 paOffset;
-
-    if (output->InterfaceVersion != RDMAPOOL_INTERFACE_VERSION_V2 ||
-        output->NumPages != expectedPages || output->AllocationToken == 0 ||
-        output->VirtualAddress == NULL || (allocationVa & (PAGE_SIZE - 1)) != 0 ||
-        output->PhysicalAddress.QuadPart < 0 || allocationVa < baseVa ||
-        allocationSize > pWdfDriver->RdmaPoolSize) {
-        return FALSE;
-    }
-
-    allocationPa = (ULONG64)output->PhysicalAddress.QuadPart;
-    if ((allocationPa & (PAGE_SIZE - 1)) != 0 || allocationPa < basePa) {
-        return FALSE;
-    }
-
-    vaOffset = (ULONG64)(allocationVa - baseVa);
-    paOffset = allocationPa - basePa;
-    return vaOffset == paOffset && vaOffset <= pWdfDriver->RdmaPoolSize - allocationSize;
-}
-
-static NTSTATUS FreeRdmaPoolEntryLocked(PVIRTIO_WDF_DRIVER pWdfDriver, PRDMAPOOL_ALLOC_ENTRY entry)
-{
-    RDMAPOOL_FREE_INPUT freeInput;
-    RDMAPOOL_IOCTL_RESULT ioctlResult;
-
-    if (entry->FreeAttempted) {
-        return entry->FreeStatus;
-    }
-
-    RtlZeroMemory(&freeInput, sizeof(freeInput));
-    freeInput.InterfaceVersion = RDMAPOOL_INTERFACE_VERSION_V2;
-    freeInput.NumPages = entry->NumPages;
-    freeInput.VirtualAddress = entry->VirtualAddress;
-    freeInput.AllocationToken = entry->AllocationToken;
-
-    ioctlResult = RdmaPoolIoctl(pWdfDriver, (ULONG)IOCTL_RDMAPOOL_FREE, &freeInput,
-                                sizeof(freeInput), NULL, 0);
-    if (!ioctlResult.Submitted) {
-        entry->FreeStatus = ioctlResult.Status;
-        return entry->FreeStatus;
-    }
-    entry->FreeAttempted = TRUE;
-    entry->FreeStatus = NT_SUCCESS(ioctlResult.Status) && ioctlResult.Information != 0 ?
-                            STATUS_DATA_ERROR :
-                            ioctlResult.Status;
-    if (!NT_SUCCESS(entry->FreeStatus)) {
-        pWdfDriver->RdmaPoolClosing = TRUE;
-    }
-    return entry->FreeStatus;
-}
-
-static BOOLEAN GetTrackedRdmaPoolPhysicalAddress(PVIRTIO_WDF_DRIVER pWdfDriver, PVOID va,
-                                                 PHYSICAL_ADDRESS *pa)
-{
-    PLIST_ENTRY listEntry;
-    ULONG_PTR address = (ULONG_PTR)va;
-    BOOLEAN found = FALSE;
-
-    pa->QuadPart = 0;
-    if (!pWdfDriver->RdmaPoolActive || pWdfDriver->RdmaPoolBaseVA == NULL) {
-        return FALSE;
-    }
-
-    WdfSpinLockAcquire(pWdfDriver->DmaSpinlock);
-    for (listEntry = pWdfDriver->RdmaPoolAllocList.Flink;
-         listEntry != &pWdfDriver->RdmaPoolAllocList; listEntry = listEntry->Flink) {
-        PRDMAPOOL_ALLOC_ENTRY allocation =
-            CONTAINING_RECORD(listEntry, RDMAPOOL_ALLOC_ENTRY, ListEntry);
-        ULONG_PTR allocationBase = (ULONG_PTR)allocation->VirtualAddress;
-        ULONG64 allocationSize = (ULONG64)allocation->NumPages * PAGE_SIZE;
-
-        if (!allocation->FreeAttempted && address >= allocationBase &&
-            (ULONG64)(address - allocationBase) < allocationSize) {
-            pa->QuadPart = pWdfDriver->RdmaPoolBasePA.QuadPart +
-                           (address - (ULONG_PTR)pWdfDriver->RdmaPoolBaseVA);
-            found = TRUE;
-            break;
-        }
-    }
-    WdfSpinLockRelease(pWdfDriver->DmaSpinlock);
-    return found;
-}
-
-static NTSTATUS FreeTrackedRdmaPoolAllocation(PVIRTIO_WDF_DRIVER pWdfDriver, PVOID va)
-{
-    PLIST_ENTRY listEntry;
-    PRDMAPOOL_ALLOC_ENTRY allocation = NULL;
-    NTSTATUS status = STATUS_NOT_FOUND;
-
-    if (KeGetCurrentIrql() != PASSIVE_LEVEL || pWdfDriver->RdmaPoolIoctlLock == NULL) {
-        return STATUS_INVALID_DEVICE_STATE;
-    }
-
-    WdfWaitLockAcquire(pWdfDriver->RdmaPoolIoctlLock, NULL);
-    WdfSpinLockAcquire(pWdfDriver->DmaSpinlock);
-    for (listEntry = pWdfDriver->RdmaPoolAllocList.Flink;
-         listEntry != &pWdfDriver->RdmaPoolAllocList; listEntry = listEntry->Flink) {
-        PRDMAPOOL_ALLOC_ENTRY candidate =
-            CONTAINING_RECORD(listEntry, RDMAPOOL_ALLOC_ENTRY, ListEntry);
-        if (candidate->VirtualAddress == va) {
-            allocation = candidate;
-            break;
-        }
-    }
-    WdfSpinLockRelease(pWdfDriver->DmaSpinlock);
-
-    if (allocation != NULL) {
-        status = FreeRdmaPoolEntryLocked(pWdfDriver, allocation);
-        if (NT_SUCCESS(status)) {
-            WdfSpinLockAcquire(pWdfDriver->DmaSpinlock);
-            RemoveEntryList(&allocation->ListEntry);
-            WdfSpinLockRelease(pWdfDriver->DmaSpinlock);
-        }
-    }
-    WdfWaitLockRelease(pWdfDriver->RdmaPoolIoctlLock);
-
-    if (allocation != NULL && NT_SUCCESS(status)) {
-        ExFreePoolWithTag(allocation, RDMAPOOL_ALLOC_TAG);
-    }
-    return status;
-}
-
-/* Allocate DMA memory from rdmapool via IOCTL */
-static void *AllocateFromRdmaPool(PVIRTIO_WDF_DRIVER pWdfDriver, size_t size, ULONG groupTag)
-{
-    RDMAPOOL_ALLOCATE_INPUT allocInput;
-    RDMAPOOL_ALLOCATE_OUTPUT allocOutput;
-    PRDMAPOOL_ALLOC_ENTRY entry;
-    ULONG64 pageCount;
-    RDMAPOOL_IOCTL_RESULT ioctlResult;
-
-    if (KeGetCurrentIrql() != PASSIVE_LEVEL || size == 0 || pWdfDriver->RdmaPoolIoctlLock == NULL) {
-        return NULL;
-    }
-
-    pageCount = (ULONG64)(size / PAGE_SIZE) + ((size % PAGE_SIZE) != 0);
-    if (pageCount == 0 || pageCount > MAXULONG) {
-        return NULL;
-    }
-
-    entry = (PRDMAPOOL_ALLOC_ENTRY)ExAllocatePoolUninitialized(NonPagedPool, sizeof(*entry),
-                                                               RDMAPOOL_ALLOC_TAG);
-    if (entry == NULL) {
-        return NULL;
-    }
-    RtlZeroMemory(entry, sizeof(*entry));
-
-    RtlZeroMemory(&allocInput, sizeof(allocInput));
-    RtlZeroMemory(&allocOutput, sizeof(allocOutput));
-    allocInput.InterfaceVersion = RDMAPOOL_INTERFACE_VERSION_V2;
-    allocInput.NumPages = (ULONG)pageCount;
-
-    WdfWaitLockAcquire(pWdfDriver->RdmaPoolIoctlLock, NULL);
-    if (!pWdfDriver->RdmaPoolActive || pWdfDriver->RdmaPoolClosing ||
-        pWdfDriver->RdmaPoolFileObject == NULL) {
-        WdfWaitLockRelease(pWdfDriver->RdmaPoolIoctlLock);
-        ExFreePoolWithTag(entry, RDMAPOOL_ALLOC_TAG);
-        return NULL;
-    }
-
-    ioctlResult = RdmaPoolIoctl(pWdfDriver, (ULONG)IOCTL_RDMAPOOL_ALLOCATE, &allocInput,
-                                sizeof(allocInput), &allocOutput, sizeof(allocOutput));
-
-    if (!NT_SUCCESS(ioctlResult.Status)) {
-        DPrintf(0, "%s: IOCTL_RDMAPOOL_ALLOCATE failed 0x%x (size=0x%x)\n", __FUNCTION__,
-                ioctlResult.Status, (ULONG)size);
-        WdfWaitLockRelease(pWdfDriver->RdmaPoolIoctlLock);
-        ExFreePoolWithTag(entry, RDMAPOOL_ALLOC_TAG);
-        return NULL;
-    }
-
-    entry->VirtualAddress = allocOutput.VirtualAddress;
-    entry->NumPages = allocOutput.NumPages;
-    entry->AllocationToken = allocOutput.AllocationToken;
-    entry->GroupTag = groupTag;
-
-    if (ioctlResult.Information != sizeof(allocOutput) ||
-        !ValidateRdmaPoolAllocation(pWdfDriver, &allocOutput, allocInput.NumPages)) {
-        NTSTATUS rollbackStatus = STATUS_INVALID_PARAMETER;
-        BOOLEAN hasOwnerTuple =
-            entry->VirtualAddress != NULL && entry->NumPages != 0 && entry->AllocationToken != 0;
-
-        if (hasOwnerTuple) {
-            rollbackStatus = FreeRdmaPoolEntryLocked(pWdfDriver, entry);
-        }
-        if (NT_SUCCESS(rollbackStatus)) {
-            WdfWaitLockRelease(pWdfDriver->RdmaPoolIoctlLock);
-            ExFreePoolWithTag(entry, RDMAPOOL_ALLOC_TAG);
-        } else if (!hasOwnerTuple) {
-            /* A successful but malformed response may still have published an
-             * allocation whose identity cannot be expressed by V2 FREE. Keep
-             * the connection poisoned until shutdown can close the file after
-             * all device DMA and queue access has stopped. */
-            pWdfDriver->RdmaPoolClosing = TRUE;
-            pWdfDriver->RdmaPoolOwnerUnknown = TRUE;
-            WdfWaitLockRelease(pWdfDriver->RdmaPoolIoctlLock);
-            ExFreePoolWithTag(entry, RDMAPOOL_ALLOC_TAG);
-            DPrintf(0, "%s: malformed ALLOCATE omitted the owner tuple; file close required\n",
-                    __FUNCTION__);
-        } else {
-            WdfSpinLockAcquire(pWdfDriver->DmaSpinlock);
-            InsertTailList(&pWdfDriver->RdmaPoolAllocList, &entry->ListEntry);
-            pWdfDriver->RdmaPoolClosing = TRUE;
-            WdfSpinLockRelease(pWdfDriver->DmaSpinlock);
-            WdfWaitLockRelease(pWdfDriver->RdmaPoolIoctlLock);
-            DPrintf(0, "%s: malformed ALLOCATE rollback failed 0x%x; retaining owner\n",
-                    __FUNCTION__, rollbackStatus);
-        }
-        return NULL;
-    }
-
-    WdfSpinLockAcquire(pWdfDriver->DmaSpinlock);
-    InsertTailList(&pWdfDriver->RdmaPoolAllocList, &entry->ListEntry);
-    WdfSpinLockRelease(pWdfDriver->DmaSpinlock);
-    WdfWaitLockRelease(pWdfDriver->RdmaPoolIoctlLock);
-
-    DPrintf(1, "%s: rdmapool alloc VA=%p PA=0x%llx size=0x%x\n", __FUNCTION__,
-            allocOutput.VirtualAddress, allocOutput.PhysicalAddress.QuadPart, (ULONG)size);
-
-    return allocOutput.VirtualAddress;
-}
 
 static void *AllocateCommonBuffer(PVIRTIO_WDF_DRIVER pWdfDriver, size_t size, ULONG groupTag)
 {
@@ -383,14 +79,7 @@ static void *AllocateCommonBuffer(PVIRTIO_WDF_DRIVER pWdfDriver, size_t size, UL
 
 void *VirtIOWdfDeviceAllocDmaMemory(VirtIODevice *vdev, size_t size, ULONG groupTag)
 {
-    PVIRTIO_WDF_DRIVER pWdfDriver = vdev->DeviceContext;
-
-    /* If restricted DMA pool is active, allocate from it */
-    if (pWdfDriver->RdmaPoolActive) {
-        return AllocateFromRdmaPool(pWdfDriver, size, groupTag);
-    }
-
-    return AllocateCommonBuffer(pWdfDriver, size, groupTag);
+    return AllocateCommonBuffer(vdev->DeviceContext, size, groupTag);
 }
 
 static BOOLEAN FindCommonBuffer(PVIRTIO_WDF_DRIVER pWdfDriver, void *p, PHYSICAL_ADDRESS *ppa,
@@ -456,37 +145,14 @@ static PHYSICAL_ADDRESS GetPhysicalAddress(PVIRTIO_WDF_DRIVER pWdfDriver, PVOID 
 
 PHYSICAL_ADDRESS VirtIOWdfDeviceGetPhysicalAddress(VirtIODevice *vdev, void *va)
 {
-    PVIRTIO_WDF_DRIVER pWdfDriver = vdev->DeviceContext;
-
-    /* Pool-wide bounds are insufficient: another file owner may hold the VA. */
-    if (IsRdmaPoolAddress(pWdfDriver, va)) {
-        PHYSICAL_ADDRESS pa;
-        if (!GetTrackedRdmaPoolPhysicalAddress(pWdfDriver, va, &pa)) {
-            DPrintf(0, "%s: VA=%p is not a live rdmapool allocation\n", __FUNCTION__, va);
-        }
-        return pa;
-    }
-
-    return GetPhysicalAddress(pWdfDriver, va);
+    return GetPhysicalAddress(vdev->DeviceContext, va);
 }
 
 void VirtIOWdfDeviceFreeDmaMemory(VirtIODevice *vdev, void *va)
 {
-    PVIRTIO_WDF_DRIVER pWdfDriver = vdev->DeviceContext;
-
-    /* If the VA is within the rdmapool region, free it there */
-    if (IsRdmaPoolAddress(pWdfDriver, va)) {
-        NTSTATUS status = FreeTrackedRdmaPoolAllocation(pWdfDriver, va);
-        if (!NT_SUCCESS(status)) {
-            DPrintf(0, "%s: rdmapool FREE VA=%p failed 0x%x; record retained\n", __FUNCTION__, va,
-                    status);
-        }
-        return;
-    }
-
     PHYSICAL_ADDRESS pa;
     size_t offset;
-    FindCommonBuffer(pWdfDriver, va, &pa, &offset, TRUE);
+    FindCommonBuffer(vdev->DeviceContext, va, &pa, &offset, TRUE);
 }
 
 static BOOLEAN FindCommonBufferByTag(PVIRTIO_WDF_DRIVER pWdfDriver, ULONG tag)
@@ -522,8 +188,6 @@ static BOOLEAN FindCommonBufferByTag(PVIRTIO_WDF_DRIVER pWdfDriver, ULONG tag)
 
 void VirtIOWdfDeviceFreeDmaMemoryByTag(VirtIODevice *vdev, ULONG groupTag)
 {
-    PVIRTIO_WDF_DRIVER pWdfDriver;
-
     if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
         DPrintf(0, "%s FAILED(irql)\n", __FUNCTION__);
         return;
@@ -536,48 +200,14 @@ void VirtIOWdfDeviceFreeDmaMemoryByTag(VirtIODevice *vdev, ULONG groupTag)
         DPrintf(0, "%s was not initialized\n", __FUNCTION__);
         return;
     }
-    pWdfDriver = vdev->DeviceContext;
-
-    for (;;) {
-        PLIST_ENTRY listEntry;
-        PVOID address = NULL;
-
-        WdfSpinLockAcquire(pWdfDriver->DmaSpinlock);
-        for (listEntry = pWdfDriver->RdmaPoolAllocList.Flink;
-             listEntry != &pWdfDriver->RdmaPoolAllocList; listEntry = listEntry->Flink) {
-            PRDMAPOOL_ALLOC_ENTRY candidate =
-                CONTAINING_RECORD(listEntry, RDMAPOOL_ALLOC_ENTRY, ListEntry);
-            if (candidate->GroupTag == groupTag) {
-                address = candidate->VirtualAddress;
-                break;
-            }
-        }
-        WdfSpinLockRelease(pWdfDriver->DmaSpinlock);
-
-        if (address == NULL) {
-            break;
-        }
-        if (!NT_SUCCESS(FreeTrackedRdmaPoolAllocation(pWdfDriver, address))) {
-            break;
-        }
-    }
     while (FindCommonBufferByTag(vdev->DeviceContext, groupTag))
         ;
 }
 
 static void FreeSlicedBlock(PVIRTIO_DMA_MEMORY_SLICED p)
 {
-    /* If rdmapool is active and this VA is in the pool, free via rdmapool */
-    if (IsRdmaPoolAddress(p->drv, p->va)) {
-        NTSTATUS status = FreeTrackedRdmaPoolAllocation(p->drv, p->va);
-        if (!NT_SUCCESS(status)) {
-            DPrintf(0, "%s: rdmapool FREE VA=%p failed 0x%x; record retained\n", __FUNCTION__,
-                    p->va, status);
-        }
-    } else {
-        size_t offset;
-        FindCommonBuffer(p->drv, p->va, &p->pa, &offset, TRUE);
-    }
+    size_t offset;
+    FindCommonBuffer(p->drv, p->va, &p->pa, &offset, TRUE);
     ExFreePoolWithTag(p, p->drv->MemoryTag);
 }
 
@@ -594,19 +224,12 @@ static PVOID AllocateSlice(PVIRTIO_DMA_MEMORY_SLICED p, PHYSICAL_ADDRESS *ppa)
 
 static void FreeSlice(PVIRTIO_DMA_MEMORY_SLICED p, PVOID va)
 {
+    PHYSICAL_ADDRESS pa;
     size_t offset;
-
-    /* For rdmapool addresses, compute offset directly */
-    if (IsRdmaPoolAddress(p->drv, va)) {
-        offset = (ULONG_PTR)va - (ULONG_PTR)p->va;
-    } else {
-        PHYSICAL_ADDRESS pa;
-        if (!FindCommonBuffer(p->drv, va, &pa, &offset, FALSE)) {
-            DPrintf(0, "%s: block with va %p not found\n", __FUNCTION__, va);
-            return;
-        }
+    if (!FindCommonBuffer(p->drv, va, &pa, &offset, FALSE)) {
+        DPrintf(0, "%s: block with va %p not found\n", __FUNCTION__, va);
+        return;
     }
-
     if (offset % p->slice) {
         DPrintf(0, "%s: offset %d is wrong for slice %d\n", __FUNCTION__, (ULONG)offset, p->slice);
         return;
@@ -632,21 +255,9 @@ PVIRTIO_DMA_MEMORY_SLICED VirtIOWdfDeviceAllocDmaMemorySliced(VirtIODevice *vdev
     }
     __analysis_assume(allocSize > sizeof(*p));
     RtlZeroMemory(p, sizeof(*p));
-
-    /* Allocate the backing DMA buffer */
-    if (pWdfDriver->RdmaPoolActive) {
-        p->va = AllocateFromRdmaPool(pWdfDriver, blockSize, 0);
-        if (p->va) {
-            /* Compute PA directly from pool base offsets */
-            p->pa.QuadPart = pWdfDriver->RdmaPoolBasePA.QuadPart +
-                             ((ULONG_PTR)p->va - (ULONG_PTR)pWdfDriver->RdmaPoolBaseVA);
-        }
-    } else {
-        p->va = AllocateCommonBuffer(pWdfDriver, blockSize, 0);
-        p->pa = GetPhysicalAddress(pWdfDriver, p->va);
-    }
-
-    if (!p->va) {
+    p->va = AllocateCommonBuffer(pWdfDriver, blockSize, 0);
+    p->pa = GetPhysicalAddress(pWdfDriver, p->va);
+    if (!p->va || !p->pa.QuadPart) {
         ExFreePoolWithTag(p, pWdfDriver->MemoryTag);
         return NULL;
     }
@@ -657,64 +268,6 @@ PVIRTIO_DMA_MEMORY_SLICED VirtIOWdfDeviceAllocDmaMemorySliced(VirtIODevice *vdev
     p->get_slice = AllocateSlice;
     p->destroy = FreeSlicedBlock;
     return p;
-}
-
-NTSTATUS VirtIOWdfReleaseRdmaPoolAllocations(PVIRTIO_WDF_DRIVER pWdfDriver)
-{
-    NTSTATUS firstFailure = STATUS_SUCCESS;
-
-    if (pWdfDriver->RdmaPoolIoctlLock == NULL) {
-        return STATUS_SUCCESS;
-    }
-
-    WdfWaitLockAcquire(pWdfDriver->RdmaPoolIoctlLock, NULL);
-    pWdfDriver->RdmaPoolClosing = TRUE;
-    if (pWdfDriver->RdmaPoolOwnerUnknown) {
-        /* This is called only after VirtIOWdfShutdown has reset the device and
-         * deleted every queue. Closing the sole file owner is therefore the
-         * only safe recovery for an allocation whose V2 identity was malformed. */
-        if (pWdfDriver->RdmaPoolFileObject == NULL) {
-            WdfWaitLockRelease(pWdfDriver->RdmaPoolIoctlLock);
-            return STATUS_INVALID_DEVICE_STATE;
-        }
-        ObDereferenceObject(pWdfDriver->RdmaPoolFileObject);
-        pWdfDriver->RdmaPoolFileObject = NULL;
-        pWdfDriver->RdmaPoolDeviceObject = NULL;
-        pWdfDriver->RdmaPoolOwnerUnknown = FALSE;
-        while (!IsListEmpty(&pWdfDriver->RdmaPoolAllocList)) {
-            PLIST_ENTRY listEntry = RemoveHeadList(&pWdfDriver->RdmaPoolAllocList);
-            ExFreePoolWithTag(CONTAINING_RECORD(listEntry, RDMAPOOL_ALLOC_ENTRY, ListEntry),
-                              RDMAPOOL_ALLOC_TAG);
-        }
-        WdfWaitLockRelease(pWdfDriver->RdmaPoolIoctlLock);
-        return STATUS_SUCCESS;
-    }
-    for (;;) {
-        PRDMAPOOL_ALLOC_ENTRY allocation;
-        NTSTATUS status;
-
-        WdfSpinLockAcquire(pWdfDriver->DmaSpinlock);
-        if (IsListEmpty(&pWdfDriver->RdmaPoolAllocList)) {
-            WdfSpinLockRelease(pWdfDriver->DmaSpinlock);
-            break;
-        }
-        allocation =
-            CONTAINING_RECORD(pWdfDriver->RdmaPoolAllocList.Flink, RDMAPOOL_ALLOC_ENTRY, ListEntry);
-        WdfSpinLockRelease(pWdfDriver->DmaSpinlock);
-
-        status = FreeRdmaPoolEntryLocked(pWdfDriver, allocation);
-        if (!NT_SUCCESS(status)) {
-            firstFailure = status;
-            break;
-        }
-
-        WdfSpinLockAcquire(pWdfDriver->DmaSpinlock);
-        RemoveEntryList(&allocation->ListEntry);
-        WdfSpinLockRelease(pWdfDriver->DmaSpinlock);
-        ExFreePoolWithTag(allocation, RDMAPOOL_ALLOC_TAG);
-    }
-    WdfWaitLockRelease(pWdfDriver->RdmaPoolIoctlLock);
-    return firstFailure;
 }
 
 VOID OnDmaTransactionDestroy(WDFOBJECT Object)

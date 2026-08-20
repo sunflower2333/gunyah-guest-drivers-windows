@@ -391,12 +391,6 @@ VioScsiFindAdapter(IN PVOID DeviceExtension,
     adaptExt->indirect = FALSE;
     adaptExt->max_physical_breaks = SCSI_MINIMUM_PHYSICAL_BREAKS;
     GetScsiConfig(DeviceExtension);
-    if (CHECKBIT(adaptExt->features, VIRTIO_F_ACCESS_PLATFORM))
-    {
-        RhelDbgPrint(TRACE_LEVEL_FATAL,
-                     " VIRTIO_F_ACCESS_PLATFORM requires a restricted-DMA broker; physical StorPort is unsupported\n");
-        return SP_RETURN_ERROR;
-    }
     SetGuestFeatures(DeviceExtension);
 
     ConfigInfo->NumberOfBuses = 1;

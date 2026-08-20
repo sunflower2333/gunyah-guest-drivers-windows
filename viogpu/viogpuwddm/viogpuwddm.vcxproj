@@ -60,7 +60,6 @@
     <ClInclude Include="..\common\edid.h" />
     <ClInclude Include="..\common\helper.h" />
     <ClInclude Include="..\common\viogpu_named_pool.h" />
-    <ClInclude Include="..\common\viogpu_rdma.h" />
     <ClInclude Include="..\common\viogpu_3d_wire.h" />
     <ClInclude Include="..\..\droidvmpool\droidvmpool_interface.h" />
     <ClInclude Include="..\shared\viogpu_wddm_abi.h" />
@@ -77,7 +76,6 @@
     <ClCompile Include="..\common\viogpu_named_pool.cpp" />
     <ClCompile Include="..\common\viogpu_pci.cpp" />
     <ClCompile Include="..\common\viogpu_queue.cpp" />
-    <ClCompile Include="..\common\viogpu_rdma.cpp" />
     <ClCompile Include="..\viogpudo\driver.cpp">
       <WppGenerateUsingTemplateFile>{$(MSBuildProjectDirectory)\wpp-non-owner.tpl}*.tmh</WppGenerateUsingTemplateFile>
     </ClCompile>

@@ -526,8 +526,7 @@ bool CParaNdisTX::AllocateExtraPages()
         {
             return false;
         }
-        /* Pass the adapter so TX copy pages come from the restricted DMA pool. */
-        Page->Initialize(m_Context->MiniportHandle, m_Context);
+        Page->Initialize(m_Context->MiniportHandle);
         if (Page->Allocate(PAGE_SIZE))
         {
             m_ExtraPages.Push(Page);
@@ -1225,10 +1224,7 @@ NBMappingStatus CNB::FillDescriptorSGList(CTXDescriptor &Descriptor, ULONG Parse
     {
         return NBMappingStatus::FAILURE;
     }
-    /* In a Gunyah protected VM the backend cannot read the NDIS packet buffers
-     * directly, so never map them via SG; always copy the payload into our
-     * restricted-DMA-pool pages (the copy path below). */
-    if (!m_Context->RdmaPoolActive && Descriptor.HasRoom(m_SGL->NumberOfElements))
+    if (Descriptor.HasRoom(m_SGL->NumberOfElements))
     {
         return MapDataToVirtioSGL(Descriptor, ParsedHeadersLength + NET_BUFFER_DATA_OFFSET(m_NB));
     }

@@ -27,10 +27,9 @@
  *    last-chance timer (PSCI SYSTEM_OFF after 10s) only fires if this
  *    platform ever fails to deliver an S5 IRP, restoring the old behavior.
  *
- * Platform gate: PSCI is only issued when the rdmapool device interface
- * (ACPI\RDMA0000 - the Gunyah pVM marker) is present. On QEMU/KVM or any
- * ACPI-complete platform this driver stays inert and Windows' native power
- * paths run unmodified, so the same disk image boots elsewhere.
+ * This package is staged only on the DroidVM/Gunyah image. It therefore
+ * directly bridges the root-enumerated power device to the platform PSCI
+ * conduit; no auxiliary marker device is required.
  *
  * Copyright (c) 2026
  * SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -38,9 +37,6 @@
 
 #include <ntddk.h>
 #include <wdf.h>
-#include <wdmguid.h>
-#include <initguid.h>
-#include "rdmapool_interface.h" /* GUID_DEVINTERFACE_RDMAPOOL (probe only) */
 
 /* PSCI function IDs (SMC64), conduit "hvc" on this platform. Stub in
  * pvmpower_psci.asm places fn/args in x0-x3 per the C ABI and executes HVC #0. */
@@ -68,40 +64,6 @@ static KDPC g_FallbackDpc;
 
 /* Ensure PSCI is issued at most once (S5 path vs fallback timer race). */
 static volatile LONG g_PsciFired = 0;
-
-/* TRUE once the rdmapool interface (Gunyah pVM marker) has been seen. */
-static volatile LONG g_PlatformIsGunyahPvm = 0;
-
-/*
- * Probe for the rdmapool device interface. Only ever PROMOTES the cached state
- * to "present" - an early negative (rdmapool not started yet) is not sticky.
- * PASSIVE_LEVEL only.
- */
-static BOOLEAN PvmPowerProbeGunyahPvm(VOID)
-{
-    NTSTATUS status;
-    PWSTR list = NULL;
-
-    if (InterlockedCompareExchange(&g_PlatformIsGunyahPvm, 0, 0) != 0)
-    {
-        return TRUE;
-    }
-    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
-    {
-        return FALSE;
-    }
-
-    status = IoGetDeviceInterfaces(&GUID_DEVINTERFACE_RDMAPOOL, NULL, 0, &list);
-    if (NT_SUCCESS(status) && list != NULL && *list != L'\0')
-    {
-        InterlockedExchange(&g_PlatformIsGunyahPvm, 1);
-    }
-    if (list != NULL)
-    {
-        ExFreePool(list);
-    }
-    return InterlockedCompareExchange(&g_PlatformIsGunyahPvm, 0, 0) != 0;
-}
 
 /*
  * Issue PSCI at most once, picking RESET vs OFF from the given action. Any
@@ -164,11 +126,8 @@ PvmPowerPowerIrpPreprocess(_In_ WDFDEVICE Device, _Inout_ PIRP Irp)
             if (irpStack->MinorFunction == IRP_MN_SET_POWER)
             {
                 InterlockedExchange(&g_ShutdownAction, (LONG)irpStack->Parameters.Power.ShutdownType);
-                if (InterlockedCompareExchange(&g_PlatformIsGunyahPvm, 0, 0) != 0)
-                {
-                    PvmPowerDoPsci(irpStack->Parameters.Power.ShutdownType, "S5 set-power IRP");
-                    /* Only reached if PSCI failed; fall through to normal handling. */
-                }
+                PvmPowerDoPsci(irpStack->Parameters.Power.ShutdownType, "S5 set-power IRP");
+                /* Only reached if PSCI failed; fall through to normal handling. */
             }
         }
     }
@@ -188,22 +147,13 @@ PvmPowerShutdownIrp(_In_ WDFDEVICE Device, _Inout_ PIRP Irp)
 {
     UNREFERENCED_PARAMETER(Device);
 
-    if (PvmPowerProbeGunyahPvm())
-    {
-        LARGE_INTEGER due;
-        due.QuadPart = -(LONGLONG)PVMPOWER_FALLBACK_TIMEOUT_SEC * 10 * 1000 * 1000; /* relative, 100ns */
-        DbgPrintEx(DPFLTR_DEFAULT_ID,
-                   DPFLTR_INFO_LEVEL,
-                   "pvmpower: last-chance shutdown - waiting for the S5 power IRP (fallback in %us)\n",
-                   PVMPOWER_FALLBACK_TIMEOUT_SEC);
-        (void)KeSetTimer(&g_FallbackTimer, due, &g_FallbackDpc);
-    }
-    else
-    {
-        DbgPrintEx(DPFLTR_DEFAULT_ID,
-                   DPFLTR_INFO_LEVEL,
-                   "pvmpower: no rdmapool interface (not a Gunyah pVM) - staying inert\n");
-    }
+    LARGE_INTEGER due;
+    due.QuadPart = -(LONGLONG)PVMPOWER_FALLBACK_TIMEOUT_SEC * 10 * 1000 * 1000; /* relative, 100ns */
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "pvmpower: last-chance shutdown - waiting for the S5 power IRP (fallback in %us)\n",
+               PVMPOWER_FALLBACK_TIMEOUT_SEC);
+    (void)KeSetTimer(&g_FallbackTimer, due, &g_FallbackDpc);
 
     Irp->IoStatus.Status = STATUS_SUCCESS;
     Irp->IoStatus.Information = 0;
@@ -262,14 +212,9 @@ PvmPowerEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
         return status;
     }
 
-    /* Opportunistic platform probe (positive result is cached; a negative here
-     * just means rdmapool has not started yet and we re-probe at shutdown). */
-    (void)PvmPowerProbeGunyahPvm();
-
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,
-               "pvmpower: loaded (Gunyah pVM marker %s)\n",
-               InterlockedCompareExchange(&g_PlatformIsGunyahPvm, 0, 0) ? "present" : "not seen yet");
+               "pvmpower: loaded for the DroidVM PSCI power path\n");
     return STATUS_SUCCESS;
 }
 

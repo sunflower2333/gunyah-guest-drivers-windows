@@ -34,12 +34,12 @@
 #include "viogpu_queue.tmh"
 #endif
 
-static BOOLEAN BuildSGElement(IVioGpuPCI *pPci, VirtIOBufferDescriptor *sg, PVOID buf, ULONG size)
+static BOOLEAN BuildSGElement(VirtIOBufferDescriptor *sg, PVOID buf, ULONG size)
 {
     if (size != 0 && MmIsAddressValid(buf))
     {
         sg->length = min(size, PAGE_SIZE - BYTE_OFFSET(buf));
-        sg->physAddr = pPci->GetDmaPhysicalAddress(buf);
+        sg->physAddr = MmGetPhysicalAddress(buf);
         return sg->physAddr.QuadPart != 0;
     }
     return FALSE;
@@ -56,7 +56,6 @@ VioGpuQueue::VioGpuQueue()
     m_Index = (UINT)-1;
     m_pVIODevice = NULL;
     m_pVirtQueue = NULL;
-    m_pPci = NULL;
     KeInitializeSpinLock(&m_SpinLock);
 }
 
@@ -80,7 +79,6 @@ BOOLEAN VioGpuQueue::Init(_In_ VirtIODevice *pVIODevice, _In_ struct virtqueue *
         return FALSE;
     }
     m_pVIODevice = pVIODevice;
-    m_pPci = reinterpret_cast<IVioGpuPCI *>(pVIODevice->DeviceContext);
     m_pVirtQueue = pVirtQueue;
     m_Index = index;
     return TRUE;
@@ -1532,7 +1530,7 @@ int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
         return VIOGPU_QUEUE_ERROR;
     }
 
-    if (!BuildSGElement(m_pPci, &sg[outcnt + incnt], (PVOID)buf->buf, buf->size))
+    if (!BuildSGElement(&sg[outcnt + incnt], (PVOID)buf->buf, buf->size))
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid command DMA address %p\n", __FUNCTION__, buf->buf));
         return VIOGPU_QUEUE_ERROR;
@@ -1549,7 +1547,7 @@ int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
         PVOID data_buf = (PVOID)buf->data_buf;
         while (data_size)
         {
-            if (BuildSGElement(m_pPci, &sg[outcnt + incnt], data_buf, data_size))
+            if (BuildSGElement(&sg[outcnt + incnt], data_buf, data_size))
             {
                 ULONG segmentSize = sg[outcnt + incnt].length;
                 data_buf = (PVOID)((PUCHAR)data_buf + segmentSize);
@@ -1578,7 +1576,7 @@ int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
 
     if (buf->resp_size && (sgleft > 0))
     {
-        if (!BuildSGElement(m_pPci, &sg[outcnt + incnt], (PVOID)buf->resp_buf, buf->resp_size))
+        if (!BuildSGElement(&sg[outcnt + incnt], (PVOID)buf->resp_buf, buf->resp_size))
         {
             DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid response DMA address %p\n", __FUNCTION__, buf->resp_buf));
             return VIOGPU_QUEUE_ERROR;
@@ -1633,23 +1631,17 @@ void VioGpuQueue::ReleaseBuffer(PGPU_VBUFFER buf)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
-BOOLEAN VioGpuBuf::Init(_In_ UINT cnt, _In_ IVioGpuPCI *pPci)
+BOOLEAN VioGpuBuf::Init(_In_ UINT cnt)
 {
     KIRQL OldIrql;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
-    if (cnt == 0 || pPci == NULL)
+    if (cnt == 0)
     {
         return FALSE;
     }
     KeAcquireSpinLock(&m_SpinLock, &OldIrql);
-    if (m_pPci != NULL && m_pPci != pPci)
-    {
-        KeReleaseSpinLock(&m_SpinLock, OldIrql);
-        return FALSE;
-    }
-    m_pPci = pPci;
     m_uCountMin = cnt;
     UINT allocateCount = m_uCount < cnt ? cnt - m_uCount : 0;
     KeReleaseSpinLock(&m_SpinLock, OldIrql);
@@ -1703,8 +1695,7 @@ void VioGpuBuf::Close(void)
     m_uCountMin = 0;
     KeReleaseSpinLock(&m_SpinLock, oldIrql);
 
-    // The allocator owner must remain valid until every allocation has been
-    // returned to the same backing pool that created it.
+    // Callbacks and frees run after the lists are detached from the spin lock.
     while (!IsListEmpty(&buffers))
     {
         LIST_ENTRY *entry = RemoveHeadList(&buffers);
@@ -1729,10 +1720,6 @@ void VioGpuBuf::Close(void)
         }
         FreeMemory(buffer);
     }
-
-    KeAcquireSpinLock(&m_SpinLock, &oldIrql);
-    m_pPci = NULL;
-    KeReleaseSpinLock(&m_SpinLock, oldIrql);
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -1996,7 +1983,6 @@ VioGpuBuf::VioGpuBuf()
     InitializeListHead(&m_InUseBufs);
     KeInitializeSpinLock(&m_SpinLock);
     m_uCount = 0;
-    m_pPci = NULL;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -2014,10 +2000,7 @@ VioGpuBuf::~VioGpuBuf()
 
 PVOID VioGpuBuf::AllocateMemory(SIZE_T size, SIZE_T alignment)
 {
-    if (m_pPci != NULL && m_pPci->IsRestrictedDmaActive())
-    {
-        return m_pPci->AllocateDmaMemory(size, alignment);
-    }
+    UNREFERENCED_PARAMETER(alignment);
     PVOID address = ExAllocatePoolUninitialized(NonPagedPoolNx, size, VIOGPUTAG);
     if (address != NULL)
     {
@@ -2032,14 +2015,7 @@ void VioGpuBuf::FreeMemory(PVOID address)
     {
         return;
     }
-    if (m_pPci != NULL && m_pPci->IsRestrictedDmaActive())
-    {
-        m_pPci->FreeDmaMemory(address);
-    }
-    else
-    {
-        ExFreePoolWithTag(address, VIOGPUTAG);
-    }
+    ExFreePoolWithTag(address, VIOGPUTAG);
 }
 
 VioGpuMemSegment::VioGpuMemSegment(void)
@@ -2054,8 +2030,6 @@ VioGpuMemSegment::VioGpuMemSegment(void)
     m_bSystemMemory = FALSE;
     m_bMapped = FALSE;
     m_Size = 0;
-    m_pPci = NULL;
-    m_bRestrictedDma = FALSE;
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
@@ -2070,14 +2044,14 @@ VioGpuMemSegment::~VioGpuMemSegment(void)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
-BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr, _In_ IVioGpuPCI *pPci)
+BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr)
 {
     PAGED_CODE();
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
     ASSERT(size);
-    if (size == 0 || pPci == NULL || size > MAXUINT - (PAGE_SIZE - 1))
+    if (size == 0 || size > MAXUINT - (PAGE_SIZE - 1))
     {
         return FALSE;
     }
@@ -2086,20 +2060,7 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
     SIZE_T sglsize = FIELD_OFFSET(SCATTER_GATHER_LIST, Elements) +
                      (sizeof(SCATTER_GATHER_ELEMENT) * static_cast<SIZE_T>(pages));
     size = pages * PAGE_SIZE;
-    m_pPci = pPci;
-    m_bRestrictedDma = pPci->IsRestrictedDmaActive();
-
-    if (m_bRestrictedDma)
-    {
-        m_pVAddr = pPci->AllocateDmaMemory(size, PAGE_SIZE);
-        if (!m_pVAddr)
-        {
-            DbgPrint(TRACE_LEVEL_FATAL, ("%s restricted DMA pool cannot allocate %x bytes\n", __FUNCTION__, size));
-            return FALSE;
-        }
-        m_bSystemMemory = TRUE;
-    }
-    else if ((pPAddr == NULL) || pPAddr->QuadPart == 0LL)
+    if ((pPAddr == NULL) || pPAddr->QuadPart == 0LL)
     {
         m_pVAddr = new (NonPagedPoolNx) BYTE[size];
 
@@ -2125,7 +2086,6 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
     // construction step fails.
     m_Size = size;
 
-    if (!m_bRestrictedDma)
     {
         m_pMdl = IoAllocateMdl(m_pVAddr, size, FALSE, FALSE, NULL);
         if (!m_pMdl)
@@ -2170,7 +2130,7 @@ BOOLEAN VioGpuMemSegment::Init(_In_ UINT size, _In_opt_ PPHYSICAL_ADDRESS pPAddr
     {
         PHYSICAL_ADDRESS pa = {0};
         ASSERT(MmIsAddressValid(buf));
-        pa = m_pPci->GetDmaPhysicalAddress(buf);
+        pa = MmGetPhysicalAddress(buf);
         if (pa.QuadPart == 0LL)
         {
             DbgPrint(TRACE_LEVEL_FATAL, ("%s Invalid PA buf = %p element %d\n", __FUNCTION__, buf, i));
@@ -2201,7 +2161,7 @@ PHYSICAL_ADDRESS VioGpuMemSegment::GetPhysicalAddress(void)
     PHYSICAL_ADDRESS pa = {0};
     if (m_pVAddr && MmIsAddressValid(m_pVAddr))
     {
-        pa = m_pPci->GetDmaPhysicalAddress(m_pVAddr);
+        pa = MmGetPhysicalAddress(m_pVAddr);
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
@@ -2227,17 +2187,7 @@ void VioGpuMemSegment::Close(void)
 
     if (m_pVAddr != NULL && m_bSystemMemory)
     {
-        if (m_bRestrictedDma)
-        {
-            if (m_pPci != NULL)
-            {
-                m_pPci->FreeDmaMemory(m_pVAddr);
-            }
-        }
-        else
-        {
-            delete[] reinterpret_cast<PBYTE>(m_pVAddr);
-        }
+        delete[] reinterpret_cast<PBYTE>(m_pVAddr);
     }
     else if (m_pVAddr != NULL && m_bMapped)
     {
@@ -2249,9 +2199,7 @@ void VioGpuMemSegment::Close(void)
     m_pSGList = NULL;
     m_bSystemMemory = FALSE;
     m_bMapped = FALSE;
-    m_bRestrictedDma = FALSE;
     m_Size = 0;
-    m_pPci = NULL;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -2337,7 +2285,7 @@ UINT CrsrQueue::QueueCursor(PGPU_VBUFFER buf)
     int ret = 0;
 
     ASSERT(buf->size <= PAGE_SIZE);
-    if (BuildSGElement(m_pPci, &sg[outcnt], (PVOID)buf->buf, buf->size))
+    if (BuildSGElement(&sg[outcnt], (PVOID)buf->buf, buf->size))
     {
         outcnt++;
     }

@@ -41,8 +41,6 @@
 
 static UINT g_InstanceId = 0;
 
-#define VIOGPU_RDMAPOOL_RETRY_COUNT 100
-#define VIOGPU_RDMAPOOL_RETRY_MS    100
 #if defined(VIOGPU_WDDM_CI_ONLY)
 #define VIOGPU_DROIDVMPOOL_RETRY_COUNT 100
 #define VIOGPU_DROIDVMPOOL_RETRY_MS    100
@@ -132,7 +130,6 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     *((UINT *)&m_Flags) = 0;
-    SetRestrictedDmaRequired(TRUE);
     RtlZeroMemory(&m_DxgkInterface, sizeof(m_DxgkInterface));
     RtlZeroMemory(&m_DeviceInfo, sizeof(m_DeviceInfo));
     RtlZeroMemory(&m_CurrentMode, sizeof(m_CurrentMode));
@@ -3488,13 +3485,6 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
         SetUsePresentProgress(!!value);
     }
 
-    value = 1;
-    Status = ReadRegistryDWORD(DevInstRegKeyHandle, L"RequireRestrictedDma", &value);
-    if (NT_SUCCESS(Status))
-    {
-        SetRestrictedDmaRequired(!!value);
-    }
-
     // The following keys are optional and no need to report error if them are missing
     value = 0;
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"PersistentDispMode0Width", &value);
@@ -3574,7 +3564,6 @@ VioGpuAdapter::~VioGpuAdapter(void)
                                             VioGpuNativeContextOffline);
     if (state != VioGpuNativeContextOffline || !IsListEmpty(&m_NativeContextRegistry) || m_bVirtioInitialized ||
         m_bQueuesInitialized || m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() ||
-        m_RdmaPool.HasArenaOwner() ||
 #if defined(VIOGPU_WDDM_CI_ONLY)
         m_DrmHostPool.HasConnectionOwner() || m_GpuGuestPool.HasConnectionOwner() ||
 #endif
@@ -3596,7 +3585,7 @@ VioGpuAdapter::~VioGpuAdapter(void)
     NT_ASSERT(IsListEmpty(&m_NativeContextRegistry));
     NT_ASSERT(!m_bVirtioInitialized && !m_bQueuesInitialized);
     NT_ASSERT(m_pWorkThread == NULL && m_WorkThreadHandle == NULL);
-    NT_ASSERT(!m_GpuBuf.HasAllocationOwner() && !m_RdmaPool.HasArenaOwner());
+    NT_ASSERT(!m_GpuBuf.HasAllocationOwner());
 #if defined(VIOGPU_WDDM_CI_ONLY)
     NT_ASSERT(!m_DrmHostPool.HasConnectionOwner());
     NT_ASSERT(!m_GpuGuestPool.HasConnectionOwner());
@@ -3667,11 +3656,6 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
                    "viogpu init: refusing to replace retained transport storage\n");
         return STATUS_DEVICE_NOT_READY;
     }
-    if (m_pVioGpuDod->IsRestrictedDmaRequired() && !m_RdmaPool.IsActive())
-    {
-        DbgPrint(TRACE_LEVEL_FATAL, ("restricted DMA is required before virtio queue initialization\n"));
-        return STATUS_DEVICE_NOT_READY;
-    }
     status = VirtIoDeviceInit();
     if (!NT_SUCCESS(status))
     {
@@ -3699,8 +3683,6 @@ NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
                        status);
             break;
         }
-
-        AckFeature(VIRTIO_F_ACCESS_PLATFORM);
 
         status = NegotiateNativeContextFeatures();
         if (!NT_SUCCESS(status))
@@ -3962,7 +3944,6 @@ BOOLEAN VioGpuAdapter::BeginNativeContextInitialization(void)
 
     if (!IsListEmpty(&m_NativeContextRegistry) || m_bVirtioInitialized || m_bQueuesInitialized ||
         m_pWorkThread != NULL || m_WorkThreadHandle != NULL || m_GpuBuf.HasAllocationOwner() ||
-        m_RdmaPool.HasArenaOwner() ||
 #if defined(VIOGPU_WDDM_CI_ONLY)
         m_DrmHostPool.HasConnectionOwner() || m_GpuGuestPool.HasConnectionOwner() ||
 #endif
@@ -5414,33 +5395,6 @@ NTSTATUS VioGpuAdapter::VirtIoDeviceInit()
                                     m_PciResources.IsMSIEnabled());
 }
 
-NTSTATUS VioGpuAdapter::ConnectRestrictedDma(void)
-{
-    PAGED_CODE();
-
-    NTSTATUS status;
-    for (ULONG retry = 0;; ++retry)
-    {
-        status = m_RdmaPool.Connect();
-        if (status != STATUS_NOT_FOUND || !m_pVioGpuDod->IsRestrictedDmaRequired() ||
-            retry + 1 >= VIOGPU_RDMAPOOL_RETRY_COUNT)
-        {
-            break;
-        }
-
-        LARGE_INTEGER delay;
-        delay.QuadPart = -(LONGLONG)VIOGPU_RDMAPOOL_RETRY_MS * 10 * 1000;
-        KeDelayExecutionThread(KernelMode, FALSE, &delay);
-    }
-
-    if (status == STATUS_NOT_FOUND && !m_pVioGpuDod->IsRestrictedDmaRequired())
-    {
-        DbgPrint(TRACE_LEVEL_INFORMATION, ("rdmapool not present, restricted DMA disabled by configuration\n"));
-        return STATUS_SUCCESS;
-    }
-    return NT_SUCCESS(status) ? status : STATUS_DEVICE_NOT_READY;
-}
-
 #if defined(VIOGPU_WDDM_CI_ONLY)
 _Use_decl_annotations_ VOID VioGpuAdapter::NamedPoolFailureCallback(PVOID context)
 {
@@ -5500,11 +5454,7 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
         return STATUS_INVALID_PARAMETER;
     }
 
-    NTSTATUS status = ConnectRestrictedDma();
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
+    NTSTATUS status = STATUS_SUCCESS;
 
 #if defined(VIOGPU_WDDM_CI_ONLY)
     status = ConnectDrmHostPool();
@@ -5527,7 +5477,7 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
     }
 
     UINT allocation = m_CtrlQueue.QueryAllocation() + m_CursorQueue.QueryAllocation();
-    if (allocation == 0 || !m_GpuBuf.Init(allocation, this))
+    if (allocation == 0 || !m_GpuBuf.Init(allocation))
     {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -5585,13 +5535,6 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
     }
     reqSize = max(reqSize, maxResSize * 4U);
 
-    if (m_RdmaPool.IsActive())
-    {
-        fbPa.QuadPart = 0;
-        fbSize = reqSize;
-        pDispInfo->PhysicAddress.QuadPart = 0;
-        m_pVioGpuDod->SetUsePhysicalMemory(FALSE);
-    }
     if (fbPa.QuadPart != 0)
     {
         pDispInfo->PhysicAddress = fbPa;
@@ -5606,11 +5549,11 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
         fbSize = max(reqSize, fbSize);
     }
 
-    if (!m_FrameSegment.Init(fbSize, &fbPa, this))
+    if (!m_FrameSegment.Init(fbSize, &fbPa))
     {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-    if (!m_CursorSegment.Init(POINTER_SIZE * POINTER_SIZE * 4, NULL, this))
+    if (!m_CursorSegment.Init(POINTER_SIZE * POINTER_SIZE * 4, NULL))
     {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -5737,9 +5680,8 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
 
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,
-               "viogpu HWInit: completed, modes=%u restrictedDma=%u status=0x%08X\n",
+               "viogpu HWInit: completed, modes=%u status=0x%08X\n",
                m_ModeCount,
-               m_RdmaPool.IsActive(),
                status);
     return status;
 }
@@ -6848,7 +6790,6 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     {
         if (!IsListEmpty(&m_NativeContextRegistry) || m_pWorkThread != NULL || m_WorkThreadHandle != NULL ||
             m_bVirtioInitialized || m_bQueuesInitialized || m_GpuBuf.HasAllocationOwner() ||
-            m_RdmaPool.HasArenaOwner() ||
 #if defined(VIOGPU_WDDM_CI_ONLY)
             m_DrmHostPool.HasConnectionOwner() || m_GpuGuestPool.HasConnectionOwner() ||
 #endif
@@ -7020,12 +6961,6 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
         return status;
     }
 #endif
-    status = m_RdmaPool.Disconnect();
-    if (!NT_SUCCESS(status))
-    {
-        FailNativeContextAtAnyIrql();
-        return status;
-    }
     ClearNativeContextReadiness();
     m_u64HostFeatures = 0;
     m_u64GuestFeatures = 0;
@@ -7444,37 +7379,14 @@ PDXGKRNL_INTERFACE VioGpuAdapter::GetDxgkInterface()
     return m_pVioGpuDod->GetDxgkInterface();
 }
 
-PVOID VioGpuAdapter::AllocateDmaMemory(SIZE_T size, SIZE_T alignment)
-{
-    return m_RdmaPool.Allocate(size, alignment);
-}
-
-void VioGpuAdapter::FreeDmaMemory(PVOID address)
-{
-    m_RdmaPool.Free(address);
-}
-
-PHYSICAL_ADDRESS VioGpuAdapter::GetDmaPhysicalAddress(PVOID address)
-{
-    if (m_RdmaPool.IsActive())
-    {
-        return m_RdmaPool.GetPhysicalAddress(address);
-    }
-    return MmGetPhysicalAddress(address);
-}
-
-BOOLEAN VioGpuAdapter::IsRestrictedDmaActive(void)
-{
-    return m_RdmaPool.IsActive();
-}
-
 BOOLEAN VioGpuAdapter::QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const
 {
 #if defined(VIOGPU_WDDM_CI_ONLY)
     return m_GpuGuestPool.QueryPhysicalRange(physicalAddress, size);
 #else
-    PVOID baseAddress = NULL;
-    return m_RdmaPool.QueryVidMmSegment(&baseAddress, physicalAddress, size);
+    UNREFERENCED_PARAMETER(physicalAddress);
+    UNREFERENCED_PARAMETER(size);
+    return FALSE;
 #endif
 }
 

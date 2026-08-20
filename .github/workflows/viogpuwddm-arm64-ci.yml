@@ -2,12 +2,6 @@ name: Check viogpu full WDDM ARM64 contract
 
 on:
   workflow_dispatch:
-    inputs:
-      run_mutation:
-        description: Run the expensive restricted-DMA mutation suite
-        required: false
-        default: false
-        type: boolean
   pull_request:
     paths:
       - "viogpu/common/**"
@@ -17,7 +11,6 @@ on:
       - "viogpu/viogpudo/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
-      - "rdmapool/**"
       - "droidvmpool/**"
       - "NetKVM/Common/**"
       - "NetKVM/wlh/**"
@@ -35,7 +28,6 @@ on:
       - "viogpu/viogpudo/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
-      - "rdmapool/**"
       - "droidvmpool/**"
       - "NetKVM/Common/**"
       - "NetKVM/wlh/**"
@@ -83,12 +75,7 @@ jobs:
         shell: pwsh
         run: python viogpu/viogpuwddm/check-named-pool.py
 
-      - name: Attack restricted-DMA safety contract
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_mutation }}
-        shell: pwsh
-        run: python viogpu/viogpuwddm/test-rdma-contract.py
-
-      - name: Build restricted-DMA ABI consumers
+      - name: Build shared dependencies and guest drivers
         shell: pwsh
         run: |
           $common = @(
@@ -104,7 +91,6 @@ jobs:
             @{ Path = 'VirtIO/WDF/VirtioLib-WDF.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'NetKVM/CoInstaller/netkvmco-vs2015.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'NetKVM/ProtocolService/ProtocolService.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
-            @{ Path = 'rdmapool/rdmapool.vcxproj'; Configuration = 'Release'; Platform = 'ARM64' },
             @{ Path = 'droidvmpool/droidvmpool.vcxproj'; Configuration = 'Release'; Platform = 'ARM64' },
             @{ Path = 'viostor/viostor.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'vioscsi/vioscsi.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },

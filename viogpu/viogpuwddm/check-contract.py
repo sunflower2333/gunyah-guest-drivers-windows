@@ -26,18 +26,6 @@ IDR_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_idr.h").resolve()
 WDDM_ABI_HEADER_PATH = (PROJECT_DIR.parent / "shared" / "viogpu_wddm_abi.h").resolve()
 WDDM_ABI_FIXTURE_DIR = (PROJECT_DIR.parent / "tests" / "wddm-private-abi").resolve()
 QUEUE_SOURCE_PATH = (PROJECT_DIR.parent / "common" / "viogpu_queue.cpp").resolve()
-RDMA_SOURCE_PATH = (PROJECT_DIR.parent / "common" / "viogpu_rdma.cpp").resolve()
-RDMA_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_rdma.h").resolve()
-RDMAPOOL_DIR = (PROJECT_DIR.parent.parent / "rdmapool").resolve()
-RDMAPOOL_INTERFACE_PATH = RDMAPOOL_DIR / "rdmapool_interface.h"
-RDMAPOOL_PROVIDER_PATH = RDMAPOOL_DIR / "rdmapool.c"
-DMAPOOL_SOURCE_PATH = RDMAPOOL_DIR / "dmapool.c"
-SHARED_RDMA_CLIENT_PATH = RDMAPOOL_DIR / "rdmaclient.c"
-SHARED_RDMA_CLIENT_HEADER_PATH = RDMAPOOL_DIR / "rdmaclient.h"
-WDF_DIR = (PROJECT_DIR.parent.parent / "VirtIO" / "WDF").resolve()
-WDF_DMA_PATH = WDF_DIR / "Dma.c"
-WDF_SOURCE_PATH = WDF_DIR / "VirtIOWdf.c"
-WDF_HEADER_PATH = WDF_DIR / "VirtIOWdf.h"
 PCI_SOURCE_PATH = (PROJECT_DIR.parent / "common" / "viogpu_pci.cpp").resolve()
 PCI_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_pci.h").resolve()
 VIRTIO_DIR = (PROJECT_DIR.parent.parent / "VirtIO").resolve()
@@ -45,42 +33,11 @@ VIRTIO_HEADER_PATH = VIRTIO_DIR / "virtio_pci.h"
 VIRTIO_COMMON_PATH = VIRTIO_DIR / "VirtIOPCICommon.c"
 VIRTIO_MODERN_PATH = VIRTIO_DIR / "VirtIOPCIModern.c"
 VIRTIO_LEGACY_PATH = VIRTIO_DIR / "VirtIOPCILegacy.c"
-NETKVM_DIR = (PROJECT_DIR.parent.parent / "NetKVM").resolve()
-NETKVM_RDMA_SOURCE_PATH = NETKVM_DIR / "Common" / "ParaNdis_RdmaPool.cpp"
-NETKVM_COMMON_SOURCE_PATH = NETKVM_DIR / "Common" / "ParaNdis_Common.cpp"
-NETKVM_UTIL_SOURCE_PATH = NETKVM_DIR / "Common" / "ParaNdis_Util.cpp"
-NETKVM_HEADER_SOURCE_PATH = NETKVM_DIR / "Common" / "ndis56common.h"
-NETKVM_IMPL_SOURCE_PATH = NETKVM_DIR / "wlh" / "ParaNdis6_Impl.cpp"
-NETKVM_DRIVER_SOURCE_PATH = NETKVM_DIR / "wlh" / "ParaNdis6_Driver.cpp"
 PROJECT = PROJECT_DIR / "viogpuwddm.vcxproj"
 WPP_NON_OWNER_TEMPLATE = PROJECT_DIR / "wpp-non-owner.tpl"
 NAMESPACE = {"msbuild": "http://schemas.microsoft.com/developer/msbuild/2003"}
 REGISTRATION_HELPER = "VioGpuWddmInitializeMiniportCompileOnly"
 WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "viogpuwddm-arm64-ci.yml").resolve()
-STORAGE_PROJECTS = (
-    (
-        "viostor",
-        (PROJECT_DIR.parent.parent / "viostor" / "viostor.vcxproj").resolve(),
-        "VirtIoFindAdapter",
-        "RhelGetDiskGeometry",
-        "RhelSetGuestFeatures",
-    ),
-    (
-        "vioscsi",
-        (PROJECT_DIR.parent.parent / "vioscsi" / "vioscsi.vcxproj").resolve(),
-        "VioScsiFindAdapter",
-        "GetScsiConfig",
-        "SetGuestFeatures",
-    ),
-)
-STORPORT_PROHIBITED_BROKER_DDIS = (
-    "IoBuildDeviceIoControlRequest",
-    "IoCallDriver",
-    "IoGetDeviceInterfaces",
-    "IoGetDeviceObjectPointer",
-)
-
-
 def strip_cpp_comments_and_literals(source: str) -> str:
     result = list(source)
 
@@ -143,28 +100,12 @@ VIOGPU_SOURCE = VIOGPU_SOURCE_PATH.read_text(encoding="utf-8")
 VIOGPU_HEADER_SOURCE = VIOGPU_HEADER_PATH.read_text(encoding="utf-8")
 DOD_DRIVER_SOURCE = DOD_DRIVER_SOURCE_PATH.read_text(encoding="utf-8")
 QUEUE_HEADER_SOURCE = QUEUE_HEADER_PATH.read_text(encoding="utf-8")
-RDMA_SOURCE = RDMA_SOURCE_PATH.read_text(encoding="utf-8")
-RDMA_HEADER_SOURCE = RDMA_HEADER_PATH.read_text(encoding="utf-8")
-RDMAPOOL_INTERFACE_SOURCE = RDMAPOOL_INTERFACE_PATH.read_text(encoding="utf-8")
-RDMAPOOL_PROVIDER_SOURCE = RDMAPOOL_PROVIDER_PATH.read_text(encoding="utf-8")
-DMAPOOL_SOURCE = DMAPOOL_SOURCE_PATH.read_text(encoding="utf-8")
-SHARED_RDMA_CLIENT_SOURCE = SHARED_RDMA_CLIENT_PATH.read_text(encoding="utf-8")
-SHARED_RDMA_CLIENT_HEADER_SOURCE = SHARED_RDMA_CLIENT_HEADER_PATH.read_text(encoding="utf-8")
-WDF_DMA_SOURCE = WDF_DMA_PATH.read_text(encoding="utf-8")
-WDF_SOURCE = WDF_SOURCE_PATH.read_text(encoding="utf-8")
-WDF_HEADER_SOURCE = WDF_HEADER_PATH.read_text(encoding="utf-8")
 PCI_SOURCE = PCI_SOURCE_PATH.read_text(encoding="utf-8")
 PCI_HEADER_SOURCE = PCI_HEADER_PATH.read_text(encoding="utf-8")
 VIRTIO_HEADER_SOURCE = VIRTIO_HEADER_PATH.read_text(encoding="utf-8")
 VIRTIO_COMMON_SOURCE = VIRTIO_COMMON_PATH.read_text(encoding="utf-8")
 VIRTIO_MODERN_SOURCE = VIRTIO_MODERN_PATH.read_text(encoding="utf-8")
 VIRTIO_LEGACY_SOURCE = VIRTIO_LEGACY_PATH.read_text(encoding="utf-8")
-NETKVM_RDMA_SOURCE = NETKVM_RDMA_SOURCE_PATH.read_text(encoding="utf-8")
-NETKVM_COMMON_SOURCE = NETKVM_COMMON_SOURCE_PATH.read_text(encoding="utf-8")
-NETKVM_UTIL_SOURCE = NETKVM_UTIL_SOURCE_PATH.read_text(encoding="utf-8")
-NETKVM_HEADER_SOURCE = NETKVM_HEADER_SOURCE_PATH.read_text(encoding="utf-8")
-NETKVM_IMPL_SOURCE = NETKVM_IMPL_SOURCE_PATH.read_text(encoding="utf-8")
-NETKVM_DRIVER_SOURCE = NETKVM_DRIVER_SOURCE_PATH.read_text(encoding="utf-8")
 VIOGPU_CODE = strip_cpp_comments_and_literals(VIOGPU_SOURCE)
 VIOGPU_HEADER_CODE = strip_cpp_comments_and_literals(VIOGPU_HEADER_SOURCE)
 DOD_DRIVER_CODE = strip_cpp_comments_and_literals(DOD_DRIVER_SOURCE)
@@ -176,28 +117,12 @@ WDDM_ABI_HEADER_SOURCE = WDDM_ABI_HEADER_PATH.read_text(encoding="utf-8")
 WDDM_ABI_HEADER_CODE = strip_cpp_comments_and_literals(WDDM_ABI_HEADER_SOURCE)
 QUEUE_HEADER_CODE = strip_cpp_comments_and_literals(QUEUE_HEADER_SOURCE)
 QUEUE_CODE = strip_cpp_comments_and_literals(QUEUE_SOURCE_PATH.read_text(encoding="utf-8"))
-RDMA_CODE = strip_cpp_comments_and_literals(RDMA_SOURCE)
-RDMA_HEADER_CODE = strip_cpp_comments_and_literals(RDMA_HEADER_SOURCE)
-RDMAPOOL_INTERFACE_CODE = strip_cpp_comments_and_literals(RDMAPOOL_INTERFACE_SOURCE)
-RDMAPOOL_PROVIDER_CODE = strip_cpp_comments_and_literals(RDMAPOOL_PROVIDER_SOURCE)
-DMAPOOL_CODE = strip_cpp_comments_and_literals(DMAPOOL_SOURCE)
-SHARED_RDMA_CLIENT_CODE = strip_cpp_comments_and_literals(SHARED_RDMA_CLIENT_SOURCE)
-SHARED_RDMA_CLIENT_HEADER_CODE = strip_cpp_comments_and_literals(SHARED_RDMA_CLIENT_HEADER_SOURCE)
-WDF_DMA_CODE = strip_cpp_comments_and_literals(WDF_DMA_SOURCE)
-WDF_CODE = strip_cpp_comments_and_literals(WDF_SOURCE)
-WDF_HEADER_CODE = strip_cpp_comments_and_literals(WDF_HEADER_SOURCE)
 PCI_CODE = strip_cpp_comments_and_literals(PCI_SOURCE)
 PCI_HEADER_CODE = strip_cpp_comments_and_literals(PCI_HEADER_SOURCE)
 VIRTIO_HEADER_CODE = strip_cpp_comments_and_literals(VIRTIO_HEADER_SOURCE)
 VIRTIO_COMMON_CODE = strip_cpp_comments_and_literals(VIRTIO_COMMON_SOURCE)
 VIRTIO_MODERN_CODE = strip_cpp_comments_and_literals(VIRTIO_MODERN_SOURCE)
 VIRTIO_LEGACY_CODE = strip_cpp_comments_and_literals(VIRTIO_LEGACY_SOURCE)
-NETKVM_RDMA_CODE = strip_cpp_comments_and_literals(NETKVM_RDMA_SOURCE)
-NETKVM_COMMON_CODE = strip_cpp_comments_and_literals(NETKVM_COMMON_SOURCE)
-NETKVM_UTIL_CODE = strip_cpp_comments_and_literals(NETKVM_UTIL_SOURCE)
-NETKVM_HEADER_CODE = strip_cpp_comments_and_literals(NETKVM_HEADER_SOURCE)
-NETKVM_IMPL_CODE = strip_cpp_comments_and_literals(NETKVM_IMPL_SOURCE)
-NETKVM_DRIVER_CODE = strip_cpp_comments_and_literals(NETKVM_DRIVER_SOURCE)
 
 
 def fail(message: str) -> None:
@@ -727,165 +652,6 @@ def project_compile_sources(root: ET.Element, project: Path = PROJECT) -> dict[P
     return sources
 
 
-def require_storport_access_platform_gate(
-    owner: str,
-    sources: dict[Path, str],
-    find_adapter_name: str,
-    read_features_name: str,
-    acknowledge_features_name: str,
-) -> None:
-    definitions = [source for source in sources.values() if re.search(
-        rf"\b{re.escape(find_adapter_name)}\s*\([^;{{}}]*\)\s*\{{", source, re.DOTALL
-    )]
-    if len(definitions) != 1:
-        fail(f"{owner} must compile exactly one {find_adapter_name} definition")
-
-    find_adapter = function_body(find_adapter_name, definitions[0])
-    compact = canonical_code(find_adapter)
-    feature_read = compact.find(f"{read_features_name}(DeviceExtension);")
-    feature_acknowledge = compact.find(f"{acknowledge_features_name}(DeviceExtension);")
-    queue_sizing = compact.find("virtio_query_queue_allocation(")
-    dma_allocation = compact.find("StorPortGetUncachedExtension(")
-    if min(feature_read, feature_acknowledge, queue_sizing, dma_allocation) < 0:
-        fail(f"{owner} FindAdapter is missing a required feature, queue, or DMA initialization stage")
-
-    gates = [
-        (body, start, end)
-        for condition, body, start, end in if_blocks(find_adapter)
-        if canonical_code(condition) == "CHECKBIT(adaptExt->features,VIRTIO_F_ACCESS_PLATFORM)"
-        and canonical_code(body).endswith("returnSP_RETURN_ERROR;")
-    ]
-    if len(gates) != 1:
-        fail(f"{owner} must reject VIRTIO_F_ACCESS_PLATFORM exactly once in FindAdapter")
-    gate_start = len(canonical_code(find_adapter[: gates[0][1]]))
-    gate_end = len(canonical_code(find_adapter[: gates[0][2]]))
-    if not feature_read < gate_start < gate_end <= min(feature_acknowledge, queue_sizing, dma_allocation):
-        fail(
-            f"{owner} must reject VIRTIO_F_ACCESS_PLATFORM after reading host features and before "
-            "feature acknowledgement, queue sizing, or DMA allocation"
-        )
-
-    acknowledge_definitions = [source for source in sources.values() if re.search(
-        rf"\b{re.escape(acknowledge_features_name)}\s*\([^;{{}}]*\)\s*\{{", source, re.DOTALL
-    )]
-    if len(acknowledge_definitions) != 1:
-        fail(f"{owner} must compile exactly one {acknowledge_features_name} definition")
-    acknowledge = function_body(acknowledge_features_name, acknowledge_definitions[0])
-    if re.search(r"\bVIRTIO_F_ACCESS_PLATFORM\b", acknowledge):
-        fail(f"{owner} must never acknowledge VIRTIO_F_ACCESS_PLATFORM")
-
-
-def require_viostor_restart_access_platform_gate(sources: dict[Path, str]) -> None:
-    feature_reader_definitions = [
-        source
-        for source in sources.values()
-        if re.search(
-            r"\bVOID\s+RhelGetDiskGeometry\s*\([^;{}]*\)\s*\{",
-            source,
-            re.DOTALL,
-        )
-    ]
-    if len(feature_reader_definitions) != 1:
-        fail("viostor must compile exactly one RhelGetDiskGeometry definition")
-    feature_reader = canonical_code(
-        function_body("RhelGetDiskGeometry", feature_reader_definitions[0])
-    )
-    offered_feature_refresh = "adaptExt->features=virtio_get_features(&adaptExt->vdev);"
-    if feature_reader.count(offered_feature_refresh) != 1:
-        fail("viostor feature reader must refresh offered features exactly once")
-
-    definitions = [
-        (source, match)
-        for source in sources.values()
-        for match in re.finditer(
-            r"\bBOOLEAN\s+VirtIoHwReinitialize\s*\([^;{}]*\)\s*\{",
-            source,
-            re.DOTALL,
-        )
-    ]
-    if len(definitions) != 1:
-        fail("viostor must compile exactly one VirtIoHwReinitialize definition")
-
-    source, definition = definitions[0]
-    body_start = definition.end() - 1
-    depth = 0
-    body_end = -1
-    for offset in range(body_start, len(source)):
-        if source[offset] == "{":
-            depth += 1
-        elif source[offset] == "}":
-            depth -= 1
-            if depth == 0:
-                body_end = offset
-                break
-    if body_end < 0:
-        fail("viostor VirtIoHwReinitialize definition is unterminated")
-    restart = source[body_start + 1 : body_end]
-    compact = canonical_code(restart)
-    device_initialize = compact.find("InitVirtIODevice(DeviceExtension)")
-    feature_read = compact.find("RhelGetDiskGeometry(DeviceExtension);")
-    feature_acknowledge = compact.find("RhelSetGuestFeatures(DeviceExtension);")
-    queue_initialization = compact.find("VirtIoHwInitialize(DeviceExtension)")
-    gates = [
-        (body, start, end)
-        for condition, body, start, end in if_blocks(restart)
-        if canonical_code(condition) == "CHECKBIT(adaptExt->features,VIRTIO_F_ACCESS_PLATFORM)"
-        and canonical_code(body).endswith("returnFALSE;")
-    ]
-    restart_stages = (
-        "InitVirtIODevice(DeviceExtension)",
-        "RhelGetDiskGeometry(DeviceExtension);",
-        "RhelSetGuestFeatures(DeviceExtension);",
-        "VirtIoHwInitialize(DeviceExtension)",
-    )
-    if (
-        min(device_initialize, feature_read, feature_acknowledge, queue_initialization) < 0
-        or any(compact.count(stage) != 1 for stage in restart_stages)
-        or len(gates) != 1
-    ):
-        fail("viostor restart must re-read and reject VIRTIO_F_ACCESS_PLATFORM exactly once")
-    gate_start = len(canonical_code(restart[: gates[0][1]]))
-    gate_end = len(canonical_code(restart[: gates[0][2]]))
-    if not (
-        device_initialize < feature_read < gate_start < gate_end
-        <= min(feature_acknowledge, queue_initialization)
-    ):
-        fail(
-            "viostor restart must reject refreshed VIRTIO_F_ACCESS_PLATFORM before feature "
-            "acknowledgement or queue initialization"
-        )
-
-
-def check_storport_restricted_dma_policy() -> None:
-    for owner, project, find_adapter, read_features, acknowledge_features in STORAGE_PROJECTS:
-        root = ET.parse(project).getroot()
-        sources = project_compile_sources(root, project)
-        compiled_paths = {path.as_posix().lower() for path in sources}
-        forbidden_suffixes = (
-            "/rdmapool/rdmaclient.c",
-            f"/{owner}/{owner}_rdma.c",
-        )
-        for suffix in forbidden_suffixes:
-            if any(path.endswith(suffix) for path in compiled_paths):
-                fail(f"{owner} physical StorPort project must not compile restricted-DMA client {suffix}")
-
-        for ddi in STORPORT_PROHIBITED_BROKER_DDIS:
-            callers = [path for path, source in sources.items() if re.search(rf"\b{ddi}\s*\(", source)]
-            if callers:
-                locations = ", ".join(path.as_posix() for path in callers)
-                fail(f"{owner} physical StorPort sources must not call prohibited {ddi}: {locations}")
-
-        require_storport_access_platform_gate(
-            owner,
-            sources,
-            find_adapter,
-            read_features,
-            acknowledge_features,
-        )
-        if owner == "viostor":
-            require_viostor_restart_access_platform_gate(sources)
-
-
 def source_occurrences(sources: dict[Path, str], pattern: str) -> list[tuple[Path, int]]:
     return [
         (path, match.start())
@@ -1242,7 +1008,6 @@ def check_native_context_readiness(
     destructor = function_body("VioGpuAdapter::~VioGpuAdapter", viogpu_code)
     buffer_close = function_body("VioGpuBuf::Close", QUEUE_CODE)
     segment_close = function_body("VioGpuMemSegment::Close", QUEUE_CODE)
-    rdma_connect = function_body("VioGpuAdapter::ConnectRestrictedDma", viogpu_code)
 
     require_single_final_return(stop, "return STATUS_SUCCESS;", "native-context transport teardown")
     if re.search(r"\bgoto\b", stop):
@@ -1255,14 +1020,9 @@ def check_native_context_readiness(
         fail("ProbeNativeContextReadiness must have one definition and only the transport call site")
     transport_start = function_body("VioGpuAdapter::StartNativeContextTransport", viogpu_code)
     require_call_count(transport_start, "ProbeNativeContextReadiness", 1, "transport start")
-    require_call_count(transport_start, "ConnectRestrictedDma", 1, "transport start")
     require_call_count(transport_start, "ConnectDrmHostPool", 1, "transport start")
     require_call_count(transport_start, "ConnectGpuGuestPool", 1, "transport start")
     transport_start_compact = compact_code(transport_start)
-    rdma_connect_offset = transport_start_compact.find("NTSTATUSstatus=ConnectRestrictedDma();")
-    rdma_failure_offset = transport_start_compact.find(
-        "if(!NT_SUCCESS(status)){returnstatus;}", rdma_connect_offset
-    )
     host_connect_offset = transport_start_compact.find("status=ConnectDrmHostPool();")
     host_failure_offset = transport_start_compact.find(
         "if(!NT_SUCCESS(status)){returnstatus;}", host_connect_offset
@@ -1273,30 +1033,22 @@ def check_native_context_readiness(
     )
     virtio_init_offset = transport_start_compact.find("status=VioGpuAdapterInit(pDispInfo);")
     if min(
-        rdma_connect_offset,
-        rdma_failure_offset,
         host_connect_offset,
         host_failure_offset,
         guest_connect_offset,
         guest_failure_offset,
         virtio_init_offset,
     ) < 0 or not (
-        rdma_connect_offset
-        < rdma_failure_offset
-        < host_connect_offset
+        host_connect_offset
         < host_failure_offset
         < guest_connect_offset
         < guest_failure_offset
         < virtio_init_offset
     ):
-        fail("transport start must connect restricted DMA and both product pools before initializing VirtIO")
-    if len(re.findall(r"\bm_RdmaPool\s*\.\s*Connect\s*\(", viogpu_code)) != 1 or len(
-        re.findall(r"\bm_RdmaPool\s*\.\s*Connect\s*\(", rdma_connect)
-    ) != 1:
-        fail("restricted-DMA connection must be owned only by the restartable transport-start helper")
+        fail("Native Context transport must connect drm2kgsl_host and gpu_guest before initializing VirtIO")
     hw_init_compact = compact_code(hw_init)
     probe_offset = compact_code(transport_start).find("status=ProbeNativeContextReadiness();")
-    buffer_offset = compact_code(transport_start).find("m_GpuBuf.Init(allocation,this)")
+    buffer_offset = compact_code(transport_start).find("m_GpuBuf.Init(allocation)")
     idr_offset = compact_code(transport_start).find("m_Idr.Init(1,VIOGPU_NATIVE_RESOURCE_ID_START)")
     if min(probe_offset, buffer_offset, idr_offset) < 0 or not (buffer_offset < idr_offset < probe_offset):
         fail("HWInit must probe only after control buffers and the ID allocator are initialized")
@@ -1369,7 +1121,6 @@ def check_native_context_readiness(
         ("m_GpuBuf.Close()", "control-buffer allocator teardown"),
         ("status=m_GpuGuestPool.Disconnect()", "gpu_guest connection release"),
         ("status=m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
-        ("status=m_RdmaPool.Disconnect()", "restricted-DMA arena disconnect"),
         ("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)", "offline publication"),
     ):
         if fragment not in stop_compact:
@@ -1471,7 +1222,6 @@ def check_native_context_readiness(
         ("m_GpuBuf.Close()", "control-buffer allocator teardown"),
         ("status=m_GpuGuestPool.Disconnect()", "gpu_guest connection release"),
         ("status=m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
-        ("status=m_RdmaPool.Disconnect()", "restricted-DMA arena disconnect"),
         ("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)", "offline publication"),
     )
     teardown_offsets = [(stop_compact.find(fragment), description) for fragment, description in teardown_order]
@@ -1486,17 +1236,11 @@ def check_native_context_readiness(
     host_failure = stop_compact.find(
         "if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", host_disconnect
     )
-    rdma_disconnect = stop_compact.find("status=m_RdmaPool.Disconnect()")
-    rdma_failure = stop_compact.find("if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", rdma_disconnect)
     offline_publish = stop_compact.find("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)")
-    if min(guest_disconnect, guest_failure, host_disconnect, host_failure, rdma_disconnect) < 0 or not (
-        guest_disconnect < guest_failure < host_disconnect < host_failure < rdma_disconnect
+    if min(guest_disconnect, guest_failure, host_disconnect, host_failure, offline_publish) < 0 or not (
+        guest_disconnect < guest_failure < host_disconnect < host_failure < offline_publish
     ):
         fail("transport teardown must retain the adapter when named-pool notification teardown fails")
-    if min(rdma_disconnect, rdma_failure, offline_publish) < 0 or not (
-        rdma_disconnect < rdma_failure < offline_publish
-    ):
-        fail("transport teardown must retain the adapter when restricted-DMA disconnect fails")
     failed_path = stop_compact.find("if(state==VioGpuNativeContextFailed)")
     failed_transition = stop_compact.find(
         "InterlockedCompareExchange(&m_NativeContextState,VioGpuNativeContextQuiescing,VioGpuNativeContextFailed)"
@@ -1565,51 +1309,43 @@ def check_native_context_readiness(
     lock_offsets = [match.start() for match in re.finditer(r"\bKeAcquireSpinLock\s*\(", buffer_close)]
     unlock_offsets = [match.start() for match in re.finditer(r"\bKeReleaseSpinLock\s*\(", buffer_close)]
     free_offsets = [match.start() for match in re.finditer(r"\bFreeMemory\s*\(", buffer_close)]
-    owner_clear_offset = buffer_close_compact.find("m_pPci=NULL;")
-    if len(lock_offsets) != 2 or len(unlock_offsets) != 2 or len(free_offsets) != 3:
-        fail("control-buffer teardown must use two lock scopes and free response, data, and descriptor storage")
-    if not (
-        lock_offsets[0] < unlock_offsets[0] < free_offsets[0] <= free_offsets[-1] < lock_offsets[1] < unlock_offsets[1]
-    ):
-        fail("control-buffer teardown must return all allocations outside the spin lock before its final owner update")
-    last_free_compact = buffer_close_compact.rfind("FreeMemory(")
-    if owner_clear_offset < last_free_compact or owner_clear_offset > buffer_close_compact.rfind("KeReleaseSpinLock("):
-        fail("control-buffer teardown must clear its allocation owner only after every allocation is returned")
+    if len(lock_offsets) != 1 or len(unlock_offsets) != 1 or len(free_offsets) != 3:
+        fail("control-buffer teardown must use one detach lock and free response, data, and descriptor storage")
+    if not lock_offsets[0] < unlock_offsets[0] < free_offsets[0] <= free_offsets[-1]:
+        fail("control-buffer teardown must detach every buffer before freeing allocations outside the spin lock")
+    for list_name in ("m_InUseBufs", "m_FreeBufs"):
+        drain = rf"\bwhile\s*\(\s*!\s*IsListEmpty\s*\(\s*&{list_name}\s*\)\s*\)"
+        if len(re.findall(drain, buffer_close)) != 1:
+            fail(f"control-buffer teardown must detach {list_name} exactly once")
+    for member in ("m_uCount", "m_uCountMin"):
+        writes = variable_write_offsets(buffer_close, member)
+        if len(writes) != 1 or not lock_offsets[0] < writes[0] < unlock_offsets[0]:
+            fail(f"control-buffer teardown must clear {member} exactly once while holding the detach lock")
     for argument in ("buffer->resp_buf", "buffer->data_buf", "buffer"):
         if len(re.findall(rf"\bFreeMemory\s*\(\s*{re.escape(argument)}\s*\)\s*;", buffer_close)) != 1:
             fail(f"control-buffer teardown must free exactly {argument}")
-    first_unlock = buffer_close.find("KeReleaseSpinLock")
-    first_free = min(free_offsets)
-    owner_writes = [match.start() for match in re.finditer(r"\bm_pPci\b\s*=", buffer_close)]
-    if any(first_unlock < offset < first_free for offset in owner_writes):
-        fail("control-buffer teardown must not clear its allocator owner through an alias before freeing allocations")
-    if "&m_pPci" in buffer_close_compact[compact_code(buffer_close).find("KeReleaseSpinLock("):first_free]:
-        fail("control-buffer teardown must not expose its allocator-owner slot before freeing allocations")
 
     segment_close_compact = compact_code(segment_close)
     for fragment, description in (
         ("if(m_pVAddr!=NULL&&m_bSystemMemory)", "owned-memory guard"),
-        ("if(m_pPci!=NULL){m_pPci->FreeDmaMemory(m_pVAddr);}", "restricted-DMA owner guard"),
+        ("delete[]reinterpret_cast<PBYTE>(m_pVAddr);", "owned-memory release"),
         ("elseif(m_pVAddr!=NULL&&m_bMapped)", "mapped-framebuffer guard"),
+        ("(void)UnmapFrameBuffer(m_pVAddr,(ULONG)m_Size);", "mapped-framebuffer release"),
         ("m_pVAddr=NULL;", "address clear"),
+        ("delete[]reinterpret_cast<PBYTE>(m_pSGList);", "scatter-gather release"),
+        ("m_pSGList=NULL;", "scatter-gather clear"),
         ("m_bSystemMemory=FALSE;", "system-memory clear"),
         ("m_bMapped=FALSE;", "mapping clear"),
-        ("m_bRestrictedDma=FALSE;", "restricted-DMA clear"),
         ("m_Size=0;", "size clear"),
-        ("m_pPci=NULL;", "allocator-owner clear"),
     ):
         if segment_close_compact.count(fragment) != 1:
             fail(f"memory-segment teardown must contain exactly one {description}")
-    if segment_close_compact.find("m_pPci->FreeDmaMemory(m_pVAddr)") > segment_close_compact.find("m_pPci=NULL;"):
-        fail("memory-segment teardown must return restricted DMA before clearing its allocator owner")
     for member in (
         "m_pVAddr",
         "m_pSGList",
         "m_bSystemMemory",
         "m_bMapped",
-        "m_bRestrictedDma",
         "m_Size",
-        "m_pPci",
     ):
         if len(variable_write_offsets(segment_close, member)) != 1:
             fail(f"memory-segment teardown must publish exactly one final write to {member}")
@@ -4342,14 +4078,11 @@ def check_segment_failure_semantics() -> None:
             or init[close_offset : return_offset + len("returnFALSE;")] != "Close();returnFALSE;"
         ):
             fail(f"memory-segment initialization must call Close before failing {guard}")
-    if len(re.findall(r"\bm_pPci\s*=(?!=)\s*pPci\s*;", init_body)) != 1:
-        fail("memory-segment initialization must acquire its allocator owner exactly once")
-
     sg_construction = (
         "for(UINTi=0;i<pages;++i){"
         "PHYSICAL_ADDRESSpa={0};"
         "ASSERT(MmIsAddressValid(buf));"
-        "pa=m_pPci->GetDmaPhysicalAddress(buf);"
+        "pa=MmGetPhysicalAddress(buf);"
     )
     sg_publish = (
         "m_pSGList->Elements[i].Address=pa;"
@@ -4555,560 +4288,6 @@ def check_pci_resource_lifetime() -> None:
         fail("VirtIO vector selection must leave config and queue vectors unprogrammed for line interrupts")
 
 
-def check_rdma_ioctl_lifetime() -> None:
-    interface = canonical_code(RDMAPOOL_INTERFACE_CODE)
-    for name, value in (
-        ("RDMAPOOL_INTERFACE_VERSION_V2", 2),
-        ("IOCTL_RDMAPOOL_ALLOCATE", 0x805),
-        ("IOCTL_RDMAPOOL_FREE", 0x806),
-        ("IOCTL_RDMAPOOL_QUERY_POOL", 0x807),
-    ):
-        if name.startswith("IOCTL_"):
-            matches = re.findall(
-                rf"#define{re.escape(name)}CTL_CODE\(FILE_DEVICE_RDMAPOOL,(0x[0-9A-Fa-f]+),METHOD_BUFFERED,FILE_ANY_ACCESS\)",
-                interface,
-            )
-            if len(matches) != 1 or int(matches[0], 0) != value:
-                fail(f"restricted-DMA V2 must define {name} with function {value:#x} exactly once")
-        else:
-            require_integer_define(RDMAPOOL_INTERFACE_SOURCE, name, value, "restricted-DMA V2 interface")
-
-    allocate_output = re.search(
-        r"typedefstruct_RDMAPOOL_ALLOCATE_OUTPUT\{([^{}]+)\}RDMAPOOL_ALLOCATE_OUTPUT",
-        interface,
-    )
-    free_input = re.search(r"typedefstruct_RDMAPOOL_FREE_INPUT\{([^{}]+)\}RDMAPOOL_FREE_INPUT", interface)
-    query_output = re.search(
-        r"typedefstruct_RDMAPOOL_QUERY_POOL_OUTPUT\{([^{}]+)\}RDMAPOOL_QUERY_POOL_OUTPUT",
-        interface,
-    )
-    if allocate_output is None or free_input is None or query_output is None:
-        fail("restricted-DMA V2 interface structures are missing")
-    for body, fields, owner in (
-        (
-            allocate_output.group(1),
-            ("ULONGInterfaceVersion;", "ULONGNumPages;", "PVOIDVirtualAddress;", "ULONG64AllocationToken;"),
-            "ALLOCATE output",
-        ),
-        (
-            free_input.group(1),
-            ("ULONGInterfaceVersion;", "ULONGNumPages;", "PVOIDVirtualAddress;", "ULONG64AllocationToken;"),
-            "FREE input",
-        ),
-        (
-            query_output.group(1),
-            ("ULONG64TotalSize;", "ULONGInterfaceVersion;", "ULONGPageSize;"),
-            "QUERY_POOL output",
-        ),
-    ):
-        if any(body.count(field) != 1 for field in fields):
-            fail(f"restricted-DMA V2 {owner} must carry every required versioned ownership field")
-
-    ioctl_body = function_body("RdmaPoolIoctl", RDMA_CODE)
-    ioctl = canonical_code(ioctl_body)
-    if "VIOGPU_RDMA_IOCTL_RESULTresult={STATUS_INSUFFICIENT_RESOURCES,0,FALSE};" not in ioctl:
-        fail("RDMA IOCTL must distinguish requests that were never submitted")
-    submit_offset = ioctl.find("result.Submitted=TRUE;")
-    dispatch_offset = ioctl.find("NTSTATUSstatus=IoCallDriver(deviceObject,irp);")
-    if min(submit_offset, dispatch_offset) < 0 or submit_offset > dispatch_offset:
-        fail("RDMA IOCTL must publish Submitted before dispatch")
-    pending_blocks = [
-        (body, start, end)
-        for condition, body, start, end in if_blocks(ioctl_body)
-        if is_equality_condition(condition, "status", "STATUS_PENDING")
-    ]
-    pending = canonical_code(pending_blocks[0][0]) if len(pending_blocks) == 1 else ""
-    wait = "NTSTATUSwaitStatus=KeWaitForSingleObject(&event,Executive,KernelMode,FALSE,NULL);"
-    if len(pending_blocks) != 1 or wait not in pending or "status=NT_SUCCESS(waitStatus)?ioStatus.Status:waitStatus;" not in pending:
-        fail("RDMA IOCTL must synchronously drain a pending IRP before stack buffers leave scope")
-    if ioctl.count("KeWaitForSingleObject(") != 1 or "IoCancelIrp(" in ioctl or "IoSetCompletionRoutine(" in ioctl:
-        fail("RDMA IOCTL must use one unbounded synchronous drain without a partial cancellation handoff")
-    if "result.Status=status;result.Information=ioStatus.Information;returnresult;" not in ioctl:
-        fail("RDMA IOCTL must return final status, Information, and submission state together")
-
-    connect = canonical_code(function_body("VioGpuRdmaPool::Connect", RDMA_CODE))
-    for required in (
-        "ioctlResult.Information!=sizeof(query)",
-        "query.InterfaceVersion!=RDMAPOOL_INTERFACE_VERSION_V2",
-        "query.PageSize!=PAGE_SIZE",
-        "ioctlResult.Information!=sizeof(allocation)",
-        "ioctlResult.Information!=sizeof(output)",
-        "output.InterfaceVersion!=RDMAPOOL_INTERFACE_VERSION_V2",
-        "output.NumPages!=arenaPages",
-        "output.AllocationToken==0",
-        "vaOffset!=paOffset",
-        "vaOffset>query.TotalSize-arenaSize",
-        "m_AllocationToken=output.AllocationToken;",
-        "m_ArenaOwned=TRUE;",
-        "m_Ready=TRUE;",
-    ):
-        if connect.count(required) != 1:
-            fail(f"RDMA Connect must validate and publish V2 ownership exactly once: {required}")
-    if not connect.find("RtlZeroMemory(m_BaseVA,m_Size);") < connect.find("m_Ready=TRUE;"):
-        fail("RDMA Connect must publish Ready only after arena initialization completes")
-    if "m_ArenaOwned||m_FileObject!=NULL||m_DeviceObject!=NULL||m_Bitmap!=NULL" not in connect:
-        fail("RDMA Connect must refuse to replace retained arena ownership")
-
-    disconnect_body = function_body("VioGpuRdmaPool::Disconnect", RDMA_CODE)
-    disconnect = canonical_code(disconnect_body)
-    for required in (
-        "m_Ready=FALSE;",
-        "ExWaitForRundownProtectionRelease(&m_Operations);",
-        "ExRundownCompleted(&m_Operations);",
-        "input.InterfaceVersion=RDMAPOOL_INTERFACE_VERSION_V2;",
-        "input.NumPages=m_PageCount;",
-        "input.AllocationToken=m_AllocationToken;",
-        "if(!ioctlResult.Submitted){m_DisconnectStatus=ioctlResult.Status;returnm_DisconnectStatus;}",
-        "if(m_DisconnectAttempted){returnm_DisconnectStatus;}",
-        "m_DisconnectAttempted=TRUE;",
-    ):
-        if disconnect.count(required) != 1:
-            fail(f"RDMA Disconnect must retain exact V2 ownership until confirmed FREE: {required}")
-    if disconnect.count("ClearConnection();returnSTATUS_SUCCESS;") != 2:
-        fail("RDMA Disconnect may clear only no-owner state or provider-confirmed FREE state")
-    failure_blocks = [
-        (body, start, end)
-        for condition, body, start, end in if_blocks(disconnect)
-        if is_failure_condition(condition, "m_DisconnectStatus")
-    ]
-    if len(failure_blocks) != 1 or canonical_code(failure_blocks[0][0]) != "returnm_DisconnectStatus;":
-        fail("RDMA Disconnect must retain exact V2 ownership on one provider FREE failure path")
-    failure_return = failure_blocks[0][1]
-    final_clear = disconnect.rfind("ClearConnection();returnSTATUS_SUCCESS;")
-    if final_clear < failure_return:
-        fail("RDMA Disconnect must retain ownership on provider FREE failure")
-    submitted_failure = disconnect.find("m_DisconnectAttempted=TRUE;")
-    not_submitted = disconnect.find("if(!ioctlResult.Submitted)")
-    if disconnect.count("RdmaPoolIoctl(") != 1 or not (not_submitted < submitted_failure < failure_return):
-        fail("RDMA FREE must cache only a submitted attempt and prohibit duplicate submission")
-    if not disconnect.find("m_Ready=FALSE;") < disconnect.find("ExWaitForRundownProtectionRelease") < disconnect.find("RdmaPoolIoctl("):
-        fail("RDMA Disconnect must close operations and drain rundown before provider FREE")
-    rundown_wait = disconnect.find("ExWaitForRundownProtectionRelease(&m_Operations);")
-    rundown_complete = disconnect.find("ExRundownCompleted(&m_Operations);")
-    rundown_mark = disconnect.find("m_RundownCompleted=TRUE;")
-    if min(rundown_wait, rundown_complete, rundown_mark) < 0 or not rundown_wait < rundown_complete < rundown_mark:
-        fail("RDMA Disconnect must complete the rundown object before marking it closed")
-
-    header = canonical_code(RDMA_HEADER_CODE)
-    for required in (
-        "BOOLEANm_ArenaOwned;",
-        "BOOLEANm_Ready;",
-        "BOOLEANm_RundownCompleted;",
-        "BOOLEANm_DisconnectAttempted;",
-        "ULONG64m_AllocationToken;",
-        "mutableEX_RUNDOWN_REFm_Operations;",
-        "returnm_Ready;",
-        "returnm_ArenaOwned;",
-    ):
-        if header.count(required) != 1:
-            fail(f"RDMA client must separate arena ownership, readiness, and rundown: {required}")
-    clear_connection = canonical_code(function_body("VioGpuRdmaPool::ClearConnection", RDMA_CODE))
-    if clear_connection.count("m_DisconnectAttempted=FALSE;") != 1:
-        fail("RDMA client may clear submitted-FREE state only with the complete connection")
-
-    allocate = canonical_code(function_body("VioGpuRdmaPool::Allocate", RDMA_CODE))
-    free = canonical_code(function_body("VioGpuRdmaPool::Free", RDMA_CODE))
-    if allocate.count("ExAcquireRundownProtection(&m_Operations)") != 1 or allocate.count("ExReleaseRundownProtection(&m_Operations)") < 5:
-        fail("RDMA sub-allocation must hold rundown across bitmap publication and memory initialization")
-    if free.count("ExAcquireRundownProtection(&m_Operations)") != 1 or free.count("ExReleaseRundownProtection(&m_Operations)") < 4:
-        fail("RDMA sub-free must hold rundown across header validation and bitmap consumption")
-
-    provider = canonical_code(RDMAPOOL_PROVIDER_CODE)
-    if provider.count("WdfRequestGetRequestorMode(Request)!=KernelMode") != 1:
-        fail("rdmapool provider must reject user-mode kernel-VA requests")
-    for required in (
-        "WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&fileAttributes,RDMAPOOL_FILE_CONTEXT);",
-        "WDF_FILEOBJECT_CONFIG_INIT(&fileConfig,RdmaPoolEvtDeviceFileCreate,RdmaPoolEvtFileClose,WDF_NO_EVENT_CALLBACK);",
-        "WdfDeviceInitSetFileObjectConfig(DeviceInit,&fileConfig,&fileAttributes);",
-        "fileContext->InitializingCount=0;",
-        "KeInitializeEvent(&fileContext->NoInitializersEvent,NotificationEvent,TRUE);",
-        "WdfRequestComplete(Request,STATUS_SUCCESS);",
-        "ULONGreleased=DmaPoolCloseOwner(fileContext);",
-        "outputValue.InterfaceVersion=RDMAPOOL_INTERFACE_VERSION_V2;",
-        "outputValue.NumPages=inputValue.NumPages;",
-        "*output=outputValue;",
-        "status=DmaPoolFreePages(fileContext,inputValue.VirtualAddress,inputValue.NumPages,inputValue.AllocationToken);",
-        "InputBufferLength!=0||OutputBufferLength!=sizeof(RDMAPOOL_QUERY_ALLOCATION_OUTPUT)",
-    ):
-        if provider.count(required) != 1:
-            fail(f"rdmapool dispatch must preserve V2 file ownership and buffered input: {required}")
-    if provider.count("inputValue=*input;") != 2:
-        fail("rdmapool mutating IOCTLs must snapshot each METHOD_BUFFERED input")
-    if provider.count("fileContext==NULL||inputValue.InterfaceVersion!=RDMAPOOL_INTERFACE_VERSION_V2") != 2:
-        fail("rdmapool V2 ALLOCATE and FREE must validate file ownership and ABI version")
-
-    allocator = canonical_code(DMAPOOL_CODE)
-    retired_reserve = ("IOCTL_RDMAPOOL_RESERVE", "RDMAPOOL_RESERVE_INPUT", "DmaPoolReservePages")
-    if any(
-        token in RDMAPOOL_INTERFACE_SOURCE or token in RDMAPOOL_PROVIDER_SOURCE or token in DMAPOOL_SOURCE
-        for token in retired_reserve
-    ):
-        fail("restricted-DMA V2 must not retain the ownerless legacy RESERVE path")
-    allocate_pages = canonical_code(function_body("DmaPoolAllocatePages", DMAPOOL_CODE))
-    free_pages = canonical_code(function_body("DmaPoolFreePages", DMAPOOL_CODE))
-    close_owner = canonical_code(function_body("DmaPoolCloseOwner", DMAPOOL_CODE))
-    destroy = canonical_code(function_body("DmaPoolDestroy", DMAPOOL_CODE))
-    if allocator.count("staticULONG64gNextAllocationToken;") != 1 or "gNextAllocationToken=0;" in canonical_code(
-        function_body("DmaPoolInit", DMAPOOL_CODE)
-    ):
-        fail("rdmapool allocation tokens must not reset across PnP PrepareHardware cycles")
-    for required in (
-        "gNextAllocationToken==MAXULONGLONG",
-        "Allocation->Owner=Owner;",
-        "Allocation->Token=gNextAllocationToken;",
-        "Allocation->Initializing=TRUE;",
-        "InsertTailList(&gAllocationList,&Allocation->ListEntry);",
-        "Owner->InitializingCount++;",
-        "KeClearEvent(&Owner->NoInitializersEvent);",
-        "RtlZeroMemory(allocationVa,(SIZE_T)NumPages*PAGE_SIZE);",
-        "if(!gPoolReady||Owner->Closing||Allocation->Cancelled)",
-        "Allocation->Initializing=FALSE;",
-        "Owner->InitializingCount--;",
-        "KeSetEvent(&Owner->NoInitializersEvent,IO_NO_INCREMENT,FALSE);",
-    ):
-        if allocate_pages.count(required) != 1:
-            fail(f"rdmapool ALLOCATE must use two-phase token ownership: {required}")
-    for required in (
-        "Candidate->Token==AllocationToken",
-        "Allocation->Owner!=Owner",
-        "Allocation->VirtualAddress!=VirtualAddress",
-        "Allocation->NumPages!=NumPages",
-        "RemoveEntryList(&Allocation->ListEntry);",
-    ):
-        if free_pages.count(required) != 1:
-            fail(f"rdmapool FREE must atomically consume exact owner/token/extent: {required}")
-    if "Owner->Closing=TRUE;" not in close_owner or "Allocation->Cancelled=TRUE;" not in close_owner:
-        fail("rdmapool file close must close the owner and cancel unpublished allocations")
-    cleanup_wait = close_owner.find("KeWaitForSingleObject(&Owner->NoInitializersEvent")
-    if cleanup_wait < close_owner.find("Owner->Closing=TRUE;") or cleanup_wait > close_owner.find("returnReleased;"):
-        fail("rdmapool file close must retain owner context until initializers drain")
-    destroy_gate = destroy.find("gPoolReady=FALSE;")
-    destroy_wait = destroy.find("KeWaitForSingleObject(&gNoInitializersEvent")
-    if min(destroy_gate, destroy_wait) < 0 or destroy_gate > destroy_wait:
-        fail("rdmapool ReleaseHardware must stop new allocations before draining initializers")
-
-
-def check_shared_rdma_clients() -> None:
-    shared_header = canonical_code(SHARED_RDMA_CLIENT_HEADER_CODE)
-    for required in (
-        "BOOLEANActive;",
-        "ULONGAllocationPages;",
-        "ULONG64AllocationToken;",
-        "BOOLEANDisconnectAttempted;",
-        "NTSTATUSDisconnectStatus;",
-    ):
-        if shared_header.count(required) != 1:
-            fail(f"shared RDMA client must retain readiness and exact V2 ownership: {required}")
-
-    shared_ioctl_body = function_body("RdmaClientIoctl", SHARED_RDMA_CLIENT_CODE)
-    shared_ioctl = canonical_code(shared_ioctl_body)
-    if "RDMA_CLIENT_IOCTL_RESULTresult={STATUS_INSUFFICIENT_RESOURCES,0,FALSE};" not in shared_ioctl:
-        fail("shared RDMA IOCTL must distinguish requests that were never submitted")
-    submitted = shared_ioctl.find("result.Submitted=TRUE;")
-    dispatched = shared_ioctl.find("status=IoCallDriver(c->PoolDeviceObject,irp);")
-    if min(submitted, dispatched) < 0 or submitted > dispatched:
-        fail("shared RDMA IOCTL must publish Submitted immediately before dispatch")
-    if shared_ioctl.count("KeWaitForSingleObject(&event,Executive,KernelMode,FALSE,NULL)") != 1:
-        fail("shared RDMA IOCTL must synchronously drain a pending stack-buffer IRP")
-    if "result.Status=status;result.Information=iosb.Information;returnresult;" not in shared_ioctl:
-        fail("shared RDMA IOCTL must return status, Information, and submission state together")
-
-    shared_connect = canonical_code(function_body("RdmaClientConnect", SHARED_RDMA_CLIENT_CODE))
-    retained_guard = (
-        "c->Active||c->PoolFileObject!=NULL||c->PoolDeviceObject!=NULL||"
-        "c->BaseVA!=NULL||c->Size!=0||c->AllocationPages!=0||"
-        "c->AllocationToken!=0||c->DisconnectAttempted"
-    )
-    if retained_guard not in shared_connect:
-        fail("shared RDMA Connect must refuse to overwrite any retained owner tuple")
-    for required in (
-        "ioctlResult.Information!=sizeof(queryOutput)",
-        "queryOutput.InterfaceVersion!=RDMAPOOL_INTERFACE_VERSION_V2",
-        "queryOutput.PageSize!=PAGE_SIZE",
-        "allocInput.InterfaceVersion=RDMAPOOL_INTERFACE_VERSION_V2;",
-        "ioctlResult.Information!=sizeof(allocOutput)",
-        "!RdmaClientValidAllocation(&queryOutput,&allocOutput,totalPages)",
-        "freeInput.InterfaceVersion=RDMAPOOL_INTERFACE_VERSION_V2;",
-        "freeInput.NumPages=allocOutput.NumPages;",
-        "freeInput.VirtualAddress=allocOutput.VirtualAddress;",
-        "freeInput.AllocationToken=allocOutput.AllocationToken;",
-        "c->AllocationPages=allocOutput.NumPages;",
-        "c->DisconnectAttempted=rollbackResult.Submitted;",
-    ):
-        if shared_connect.count(required) != 1:
-            fail(f"shared RDMA Connect must validate or retain malformed V2 ownership: {required}")
-    if shared_connect.count("c->AllocationToken=allocOutput.AllocationToken;") != 2:
-        fail("shared RDMA Connect must retain malformed and publish valid allocation tokens")
-    active_publish = shared_connect.rfind("c->Active=TRUE;")
-    token_publish = shared_connect.rfind("c->AllocationToken=allocOutput.AllocationToken;")
-    if active_publish < token_publish or active_publish < 0:
-        fail("shared RDMA Connect must publish Active only after the complete owner tuple")
-
-    shared_disconnect_body = function_body("RdmaClientDisconnect", SHARED_RDMA_CLIENT_CODE)
-    shared_disconnect = canonical_code(shared_disconnect_body)
-    for required in (
-        "if(c->PollThread!=NULL){returnSTATUS_DEVICE_BUSY;}",
-        "if(c->DisconnectAttempted){returnc->DisconnectStatus;}",
-        "freeInput.InterfaceVersion=RDMAPOOL_INTERFACE_VERSION_V2;",
-        "freeInput.VirtualAddress=c->BaseVA;",
-        "freeInput.NumPages=c->AllocationPages;",
-        "freeInput.AllocationToken=c->AllocationToken;",
-        "if(!ioctlResult.Submitted){c->DisconnectStatus=status;returnc->DisconnectStatus;}",
-        "c->DisconnectAttempted=TRUE;",
-        "RdmaClientClosePoolFile(c);",
-        "c->AllocationPages=0;",
-        "c->AllocationToken=0;",
-        "c->Active=FALSE;",
-    ):
-        if shared_disconnect.count(required) != 1:
-            fail(f"shared RDMA Disconnect must retain exact ownership until confirmed FREE: {required}")
-    not_submitted = shared_disconnect.find("if(!ioctlResult.Submitted)")
-    attempted = shared_disconnect.find("c->DisconnectAttempted=TRUE;")
-    failed = shared_disconnect.find("if(!NT_SUCCESS(status)||ioctlResult.Information!=0)")
-    close_file = shared_disconnect.find("RdmaClientClosePoolFile(c);")
-    if shared_disconnect.count("RdmaClientIoctl(") != 1 or not (
-        0 <= not_submitted < attempted < failed < close_file
-    ):
-        fail("shared RDMA FREE must cache only submitted attempts and clear only confirmed ownership")
-
-    wdf_header = canonical_code(WDF_HEADER_CODE)
-    for required in (
-        "WDFWAITLOCKRdmaPoolIoctlLock;",
-        "BOOLEANRdmaPoolActive;",
-        "BOOLEANRdmaPoolClosing;",
-        "BOOLEANRdmaPoolOwnerUnknown;",
-        "LIST_ENTRYRdmaPoolAllocList;",
-    ):
-        if wdf_header.count(required) != 1:
-            fail(f"WDF RDMA client must separate readiness, closing, and owner state: {required}")
-
-    wdf_ioctl = canonical_code(function_body("RdmaPoolIoctl", WDF_DMA_CODE))
-    if "RDMAPOOL_IOCTL_RESULTresult={STATUS_INSUFFICIENT_RESOURCES,0,FALSE};" not in wdf_ioctl:
-        fail("WDF RDMA IOCTL must distinguish requests that were never submitted")
-    submitted = wdf_ioctl.find("result.Submitted=TRUE;")
-    dispatched = wdf_ioctl.find("status=IoCallDriver(pWdfDriver->RdmaPoolDeviceObject,irp);")
-    if min(submitted, dispatched) < 0 or submitted > dispatched:
-        fail("WDF RDMA IOCTL must publish Submitted immediately before dispatch")
-
-    free_entry = canonical_code(function_body("FreeRdmaPoolEntryLocked", WDF_DMA_CODE))
-    for required in (
-        "if(entry->FreeAttempted){returnentry->FreeStatus;}",
-        "freeInput.InterfaceVersion=RDMAPOOL_INTERFACE_VERSION_V2;",
-        "freeInput.NumPages=entry->NumPages;",
-        "freeInput.VirtualAddress=entry->VirtualAddress;",
-        "freeInput.AllocationToken=entry->AllocationToken;",
-        "if(!ioctlResult.Submitted){entry->FreeStatus=ioctlResult.Status;returnentry->FreeStatus;}",
-        "entry->FreeAttempted=TRUE;",
-        "pWdfDriver->RdmaPoolClosing=TRUE;",
-    ):
-        if free_entry.count(required) != 1:
-            fail(f"WDF RDMA FREE must retain exact ownership and submitted state: {required}")
-    if not free_entry.find("if(!ioctlResult.Submitted)") < free_entry.find("entry->FreeAttempted=TRUE;"):
-        fail("WDF RDMA FREE must allow retry only when no IRP was submitted")
-
-    wdf_allocate = canonical_code(function_body("AllocateFromRdmaPool", WDF_DMA_CODE))
-    for required in (
-        "!pWdfDriver->RdmaPoolActive||pWdfDriver->RdmaPoolClosing||pWdfDriver->RdmaPoolFileObject==NULL",
-        "entry->VirtualAddress=allocOutput.VirtualAddress;",
-        "entry->NumPages=allocOutput.NumPages;",
-        "entry->AllocationToken=allocOutput.AllocationToken;",
-        "ioctlResult.Information!=sizeof(allocOutput)",
-        "!ValidateRdmaPoolAllocation(pWdfDriver,&allocOutput,allocInput.NumPages)",
-        "rollbackStatus=FreeRdmaPoolEntryLocked(pWdfDriver,entry);",
-        "pWdfDriver->RdmaPoolOwnerUnknown=TRUE;",
-    ):
-        if wdf_allocate.count(required) != 1:
-            fail(f"WDF RDMA ALLOCATE must validate or retain malformed ownership: {required}")
-    if wdf_allocate.count("InsertTailList(&pWdfDriver->RdmaPoolAllocList,&entry->ListEntry);") != 2:
-        fail("WDF RDMA ALLOCATE must track both valid and failed-rollback owner tuples")
-
-    release = canonical_code(function_body("VirtIOWdfReleaseRdmaPoolAllocations", WDF_DMA_CODE))
-    unknown = release.find("if(pWdfDriver->RdmaPoolOwnerUnknown)")
-    close_unknown = release.find("ObDereferenceObject(pWdfDriver->RdmaPoolFileObject);", unknown)
-    free_known = release.find("status=FreeRdmaPoolEntryLocked(pWdfDriver,allocation);")
-    remove_known = release.find("RemoveEntryList(&allocation->ListEntry);", free_known)
-    if min(unknown, close_unknown, free_known, remove_known) < 0 or not (
-        unknown < close_unknown < free_known < remove_known
-    ):
-        fail("WDF shutdown must use file close for unknown ownership and remove known entries only after FREE")
-
-    wdf_disconnect = canonical_code(function_body("VirtIOWdfDisconnectRdmaPool", WDF_CODE))
-    release_call = wdf_disconnect.find("status=VirtIOWdfReleaseRdmaPoolAllocations(pWdfDriver);")
-    failure_return = wdf_disconnect.find("if(!NT_SUCCESS(status)){returnstatus;}")
-    close_file = wdf_disconnect.find("ObDereferenceObject(pWdfDriver->RdmaPoolFileObject);")
-    if min(release_call, failure_return, close_file) < 0 or not release_call < failure_return < close_file:
-        fail("WDF disconnect must retain its file owner whenever allocation release fails")
-
-    shutdown = canonical_code(function_body("VirtIOWdfShutdown", WDF_CODE))
-    reset = shutdown.find("virtio_device_reset(&pWdfDriver->VIODevice);")
-    delete = shutdown.find("virtio_delete_queues(&pWdfDriver->VIODevice);")
-    device_shutdown = shutdown.find("virtio_device_shutdown(&pWdfDriver->VIODevice);")
-    disconnect = shutdown.find("status=VirtIOWdfDisconnectRdmaPool(pWdfDriver);")
-    pci_free = shutdown.find("PCIFreeBars(pWdfDriver);")
-    if min(reset, delete, device_shutdown, disconnect, pci_free) < 0 or not (
-        reset < delete < device_shutdown < disconnect < pci_free
-    ):
-        fail("WDF shutdown must quiesce device and queues before RDMA owner cleanup")
-
-    initialize = canonical_code(function_body("VirtIOWdfInitialize", WDF_CODE))
-    fallback = (
-        "elseif(rdmaStatus==STATUS_NOT_FOUND&&!virtio_is_feature_enabled("
-        "VirtIOWdfGetDeviceFeatures(pWdfDriver),VIRTIO_F_ACCESS_PLATFORM))"
-    )
-    if fallback not in initialize or "status=rdmaStatus;" not in initialize:
-        fail("WDF initialization may fall back to normal DMA only when rdmapool is absent")
-
-    set_features = canonical_code(function_body("VirtIOWdfSetDriverFeatures", WDF_CODE))
-    access_platform = set_features.find(
-        "if(virtio_is_feature_enabled(uDeviceFeatures,VIRTIO_F_ACCESS_PLATFORM))"
-    )
-    owner_gate = set_features.find(
-        "if(!pWdfDriver->RdmaPoolActive||pWdfDriver->RdmaPoolClosing||"
-        "pWdfDriver->RdmaPoolFileObject==NULL)",
-        access_platform,
-    )
-    acknowledge = set_features.find(
-        "virtio_feature_enable(uFeatures,VIRTIO_F_ACCESS_PLATFORM);", owner_gate
-    )
-    if min(access_platform, owner_gate, acknowledge) < 0 or not access_platform < owner_gate < acknowledge:
-        fail("WDF must require a live rdmapool owner before acknowledging ACCESS_PLATFORM")
-
-
-def check_netkvm_terminal_cleanup() -> None:
-    header = canonical_code(NETKVM_HEADER_CODE)
-    for required in (
-        "BOOLEANCleanupComplete=FALSE;",
-        "NTSTATUSCleanupStatus=STATUS_SUCCESS;",
-        "BOOLEANm_OwnerOpen=FALSE;",
-        "BOOLEANm_DisconnectStarted=FALSE;",
-        "NTSTATUSm_Status=STATUS_SUCCESS;",
-    ):
-        if header.count(required) != 1:
-            fail(f"NetKVM must retain explicit cleanup and rdmapool owner state: {required}")
-
-    free_allocation = canonical_code(function_body("RdmaPoolFreeAllocationLocked", NETKVM_RDMA_CODE))
-    cached_free = free_allocation.find(
-        "if(Allocation->FreeSubmitted){returnAllocation->FreeStatus;}"
-    )
-    free_ioctl = free_allocation.find("status=RdmaPoolIoctl(")
-    if (
-        cached_free < 0
-        or free_ioctl < 0
-        or cached_free > free_ioctl
-        or free_allocation.count("RdmaPoolIoctl(") != 1
-    ):
-        fail("NetKVM cached FREE completion must return before the only provider IOCTL")
-    for required in (
-        "if(submitted){Allocation->FreeSubmitted=TRUE;Allocation->FreeStatus=status;}",
-        "freeInput.InterfaceVersion=RDMAPOOL_INTERFACE_VERSION_V2;",
-        "freeInput.NumPages=Allocation->NumPages;",
-        "freeInput.VirtualAddress=Allocation->VirtualAddress;",
-        "freeInput.AllocationToken=Allocation->AllocationToken;",
-    ):
-        if free_allocation.count(required) != 1:
-            fail(f"NetKVM FREE must cache one exact provider submission: {required}")
-
-    publish = canonical_code(function_body("RdmaPoolPublishOwnerCleanupLocked", NETKVM_RDMA_CODE))
-    for required in (
-        "allocation->FreeSubmitted=TRUE;",
-        "allocation->FreeStatus=STATUS_SUCCESS;",
-        "pContext->RdmaPoolAutoDisconnect.m_EmergencyActive=FALSE;",
-        "pContext->RdmaPoolAutoDisconnect.m_Status=STATUS_SUCCESS;",
-    ):
-        if publish.count(required) != 1:
-            fail(f"NetKVM file-owner cleanup must publish terminal tombstones: {required}")
-    if "RdmaPoolIoctl(" in publish or "RdmaPoolFreeAllocationLocked(" in publish:
-        fail("NetKVM tombstone publication must not submit provider I/O")
-
-    release_body = function_body("ParaNdis_RdmaPoolReleaseAllocations", NETKVM_RDMA_CODE)
-    release = canonical_code(release_body)
-    cached_status = (
-        "if(!NT_SUCCESS(pContext->RdmaPoolAutoDisconnect.m_Status)){"
-        "firstFailure=pContext->RdmaPoolAutoDisconnect.m_Status;}"
-    )
-    release_loop = (
-        "for(entry=pContext->RdmaPoolAutoDisconnect.m_Allocations.Flink;"
-        "NT_SUCCESS(firstFailure)&&entry!=&pContext->RdmaPoolAutoDisconnect.m_Allocations;"
-        "entry=entry->Flink)"
-    )
-    emergency_gate = "if(NT_SUCCESS(firstFailure)){status=RdmaPoolFreeEmergencyAllocationLocked(pContext);"
-    if release.count(cached_status) != 1 or release.count(release_loop) != 1:
-        fail("NetKVM release must skip all further FREE submissions after a cached or first failure")
-    if release.count(emergency_gate) != 1:
-        fail("NetKVM emergency FREE must run only while no earlier FREE has failed")
-    if release.count("status=RdmaPoolFreeAllocationLocked(pContext,allocation);") != 1:
-        fail("NetKVM release must have one FREE site guarded by the failure-stopping loop")
-
-    terminal_blocks = [
-        body
-        for condition, body, _, _ in if_blocks(release_body)
-        if is_failure_condition(condition, "firstFailure")
-    ]
-    if len(terminal_blocks) != 1:
-        fail("NetKVM release must have one terminal first-failure recovery block")
-    terminal = canonical_code(terminal_blocks[0])
-    close_file = terminal.find("RdmaPoolCloseFileLocked(pContext);")
-    publish_tombstones = terminal.find("RdmaPoolPublishOwnerCleanupLocked(pContext);")
-    unlock = terminal.find("RdmaPoolUnlock(pContext);")
-    failure_return = terminal.find("returnfirstFailure;")
-    if min(close_file, publish_tombstones, unlock, failure_return) < 0 or not (
-        close_file < publish_tombstones < unlock < failure_return
-    ):
-        fail("NetKVM must close the file owner before publishing terminal tombstones")
-    if release.count("RdmaPoolCloseFileLocked(pContext);") != 1 or release.count(
-        "RdmaPoolPublishOwnerCleanupLocked(pContext);"
-    ) != 1:
-        fail("NetKVM terminal recovery must close and publish exactly once")
-
-    late_free = canonical_code(function_body("ParaNdis_RdmaPoolFree", NETKVM_RDMA_CODE))
-    tombstone_gate = (
-        "if(pContext->RdmaPoolAutoDisconnect.m_DisconnectStarted&&!allocation->FreeSubmitted)"
-        "{RdmaPoolUnlock(pContext);returnSTATUS_INVALID_DEVICE_STATE;}"
-    )
-    consume = late_free.find("status=RdmaPoolFreeAllocationLocked(pContext,allocation);")
-    failure = late_free.find("if(!NT_SUCCESS(status))", consume)
-    remove = late_free.find("RemoveEntryList(&allocation->ListEntry);", failure)
-    unlock = late_free.find("RdmaPoolUnlock(pContext);", remove)
-    free_record = late_free.find("NdisFreeMemoryWithTagPriority(", unlock)
-    if late_free.count(tombstone_gate) != 1 or min(consume, failure, remove, unlock, free_record) < 0 or not (
-        consume < failure < remove < unlock < free_record
-    ):
-        fail("NetKVM late free must accept a submitted tombstone and consume its tracking record")
-    if late_free.count("RdmaPoolFreeAllocationLocked(pContext,allocation);") != 1:
-        fail("NetKVM late free must use exactly one cached-or-submit FREE helper")
-
-    cleanup = canonical_code(function_body("ParaNdis_CleanupContext", NETKVM_COMMON_CODE))
-    cached_cleanup = "if(pContext->CleanupComplete){returnpContext->CleanupStatus;}"
-    release_call = cleanup.find("status=ParaNdis_RdmaPoolReleaseAllocations(pContext);")
-    disconnect_call = cleanup.find("status=ParaNdis_RdmaPoolDisconnect(pContext);", release_call)
-    publish_status = cleanup.find("pContext->CleanupStatus=status;", disconnect_call)
-    publish_complete = cleanup.find("pContext->CleanupComplete=TRUE;", publish_status)
-    if cleanup.count(cached_cleanup) != 1 or not (
-        0 <= cleanup.find(cached_cleanup) < release_call < disconnect_call < publish_status < publish_complete
-    ):
-        fail("NetKVM cleanup must cache its terminal result before any repeated provider operation")
-    if cleanup.count("ParaNdis_RdmaPoolReleaseAllocations(pContext)") != 1 or cleanup.count(
-        "ParaNdis_RdmaPoolDisconnect(pContext)"
-    ) != 1:
-        fail("NetKVM cleanup must have one normal/terminal rdmapool cleanup sequence")
-
-    for owner, source in (
-        ("ParaNdis6_Initialize", NETKVM_DRIVER_CODE),
-        ("ParaNdis6_Halt", NETKVM_DRIVER_CODE),
-    ):
-        body = canonical_code(function_body(owner, source))
-        cleanup_call = body.find("ParaNdis_CleanupContext(pContext);")
-        destroy_call = body.find("pContext->Destroy(pContext,pContext->MiniportHandle);")
-        if (
-            cleanup_call < 0
-            or destroy_call < 0
-            or cleanup_call > destroy_call
-            or body.count("ParaNdis_CleanupContext(pContext)") != 1
-            or body.count("pContext->Destroy(pContext,pContext->MiniportHandle)") != 1
-        ):
-            fail(f"{owner} must complete NetKVM terminal cleanup before adapter destruction")
-
-
 def check_adapter_lifecycle() -> None:
     adapter_header = canonical_code(VIOGPU_HEADER_CODE)
     for required in (
@@ -5118,12 +4297,6 @@ def check_adapter_lifecycle() -> None:
     ):
         if adapter_header.count(required) != 1:
             fail(f"DOD adapter must expose one retry-safe hardware rundown field: {required}")
-
-    owner_checks = re.findall(r"\bm_RdmaPool\s*\.\s*HasArenaOwner\s*\(\s*\)", VIOGPU_CODE)
-    if len(owner_checks) != 4:
-        fail("adapter teardown and restart gates must check retained RDMA arena ownership exactly four times")
-    if len(re.findall(r"\bm_RdmaPool\s*\.\s*IsActive\s*\(\s*\)", VIOGPU_CODE)) != 5:
-        fail("adapter data paths must use RDMA readiness only in the five active-allocation decisions")
 
     start = function_body("VioGpuDod::StartDevice", VIOGPU_CODE)
     start_compact = canonical_code(start)
@@ -5721,10 +4894,6 @@ def main() -> None:
     check_dpc_completion_semantics()
     check_segment_failure_semantics()
     check_pci_resource_lifetime()
-    check_rdma_ioctl_lifetime()
-    check_shared_rdma_clients()
-    check_netkvm_terminal_cleanup()
-    check_storport_restricted_dma_policy()
     check_adapter_lifecycle()
     check_worker_thread_lifetime()
     check_project_safety(root)

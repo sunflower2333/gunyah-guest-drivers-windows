@@ -638,17 +638,13 @@ class CNdisSharedMemory : public CNdisAllocatable<CNdisSharedMemory, 'XTSM'>
     {
     }
 
-    /* Context (optional) lets Allocate route through the restricted DMA pool
-     * (rdmapool) when the adapter runs in a Gunyah protected VM. */
-    void Initialize(NDIS_HANDLE DrvHandle, struct _PARANDIS_ADAPTER *Context = nullptr)
+    void Initialize(NDIS_HANDLE DrvHandle)
     {
         m_DrvHandle = DrvHandle;
-        m_Context = Context;
     }
 
     ~CNdisSharedMemory();
     bool Allocate(ULONG Size, bool IsCached = true);
-    NTSTATUS Release();
 
     ULONG GetSize() const
     {
@@ -665,8 +661,6 @@ class CNdisSharedMemory : public CNdisAllocatable<CNdisSharedMemory, 'XTSM'>
 
   private:
     NDIS_HANDLE m_DrvHandle;
-    struct _PARANDIS_ADAPTER *m_Context = nullptr;
-    bool m_FromRdmaPool = false;
 
     PVOID m_VA = nullptr;
     NDIS_PHYSICAL_ADDRESS m_PA = NDIS_PHYSICAL_ADDRESS();

@@ -129,10 +129,6 @@ class IVioGpuPCI
     virtual PDXGKRNL_INTERFACE GetDxgkInterface() = 0;
     virtual CPciResources *GetPciResources() = 0;
     virtual BOOLEAN IsMSIEnabled() = 0;
-    virtual PVOID AllocateDmaMemory(SIZE_T size, SIZE_T alignment) = 0;
-    virtual void FreeDmaMemory(PVOID address) = 0;
-    virtual PHYSICAL_ADDRESS GetDmaPhysicalAddress(PVOID address) = 0;
-    virtual BOOLEAN IsRestrictedDmaActive() = 0;
 };
 
 NTSTATUS

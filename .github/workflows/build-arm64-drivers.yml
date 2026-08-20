@@ -59,11 +59,11 @@ jobs:
         shell: pwsh
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
-          #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動 -> rdmapool
+          #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動 -> droidvmpool
           # Driver 版號 = 100.6.101.<58000 + 自 versioning epoch 起的 commit 數>。
           # 維持第三段 101，第四段從 58000 往上長（每 commit +1），epoch 之後第一個 build = 58001，
           # 故永遠 > 現役 100.6.101.58000。16-bit 上限 65535 → 約 7500 次 build 餘裕；接近上限再開新 epoch。
-          # 對未用 Driver.RHEL.props 的專案（如 rdmapool）此 /p: 是未使用屬性，無副作用。
+          # 對未用 Driver.RHEL.props 的專案（如 droidvmpool）此 /p: 是未使用屬性，無副作用。
           # versioning epoch = base commit. 開關：設為空字串 '' 或 $null 即關閉自增，
           # 第四段固定落回 58000（相當於 +0）。設為某個 commit 時，其後每個 commit +1。
           $epoch = ''   # DISABLED：空/None => +0 => 100.6.101.58000
@@ -99,7 +99,7 @@ jobs:
             @{ p='viorng/viorng/viorng.vcxproj';            c='Win11 Release'; plat='ARM64' },
             @{ p='viosock/sys/viosock.vcxproj';             c='Win11 Release'; plat='ARM64' },
             @{ p='NetKVM/NetKVM-VS2015.vcxproj';            c='Win11 Release'; plat='ARM64' },
-            @{ p='rdmapool/rdmapool.vcxproj';               c='Release';       plat='ARM64' },
+            @{ p='droidvmpool/droidvmpool.vcxproj';         c='Release';       plat='ARM64' },
             @{ p='pvmpower/pvmpower.vcxproj';               c='Release';       plat='ARM64' }
           )
           $failed = @()
@@ -160,7 +160,7 @@ jobs:
             @{ n='NetKVM';    root='NetKVM';    bins=@('netkvm.sys','netkvmp.exe'); inf='netkvm.inf' },
             @{ n='vioinput';  root='vioinput';  bins=@('vioinput.sys','viohidkmdf.sys'); inf='vioinput.inf' },
             @{ n='viogpu';    root='viogpu';    bins=@('viogpudo.sys','viogpudo.pdb','viogpuap.exe','viogpuap.pdb','vgpusrv.exe','vgpusrv.pdb','viogpures.exe','viogpures.pdb'); inf='viogpudo.inf' },
-            @{ n='rdmapool';  root='rdmapool';  bins=@('rdmapool.sys'); inf='rdmapool.inf' },
+            @{ n='droidvmpool'; root='droidvmpool'; bins=@('droidvmpool.sys'); inf='droidvmpool.inf' },
             @{ n='pvmpower';  root='pvmpower';  bins=@('pvmpower.sys'); inf='pvmpower.inf' }
           )
           # 在 root 下找最佳檔案：優先路徑含 ARM64、最新修改
@@ -241,7 +241,7 @@ jobs:
           }
           # --- bundle installer into the artifact (source: .install_scripts/) ---
           # INSTALL.cmd (UAC launcher) + install-drivers.ps1 install the pVM drivers
-          # (rdmapool first, then viogpu/pvmpower/storage/input, NetKVM last) and remove
+          # (droidvmpool first, then viogpu/pvmpower/storage/input, NetKVM last) and remove
           # older versions.
           Copy-Item .install_scripts\INSTALL.cmd, .install_scripts\install-drivers.ps1, .install_scripts\pvmpower-devnode.ps1 out\ -Force
           Write-Host "[pkg] bundled out\INSTALL.cmd + installer scripts"

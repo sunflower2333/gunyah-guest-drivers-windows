@@ -6,56 +6,40 @@ hypervisor on an Android phone), on top of upstream virtio-win.
 
 ## How it works
 
-In a protected VM, guest memory is not visible to the host by default
-(lent memory). The only region shared with the host is the **restricted
-DMA pool**, declared in the boot FDT and surfaced to Windows by edk2-fork as
-an `ACPI\RDMA0000` node. The crosvm virtio backends can only read and
-write pages inside that pool, so the vrings, request/response headers
-and the I/O payload itself must either live in the pool or be bounced
-through it.
+The DroidVM Native Context path uses the explicitly provisioned
+`drm2kgsl_host` and `gpu_guest` named pools. The viogpu compile-only target
+connects those providers before VirtIO initialization and keeps all pool
+ownership and teardown fail-closed. Ordinary VirtIO buffers use the stock
+nonpaged/contiguous allocation path.
 
-- **rdmapool.sys** (new) binds `ACPI\RDMA0000` and exposes pool
-  allocate/free through an IOCTL interface.
-- **StorPort** (viostor/vioscsi) does not use the restricted-DMA broker.
-  These are physical StorPort miniports, whose DDI contract prohibits the
-  WDM calls needed by that client. If the host offers
-  `VIRTIO_F_ACCESS_PLATFORM`, they fail adapter discovery before feature
-  acknowledgement, queue sizing, or DMA allocation.
-- **NDIS** (NetKVM) uses `ParaNdis_RdmaPool`: vrings, RX/control and TX
-  copy pages all live in the pool; TX is forced through the copy path.
 - **WDF drivers** (vioinput, ...) are routed centrally by
   `VirtIO/WDF` (Dma.c / VirtIOWdf.c).
-
-The NetKVM and WDF broker paths are gated on the `ACPI\RDMA0000` device
-interface, so they can retain their stock virtio paths when the broker is
-absent. Storage uses the stricter offered-feature gate above: it supports the
-normal non-`ACCESS_PLATFORM` path and deliberately rejects restricted-DMA
-devices until a StorPort-compatible transport exists.
+- **viogpu** contains the compile-only Windows Native Context contract for
+  the Turnip/crosvm path. It is not an installable product driver yet.
 
 ## Driver status
 
 Legend:
-* ✨ new driver added by this fork 
-* ✅ ported and vrified 
+* ✨ new driver added by this fork
+* ✅ ported and verified
 * ⚠️ ported but not yet verified 
 * ❌ not ported
 * 🚫 explicitly unsupported and rejected
 
 | Driver | Status | Notes |
 |---|:---:|---|
-| rdmapool.sys | ✨ | restricted DMA pool provider (`ACPI\RDMA0000`)<br> pool allocate/free IOCTL interface every other pVM driver builds on |
 | pvmpower.sys | ✨ | PSCI shutdown/reboot bridge<br> detect S5 `ShutdownType` and launch gunyah hypercall to shutdown/restart the VM |
-| viostor | 🚫 | rejects `VIRTIO_F_ACCESS_PLATFORM`; no restricted-DMA data path |
-| NetKVM | ✅ | `ParaNdis_RdmaPool`, TX forced through the copy path |
+| viostor | ✅ | stock VirtIO path |
+| NetKVM | ✅ | stock VirtIO path |
 | vioinput | ✅ | via the VirtIO-WDF routing; in daily use (VNC input) |
-| vioscsi | 🚫 | rejects `VIRTIO_F_ACCESS_PLATFORM`; no restricted-DMA data path |
+| vioscsi | ✅ | stock VirtIO path |
 | vioserial | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viorng | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viosock | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | Balloon | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viomem | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viofs | ⚠️ | VirtIO-WDF routing in place, data path unreviewed |
-| viogpu | ❌ | not ported; need huge works(~~dxvk~~ -> ~~gfxstream~~ -> Turnip Driver -> AHardwareBuffer) |
+| viogpu | ⚠️ | Native Context WDDM contract is compile-only and fail-closed |
 | pvpanic | ❌ | not ported |
 | fwcfg  | ❌ | not ported |
 | ivshmem | ❌ | not ported |

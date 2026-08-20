@@ -1,9 +1,9 @@
 $ErrorActionPreference='Continue'
 $base = $PSScriptRoot
 Write-Host "DroidVM ARM64 driver installer" -ForegroundColor Cyan
-# rdmapool first because the pVM virtio drivers depend on its restricted DMA interface.
+# droidvmpool first because Native Context consumes its named-pool interfaces.
 # NetKVM last: touching a live NIC during replacement can bugcheck.
-$order = @('rdmapool','viogpu','pvmpower','viostor','vioscsi','vioinput','NetKVM')
+$order = @('droidvmpool','viogpu','pvmpower','viostor','vioscsi','vioinput','NetKVM')
 
 function Get-Pkgs {
   $r=@(); $pub=$null
@@ -30,4 +30,4 @@ foreach($d in $order){
   foreach($p in $after){ if($p -ne $new){ Write-Host ("  remove old " + $p); pnputil /delete-driver $p /uninstall | Out-Null } }
 }
 Write-Host ""
-Write-Host "DONE. Reboot so the boot drivers (viostor/rdmapool) load the new version." -ForegroundColor Green
+Write-Host "DONE. Reboot so the boot drivers (viostor/droidvmpool) load the new version." -ForegroundColor Green

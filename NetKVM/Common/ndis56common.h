@@ -488,38 +488,12 @@ struct _tagRxNetDescriptor
 struct _PARANDIS_ADAPTER : public CNdisAllocatable<_PARANDIS_ADAPTER, 'DCTX'>
 {
     _PARANDIS_ADAPTER(NDIS_HANDLE Handle)
-        : RdmaPoolAutoDisconnect(Handle), MiniportHandle(Handle), guestAnnouncePackets(this), CXPath(this),
-          RSSParameters(Handle)
+        : MiniportHandle(Handle), guestAnnouncePackets(this), CXPath(this), RSSParameters(Handle)
     {
         m_StateMachine.RegisterFlow(m_RxStateMachine);
         m_StateMachine.RegisterFlow(m_CxStateMachine);
     }
     ~_PARANDIS_ADAPTER();
-    /* MUST stay the FIRST data member so its final invariant check runs after
-     * every DMA-owning member destructor. Explicit cleanup frees provider
-     * allocations and disconnects; this destructor never closes the owner. */
-    struct CRdmaPoolAutoDisconnect
-    {
-        explicit CRdmaPoolAutoDisconnect(NDIS_HANDLE MiniportHandle) : m_MiniportHandle(MiniportHandle)
-        {
-            KeInitializeMutex(&m_IoctlMutex, 0);
-            InitializeListHead(&m_Allocations);
-        }
-
-        KMUTEX m_IoctlMutex;
-        LIST_ENTRY m_Allocations;
-        NDIS_HANDLE m_MiniportHandle = NULL;
-        BOOLEAN m_OwnerOpen = FALSE;
-        BOOLEAN m_DisconnectStarted = FALSE;
-        BOOLEAN m_EmergencyActive = FALSE;
-        PVOID m_EmergencyVirtualAddress = NULL;
-        ULONG m_EmergencyNumPages = 0;
-        ULONG64 m_EmergencyAllocationToken = 0;
-        BOOLEAN m_EmergencyFreeSubmitted = FALSE;
-        NTSTATUS m_EmergencyFreeStatus = STATUS_SUCCESS;
-        NTSTATUS m_Status = STATUS_SUCCESS;
-        ~CRdmaPoolAutoDisconnect();
-    } RdmaPoolAutoDisconnect;
     NDIS_HANDLE MiniportHandle = NULL;
     NDIS_HANDLE InterruptHandle = NULL;
     NDIS_HANDLE BufferListsPool = NULL;
@@ -528,19 +502,6 @@ struct _PARANDIS_ADAPTER : public CNdisAllocatable<_PARANDIS_ADAPTER, 'DCTX'>
     CPciResources PciResources;
     VirtIODevice IODevice = {};
     CNdisSharedMemory *pPageAllocator = NULL;
-
-    /* Restricted DMA pool (Gunyah protected VM). When RdmaPoolActive, all
-     * device-visible DMA memory is allocated from the rdmapool driver and
-     * TX is forced through the copy path so packet data lands in the pool.
-     * See ParaNdis_RdmaPool.cpp. */
-    BOOLEAN RdmaPoolActive = FALSE;
-    PDEVICE_OBJECT RdmaPoolDeviceObject = NULL;
-    PFILE_OBJECT RdmaPoolFileObject = NULL;
-    PVOID RdmaPoolBaseVA = NULL;
-    PHYSICAL_ADDRESS RdmaPoolBasePA = {};
-    ULONG64 RdmaPoolSize = 0;
-    BOOLEAN CleanupComplete = FALSE;
-    NTSTATUS CleanupStatus = STATUS_SUCCESS;
 
 #ifdef PARANDIS_DEBUG_INTERRUPTS
     LARGE_INTEGER LastInterruptTimeStamp = {};
@@ -828,9 +789,7 @@ BOOLEAN ParaNdis_InitialAllocatePhysicalMemory(PARANDIS_ADAPTER *pContext,
                                                ULONG ulSize,
                                                tCompletePhysicalAddress *pAddresses);
 
-NTSTATUS ParaNdis_FreePhysicalMemory(PARANDIS_ADAPTER *pContext, tCompletePhysicalAddress *pAddresses);
-
-NTSTATUS ParaNdis_CleanupContext(PARANDIS_ADAPTER *pContext);
+VOID ParaNdis_FreePhysicalMemory(PARANDIS_ADAPTER *pContext, tCompletePhysicalAddress *pAddresses);
 
 void ParaNdis_RestoreDeviceConfigurationAfterReset(PARANDIS_ADAPTER *pContext);
 

@@ -382,12 +382,6 @@ VirtIoFindAdapter(IN PVOID DeviceExtension,
     }
 
     RhelGetDiskGeometry(DeviceExtension);
-    if (CHECKBIT(adaptExt->features, VIRTIO_F_ACCESS_PLATFORM))
-    {
-        RhelDbgPrint(TRACE_LEVEL_FATAL,
-                     " VIRTIO_F_ACCESS_PLATFORM requires a restricted-DMA broker; physical StorPort is unsupported\n");
-        return SP_RETURN_ERROR;
-    }
     RhelSetGuestFeatures(DeviceExtension);
 
     ConfigInfo->NumberOfBuses = 1;
@@ -589,6 +583,11 @@ VOID RhelSetGuestFeatures(IN PVOID DeviceExtension)
         {
             guestFeatures |= (1ULL << VIRTIO_F_RING_PACKED);
         }
+    }
+
+    if (CHECKBIT(adaptExt->features, VIRTIO_F_ACCESS_PLATFORM))
+    {
+        guestFeatures |= (1ULL << VIRTIO_F_ACCESS_PLATFORM);
     }
 
     if (CHECKBIT(adaptExt->features, VIRTIO_F_ANY_LAYOUT))
@@ -1429,12 +1428,6 @@ VirtIoHwReinitialize(IN PVOID DeviceExtension)
         return FALSE;
     }
     RhelGetDiskGeometry(DeviceExtension);
-    if (CHECKBIT(adaptExt->features, VIRTIO_F_ACCESS_PLATFORM))
-    {
-        RhelDbgPrint(TRACE_LEVEL_FATAL,
-                     " VIRTIO_F_ACCESS_PLATFORM requires a restricted-DMA broker; physical StorPort is unsupported\n");
-        return FALSE;
-    }
     RhelSetGuestFeatures(DeviceExtension);
 
     if (!VirtIoHwInitialize(DeviceExtension))

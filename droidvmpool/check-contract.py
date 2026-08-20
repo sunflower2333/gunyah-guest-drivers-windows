@@ -293,7 +293,7 @@ def check_interface(interface: str, header: str) -> None:
 def check_inf(inf: str) -> None:
     if inf.count(r"ACPI\DRVM0001") != 1:
         fail("INF must bind exactly the shared ACPI\\DRVM0001 hardware ID")
-    for forbidden in ("RDMA0000", "gpu_guest", "drm2kgsl_host"):
+    for forbidden in ("gpu_guest", "drm2kgsl_host"):
         if forbidden in inf:
             fail(f"INF must not attempt per-instance pool selection: {forbidden}")
     if "StartType      = 0" not in inf or "KmdfLibraryVersion = $KMDFVERSION$" not in inf:

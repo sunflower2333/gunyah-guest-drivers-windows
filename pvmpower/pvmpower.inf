@@ -3,8 +3,8 @@
 ;
 ; Binds to the root-enumerated ROOT\PVMPOWER device (created by the DroidVM
 ; driver installer) and bridges Windows S5 shutdown/reboot onto PSCI
-; SYSTEM_OFF / SYSTEM_RESET. Inert when the platform is not a Gunyah pVM
-; (no rdmapool / ACPI\RDMA0000 present), e.g. under QEMU/KVM.
+; SYSTEM_OFF / SYSTEM_RESET. This package is intended only for DroidVM/Gunyah
+; images.
 ;
 
 [Version]

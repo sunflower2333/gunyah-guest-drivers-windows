@@ -31,7 +31,6 @@
 #include "virtio_ring.h"
 #include "kdebugprint.h"
 #include "ParaNdis_DebugHistory.h"
-#include "ParaNdis_RdmaPool.h"
 #include "Trace.h"
 #ifdef NETKVM_WPP_ENABLED
 #include "ParaNdis_Common.tmh"
@@ -873,18 +872,6 @@ NDIS_STATUS ParaNdis_InitializeContext(PARANDIS_ADAPTER *pContext, PNDIS_RESOURC
             return status;
         }
 
-        /* Only an absent rdmapool permits ordinary NDIS DMA. An incompatible
-         * or broken provider must fail closed before device-visible memory is
-         * allocated. */
-        nt_status = ParaNdis_RdmaPoolConnect(pContext);
-        if (nt_status != STATUS_NOT_FOUND && !NT_SUCCESS(nt_status))
-        {
-            DPrintf(0, "ParaNdis_RdmaPoolConnect failed with %x", nt_status);
-            status = NTStatusToNdisStatus(nt_status);
-            DEBUG_EXIT_STATUS(0, status);
-            return status;
-        }
-
         pContext->u64HostFeatures = virtio_get_features(&pContext->IODevice);
         DumpVirtIOFeatures(pContext);
 
@@ -1609,17 +1596,8 @@ Frees all the resources allocated when the context initialized,
 Parameters:
     context
 ***********************************************************/
-NTSTATUS ParaNdis_CleanupContext(PARANDIS_ADAPTER *pContext)
+static VOID ParaNdis_CleanupContext(PARANDIS_ADAPTER *pContext)
 {
-    NTSTATUS status;
-
-    if (pContext->CleanupComplete)
-    {
-        return pContext->CleanupStatus;
-    }
-
-    pContext->guestAnnouncePackets.Clear();
-
     /* disable any interrupt generation */
     if (pContext->bDeviceInitialized)
     {
@@ -1660,22 +1638,6 @@ NTSTATUS ParaNdis_CleanupContext(PARANDIS_ADAPTER *pContext)
     }
 
     virtio_device_shutdown(&pContext->IODevice);
-
-    /* Polling, queues, DPCs and outstanding packet ownership are stopped now.
-     * Destroy every provider allocation before closing its file owner.
-     * Successful records remain as tombstones for late member destructors. */
-    status = ParaNdis_RdmaPoolReleaseAllocations(pContext);
-    if (NT_SUCCESS(status))
-    {
-        status = ParaNdis_RdmaPoolDisconnect(pContext);
-    }
-    pContext->CleanupStatus = status;
-    pContext->CleanupComplete = TRUE;
-    if (!NT_SUCCESS(status))
-    {
-        DPrintf(0, "rdmapool per-allocation FREE failed 0x%x; file-owner cleanup completed", status);
-    }
-    return status;
 }
 
 /**********************************************************
@@ -2587,9 +2549,6 @@ void ParaNdis_PrintCharArray(int DebugPrintLevel, const CCHAR *data, size_t leng
 
 _PARANDIS_ADAPTER::~_PARANDIS_ADAPTER()
 {
-    if (!CleanupComplete)
-    {
-        DPrintf(0, "adapter destroyed without explicit cleanup; rdmapool owner was not released");
-        NETKVM_ASSERT(FALSE);
-    }
+    guestAnnouncePackets.Clear();
+    ParaNdis_CleanupContext(this);
 }
