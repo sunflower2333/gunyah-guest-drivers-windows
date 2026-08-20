@@ -2472,6 +2472,20 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     for fragment in validate_requirements:
         if validate.count(fragment) != 1:
             fail(f"Render private ABI validation is missing its bounded identity check: {fragment}")
+    for forbidden in (
+        "HostState",
+        "PlacementValid",
+        "PoolGeneration",
+        "ResourceId",
+        "BlobId",
+        "BoundGeneration",
+        "BoundResetGeneration",
+        "BoundContextId",
+        "SegmentId",
+        "PhysicalAddress",
+    ):
+        if forbidden in validate:
+            fail(f"Render must not require pre-Patch residency or placement state: {forbidden}")
     if "patch->Value" in validate:
         fail("Render must accept UMD-selected SlotId values while rejecting the reserved patch bits")
     if validate.find("header->CommandStreamSize<sizeof(ULONGLONG)") > validate.find(
@@ -3771,6 +3785,20 @@ def check_wddm_submission_lifetime() -> None:
             fail(f"Render unified cleanup must release every untransferred owner: {cleanup}")
 
     patch = canonical_code(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))
+    for fragment in (
+        "allocation->HostState==VioGpuWddmAllocationHostLive",
+        "allocation->PlacementValid",
+        "allocation->PoolGeneration!=0",
+        "allocation->ResourceId>=VIOGPU_NATIVE_RESOURCE_ID_START",
+        "allocation->BlobId!=0",
+        "allocation->BoundContextId==submission->ContextId",
+        "allocation->BoundGeneration==submission->Generation",
+        "allocation->BoundResetGeneration==submission->ResetGeneration",
+        "allocationEntry->SegmentId==VIOGPU_WDDM_SEGMENT_ID",
+        "static_cast<ULONGLONG>(allocationEntry->PhysicalAddress.QuadPart)==allocation->PlacementOffset",
+    ):
+        if patch.count(fragment) != 1:
+            fail(f"Patch must retain the post-paging residency and placement gate: {fragment}")
     paging_patch_blocks = [
         canonical_code(body)
         for condition, body, _, _ in if_blocks(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))

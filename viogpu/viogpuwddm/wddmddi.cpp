@@ -1932,24 +1932,19 @@ NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_RENDER_COMMAND *header,
         {
             return allocationStatus;
         }
-        BOOLEAN resident = nativeContext != NULL && allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
-                           allocation->Adapter == device->Adapter &&
-                           allocation->HostState == VioGpuWddmAllocationHostLive && allocation->PlacementValid &&
-                           allocation->PoolGeneration != 0 &&
-                           allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START && allocation->BlobId != 0 &&
-                           allocation->NativeContext == nativeContext->Registration &&
-                           allocation->ContextGeneration == nativeContext->Generation &&
-                           allocation->ContextResetGeneration == nativeContext->ResetGeneration &&
-                           allocation->ContextId == nativeContext->ContextId &&
-                           allocation->BoundGeneration == nativeContext->Generation &&
-                           allocation->BoundResetGeneration == nativeContext->ResetGeneration &&
-                           allocation->BoundContextId == nativeContext->ContextId &&
-                           allocation->PrivateData.ExpectedResetGeneration == nativeContext->ResetGeneration &&
-                           allocationEntry->SegmentId == VIOGPU_WDDM_SEGMENT_ID &&
-                           allocationEntry->PhysicalAddress.QuadPart >= 0 &&
-                           (ULONGLONG)allocationEntry->PhysicalAddress.QuadPart == allocation->PlacementOffset;
+        /* Render runs before VidMm makes allocations resident and before Patch
+         * receives final segment addresses.  Validate the stable allocation
+         * and Native Context identity here; Patch revalidates all Host binding
+         * and placement state after paging has completed. */
+        BOOLEAN current = nativeContext != NULL && allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
+                          allocation->Adapter == device->Adapter && !allocation->Destroying &&
+                          allocation->NativeContext == nativeContext->Registration &&
+                          allocation->ContextGeneration == nativeContext->Generation &&
+                          allocation->ContextResetGeneration == nativeContext->ResetGeneration &&
+                          allocation->ContextId == nativeContext->ContextId &&
+                          allocation->PrivateData.ExpectedResetGeneration == nativeContext->ResetGeneration;
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
-        if (!resident)
+        if (!current)
         {
             return STATUS_DEVICE_NOT_READY;
         }
