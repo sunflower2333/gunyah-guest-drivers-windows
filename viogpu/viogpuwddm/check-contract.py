@@ -3513,6 +3513,11 @@ def check_wddm_submission_lifetime() -> None:
     header = canonical_code(WDDM_DDI_HEADER_CODE)
     if header.count("VioGpuWddmSubmissionAllocationLimit=128,") != 1:
         fail("submission record must use the bounded allocation-reference limit")
+    source = canonical_code(WDDM_DDI_SOURCE)
+    if source.count(
+        "constUINTVIOGPU_WDDM_ALLOCATION_LIST_SIZE=VioGpuWddmSubmissionAllocationLimit;"
+    ) != 1:
+        fail("the VidSch allocation list must match the bounded submission-reference limit")
     if WDDM_DDI_SOURCE.count("const ULONG VIOGPU_WDDM_SUBMISSION_SIGNATURE = 'sWGV';") != 1:
         fail("submission record must have one private signature")
 
