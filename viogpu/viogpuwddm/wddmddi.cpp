@@ -788,9 +788,8 @@ UINT QueryContextCompletedUmdFence(VIOGPU_WDDM_CONTEXT *context)
 
     KIRQL oldIrql;
     KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
-    UINT completed = context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE
-                         ? static_cast<UINT>(context->CompletedUmdFence)
-                         : 0;
+    UINT completed = context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE ? static_cast<UINT>(context->CompletedUmdFence)
+                                                                         : 0;
     KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
     return completed;
 }
@@ -1010,8 +1009,7 @@ NTSTATUS PublishPreparedSubmission(VIOGPU_WDDM_SUBMISSION *submission,
         allocationCount > VioGpuWddmSubmissionAllocationLimit || allocationCount != header->AllocationReferenceCount ||
         dmaBuffer == NULL || dmaBufferSize < commandLength || dmaPrivateData == NULL ||
         dmaPrivateDataSize < sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) || commandLength == 0 ||
-        header->CommandStreamSize < sizeof(MSM_CCMD_GEM_SUBMIT_REQ) ||
-        header->CommandStreamOffset >= commandLength ||
+        header->CommandStreamSize < sizeof(MSM_CCMD_GEM_SUBMIT_REQ) || header->CommandStreamOffset >= commandLength ||
         header->CommandStreamSize > commandLength - header->CommandStreamOffset || virtioBuffer == NULL ||
         snapshot->ContextId == 0 || snapshot->Generation <= 0 || snapshot->ResetGeneration == 0 ||
         !snapshot->Adapter->IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration))
@@ -1032,8 +1030,8 @@ NTSTATUS PublishPreparedSubmission(VIOGPU_WDDM_SUBMISSION *submission,
     submission->Generation = snapshot->Generation;
     submission->ResetGeneration = snapshot->ResetGeneration;
     submission->FenceId = 0;
-    const MSM_CCMD_GEM_SUBMIT_REQ *submitRequest = reinterpret_cast<const MSM_CCMD_GEM_SUBMIT_REQ *>(
-        static_cast<const BYTE *>(dmaBuffer) + header->CommandStreamOffset);
+    const MSM_CCMD_GEM_SUBMIT_REQ *submitRequest = reinterpret_cast<const MSM_CCMD_GEM_SUBMIT_REQ *>(static_cast<const BYTE *>(dmaBuffer) +
+                                                                                                     header->CommandStreamOffset);
     submission->UmdFenceId = submitRequest->fence;
     if (submission->UmdFenceId == 0)
     {
@@ -1787,8 +1785,7 @@ NTSTATUS QueryCompletedFenceInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escap
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
     if (request.Flags != VIOGPU_WDDM_ESCAPE_FLAGS_NONE || request.ExpectedResetGeneration == 0 ||
-        request.CompletedFence != 0 || request.ResetGeneration != 0 || request.ContextId != 0 ||
-        request.Reserved != 0)
+        request.CompletedFence != 0 || request.ResetGeneration != 0 || request.ContextId != 0 || request.Reserved != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -4611,7 +4608,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
             ReleaseQueuedSubmission(submission, TRUE);
             adapter->NotifyNativeSubmissionFault(fenceId,
                                                  recorded && umdFenceRecorded ? STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE
-                                                          : STATUS_INSUFFICIENT_RESOURCES,
+                                                                              : STATUS_INSUFFICIENT_RESOURCES,
                                                  submitCommand->NodeOrdinal,
                                                  submitCommand->EngineOrdinal,
                                                  TRUE);

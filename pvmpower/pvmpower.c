@@ -212,9 +212,7 @@ PvmPowerEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
         return status;
     }
 
-    DbgPrintEx(DPFLTR_DEFAULT_ID,
-               DPFLTR_INFO_LEVEL,
-               "pvmpower: loaded for the DroidVM PSCI power path\n");
+    DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "pvmpower: loaded for the DroidVM PSCI power path\n");
     return STATUS_SUCCESS;
 }
 
