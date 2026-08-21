@@ -3563,6 +3563,9 @@ def check_wddm_submission_lifetime() -> None:
         ),
         "CreateAllocation must initialize internal ownership before publishing the allocation",
     )
+    wddm_ddi = canonical_code(WDDM_DDI_CODE)
+    if wddm_ddi.count("allocation->Destroying=FALSE;") != 1 or "CancelAllocationDestroy(" in wddm_ddi:
+        fail("allocation destruction must never reopen a published allocation")
     create_context = canonical_code(function_body("VioGpuWddmCreateContext", WDDM_DDI_CODE))
     require_order(
         create_context,
@@ -3635,6 +3638,35 @@ def check_wddm_submission_lifetime() -> None:
     ):
         if acquire_allocation.count(fragment) != 1:
             fail(f"allocation submission acquisition must retain its destroy gate: {fragment}")
+    acquire_destroy_lifecycle = canonical_code(
+        function_body("AcquireAllocationLifecycleForDestroy", WDDM_DDI_CODE)
+    )
+    require_order(
+        acquire_destroy_lifecycle,
+        (
+            "allocation==NULL||KeGetCurrentIrql()!=PASSIVE_LEVEL",
+            "timeout.QuadPart=-10LL*10*1000*1000;",
+            "returnKeWaitForSingleObject(&allocation->LifecycleMutex,Executive,KernelMode,FALSE,&timeout);",
+        ),
+        "destroy retry must acquire the allocation lifecycle mutex at PASSIVE_LEVEL",
+    )
+    if "allocation->Destroying" in acquire_destroy_lifecycle or "KeReleaseMutex(" in acquire_destroy_lifecycle:
+        fail("destroy retry must preserve the close gate and retain the lifecycle mutex")
+    acquire_lifecycle = canonical_code(function_body("AcquireAllocationLifecycle", WDDM_DDI_CODE))
+    require_order(
+        acquire_lifecycle,
+        (
+            "status=AcquireAllocationLifecycleForDestroy(allocation);",
+            "if(status!=STATUS_SUCCESS)",
+            "KeAcquireSpinLock(&allocation->SubmissionLock,&oldIrql);",
+            "destroying=allocation->Destroying;",
+            "KeReleaseSpinLock(&allocation->SubmissionLock,oldIrql);",
+            "if(destroying)",
+            "KeReleaseMutex(&allocation->LifecycleMutex,FALSE);",
+            "returnSTATUS_GRAPHICS_ALLOCATION_BUSY;",
+        ),
+        "ordinary allocation lifecycle acquisition must reject the closed destroy state",
+    )
     begin_allocation = canonical_code(function_body("BeginAllocationDestroy", WDDM_DDI_CODE))
     require_order(
         begin_allocation,
@@ -3660,16 +3692,25 @@ def check_wddm_submission_lifetime() -> None:
         "CloseAllocation must release allocation ownership before device ownership",
     )
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
+    if (
+        wddm_ddi.count("AcquireAllocationLifecycleForDestroy(") != 3
+        or acquire_lifecycle.count("AcquireAllocationLifecycleForDestroy(allocation)") != 1
+        or destroy_allocation.count("AcquireAllocationLifecycleForDestroy(allocation)") != 1
+    ):
+        fail("the raw destroy-retry lifecycle acquisition must only serve the gated wrapper and DestroyAllocation")
     require_order(
         destroy_allocation,
         (
+            "status=AcquireAllocationLifecycleForDestroy(allocation);",
+            "if(status==STATUS_SUCCESS)",
             "status=BeginAllocationDestroy(allocation);",
             "status=ReleaseAllocationHostOwnership(allocation,&snapshot,snapshotAcquired);",
+            "if(status!=STATUS_SUCCESS)",
         ),
-        "DestroyAllocation must reserve ownership before Host teardown",
+        "DestroyAllocation must require an acquired mutex before retrying Host teardown",
     )
-    if "CancelAllocationDestroy(" in destroy_allocation:
-        fail("DestroyAllocation must keep its close gate after busy or unknown teardown")
+    if "NT_SUCCESS(status)" in destroy_allocation:
+        fail("DestroyAllocation must not treat positive wait statuses as successful mutex acquisition")
     destroy_context = canonical_code(function_body("VioGpuWddmDestroyContext", WDDM_DDI_CODE))
     require_order(
         destroy_context,

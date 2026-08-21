@@ -608,7 +608,9 @@ BOOLEAN AcquireAllocationNativeContextSnapshot(VIOGPU_WDDM_ALLOCATION *allocatio
     return matches;
 }
 
-NTSTATUS AcquireAllocationLifecycle(VIOGPU_WDDM_ALLOCATION *allocation)
+// The ordinary wrapper below rejects Destroying after this wait.  DestroyAllocation
+// alone may retain the mutex to retry fail-closed Host ownership teardown.
+NTSTATUS AcquireAllocationLifecycleForDestroy(VIOGPU_WDDM_ALLOCATION *allocation)
 {
     if (allocation == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
@@ -617,8 +619,13 @@ NTSTATUS AcquireAllocationLifecycle(VIOGPU_WDDM_ALLOCATION *allocation)
 
     LARGE_INTEGER timeout;
     timeout.QuadPart = -10LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&allocation->LifecycleMutex, Executive, KernelMode, FALSE, &timeout);
-    if (!NT_SUCCESS(status))
+    return KeWaitForSingleObject(&allocation->LifecycleMutex, Executive, KernelMode, FALSE, &timeout);
+}
+
+NTSTATUS AcquireAllocationLifecycle(VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    NTSTATUS status = AcquireAllocationLifecycleForDestroy(allocation);
+    if (status != STATUS_SUCCESS)
     {
         return status;
     }
@@ -946,7 +953,7 @@ NTSTATUS AcquireRenderAllocationReferences(const VIOGPU_WDDM_RENDER_COMMAND *hea
         VIOGPU_WDDM_ALLOCATION *allocation = deviceAllocation == NULL || deviceAllocation->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE ? NULL
                                                                                                                                               : deviceAllocation->Allocation;
         NTSTATUS status = AcquireAllocationLifecycle(allocation);
-        if (NT_SUCCESS(status))
+        if (status == STATUS_SUCCESS)
         {
             status = AcquireAllocationSubmissionReference(allocation, device->Adapter);
             KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
@@ -2485,8 +2492,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
         VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
         VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
         BOOLEAN snapshotAcquired = AcquireAllocationNativeContextSnapshot(allocation, &snapshot);
-        NTSTATUS status = AcquireAllocationLifecycle(allocation);
-        if (NT_SUCCESS(status))
+        NTSTATUS status = AcquireAllocationLifecycleForDestroy(allocation);
+        if (status == STATUS_SUCCESS)
         {
             if (allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE || allocation->Adapter != adapter)
             {
@@ -2495,7 +2502,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
             else
             {
                 status = BeginAllocationDestroy(allocation);
-                if (NT_SUCCESS(status))
+                if (status == STATUS_SUCCESS)
                 {
                     if (IsNativeAllocation(allocation))
                     {
@@ -2509,7 +2516,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
         {
             VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
         }
-        if (!NT_SUCCESS(status))
+        if (status != STATUS_SUCCESS)
         {
             // BeginAllocationDestroy deliberately leaves every previously
             // reserved object closed on failure.  A busy or transport-unknown
