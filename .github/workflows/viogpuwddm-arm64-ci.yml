@@ -1,5 +1,8 @@
 name: Check viogpu full WDDM ARM64 contract
 
+# The only driver target is ARM64.  x64 is used solely by runner-side host
+# tools (MSBuild and the ABI fixture executables), never as a driver target.
+
 on:
   workflow_dispatch:
   pull_request:
@@ -47,6 +50,7 @@ jobs:
         shell: pwsh
         timeout-minutes: 10
         run: |
+          $ErrorActionPreference = 'Stop'
           $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
           $requiredFiles = @(
             (Join-Path $kitRoot 'Include\10.0.28000.0\km\ntddk.h'),
@@ -67,19 +71,21 @@ jobs:
             --exact --silent --accept-package-agreements --accept-source-agreements `
             --disable-interactivity
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $missing = $requiredFiles | Where-Object { -not (Test-Path $_) }
+          if ($missing) { throw "Windows SDK/WDK 28000 remains incomplete: $($missing -join '; ')" }
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
         with:
           msbuild-architecture: x64
 
-      - name: Verify x64 MSBuild host
+      - name: Verify ARM64 cross-build host tools
         shell: pwsh
         run: |
           $msbuild = (Get-Command msbuild -ErrorAction Stop).Source
           Write-Host "MSBuild host: $msbuild"
           if ($msbuild -notmatch '\\amd64\\MSBuild\.exe$') {
-            throw "Expected x64 MSBuild host, got: $msbuild"
+            throw "Expected the x64 host MSBuild used for ARM64 cross-builds, got: $msbuild"
           }
 
       - name: Add host MSVC tools to PATH

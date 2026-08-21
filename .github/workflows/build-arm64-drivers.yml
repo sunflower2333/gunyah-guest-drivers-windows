@@ -1,5 +1,8 @@
 name: Build DroidVM ARM64 drivers
 
+# Every emitted driver target below is ARM64.  x64 appears only for runner-side
+# MSBuild/signing tools used to cross-compile and package the ARM64 binaries.
+
 # 可手動觸發，或被其他 workflow 重用（dev-release.yml 會 call 它）。
 # push 觸發移到 dev-release.yml，避免一次 push 重複建置兩次。
 on:
@@ -27,28 +30,43 @@ jobs:
       - name: Install Windows SDK and WDK 28000
         shell: pwsh
         run: |
-          winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget `
-            --exact --silent --accept-package-agreements --accept-source-agreements `
-            --disable-interactivity
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          winget install --id Microsoft.WindowsWDK.10.0.28000 --source winget `
-            --exact --silent --accept-package-agreements --accept-source-agreements `
-            --disable-interactivity
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ErrorActionPreference = 'Stop'
+          $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+          $required = @(
+            (Join-Path $kitRoot 'Include\10.0.28000.0\km\ntddk.h'),
+            (Join-Path $kitRoot 'bin\10.0.28000.0\x86\tracewpp.exe'),
+            (Join-Path $kitRoot 'lib\10.0.28000.0\km\arm64\ntoskrnl.lib'),
+            (Join-Path $kitRoot 'bin\10.0.28000.0\x64\signtool.exe'),
+            (Join-Path $kitRoot 'bin\10.0.28000.0\x86\inf2cat.exe'),
+            (Join-Path $kitRoot 'bin\10.0.28000.0\x86\stampinf.exe')
+          )
+          if (($required | Where-Object { -not (Test-Path $_) }).Count -ne 0) {
+            winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget `
+              --exact --silent --accept-package-agreements --accept-source-agreements `
+              --disable-interactivity
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            winget install --id Microsoft.WindowsWDK.10.0.28000 --source winget `
+              --exact --silent --accept-package-agreements --accept-source-agreements `
+              --disable-interactivity
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Host 'Windows SDK/WDK 28000 is already available.'
+          }
+          $missing = $required | Where-Object { -not (Test-Path $_) }
+          if ($missing) { throw "Windows SDK/WDK 28000 remains incomplete: $($missing -join '; ')" }
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
         with:
           msbuild-architecture: x64
 
-      - name: Verify x64 MSBuild host
+      - name: Verify ARM64 cross-build host tools
         shell: pwsh
         run: |
           $msbuild = (Get-Command msbuild -ErrorAction Stop).Source
           Write-Host "MSBuild host: $msbuild"
           if ($msbuild -notmatch '\\amd64\\MSBuild\.exe$') {
-            throw "Expected x64 MSBuild host, got: $msbuild"
+            throw "Expected the x64 host MSBuild used for ARM64 cross-builds, got: $msbuild"
           }
 
       - name: Generate NetKVM MOF header
@@ -74,18 +92,22 @@ jobs:
       - name: Install CPDK (Cryptographic Provider Dev Kit, for viorng's CNG provider)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $hdr = 'C:\Program Files (x86)\Windows Kits\10\Cryptographic Provider Development Kit\Include\bcrypt_provider.h'
           # 主：choco 套件
-          choco install windows-cryptographic-provider-development-kit -y --no-progress 2>&1 | Out-Host
+          & choco install windows-cryptographic-provider-development-kit -y --no-progress
+          $chocoExit = $LASTEXITCODE
           if (-not (Test-Path $hdr)) {
             # 備援：直接下載官方 cpdksetup.exe 靜默安裝
-            Write-Host "choco 未到位，改用 cpdksetup.exe"
+            Write-Host "CPDK package install returned $chocoExit; trying cpdksetup.exe"
             $url='https://download.microsoft.com/download/1/7/6/176909B0-50F2-4DF3-B29B-830A17EA7E38/CPDK_RELEASE_UPDATE/cpdksetup.exe'
             Invoke-WebRequest -Uri $url -OutFile cpdksetup.exe
             Start-Process -FilePath .\cpdksetup.exe -ArgumentList '/q','/norestart' -Wait
           }
-          if (Test-Path $hdr) { Write-Host "CPDK OK: $hdr" }
-          else { Write-Host "::warning::bcrypt_provider.h 仍找不到，viorng 可能建不起來" }
+          if (-not (Test-Path $hdr)) {
+            throw "CPDK header is required for the ARM64 viorng build: $hdr"
+          }
+          Write-Host "CPDK OK: $hdr"
 
       - name: Build ARM64 drivers
         shell: pwsh
@@ -143,8 +165,9 @@ jobs:
             }
             Write-Host "::endgroup::"
           }
-          if ($failed.Count) { Write-Host "::warning::Failed: $($failed -join ', ')" }
-          # 不中止 job；簽署/打包會處理已成功的部分
+          if ($failed.Count) {
+            throw "ARM64 driver build failed: $($failed -join ', ')"
+          }
 
       - name: Sign + package
         shell: pwsh
@@ -155,11 +178,20 @@ jobs:
           # pfx 密碼 secret（可選）；未設定就用 env:PFX_PW 預設值
           PFX_PW_SECRET: ${{ secrets.DROIDVM_PFX_PW }}
         run: |
-          $ErrorActionPreference = 'Continue'
-          $kitbin = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*" -Directory | Sort Name -Desc | Select -First 1).FullName
+          $ErrorActionPreference = 'Stop'
+          $kit = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*" -Directory |
+            Sort-Object Name -Descending |
+            Where-Object {
+              (Test-Path (Join-Path $_.FullName 'x64\signtool.exe')) -and
+              (Test-Path (Join-Path $_.FullName 'x86\inf2cat.exe')) -and
+              (Test-Path (Join-Path $_.FullName 'x86\stampinf.exe'))
+            } | Select-Object -First 1
+          if (-not $kit) { throw 'No Windows Kit contains signtool, inf2cat, and stampinf' }
+          $kitbin = $kit.FullName
           $signtool = Join-Path $kitbin 'x64\signtool.exe'
           $inf2cat  = Join-Path $kitbin 'x86\inf2cat.exe'
           $stampinf = Join-Path $kitbin 'x86\stampinf.exe'
+          Write-Host "Packaging with Windows Kit $($kit.Name)"
 
           New-Item -ItemType Directory -Force out | Out-Null
           $pfx = "out\DroidVM_Test.pfx"
@@ -221,7 +253,7 @@ jobs:
             # 取 inf（優先 ARM64 已 stamp；否則 source 模板）
             $infF = PickInf $d.root $d.inf
             if ($infF) { Copy-Item $infF.FullName (Join-Path $dest $d.inf) -Force } else { Write-Host "::warning::$($d.n): 缺 $($d.inf)"; $ok=$false }
-            if (-not $ok) { Write-Host "::warning::$($d.n) 不完整，略過簽署"; continue }
+            if (-not $ok) { throw "$($d.n) ARM64 package is incomplete" }
             $infPath = Join-Path $dest $d.inf
             # 把 .inx 模板的 INX_* token 換掉。上游是用 package project（vioinput/package、
             # VirtRNG Package）透過 build/Driver.*.props 的 <Substitution> 做；本 CI 只 build
@@ -246,27 +278,33 @@ jobs:
             # 若 inf 仍有 stampinf token，補做 stampinf（$ARCH$ -> ARM64, $KMDFVERSION$ -> 1.15）
             if ((Get-Content $infPath -Raw) -match '\$ARCH\$|\$KMDFVERSION\$') {
               & $stampinf -f $infPath -a ARM64 -k 1.15 -d "*" -v "*"
+              if ($LASTEXITCODE -ne 0) { throw "stampinf failed for $($d.n)" }
               Write-Host "stampinf -> $($d.n)"
             }
             # 防呆：替換後仍殘留 INX_* token（代表上面 $inxMap 漏了 token）-> 擋下不簽、build 失敗，
             # 避免再次靜默出貨壞掉的 inf（ServiceBinary 路徑會是壞的、驅動裝不起來）。
             if ((Get-Content $infPath -Raw) -match 'INX_[A-Z_]+') {
-              Write-Host "::error::$($d.n): $($d.inf) 替換後仍殘留 INX_* token，請補進 build script 的 inxMap。略過簽署。"
-              $infBroken = $true
-              continue
+              throw "$($d.n): $($d.inf) still contains INX_* tokens after substitution"
             }
             if ((Get-Content $infPath -Raw) -match 'NT(?:ARM64|AMD64|x86)(?:\.\d+){2,}\.\.\.\d+\.\d+\.\d+') {
-              Write-Host "::error::$($d.n): $($d.inf) 含重複 TargetOSVersion 裝飾，略過簽署。"
-              $infBroken = $true
-              continue
+              throw "$($d.n): $($d.inf) contains a duplicated TargetOSVersion decoration"
             }
             # 簽所有 PE
-            Get-ChildItem "$dest\*" -Include *.sys,*.dll,*.exe -EA SilentlyContinue |
-              ForEach-Object { & $signtool sign /fd SHA256 /f $pfx /p "$pfxPw" $_.FullName }
+            $peFiles = Get-ChildItem -LiteralPath $dest -File |
+              Where-Object { $_.Extension -in @('.sys', '.dll', '.exe') }
+            foreach ($pe in $peFiles) {
+              & $signtool sign /fd SHA256 /f $pfx /p "$pfxPw" $pe.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($pe.FullName)" }
+            }
             # 產 cat + 簽
             & $inf2cat /driver:$dest /os:$env:OSMASK
-            Get-ChildItem "$dest\*.cat" -EA SilentlyContinue |
-              ForEach-Object { & $signtool sign /fd SHA256 /f $pfx /p "$pfxPw" $_.FullName }
+            if ($LASTEXITCODE -ne 0) { throw "inf2cat failed for $($d.n)" }
+            $catFiles = Get-ChildItem -LiteralPath $dest -Filter '*.cat' -File
+            if (-not $catFiles) { throw "inf2cat produced no catalog for $($d.n)" }
+            foreach ($cat in $catFiles) {
+              & $signtool sign /fd SHA256 /f $pfx /p "$pfxPw" $cat.FullName
+              if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($cat.FullName)" }
+            }
             $has = (Get-ChildItem "$dest" | ForEach-Object Name) -join ' '
             Write-Host "packed $($d.n): $has"
           }
@@ -279,12 +317,14 @@ jobs:
 
           Remove-Item $pfx -Force   # 不上傳私鑰
           Write-Host "=== staged ==="; Get-ChildItem -Recurse out -File | Select FullName
-          # 若有任何 driver 的 inf 殘留 INX_* token，明確讓 build 失敗（避免再次靜默出貨壞包）
-          if ($infBroken) { Write-Host "::error::有 driver 的 inf 殘留未替換 INX_* token，build 失敗"; exit 1 }
+          $packageDirs = Get-ChildItem out\drivers -Directory
+          if ($packageDirs.Count -ne $drv.Count) {
+            throw "Expected $($drv.Count) complete ARM64 driver packages, found $($packageDirs.Count)"
+          }
 
       - name: Upload drivers artifact
         uses: actions/upload-artifact@v4
         with:
           name: droidvm-arm64-drivers
           path: out/**
-          if-no-files-found: warn
+          if-no-files-found: error
