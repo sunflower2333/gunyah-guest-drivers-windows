@@ -2432,8 +2432,14 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         fail("CloseAllocation must reject duplicate handles and release each wrapper reference exactly once")
 
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
-    if destroy_allocation.count("UnregisterNativeAllocationRange(allocation)") != 1:
-        fail("DestroyAllocation must unregister each native allocation's context range before dropping its pin")
+    detach_allocation = canonical_code(function_body("DetachAllocationNativeContext", WDDM_DDI_CODE))
+    if (
+        destroy_allocation.count("DetachAllocationNativeContext(allocation)") != 1
+        or "UnregisterNativeAllocationRange(allocation)" in destroy_allocation
+        or "UnregisterNativeAllocationRange(allocation)" in detach_allocation
+        or "DereferenceNativeContextAllocation" in detach_allocation
+    ):
+        fail("DestroyAllocation must route each native owner detach through one atomic retry-safe helper")
     destroy_duplicate_guard = (
         "destroyAllocation->pAllocationList[previousIndex]==destroyAllocation->pAllocationList[index]"
     )
@@ -2938,11 +2944,15 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         fail("native allocation teardown must unregister its context IOVA range")
 
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
-    release_binding = destroy_allocation.find(
-        "VioGpuAdapter::DereferenceNativeContextAllocation(allocation->NativeContext)"
-    )
-    delete_allocation = destroy_allocation.find("deleteallocation;", release_binding)
-    if release_binding < 0 or delete_allocation < 0 or release_binding > delete_allocation:
+    detach_allocation = canonical_code(function_body("DetachAllocationNativeContext", WDDM_DDI_CODE))
+    unlink_binding = detach_allocation.find("RemoveEntryList(&range->Link)")
+    release_binding = detach_allocation.find("--registration->AllocationReferences;", unlink_binding)
+    clear_binding = detach_allocation.find("allocation->NativeContext=NULL;", release_binding)
+    detach_call = destroy_allocation.find("DetachAllocationNativeContext(allocation)")
+    delete_allocation = destroy_allocation.find("deleteallocation;", detach_call)
+    if min(unlink_binding, release_binding, clear_binding, detach_call, delete_allocation) < 0 or not (
+        unlink_binding < release_binding < clear_binding and detach_call < delete_allocation
+    ):
         fail("DestroyAllocation must drop its context pin before deleting the KMD allocation")
 
     create_host = canonical_code(function_body("VioGpuAdapter::CreateNativeGuestAllocation", VIOGPU_CODE))
@@ -3673,6 +3683,38 @@ def check_wddm_submission_lifetime() -> None:
         ("allocation->Destroying=TRUE;", "allocation->SubmissionReferences!=0||allocation->OpenReferences!=0"),
         "allocation destruction must close new references before reporting busy",
     )
+    validate_destroy_state = canonical_code(
+        function_body("ValidateNativeAllocationDestroyState", WDDM_DDI_CODE)
+    )
+    require_order(
+        validate_destroy_state,
+        (
+            "if(!IsNativeAllocation(allocation))",
+            "allocation->NativeContext!=NULL&&allocation->ContextRange!=NULL",
+            "ValidateNativeAllocationRange(allocation)",
+            "allocation->Destroying&&allocation->NativeContext==NULL&&allocation->ContextRange==NULL&&allocation->HostState==VioGpuWddmAllocationHostNone",
+        ),
+        "destroy retry must accept only a live range or a closed fully detached Native allocation",
+    )
+    detach_native = canonical_code(function_body("DetachAllocationNativeContext", WDDM_DDI_CODE))
+    require_order(
+        detach_native,
+        (
+            "registration=allocation->NativeContext;",
+            "range=allocation->ContextRange;",
+            "if(registration==NULL||range==NULL)",
+            "registration==NULL&&range==NULL?STATUS_SUCCESS:STATUS_DEVICE_NOT_READY",
+            "KeAcquireSpinLock(&registration->BindingLock,&oldIrql);",
+            "range->Registration==registration&&range->Linked&&registration->AllocationReferences!=0",
+            "RemoveEntryList(&range->Link);",
+            "allocation->ContextRange=NULL;",
+            "--registration->AllocationReferences;",
+            "allocation->NativeContext=NULL;",
+            "KeReleaseSpinLock(&registration->BindingLock,oldIrql);",
+            "deleterange;",
+        ),
+        "Native allocation detach must atomically release its range and context reference",
+    )
 
     open_allocation = canonical_code(function_body("VioGpuWddmOpenAllocation", WDDM_DDI_CODE))
     require_order(
@@ -3703,12 +3745,23 @@ def check_wddm_submission_lifetime() -> None:
         (
             "status=AcquireAllocationLifecycleForDestroy(allocation);",
             "if(status==STATUS_SUCCESS)",
+            "ValidateNativeAllocationDestroyState(allocation)",
+            "snapshotAcquired=AcquireAllocationNativeContextSnapshot(allocation,&snapshot);",
             "status=BeginAllocationDestroy(allocation);",
             "status=ReleaseAllocationHostOwnership(allocation,&snapshot,snapshotAcquired);",
             "if(status!=STATUS_SUCCESS)",
+            "status=DetachAllocationNativeContext(allocation);",
+            "InterlockedDecrement(&allocation->Resource->AllocationCount);",
+            "ClearPagingRanges(allocation);",
+            "deleteallocation;",
         ),
-        "DestroyAllocation must require an acquired mutex before retrying Host teardown",
+        "DestroyAllocation must complete all fallible detaches before deleting any allocation",
     )
+    detach_call = destroy_allocation.find("status=DetachAllocationNativeContext(allocation);")
+    detach_failure = destroy_allocation.find("if(status!=STATUS_SUCCESS)", detach_call)
+    delete_allocation = destroy_allocation.find("deleteallocation;", detach_failure)
+    if min(detach_call, detach_failure, delete_allocation) < 0 or not detach_call < detach_failure < delete_allocation:
+        fail("DestroyAllocation must retain the whole allocation list after any detach failure")
     if "NT_SUCCESS(status)" in destroy_allocation:
         fail("DestroyAllocation must not treat positive wait statuses as successful mutex acquisition")
     destroy_context = canonical_code(function_body("VioGpuWddmDestroyContext", WDDM_DDI_CODE))

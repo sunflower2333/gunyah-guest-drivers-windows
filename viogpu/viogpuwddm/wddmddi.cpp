@@ -511,6 +511,68 @@ BOOLEAN ValidateNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
     return valid;
 }
 
+BOOLEAN ValidateNativeAllocationDestroyState(VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    if (!IsNativeAllocation(allocation))
+    {
+        return TRUE;
+    }
+    if (allocation->NativeContext != NULL && allocation->ContextRange != NULL)
+    {
+        return ValidateNativeAllocationRange(allocation);
+    }
+    return allocation->Destroying && allocation->NativeContext == NULL && allocation->ContextRange == NULL &&
+           allocation->HostState == VioGpuWddmAllocationHostNone;
+}
+
+NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    if (allocation == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration = allocation->NativeContext;
+    VIOGPU_WDDM_ALLOCATION_RANGE *range = allocation->ContextRange;
+    if (registration == NULL || range == NULL)
+    {
+        return registration == NULL && range == NULL ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&registration->BindingLock, &oldIrql);
+    BOOLEAN valid = allocation->Destroying && allocation->HostState == VioGpuWddmAllocationHostNone &&
+                    allocation->NativeContext == registration && allocation->ContextRange == range &&
+                    range->Registration == registration && range->Linked && registration->AllocationReferences != 0;
+    if (valid)
+    {
+        valid = FALSE;
+        for (PLIST_ENTRY entry = registration->AllocationRanges.Flink; entry != &registration->AllocationRanges;
+             entry = entry->Flink)
+        {
+            if (entry == &range->Link)
+            {
+                valid = TRUE;
+                break;
+            }
+        }
+    }
+    if (valid)
+    {
+        RemoveEntryList(&range->Link);
+        range->Linked = FALSE;
+        allocation->ContextRange = NULL;
+        --registration->AllocationReferences;
+        allocation->NativeContext = NULL;
+    }
+    KeReleaseSpinLock(&registration->BindingLock, oldIrql);
+    if (!valid)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    delete range;
+    return STATUS_SUCCESS;
+}
+
 VOID ClearPagingRanges(VIOGPU_WDDM_ALLOCATION *allocation)
 {
     if (allocation == NULL)
@@ -2481,17 +2543,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
     for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
     {
         VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
-        if (IsNativeAllocation(allocation) && !ValidateNativeAllocationRange(allocation))
-        {
-            return STATUS_DEVICE_NOT_READY;
-        }
-    }
-
-    for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
-    {
-        VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
         VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
-        BOOLEAN snapshotAcquired = AcquireAllocationNativeContextSnapshot(allocation, &snapshot);
+        BOOLEAN snapshotAcquired = FALSE;
         NTSTATUS status = AcquireAllocationLifecycleForDestroy(allocation);
         if (status == STATUS_SUCCESS)
         {
@@ -2501,12 +2554,21 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
             }
             else
             {
-                status = BeginAllocationDestroy(allocation);
-                if (status == STATUS_SUCCESS)
+                BOOLEAN destroyStateValid = ValidateNativeAllocationDestroyState(allocation);
+                if (!destroyStateValid)
                 {
-                    if (IsNativeAllocation(allocation))
+                    status = STATUS_DEVICE_NOT_READY;
+                }
+                else
+                {
+                    snapshotAcquired = AcquireAllocationNativeContextSnapshot(allocation, &snapshot);
+                    status = BeginAllocationDestroy(allocation);
+                    if (status == STATUS_SUCCESS)
                     {
-                        status = ReleaseAllocationHostOwnership(allocation, &snapshot, snapshotAcquired);
+                        if (IsNativeAllocation(allocation))
+                        {
+                            status = ReleaseAllocationHostOwnership(allocation, &snapshot, snapshotAcquired);
+                        }
                     }
                 }
             }
@@ -2525,21 +2587,22 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
         }
     }
 
+    // Complete every fallible Native Context detach before deleting any
+    // allocation from the callback's list.  Success leaves both owner pointers
+    // null for retry; failure leaves both pointers intact.
     for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
     {
         VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
-        if (allocation->NativeContext != NULL)
+        NTSTATUS status = DetachAllocationNativeContext(allocation);
+        if (status != STATUS_SUCCESS)
         {
-            NTSTATUS rangeStatus = UnregisterNativeAllocationRange(allocation);
-            if (!NT_SUCCESS(rangeStatus))
-            {
-                return rangeStatus;
-            }
-            BOOLEAN dereferenced = VioGpuAdapter::DereferenceNativeContextAllocation(allocation->NativeContext);
-            NT_ASSERT(dereferenced);
-            UNREFERENCED_PARAMETER(dereferenced);
-            allocation->NativeContext = NULL;
+            return status;
         }
+    }
+
+    for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
+    {
+        VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
         if (allocation->Resource != NULL)
         {
             LONG remaining = InterlockedDecrement(&allocation->Resource->AllocationCount);
