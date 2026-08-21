@@ -1463,6 +1463,130 @@ def check_queue_failure_semantics() -> None:
         fail("synchronous submit must publish Submitted only after the descriptor enters the queue")
 
 
+def check_synchronous_2d_control_transactions() -> None:
+    queue_header = canonical_code(QUEUE_HEADER_CODE)
+    method_names = (
+        "CreateResource2DSynchronous",
+        "AttachBackingSynchronous",
+        "DetachBackingSynchronous",
+        "UnrefResourceSynchronous",
+        "SetScanoutSynchronous",
+        "TransferToHost2DSynchronous",
+        "FlushResourceSynchronous",
+    )
+    for method_name in method_names:
+        if queue_header.count(f"VIOGPU_HOST_CONTEXT_RESULT{method_name}(") != 1:
+            fail(f"full-WDDM 2D control API must declare exactly one {method_name} transaction")
+
+    helper_body = function_body("CtrlQueue::SubmitSynchronousNoDataLocked", QUEUE_CODE)
+    helper = canonical_code(helper_body)
+    helper_requirements = (
+        "BOOLEANreleaseBuffer=TRUE;",
+        "BOOLEANsubmitted=FALSE;",
+        "BOOLEANcompleted=SubmitSynchronousLocked(buf,&releaseBuffer,&submitted);",
+        "VIOGPU_HOST_CONTEXT_RESULTresult=VioGpuHostContextUnknown;",
+        "if(!submitted){result=VioGpuHostContextNotSubmitted;}",
+        "elseif(completed&&buf->response_size==sizeof(GPU_CTRL_HDR))",
+        "if(IsPlainControlResponse(response,VIRTIO_GPU_RESP_OK_NODATA))",
+        "result=VioGpuHostContextConfirmed;",
+        "elseif(IsPlainControlErrorResponse(response))",
+        "result=VioGpuHostContextRejected;",
+        "if(releaseBuffer){ReleaseBuffer(buf);}",
+        "returnresult;",
+    )
+    for fragment in helper_requirements:
+        if helper.count(fragment) != 1:
+            fail(f"synchronous 2D response classification must retain exactly one: {fragment}")
+    if helper.count("PoisonSynchronousRequests();") != 2:
+        fail("synchronous 2D responses must poison both malformed-header and malformed-size completions")
+    if helper.find("if(!submitted)") > helper.find("elseif(completed&&buf->response_size==sizeof(GPU_CTRL_HDR))"):
+        fail("synchronous 2D response classification must resolve non-submission before reading a response")
+
+    command_contracts = {
+        "CreateResource2DSynchronous": (
+            "VIRTIO_GPU_CMD_RESOURCE_CREATE_2D",
+            "command->resource_id=resource_id;",
+            "command->format=format;",
+            "command->width=width;",
+            "command->height=height;",
+        ),
+        "DetachBackingSynchronous": (
+            "VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING",
+            "command->resource_id=resource_id;",
+        ),
+        "UnrefResourceSynchronous": (
+            "VIRTIO_GPU_CMD_RESOURCE_UNREF",
+            "command->resource_id=resource_id;",
+        ),
+        "SetScanoutSynchronous": (
+            "VIRTIO_GPU_CMD_SET_SCANOUT",
+            "command->resource_id=resource_id;",
+            "command->scanout_id=scanout_id;",
+            "command->r.width=width;",
+            "command->r.height=height;",
+            "command->r.x=x;",
+            "command->r.y=y;",
+        ),
+        "TransferToHost2DSynchronous": (
+            "VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D",
+            "command->resource_id=resource_id;",
+            "command->offset=offset;",
+            "command->r.width=width;",
+            "command->r.height=height;",
+            "command->r.x=x;",
+            "command->r.y=y;",
+        ),
+        "FlushResourceSynchronous": (
+            "VIRTIO_GPU_CMD_RESOURCE_FLUSH",
+            "command->resource_id=resource_id;",
+            "command->r.width=width;",
+            "command->r.height=height;",
+            "command->r.x=x;",
+            "command->r.y=y;",
+        ),
+    }
+    for method_name, required_fragments in command_contracts.items():
+        body = canonical_code(function_body(f"CtrlQueue::{method_name}", QUEUE_CODE))
+        if body.count("BeginSynchronousRequest()") != 1 or body.count("EndSynchronousRequest();") != 2:
+            fail(f"{method_name} must hold one synchronous epoch and release it on allocation failure and completion")
+        if body.count("SubmitSynchronousNoDataLocked(vbuf)") != 1:
+            fail(f"{method_name} must classify exactly one synchronous no-data transaction")
+        if "IsStandard2DResourceId(resource_id)" not in body:
+            fail(f"{method_name} must keep standard 2D IDs disjoint from Native Context resource IDs")
+        for fragment in required_fragments:
+            if body.count(fragment) != 1:
+                fail(f"{method_name} must retain exactly one wire field: {fragment}")
+
+    attach = canonical_code(function_body("CtrlQueue::AttachBackingSynchronous", QUEUE_CODE))
+    attach_sequence = (
+        attach.find("entry_count>PAGE_SIZE/sizeof(*entries)"),
+        attach.find("PGPU_MEM_ENTRYownedEntries="),
+        attach.find("RtlCopyMemory(ownedEntries,entries,entriesSize);"),
+        attach.find("command->hdr.type=VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;"),
+        attach.find("vbuf->data_buf=ownedEntries;"),
+        attach.find("SubmitSynchronousNoDataLocked(vbuf)"),
+    )
+    if min(attach_sequence) < 0 or list(attach_sequence) != sorted(attach_sequence):
+        fail("synchronous 2D attach must submit one bounded queue-owned backing table")
+    if attach.count("BeginSynchronousRequest()") != 1 or attach.count("EndSynchronousRequest();") != 3:
+        fail("synchronous 2D attach must release its epoch on both allocation failures and completion")
+    for fragment in (
+        "entries[index].addr==0",
+        "entries[index].length==0",
+        "entries[index].padding!=0",
+        "entries[index].addr>MAXULONGLONG-(entries[index].length-1)",
+        "command->nr_entries=entry_count;",
+        "vbuf->data_size=(UINT)entriesSize;",
+    ):
+        if attach.count(fragment) != 1:
+            fail(f"synchronous 2D attach must validate and retain exact backing data: {fragment}")
+
+    scanout = canonical_code(function_body("CtrlQueue::SetScanoutSynchronous", QUEUE_CODE))
+    disable = "BOOLEANdisable=resource_id==0&&width==0&&height==0&&x==0&&y==0;"
+    if scanout.count(disable) != 1 or "scanout_id>=VIRTIO_GPU_MAX_SCANOUTS" not in scanout:
+        fail("synchronous scanout must allow only an all-zero disable or a bounded standard 2D resource")
+
+
 def check_native_context_ownership() -> None:
     queue_header = canonical_code(strip_cpp_comments_and_literals(QUEUE_HEADER_SOURCE))
     wire_header = canonical_code(WIRE_HEADER_CODE)
@@ -5133,6 +5257,7 @@ def main() -> None:
     check_native_context_readiness()
     check_no_retired_variant_contract(sources)
     check_queue_failure_semantics()
+    check_synchronous_2d_control_transactions()
     check_native_context_ownership()
     check_wddm_private_abi(root)
     check_wddm_paging_transaction_gate()

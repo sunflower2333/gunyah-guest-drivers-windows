@@ -225,6 +225,30 @@ static BOOLEAN IsPlainControlErrorResponse(PGPU_CTRL_HDR response)
            response->padding[2] == 0;
 }
 
+static BOOLEAN IsStandard2DResourceId(UINT resourceId)
+{
+    return resourceId != 0 && resourceId < VIOGPU_NATIVE_RESOURCE_ID_START;
+}
+
+static BOOLEAN IsSupported2DResourceFormat(UINT format)
+{
+    switch (format)
+    {
+        case VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM:
+        case VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM:
+        case VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM:
+        case VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM:
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+
+static BOOLEAN IsValid2DRectangle(UINT width, UINT height, UINT x, UINT y)
+{
+    return width != 0 && height != 0 && x <= MAXUINT - width && y <= MAXUINT - height;
+}
+
 BOOLEAN CtrlQueue::BeginSynchronousRequest(void)
 {
     PAGED_CODE();
@@ -617,6 +641,293 @@ BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN rele
         return FALSE;
     }
     return TRUE;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitSynchronousNoDataLocked(PGPU_VBUFFER buf)
+{
+    PAGED_CODE();
+
+    if (buf == NULL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN submitted = FALSE;
+    BOOLEAN completed = SubmitSynchronousLocked(buf, &releaseBuffer, &submitted);
+    PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(buf->resp_buf);
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
+    if (!submitted)
+    {
+        result = VioGpuHostContextNotSubmitted;
+    }
+    else if (completed && buf->response_size == sizeof(GPU_CTRL_HDR))
+    {
+        if (IsPlainControlResponse(response, VIRTIO_GPU_RESP_OK_NODATA))
+        {
+            result = VioGpuHostContextConfirmed;
+        }
+        else if (IsPlainControlErrorResponse(response))
+        {
+            result = VioGpuHostContextRejected;
+        }
+        else
+        {
+            PoisonSynchronousRequests();
+        }
+    }
+    else if (completed)
+    {
+        PoisonSynchronousRequests();
+    }
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(buf);
+    }
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateResource2DSynchronous(UINT resource_id,
+                                                                  UINT format,
+                                                                  UINT width,
+                                                                  UINT height)
+{
+    PAGED_CODE();
+
+    if (!IsStandard2DResourceId(resource_id) || !IsSupported2DResourceFormat(format) || width == 0 || height == 0 ||
+        !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_RES_CREATE_2D command = static_cast<PGPU_RES_CREATE_2D>(AllocCmd(&vbuf, sizeof(*command)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
+    command->resource_id = resource_id;
+    command->format = format;
+    command->width = width;
+    command->height = height;
+
+    VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::AttachBackingSynchronous(UINT resource_id,
+                                                               const GPU_MEM_ENTRY *entries,
+                                                               UINT entry_count)
+{
+    PAGED_CODE();
+
+    if (!IsStandard2DResourceId(resource_id) || entries == NULL || entry_count == 0 ||
+        entry_count > PAGE_SIZE / sizeof(*entries))
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    for (UINT index = 0; index < entry_count; ++index)
+    {
+        if (entries[index].addr == 0 || entries[index].length == 0 || entries[index].padding != 0 ||
+            entries[index].addr > MAXULONGLONG - (entries[index].length - 1))
+        {
+            return VioGpuHostContextNotSubmitted;
+        }
+    }
+    if (!BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_RES_ATTACH_BACKING command = static_cast<PGPU_RES_ATTACH_BACKING>(AllocCmd(&vbuf, sizeof(*command)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    SIZE_T entriesSize = sizeof(*entries) * (SIZE_T)entry_count;
+    PGPU_MEM_ENTRY ownedEntries = static_cast<PGPU_MEM_ENTRY>(m_pBuf->AllocateMemory(entriesSize));
+    if (ownedEntries == NULL)
+    {
+        ReleaseBuffer(vbuf);
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlCopyMemory(ownedEntries, entries, entriesSize);
+
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+    command->resource_id = resource_id;
+    command->nr_entries = entry_count;
+    vbuf->data_buf = ownedEntries;
+    vbuf->data_size = (UINT)entriesSize;
+
+    VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::DetachBackingSynchronous(UINT resource_id)
+{
+    PAGED_CODE();
+
+    if (!IsStandard2DResourceId(resource_id) || !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_RES_DETACH_BACKING command = static_cast<PGPU_RES_DETACH_BACKING>(AllocCmd(&vbuf, sizeof(*command)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING;
+    command->resource_id = resource_id;
+
+    VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefResourceSynchronous(UINT resource_id)
+{
+    PAGED_CODE();
+
+    if (!IsStandard2DResourceId(resource_id) || !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_RES_UNREF command = static_cast<PGPU_RES_UNREF>(AllocCmd(&vbuf, sizeof(*command)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_UNREF;
+    command->resource_id = resource_id;
+
+    VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetScanoutSynchronous(UINT scanout_id,
+                                                            UINT resource_id,
+                                                            UINT width,
+                                                            UINT height,
+                                                            UINT x,
+                                                            UINT y)
+{
+    PAGED_CODE();
+
+    BOOLEAN disable = resource_id == 0 && width == 0 && height == 0 && x == 0 && y == 0;
+    if (scanout_id >= VIRTIO_GPU_MAX_SCANOUTS ||
+        (!disable && (!IsStandard2DResourceId(resource_id) || !IsValid2DRectangle(width, height, x, y))) ||
+        !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_SET_SCANOUT command = static_cast<PGPU_SET_SCANOUT>(AllocCmd(&vbuf, sizeof(*command)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
+    command->resource_id = resource_id;
+    command->scanout_id = scanout_id;
+    command->r.width = width;
+    command->r.height = height;
+    command->r.x = x;
+    command->r.y = y;
+
+    VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::TransferToHost2DSynchronous(UINT resource_id,
+                                                                  ULONGLONG offset,
+                                                                  UINT width,
+                                                                  UINT height,
+                                                                  UINT x,
+                                                                  UINT y)
+{
+    PAGED_CODE();
+
+    if (!IsStandard2DResourceId(resource_id) || !IsValid2DRectangle(width, height, x, y) ||
+        !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_RES_TRANSF_TO_HOST_2D command = static_cast<PGPU_RES_TRANSF_TO_HOST_2D>(AllocCmd(&vbuf, sizeof(*command)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+    command->resource_id = resource_id;
+    command->offset = offset;
+    command->r.width = width;
+    command->r.height = height;
+    command->r.x = x;
+    command->r.y = y;
+
+    VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::FlushResourceSynchronous(UINT resource_id,
+                                                               UINT width,
+                                                               UINT height,
+                                                               UINT x,
+                                                               UINT y)
+{
+    PAGED_CODE();
+
+    if (!IsStandard2DResourceId(resource_id) || !IsValid2DRectangle(width, height, x, y) ||
+        !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_RES_FLUSH command = static_cast<PGPU_RES_FLUSH>(AllocCmd(&vbuf, sizeof(*command)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+    command->resource_id = resource_id;
+    command->r.width = width;
+    command->r.height = height;
+    command->r.x = x;
+    command->r.y = y;
+
+    VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
 }
 
 BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info)
