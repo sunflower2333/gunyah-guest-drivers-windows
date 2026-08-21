@@ -1587,6 +1587,102 @@ def check_synchronous_2d_control_transactions() -> None:
         fail("synchronous scanout must allow only an all-zero disable or a bounded standard 2D resource")
 
 
+def check_wddm_2d_resource_ownership() -> None:
+    queue_header = canonical_code(QUEUE_HEADER_CODE)
+    expected_states = (
+        "VioGpu2DResourceNone=0,"
+        "VioGpu2DResourceCreated,"
+        "VioGpu2DResourceBackingAttached,"
+        "VioGpu2DResourceUnknown,"
+    )
+    if queue_header.count(expected_states) != 1:
+        fail("2D primary resources must retain explicit none, created, attached, and unknown Host states")
+
+    allocate_id = canonical_code(function_body("VioGpuAdapter::Allocate2DResourceId", VIOGPU_CODE))
+    for fragment in (
+        "KeGetCurrentIrql()!=PASSIVE_LEVEL",
+        "!m_CtrlQueue.IsSynchronousRequestsHealthy()",
+        "UINTresourceId=m_Idr.GetId();",
+        "returnresourceId<VIOGPU_NATIVE_RESOURCE_ID_START?resourceId:0;",
+    ):
+        if allocate_id.count(fragment) != 1:
+            fail(f"2D primary ID allocation must remain in the standard resource range: {fragment}")
+
+    create_host = canonical_code(function_body("VioGpuAdapter::Create2DResourceBacking", VIOGPU_CODE))
+    create_sequence = (
+        create_host.find("AcquireGpuGuestPoolMapping(&mapping)"),
+        create_host.find("entry.addr=(ULONGLONG)baseAddress.QuadPart+placementOffset;"),
+        create_host.find("m_CtrlQueue.CreateResource2DSynchronous(resourceId,format,width,height)"),
+        create_host.find("*resourceState=VioGpu2DResourceCreated;"),
+        create_host.find("m_CtrlQueue.AttachBackingSynchronous(resourceId,&entry,1)"),
+        create_host.find("*resourceState=VioGpu2DResourceBackingAttached;"),
+    )
+    if min(create_sequence) < 0 or list(create_sequence) != sorted(create_sequence):
+        fail("2D primary creation must validate guest-pool backing before ordered create and attach ownership")
+    for fragment in (
+        "mapping.GetGeneration()==poolGeneration",
+        "(baseAddress.QuadPart&(PAGE_SIZE-1))==0",
+        "entry.length=(ULONG)backingSize;",
+        "rollback=m_CtrlQueue.UnrefResourceSynchronous(resourceId);",
+        "if(rollback==VioGpuHostContextConfirmed)",
+        "*resourceState=VioGpu2DResourceNone;",
+        "*resourceState=VioGpu2DResourceUnknown;",
+        "FailNativeContextAtAnyIrql();",
+    ):
+        if fragment not in create_host:
+            fail(f"2D primary creation must retain transactional Host ownership: {fragment}")
+    rollback_call = create_host.find("rollback=m_CtrlQueue.UnrefResourceSynchronous(resourceId);")
+    rollback_confirmed = create_host.find("if(rollback==VioGpuHostContextConfirmed)", rollback_call)
+    rollback_none = create_host.find("*resourceState=VioGpu2DResourceNone;", rollback_confirmed)
+    if min(rollback_call, rollback_confirmed, rollback_none) < 0 or not rollback_call < rollback_confirmed < rollback_none:
+        fail("2D primary rollback may release ownership only after a confirmed UNREF")
+
+    destroy_host = canonical_code(function_body("VioGpuAdapter::Destroy2DResource", VIOGPU_CODE))
+    for fragment in (
+        "result=m_CtrlQueue.UnrefResourceSynchronous(resourceId);",
+        "if(result==VioGpuHostContextConfirmed)",
+        "*resourceState=VioGpu2DResourceNone;",
+        "elseif(result==VioGpuHostContextUnknown||result==VioGpuHostContextRejected)",
+        "*resourceState=VioGpu2DResourceUnknown;",
+    ):
+        if destroy_host.count(fragment) != 1:
+            fail(f"2D primary teardown must retain confirmed-only UNREF ownership: {fragment}")
+    if destroy_host.count("*released=TRUE;") != 2:
+        fail("2D primary teardown may release only an already-empty or confirmed-UNREF owner")
+    if destroy_host.count("FailNativeContextAtAnyIrql();") != 2:
+        fail("2D primary teardown must quarantine both preexisting and response-derived unknown ownership")
+    if "result==VioGpuHostContextConfirmed||result==VioGpuHostContextRejected" in destroy_host:
+        fail("2D primary teardown must not interpret INVALID_RESOURCE_ID as released ownership")
+
+    allocation_header = canonical_code(WDDM_DDI_HEADER_CODE)
+    if allocation_header.count("VIOGPU_2D_RESOURCE_STATEResource2DState;") != 1:
+        fail("each WDDM allocation must retain its exact 2D Host ownership state")
+    create_allocation = canonical_code(function_body("VioGpuWddmCreateAllocation", WDDM_DDI_CODE))
+    for fragment in (
+        "elseif((privateData.Flags&VIOGPU_WDDM_ALLOCATION_PRIMARY)!=0)",
+        "standardResourceId=adapter->Allocate2DResourceId();",
+        "allocation->ResourceId=nativeContext!=NULL?nativeResourceId:standardResourceId;",
+        "allocation->BlobId=nativeResourceId;",
+        "allocation->Resource2DState=VioGpu2DResourceNone;",
+    ):
+        if create_allocation.count(fragment) != 1:
+            fail(f"standard primary allocation must publish one disjoint 2D identity: {fragment}")
+
+    rollback = canonical_code(function_body("DestroyCreatedAllocations", WDDM_DDI_CODE))
+    if rollback.count("allocation->Adapter->Release2DResourceId(allocation->ResourceId)") != 1:
+        fail("CreateAllocation batch rollback must return every unpublished standard 2D ID")
+
+    destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
+    destroy_call = destroy_allocation.find("result=adapter->Destroy2DResource(allocation->ResourceId,")
+    release_call = destroy_allocation.find("adapter->Release2DResourceId(allocation->ResourceId)")
+    clear_id = destroy_allocation.find("allocation->ResourceId=0;", release_call)
+    delete_allocation = destroy_allocation.find("deleteallocation;")
+    if min(destroy_call, release_call, clear_id, delete_allocation) < 0 or not (
+        destroy_call < release_call < clear_id < delete_allocation
+    ):
+        fail("DestroyAllocation must release Host 2D ownership and its local ID before deleting the allocation")
+
+
 def check_native_context_ownership() -> None:
     queue_header = canonical_code(strip_cpp_comments_and_literals(QUEUE_HEADER_SOURCE))
     wire_header = canonical_code(WIRE_HEADER_CODE)
@@ -5258,6 +5354,7 @@ def main() -> None:
     check_no_retired_variant_contract(sources)
     check_queue_failure_semantics()
     check_synchronous_2d_control_transactions()
+    check_wddm_2d_resource_ownership()
     check_native_context_ownership()
     check_wddm_private_abi(root)
     check_wddm_paging_transaction_gate()

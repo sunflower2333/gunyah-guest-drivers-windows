@@ -96,6 +96,14 @@ enum VIOGPU_HOST_CONTEXT_RESULT : LONG
     VioGpuHostContextUnknown,
 };
 
+enum VIOGPU_2D_RESOURCE_STATE : LONG
+{
+    VioGpu2DResourceNone = 0,
+    VioGpu2DResourceCreated,
+    VioGpu2DResourceBackingAttached,
+    VioGpu2DResourceUnknown,
+};
+
 #define MAX_INLINE_CMD_SIZE             96
 #define MAX_INLINE_RESP_SIZE            24
 #define VBUFFER_SIZE                    (sizeof(GPU_VBUFFER) + MAX_INLINE_CMD_SIZE + MAX_INLINE_RESP_SIZE)

@@ -281,6 +281,19 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN ReinitializeNativeSubmitRundown(void);
     BOOLEAN AcquireDrmHostPoolMapping(_Out_ VioGpuDrmHostPoolMapping *mapping) const;
     BOOLEAN AcquireGpuGuestPoolMapping(_Out_ VioGpuGuestPoolMapping *mapping) const;
+    UINT Allocate2DResourceId(void);
+    BOOLEAN Release2DResourceId(_In_ UINT resourceId);
+    VIOGPU_HOST_CONTEXT_RESULT Create2DResourceBacking(_In_ UINT resourceId,
+                                                       _In_ UINT format,
+                                                       _In_ UINT width,
+                                                       _In_ UINT height,
+                                                       _In_ ULONGLONG placementOffset,
+                                                       _In_ SIZE_T backingSize,
+                                                       _In_ ULONGLONG poolGeneration,
+                                                       _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState);
+    VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
+                                                 _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                 _Out_ BOOLEAN *released);
     UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
                                                            _In_ UINT resourceId,
@@ -666,6 +679,19 @@ class VioGpuDod
     BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     BOOLEAN AcquireGpuGuestPoolMapping(_Out_ VioGpuGuestPoolMapping *mapping) const;
+    UINT Allocate2DResourceId(void);
+    BOOLEAN Release2DResourceId(_In_ UINT resourceId);
+    VIOGPU_HOST_CONTEXT_RESULT Create2DResourceBacking(_In_ UINT resourceId,
+                                                       _In_ UINT format,
+                                                       _In_ UINT width,
+                                                       _In_ UINT height,
+                                                       _In_ ULONGLONG placementOffset,
+                                                       _In_ SIZE_T backingSize,
+                                                       _In_ ULONGLONG poolGeneration,
+                                                       _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState);
+    VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
+                                                 _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                 _Out_ BOOLEAN *released);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
     BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize);
     int QueueNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ ULONGLONG fenceId);

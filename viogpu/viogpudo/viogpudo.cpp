@@ -960,6 +960,83 @@ VOID VioGpuDod::RunNativePassiveWorker(void)
     }
 }
 
+UINT VioGpuDod::Allocate2DResourceId(void)
+{
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return 0;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    UINT resourceId = !IsHardwareResetRequested() && adapter != NULL ? adapter->Allocate2DResourceId() : 0;
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return resourceId;
+}
+
+BOOLEAN VioGpuDod::Release2DResourceId(_In_ UINT resourceId)
+{
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return FALSE;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    BOOLEAN released = adapter != NULL && adapter->Release2DResourceId(resourceId);
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return released;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Create2DResourceBacking(_In_ UINT resourceId,
+                                                              _In_ UINT format,
+                                                              _In_ UINT width,
+                                                              _In_ UINT height,
+                                                              _In_ ULONGLONG placementOffset,
+                                                              _In_ SIZE_T backingSize,
+                                                              _In_ ULONGLONG poolGeneration,
+                                                              _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState)
+{
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    VIOGPU_HOST_CONTEXT_RESULT result = !IsHardwareResetRequested() && adapter != NULL
+                                            ? adapter->Create2DResourceBacking(resourceId,
+                                                                               format,
+                                                                               width,
+                                                                               height,
+                                                                               placementOffset,
+                                                                               backingSize,
+                                                                               poolGeneration,
+                                                                               resourceState)
+                                            : VioGpuHostContextNotSubmitted;
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Destroy2DResource(_In_ UINT resourceId,
+                                                        _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                        _Out_ BOOLEAN *released)
+{
+    if (released == NULL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    *released = FALSE;
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    VIOGPU_HOST_CONTEXT_RESULT result = !IsHardwareResetRequested() && adapter != NULL
+                                            ? adapter->Destroy2DResource(resourceId, resourceState, released)
+                                            : VioGpuHostContextNotSubmitted;
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return result;
+}
+
 UINT VioGpuDod::AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration)
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))
@@ -4126,6 +4203,170 @@ UINT VioGpuAdapter::AllocateNativeContextIdLocked(void)
 }
 
 #if defined(VIOGPU_WDDM_CI_ONLY)
+UINT VioGpuAdapter::Allocate2DResourceId(void)
+{
+    PAGED_CODE();
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL || !m_CtrlQueue.IsSynchronousRequestsHealthy())
+    {
+        return 0;
+    }
+    UINT resourceId = m_Idr.GetId();
+    return resourceId < VIOGPU_NATIVE_RESOURCE_ID_START ? resourceId : 0;
+}
+
+BOOLEAN VioGpuAdapter::Release2DResourceId(_In_ UINT resourceId)
+{
+    PAGED_CODE();
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL || resourceId == 0 || resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START)
+    {
+        return FALSE;
+    }
+    m_Idr.PutId(resourceId);
+    return TRUE;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT resourceId,
+                                                                  _In_ UINT format,
+                                                                  _In_ UINT width,
+                                                                  _In_ UINT height,
+                                                                  _In_ ULONGLONG placementOffset,
+                                                                  _In_ SIZE_T backingSize,
+                                                                  _In_ ULONGLONG poolGeneration,
+                                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState)
+{
+    PAGED_CODE();
+
+    if (resourceState == NULL || resourceId == 0 || resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || width == 0 ||
+        height == 0 || backingSize == 0 || backingSize > MAXULONG || (backingSize & (PAGE_SIZE - 1)) != 0 ||
+        placementOffset > MAXULONG_PTR || (placementOffset & (PAGE_SIZE - 1)) != 0 || poolGeneration == 0 ||
+        (*resourceState != VioGpu2DResourceNone && *resourceState != VioGpu2DResourceCreated) ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    GPU_MEM_ENTRY entry = {};
+    BOOLEAN entryValid = FALSE;
+    VioGpuGuestPoolMapping mapping;
+    KeEnterGuardedRegion();
+    BOOLEAN acquired = AcquireGpuGuestPoolMapping(&mapping);
+    if (acquired && mapping.GetGeneration() == poolGeneration && mapping.GetBaseAddress() != NULL &&
+        placementOffset <= mapping.GetSize() && backingSize <= mapping.GetSize() - (SIZE_T)placementOffset)
+    {
+        PHYSICAL_ADDRESS baseAddress = mapping.GetPhysicalAddress();
+        if (baseAddress.QuadPart >= 0 && (baseAddress.QuadPart & (PAGE_SIZE - 1)) == 0 &&
+            (ULONGLONG)baseAddress.QuadPart <= MAXULONGLONG - placementOffset &&
+            (ULONGLONG)baseAddress.QuadPart + placementOffset <= MAXULONGLONG - (backingSize - 1))
+        {
+            entry.addr = (ULONGLONG)baseAddress.QuadPart + placementOffset;
+            entry.length = (ULONG)backingSize;
+            entryValid = TRUE;
+        }
+    }
+    mapping.Release();
+    KeLeaveGuardedRegion();
+    if (!entryValid)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextConfirmed;
+    if (*resourceState == VioGpu2DResourceNone)
+    {
+        result = m_CtrlQueue.CreateResource2DSynchronous(resourceId, format, width, height);
+        if (result != VioGpuHostContextConfirmed)
+        {
+            if (result == VioGpuHostContextUnknown)
+            {
+                *resourceState = VioGpu2DResourceUnknown;
+                FailNativeContextAtAnyIrql();
+            }
+            return result;
+        }
+        *resourceState = VioGpu2DResourceCreated;
+    }
+
+    result = m_CtrlQueue.AttachBackingSynchronous(resourceId, &entry, 1);
+    if (result != VioGpuHostContextConfirmed)
+    {
+        if (result != VioGpuHostContextUnknown)
+        {
+            VIOGPU_HOST_CONTEXT_RESULT rollback = m_CtrlQueue.UnrefResourceSynchronous(resourceId);
+            if (rollback == VioGpuHostContextConfirmed)
+            {
+                *resourceState = VioGpu2DResourceNone;
+                return result;
+            }
+            if (rollback == VioGpuHostContextNotSubmitted)
+            {
+                return result;
+            }
+        }
+        *resourceState = VioGpu2DResourceUnknown;
+        FailNativeContextAtAnyIrql();
+        return VioGpuHostContextUnknown;
+    }
+    *resourceState = VioGpu2DResourceBackingAttached;
+
+    KeEnterGuardedRegion();
+    acquired = AcquireGpuGuestPoolMapping(&mapping);
+    BOOLEAN currentPool = acquired && mapping.GetGeneration() == poolGeneration;
+    mapping.Release();
+    KeLeaveGuardedRegion();
+    if (!currentPool)
+    {
+        *resourceState = VioGpu2DResourceUnknown;
+        FailNativeContextAtAnyIrql();
+        return VioGpuHostContextUnknown;
+    }
+    return VioGpuHostContextConfirmed;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId,
+                                                            _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                            _Out_ BOOLEAN *released)
+{
+    PAGED_CODE();
+
+    if (released == NULL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    *released = FALSE;
+    if (resourceState == NULL || resourceId == 0 || resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    if (*resourceState == VioGpu2DResourceNone)
+    {
+        *released = TRUE;
+        return VioGpuHostContextConfirmed;
+    }
+    if (*resourceState == VioGpu2DResourceUnknown ||
+        (*resourceState != VioGpu2DResourceCreated && *resourceState != VioGpu2DResourceBackingAttached))
+    {
+        FailNativeContextAtAnyIrql();
+        return VioGpuHostContextUnknown;
+    }
+
+    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.UnrefResourceSynchronous(resourceId);
+    if (result == VioGpuHostContextConfirmed)
+    {
+        *resourceState = VioGpu2DResourceNone;
+        *released = TRUE;
+    }
+    else if (result == VioGpuHostContextUnknown || result == VioGpuHostContextRejected)
+    {
+        *resourceState = VioGpu2DResourceUnknown;
+        FailNativeContextAtAnyIrql();
+        return VioGpuHostContextUnknown;
+    }
+    return result;
+}
+
 UINT VioGpuAdapter::AllocateNativeResourceIdLocked(void)
 {
     PAGED_CODE();

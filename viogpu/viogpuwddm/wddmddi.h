@@ -133,6 +133,7 @@ struct VIOGPU_WDDM_ALLOCATION
     VIOGPU_WDDM_ALLOCATION_RANGE *ContextRange;
     UINT ResourceId;
     UINT BlobId;
+    VIOGPU_2D_RESOURCE_STATE Resource2DState;
     ULONGLONG PlacementOffset;
     ULONGLONG PoolGeneration;
     VIOGPU_WDDM_ALLOCATION_HOST_STATE HostState;

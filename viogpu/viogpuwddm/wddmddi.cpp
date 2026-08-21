@@ -368,6 +368,16 @@ VOID DestroyCreatedAllocations(DXGK_ALLOCATIONINFO *allocationInfo, UINT count)
                 UNREFERENCED_PARAMETER(dereferenced);
                 allocation->NativeContext = NULL;
             }
+            if ((allocation->Flags & VIOGPU_WDDM_ALLOCATION_PRIMARY) != 0 &&
+                (allocation->Flags & VIOGPU_WDDM_ALLOCATION_NATIVE) == 0 &&
+                allocation->ResourceId != 0)
+            {
+                BOOLEAN released = allocation->Adapter != NULL &&
+                                   allocation->Adapter->Release2DResourceId(allocation->ResourceId);
+                NT_ASSERT(released);
+                UNREFERENCED_PARAMETER(released);
+                allocation->ResourceId = 0;
+            }
             if (allocation->Resource != NULL)
             {
                 LONG remaining = InterlockedDecrement(&allocation->Resource->AllocationCount);
@@ -385,6 +395,12 @@ VOID DestroyCreatedAllocations(DXGK_ALLOCATIONINFO *allocationInfo, UINT count)
 BOOLEAN IsNativeAllocation(const VIOGPU_WDDM_ALLOCATION *allocation)
 {
     return allocation != NULL && (allocation->Flags & VIOGPU_WDDM_ALLOCATION_NATIVE) != 0;
+}
+
+BOOLEAN IsStandardPrimaryAllocation(const VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    return allocation != NULL && !IsNativeAllocation(allocation) &&
+           (allocation->Flags & VIOGPU_WDDM_ALLOCATION_PRIMARY) != 0;
 }
 
 NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
@@ -2369,6 +2385,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
         }
 
         UINT nativeResourceId = 0;
+        UINT standardResourceId = 0;
         VIOGPU_NATIVE_CONTEXT_REGISTRATION *nativeContext = NULL;
         LONG contextGeneration = 0;
         ULONGLONG contextResetGeneration = 0;
@@ -2405,6 +2422,15 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
                 break;
             }
         }
+        else if ((privateData.Flags & VIOGPU_WDDM_ALLOCATION_PRIMARY) != 0)
+        {
+            standardResourceId = adapter->Allocate2DResourceId();
+            if (standardResourceId == 0)
+            {
+                status = STATUS_DEVICE_NOT_READY;
+                break;
+            }
+        }
 
         VIOGPU_WDDM_ALLOCATION *allocation = new (NonPagedPoolNx) VIOGPU_WDDM_ALLOCATION;
         if (allocation == NULL)
@@ -2414,6 +2440,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
                 BOOLEAN dereferenced = VioGpuAdapter::DereferenceNativeContextAllocation(nativeContext);
                 NT_ASSERT(dereferenced);
                 UNREFERENCED_PARAMETER(dereferenced);
+            }
+            if (standardResourceId != 0)
+            {
+                BOOLEAN released = adapter->Release2DResourceId(standardResourceId);
+                NT_ASSERT(released);
+                UNREFERENCED_PARAMETER(released);
             }
             status = STATUS_NO_MEMORY;
             break;
@@ -2436,8 +2468,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
         allocation->BackingSize = alignedSize;
         InitializeListHead(&allocation->PagingRanges);
         allocation->PagingCoveredBytes = 0;
-        allocation->ResourceId = nativeResourceId;
+        allocation->ResourceId = nativeContext != NULL ? nativeResourceId : standardResourceId;
         allocation->BlobId = nativeResourceId;
+        allocation->Resource2DState = VioGpu2DResourceNone;
         allocation->HostState = VioGpuWddmAllocationHostNone;
         allocation->Pitch = privateData.Pitch;
         allocation->Width = privateData.Width;
@@ -2569,6 +2602,24 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
                         {
                             status = ReleaseAllocationHostOwnership(allocation, &snapshot, snapshotAcquired);
                         }
+                        else if (IsStandardPrimaryAllocation(allocation) && allocation->ResourceId != 0)
+                        {
+                            BOOLEAN released = FALSE;
+                            VIOGPU_HOST_CONTEXT_RESULT result = adapter->Destroy2DResource(allocation->ResourceId,
+                                                                                          &allocation->Resource2DState,
+                                                                                          &released);
+                            if (released)
+                            {
+                                ClearNativePlacement(allocation);
+                            }
+                            status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS
+                                                                                       : STATUS_DEVICE_NOT_READY;
+                        }
+                        else if (IsStandardPrimaryAllocation(allocation) &&
+                                 (allocation->Resource2DState != VioGpu2DResourceNone || !allocation->Destroying))
+                        {
+                            status = STATUS_DEVICE_NOT_READY;
+                        }
                     }
                 }
             }
@@ -2597,6 +2648,19 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
         if (status != STATUS_SUCCESS)
         {
             return status;
+        }
+    }
+
+    for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
+    {
+        VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
+        if (IsStandardPrimaryAllocation(allocation) && allocation->ResourceId != 0)
+        {
+            if (!adapter->Release2DResourceId(allocation->ResourceId))
+            {
+                return STATUS_DEVICE_NOT_READY;
+            }
+            allocation->ResourceId = 0;
         }
     }
 
