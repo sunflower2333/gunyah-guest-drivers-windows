@@ -69,6 +69,12 @@ jobs:
             throw "Expected the x64 host MSBuild used for ARM64 cross-builds, got: $msbuild"
           }
 
+      - name: Add host MSVC and WDK tools to PATH
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          # These are host-side tools; every MSBuild target below remains ARM64.
+          arch: x64
+
       - name: Generate NetKVM MOF header
         shell: pwsh
         run: |
@@ -76,6 +82,10 @@ jobs:
           cmd /c build.cmd
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
+          $mofHeader = Join-Path $PWD 'NetKVM\Common\netkvmmof.h'
+          if (-not (Test-Path -LiteralPath $mofHeader -PathType Leaf)) {
+            throw "NetKVM MOF generation did not produce $mofHeader"
+          }
 
       # 診斷：列出可用的 Driver 平台工具集 / WDK，方便 build 失敗時定位
       - name: Diagnose toolchain
