@@ -69,7 +69,6 @@ VOID NativeRenderDispatchWorker(_In_ PVOID callbackContext);
 VOID NativeRenderDispatchCancelled(_In_ PVOID callbackContext);
 VOID NativePresentWorker(_In_ PVOID callbackContext);
 VOID NativePresentDispatchCancelled(_In_ PVOID callbackContext);
-VOID NativePagingBatchCancelled(_In_ PVOID callbackContext);
 
 void DereferenceDevice(VIOGPU_WDDM_DEVICE *device);
 
@@ -3436,6 +3435,7 @@ VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter)
     }
 }
 
+VOID NativePagingBatchCancelled(_In_ PVOID callbackContext);
 VOID NativePagingBatchWorker(_In_ PVOID callbackContext);
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE hAdapter,

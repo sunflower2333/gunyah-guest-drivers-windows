@@ -4218,6 +4218,11 @@ def check_wddm_private_abi(root: ET.Element) -> None:
 
 def check_wddm_paging_transaction_gate() -> None:
     """Native paging is reachable only through an owned, cancellable transaction."""
+    namespace_end = WDDM_DDI_SOURCE.find("} // namespace")
+    cancel_forward = WDDM_DDI_SOURCE.find("VOID NativePagingBatchCancelled(_In_ PVOID callbackContext);")
+    cancel_definition = WDDM_DDI_SOURCE.find("_Use_decl_annotations_ VOID NativePagingBatchCancelled(PVOID callbackContext)")
+    if min(namespace_end, cancel_forward, cancel_definition) < 0 or not namespace_end < cancel_forward < cancel_definition:
+        fail("paging cancel callback declaration and definition must share global linkage")
     create = canonical_code(function_body("VioGpuWddmCreateAllocation", WDDM_DDI_CODE))
     gate = "if((privateData.Flags&VIOGPU_WDDM_ALLOCATION_NATIVE)!=0){status=STATUS_GRAPHICS_DRIVER_MISMATCH;break;}"
     if gate in create:
