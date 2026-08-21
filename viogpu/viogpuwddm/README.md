@@ -200,16 +200,21 @@ trace calls and cleanup reference without emitting a second provider definition.
 
 The callback table intentionally leaves these DDI slots unset:
 
-- `DxgkDdiNotifyAcpiEvent`, `DxgkDdiControlEtwLogging`, and
-  `DxgkDdiCollectDbgInfo`.
+- `DxgkDdiNotifyAcpiEvent` and `DxgkDdiControlEtwLogging`.
 - `DxgkDdiSetPalette`, `DxgkDdiGetScanLine`, and `DxgkDdiControlInterrupt`.
-- `DxgkDdiQueryDependentEngineGroup`, `DxgkDdiQueryEngineStatus`, and
-  `DxgkDdiResetEngine`.
 - `DxgkDdiGetChildContainerId`.
 - `DxgkDdiSetPowerComponentFState` and
   `DxgkDdiPowerRuntimeControlRequest`.
 
 It also does not register the KMDOD-only `DxgkDdiPresentDisplayOnly` callback.
+The full-miniport table now registers `DxgkDdiCollectDbgInfo` and the three
+Windows 8 engine-TDR callbacks. Debug collection emits one bounded 32-byte
+snapshot using atomic reset and fence queries. The engine callbacks validate
+the single node/engine topology, but `SupportPerEngineTDR` remains zero:
+Native Context has no Host primitive that can cancel or reset one engine.
+`DxgkDdiResetEngine` therefore requests outer reset and returns failure so the
+scheduler promotes recovery to the adapter-wide timeout path; this is not
+per-engine TDR support.
 
 Standard paging now covers primary, GDI shadow, and staging allocations. It
 uses context-zero paging records, copies or fills the `gpu_guest` placement
@@ -227,6 +232,9 @@ Patch validate bounded rectangles, allocation opens, placements, pool
 generations, and patch records. Build uses each nonzero allocation-list
 `SegmentId` to prepatch its placement while still returning both patch records;
 Submit may skip Patch only when both source and destination were prepatched.
+When Patch is required, Render and Present accept either a submission-relative
+`PatchOffset` or the same offset adjusted by dxgkrnl to the full DMA buffer,
+with checked addition against the submission start.
 The private-data buffer is treated as uninitialized output until publication;
 its input-only pointer and remaining-size fields are not advanced by multipass.
 Present consumes at most 256 destination subrectangles per pass,
@@ -247,10 +255,11 @@ epoch, while a failed closed-to-open transition restores the outer reset gate.
 If an ordinary D1/D2/D3 hardware transition fails after the registry drain, the
 registry remains closed and the outer reset gate is requested; only a later D0
 recovery may publish a coherent Active epoch again.
-This is source-only. The focused local contract, checker syntax, ARM64 workflow
-YAML parsing, and diff-format checks pass; the ARM64 build for this slice is
-still pending. These checks are not Windows/KMT/Host runtime proof and do not
-make the KMD loadable or installable.
+The implementation phase completed before concentrated validation began. The
+local contract checks, Python syntax checks, ABI fixtures, workflow YAML parse,
+targeted clang-format gate, and diff check pass. ARM64 compile/link CI remains
+pending. None of these checks are Windows/KMT/Host runtime proof, and they
+cannot make the KMD loadable or installable.
 
 The preemption callback validates the single node/engine contract, reports
 `DXGK_INTERRUPT_DMA_PREEMPTED` only when the native fence queue is already
@@ -261,9 +270,11 @@ zero because Native Context has no Host cancellation/preemption primitive.
 advances the reset fence only after teardown succeeds; restart reuses the
 checked D0 recovery state machine. Render patch/submit and paging now use
 bounded private records; paging transfers consume their MDL during
-`DxgkDdiBuildPagingBuffer`, then a cancellable passive worker publishes guest
-pool placement and host BO ownership. Paging cancellation signals every
-recognized transaction even after the passive worker owns the batch. A
+`DxgkDdiBuildPagingBuffer`. Each Built record acquires its allocation submission
+reference before publication; Submit validates that existing owner instead of
+acquiring it after VidMm has received the record. A cancellable passive worker
+then publishes guest-pool placement and host BO ownership. Paging cancellation
+signals every recognized transaction even after the passive worker owns the batch. A
 structurally valid private range publishes its record count before deep record
 validation so earlier recognizable owners can release allocation references if
 a later record is stale or malformed.
@@ -275,17 +286,15 @@ and fails the inner Native Context transport. Only the scheduler's
 `DXGK_INTERRUPT_DMA_FAULTED` notification is suppressed when its identity
 cannot be represented legally.
 
-The current source deliberately leaves five runtime assumptions unproven. A
-Built paging record does not take the driver's allocation reference until
-Submit claims the complete batch; it relies on VidMm retaining the allocation,
-DMA buffer, and KMD private record until Patch, SubmitCommand, or CancelCommand.
-Render and Present interpret each `PatchOffset` relative to that submission's
-DMA start, which still needs a nonzero-submission-offset KMT test. Each Present
-multipass retry is assumed to retain every previously published private record
-until its corresponding submission retires. CPU row copies and paging copies
-also assume cache coherence between the Normal-WB `gpu_guest` mapping and Host
-KGSL access; this slice adds no explicit CPU/GPU cache-maintenance primitive.
-Finally, batch rollback clears matching in-progress paging state but cannot undo
+The current source deliberately leaves four runtime assumptions unproven. A
+Built paging record already owns the allocation, but still relies on VidMm
+retaining the DMA buffer and KMD private record until Patch, SubmitCommand, or
+CancelCommand. Each Present multipass retry is assumed to retain every
+previously published private record until its corresponding submission retires.
+CPU row copies and paging copies also assume cache coherence between the
+Normal-WB `gpu_guest` mapping and Host KGSL access; memory barriers order CPU
+accesses but do not add a platform CPU/GPU cache-maintenance primitive. Finally,
+batch rollback clears matching in-progress paging state but cannot undo
 placement or Host ownership already confirmed by an earlier executed record;
 the ensuing scheduler fault and adapter reset are the only recovery boundary.
 These are explicit runtime gates, and the current paths are compile-only source
@@ -304,8 +313,7 @@ satisfy the mandatory WDDM 1.2 feature contract.
 
 The stable display-only driver remains `viogpudo` and WDDM 1.2.
 
-The source, checker, workflow, and documentation phase is frozen. The focused
-safety contract for the current slice is:
+The focused safety contract for the current slice passes locally:
 
 ```text
 python viogpu/viogpuwddm/check-contract.py

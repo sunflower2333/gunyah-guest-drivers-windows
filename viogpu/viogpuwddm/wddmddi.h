@@ -4,8 +4,8 @@
 #include "../viogpudo/viogpudo.h"
 #include "../shared/viogpu_wddm_abi.h"
 
-// This target is compile-only until VirtIO fence completion and TDR recovery
-// are connected to the WDDM scheduler callbacks.
+// This target remains compile-only until the full WDDM 1.2 contract and its
+// Windows/KMT/Host runtime behavior have been validated end to end.
 #if !defined(VIOGPU_WDDM_CI_ONLY)
 #error viogpuwddm is not installable yet; build it only with VIOGPU_WDDM_CI_ONLY
 #endif
@@ -36,6 +36,7 @@ struct VIOGPU_WDDM_KMD_DMA_PRIVATE
 enum : USHORT
 {
     VioGpuWddmDmaPrivateVersion = 1,
+    VioGpuWddmDebugSnapshotVersion = 1,
     VioGpuWddmDmaKindRender = 1,
     VioGpuWddmDmaKindPaging = 2,
     VioGpuWddmDmaKindPresent = 3,
@@ -96,6 +97,21 @@ struct VIOGPU_WDDM_PRESENT_DMA_PACKET
 static_assert(sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) == 72, "unexpected WDDM DMA private size");
 static_assert(sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET) == 72, "unexpected WDDM paging packet size");
 static_assert(sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) == 72, "unexpected WDDM present packet size");
+
+struct VIOGPU_WDDM_DEBUG_SNAPSHOT
+{
+    ULONG Signature;
+    USHORT Version;
+    USHORT Size;
+    UINT Reason;
+    LONG HardwareResetState;
+    UINT SubmittedFence;
+    UINT CompletedFence;
+    UINT CurrentIrql;
+    UINT Reserved;
+};
+
+static_assert(sizeof(VIOGPU_WDDM_DEBUG_SNAPSHOT) == 32, "unexpected WDDM debug snapshot size");
 
 struct VIOGPU_WDDM_RESOURCE
 {
@@ -420,6 +436,10 @@ DXGKDDI_SUBMITCOMMAND VioGpuWddmSubmitCommand;
 DXGKDDI_CANCELCOMMAND VioGpuWddmCancelCommand;
 DXGKDDI_PREEMPTCOMMAND VioGpuWddmPreemptCommand;
 DXGKDDI_QUERYCURRENTFENCE VioGpuWddmQueryCurrentFence;
+DXGKDDI_QUERYDEPENDENTENGINEGROUP VioGpuWddmQueryDependentEngineGroup;
+DXGKDDI_QUERYENGINESTATUS VioGpuWddmQueryEngineStatus;
+DXGKDDI_RESETENGINE VioGpuWddmResetEngine;
 DXGKDDI_RESETFROMTIMEOUT VioGpuWddmResetFromTimeout;
 DXGKDDI_RESTARTFROMTIMEOUT VioGpuWddmRestartFromTimeout;
+DXGKDDI_COLLECTDBGINFO VioGpuWddmCollectDbgInfo;
 DXGKDDI_SETVIDPNSOURCEADDRESS VioGpuWddmSetVidPnSourceAddress;

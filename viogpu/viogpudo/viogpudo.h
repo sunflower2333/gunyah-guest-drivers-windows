@@ -775,6 +775,12 @@ class VioGpuDod
         return InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareActive) !=
                VioGpuHardwareActive;
     }
+    VIOGPU_HARDWARE_RESET_STATE QueryHardwareResetState(void) const
+    {
+        return static_cast<VIOGPU_HARDWARE_RESET_STATE>(InterlockedCompareExchange(&m_HardwareResetState,
+                                                                                   VioGpuHardwareActive,
+                                                                                   VioGpuHardwareActive));
+    }
     VOID RequestHardwareResetAtAnyIrql(void)
     {
         InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
@@ -824,6 +830,12 @@ class VioGpuDod
     UINT QueryNativeCompletedFence(void) const
     {
         return static_cast<UINT>(InterlockedCompareExchange(const_cast<volatile LONG *>(&m_NativeCompletedFence),
+                                                            0,
+                                                            0));
+    }
+    UINT QueryNativeSubmittedFence(void) const
+    {
+        return static_cast<UINT>(InterlockedCompareExchange(const_cast<volatile LONG *>(&m_NativeSubmittedFence),
                                                             0,
                                                             0));
     }

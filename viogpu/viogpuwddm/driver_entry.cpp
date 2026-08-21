@@ -49,8 +49,12 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiCancelCommand = VioGpuWddmCancelCommand;
     initialData->DxgkDdiPreemptCommand = VioGpuWddmPreemptCommand;
     initialData->DxgkDdiQueryCurrentFence = VioGpuWddmQueryCurrentFence;
+    initialData->DxgkDdiQueryDependentEngineGroup = VioGpuWddmQueryDependentEngineGroup;
+    initialData->DxgkDdiQueryEngineStatus = VioGpuWddmQueryEngineStatus;
+    initialData->DxgkDdiResetEngine = VioGpuWddmResetEngine;
     initialData->DxgkDdiResetFromTimeout = VioGpuWddmResetFromTimeout;
     initialData->DxgkDdiRestartFromTimeout = VioGpuWddmRestartFromTimeout;
+    initialData->DxgkDdiCollectDbgInfo = VioGpuWddmCollectDbgInfo;
 
     initialData->DxgkDdiSetPointerPosition = VioGpuDodSetPointerPosition;
     initialData->DxgkDdiSetPointerShape = VioGpuDodSetPointerShape;
@@ -96,8 +100,8 @@ extern "C" NTSTATUS DriverEntry(_In_ DRIVER_OBJECT *driverObject, _In_ UNICODE_S
     UNREFERENCED_PARAMETER(driverObject);
     UNREFERENCED_PARAMETER(registryPath);
 
-    // Keep the registration helper unreachable until submission completion,
-    // preemption, and TDR recovery are connected to VirtIO fences.
+    // Keep the registration helper unreachable until the full WDDM 1.2
+    // contract and its Windows/KMT/Host runtime behavior are validated.
     return STATUS_NOT_SUPPORTED;
 }
 

@@ -66,7 +66,7 @@ VIOGPU_VBUFFER_TERMINAL_CLAIM VioGpuClaimVbufferTerminalCallbacks(_Inout_ PGPU_V
         return VioGpuVbufferTerminalClaimWon;
     }
     return previous == VioGpuVbufferTerminalUnarmed ? VioGpuVbufferTerminalClaimUnarmed
-                                                     : VioGpuVbufferTerminalClaimLost;
+                                                    : VioGpuVbufferTerminalClaimLost;
 }
 
 VOID VioGpuDetachVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer)
@@ -121,8 +121,7 @@ BOOLEAN VioGpuWaitForVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer)
                                  KernelMode,
                                  FALSE,
                                  &timeout) == STATUS_SUCCESS &&
-           InterlockedCompareExchange(&buffer->terminal_callback_state, 0, 0) ==
-               VioGpuVbufferTerminalCompleted;
+           InterlockedCompareExchange(&buffer->terminal_callback_state, 0, 0) == VioGpuVbufferTerminalCompleted;
 }
 
 static BOOLEAN BuildSGElement(VirtIOBufferDescriptor *sg, PVOID buf, ULONG size)
@@ -962,8 +961,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::TransferToHost2DSynchronous(UINT resource_
 {
     PAGED_CODE();
 
-    if (!IsStandard2DResourceId(resource_id) || !IsValid2DRectangle(width, height, x, y) ||
-        !BeginSynchronousRequest())
+    if (!IsStandard2DResourceId(resource_id) || !IsValid2DRectangle(width, height, x, y) || !BeginSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -997,8 +995,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::FlushResourceSynchronous(UINT resource_id,
 {
     PAGED_CODE();
 
-    if (!IsStandard2DResourceId(resource_id) || !IsValid2DRectangle(width, height, x, y) ||
-        !BeginSynchronousRequest())
+    if (!IsStandard2DResourceId(resource_id) || !IsValid2DRectangle(width, height, x, y) || !BeginSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }

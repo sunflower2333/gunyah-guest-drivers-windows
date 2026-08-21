@@ -345,10 +345,7 @@ class CtrlQueue : public VioGpuQueue
     VIOGPU_HOST_CONTEXT_RESULT UnmapNativeControlBlob(UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT UnrefNativeResource(UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT SubmitNativeControl(UINT context_id, const void *command, UINT command_size);
-    VIOGPU_HOST_CONTEXT_RESULT CreateResource2DSynchronous(UINT resource_id,
-                                                           UINT format,
-                                                           UINT width,
-                                                           UINT height);
+    VIOGPU_HOST_CONTEXT_RESULT CreateResource2DSynchronous(UINT resource_id, UINT format, UINT width, UINT height);
     VIOGPU_HOST_CONTEXT_RESULT AttachBackingSynchronous(UINT resource_id,
                                                         const GPU_MEM_ENTRY *entries,
                                                         UINT entry_count);
@@ -366,11 +363,7 @@ class CtrlQueue : public VioGpuQueue
                                                            UINT height,
                                                            UINT x,
                                                            UINT y);
-    VIOGPU_HOST_CONTEXT_RESULT FlushResourceSynchronous(UINT resource_id,
-                                                        UINT width,
-                                                        UINT height,
-                                                        UINT x,
-                                                        UINT y);
+    VIOGPU_HOST_CONTEXT_RESULT FlushResourceSynchronous(UINT resource_id, UINT width, UINT height, UINT x, UINT y);
     BOOLEAN EnableSynchronousRequests(void);
     BOOLEAN IsSynchronousRequestsHealthy(void);
     NTSTATUS QuiesceSynchronousRequests(void);

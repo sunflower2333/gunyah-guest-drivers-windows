@@ -967,8 +967,9 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
     require_once(
         guarded_header,
         "VOIDRequestHardwareResetAtAnyIrql(void){InterlockedExchange(&m_HardwareResetState,"
-        "VioGpuHardwareResetRequested);}",
-        "named-pool loss must have a nonblocking outer hardware-reset gate",
+        "VioGpuHardwareResetRequested);#ifdefined(VIOGPU_WDDM_CI_ONLY)"
+        "RequestWddmSubmissionDrainAtAnyIrql();#endif}",
+        "named-pool loss must close the outer hardware gate and defer submission drain",
     )
 
 
