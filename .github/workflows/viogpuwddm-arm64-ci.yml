@@ -70,10 +70,20 @@ jobs:
             throw "Expected x64 MSBuild host, got: $msbuild"
           }
 
-      - name: Add MSVC to PATH
+      - name: Add host MSVC tools to PATH
         uses: ilammy/msvc-dev-cmd@v1
         with:
+          # ABI manifests below are host-only executables.  Driver projects
+          # select Platform=ARM64 explicitly in the MSBuild invocations.
           arch: x64
+
+      - name: Generate NetKVM MOF header
+        shell: pwsh
+        run: |
+          Push-Location NetKVM/Mof
+          cmd /c build.cmd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
 
       - name: Check native-context wire ABI manifest
         shell: cmd
@@ -109,7 +119,6 @@ jobs:
             '/p:SignMode=Off'
           )
           $projects = @(
-            @{ Path = 'NetKVM/Mof/Mof.vcxproj'; Configuration = 'Header'; Platform = 'x64' },
             @{ Path = 'VirtIO/VirtioLib.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'VirtIO/WDF/VirtioLib-WDF.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'NetKVM/CoInstaller/netkvmco-vs2015.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },

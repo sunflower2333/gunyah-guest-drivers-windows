@@ -51,6 +51,14 @@ jobs:
             throw "Expected x64 MSBuild host, got: $msbuild"
           }
 
+      - name: Generate NetKVM MOF header
+        shell: pwsh
+        run: |
+          Push-Location NetKVM/Mof
+          cmd /c build.cmd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+
       # 診斷：列出可用的 Driver 平台工具集 / WDK，方便 build 失敗時定位
       - name: Diagnose toolchain
         shell: pwsh
@@ -103,7 +111,6 @@ jobs:
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
                       "/p:_BUILD_MINOR_VERSION_=$minor")
           $jobs = @(
-            @{ p='NetKVM/Mof/Mof.vcxproj';                  c='Header';        plat='x64'   ; dep=$true },
             @{ p='VirtIO/VirtioLib.vcxproj';                c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='VirtIO/WDF/VirtioLib-WDF.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='NetKVM/CoInstaller/netkvmco-vs2015.vcxproj'; c='Win11 Release'; plat='ARM64' ; dep=$true },

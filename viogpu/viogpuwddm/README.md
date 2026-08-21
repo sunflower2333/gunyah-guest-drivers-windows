@@ -72,12 +72,12 @@ overlapping 8-byte patch slots, rechecks the reset generation, and only then
 publishes its DMA output. UMD-selected patch slot IDs may be nonzero; reserved
 patch bits must be zero.
 
-`Patch` deliberately returns `STATUS_NOT_SUPPORTED`. A VidMm segment physical
-address is not a Turnip per-context IOVA, and the KMD has no requested-IOVA or
-guest-backed BO transport that could provide the real address yet. `SubmitCommand`
-likewise remains fail-closed until Host GPU retirement and WDDM fence completion
-are implemented. The validation slice must not be described as a working
-Render, Patch, or submit pipeline.
+`Patch` validates and writes KMD-owned resource IDs and requested IOVAs only
+after paging placement, generation, and allocation ownership checks. It does
+not itself submit work. `SubmitCommand` queues the prepared native command and
+reports completion through the ring-1 fence path, but this remains compile-only:
+Host GPU retirement, Windows loading, and WDDM runtime behavior are unverified.
+The validation slice must not be described as a working or installable driver.
 
 The product baseline is `udmabuf=true` with independent `drm-host` and
 `gpu-guest` boot pools. The product transport must fail closed unless
@@ -94,12 +94,14 @@ KMD/UMD contract is:
   the grants and build the bounded udmabuf imported by drm2kgsl.
 
 The `drm-host` pool owns native-context control/response shmem and is independent
-of the guest BO pool. The compile-only source now implements the blob-zero
-control lifecycle only; it is not a BO allocation path. The product path does
-not use `NCTX_LEGACY_HOST_ALLOC`, runtime SHARE, pool-outside GPA backing, or a
-second offset allocator. Real Windows guest-backed CreateBlob/allocation,
-map/unmap, and teardown transport remains a P2 implementation item;
-compile/link success here does not provide that behavior.
+of the guest BO pool. The compile-only source implements the blob-zero control
+lifecycle and the guest-backed `RESOURCE_CREATE_BLOB` ownership path; it is
+still not runtime proof of BO operation. The product path does not use
+`NCTX_LEGACY_HOST_ALLOC`, runtime SHARE, pool-outside GPA backing, or a second
+offset allocator. Unknown CreateBlob/UNREF results poison the generation rather
+than guessing ownership. Runtime crosvm support, map/unmap behavior, and
+teardown remain unverified; compile/link success here does not provide that
+behavior.
 
 The compile-only target now discovers exactly one `drm2kgsl_host` provider and
 one `gpu_guest` provider through the same versioned direct interface. It connects
