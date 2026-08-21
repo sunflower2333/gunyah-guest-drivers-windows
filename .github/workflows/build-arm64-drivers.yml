@@ -12,6 +12,7 @@ on:
 env:
   CONFIG: "Win11 Release"
   PLATFORM: "ARM64"
+  DROIDVM_KIT_VERSION: "10.0.28000.0"
   OSMASK: "Server10_ARM64"          # 與 build/Driver.PackOne.targets 一致（Win11/ARM64）
   CERT_SUBJECT: "CN=DroidVM Test"
   PFX_PW: "droidvm"
@@ -33,12 +34,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
           $required = @(
-            (Join-Path $kitRoot 'Include\10.0.28000.0\km\ntddk.h'),
-            (Join-Path $kitRoot 'bin\10.0.28000.0\x86\tracewpp.exe'),
-            (Join-Path $kitRoot 'lib\10.0.28000.0\km\arm64\ntoskrnl.lib'),
-            (Join-Path $kitRoot 'bin\10.0.28000.0\x64\signtool.exe'),
-            (Join-Path $kitRoot 'bin\10.0.28000.0\x86\inf2cat.exe'),
-            (Join-Path $kitRoot 'bin\10.0.28000.0\x86\stampinf.exe')
+            (Join-Path $kitRoot "Include\$env:DROIDVM_KIT_VERSION\km\ntddk.h"),
+            (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\tracewpp.exe"),
+            (Join-Path $kitRoot "lib\$env:DROIDVM_KIT_VERSION\km\arm64\ntoskrnl.lib"),
+            (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x64\signtool.exe"),
+            (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\inf2cat.exe"),
+            (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\stampinf.exe")
           )
           if (($required | Where-Object { -not (Test-Path $_) }).Count -ne 0) {
             winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget `
@@ -53,7 +54,7 @@ jobs:
             Write-Host 'Windows SDK/WDK 28000 is already available.'
           }
           $missing = $required | Where-Object { -not (Test-Path $_) }
-          if ($missing) { throw "Windows SDK/WDK 28000 remains incomplete: $($missing -join '; ')" }
+          if ($missing) { throw "Windows SDK/WDK $env:DROIDVM_KIT_VERSION remains incomplete: $($missing -join '; ')" }
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
@@ -141,6 +142,7 @@ jobs:
           if ($minor -gt 65535) { Write-Host "::warning::driver minor $minor 超過 65535，請開新 epoch 或 bump 第三段"; $minor = 65535 }
           Write-Host "Driver version = 100.6.101.$minor"
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
+                      "/p:WindowsTargetPlatformVersion=$env:DROIDVM_KIT_VERSION",
                       "/p:_BUILD_MINOR_VERSION_=$minor")
           $jobs = @(
             @{ p='VirtIO/VirtioLib.vcxproj';                c='Win11 Release'; plat='ARM64' ; dep=$true },
@@ -189,19 +191,16 @@ jobs:
           PFX_PW_SECRET: ${{ secrets.DROIDVM_PFX_PW }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $kit = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*" -Directory |
-            Sort-Object Name -Descending |
-            Where-Object {
-              (Test-Path (Join-Path $_.FullName 'x64\signtool.exe')) -and
-              (Test-Path (Join-Path $_.FullName 'x86\inf2cat.exe')) -and
-              (Test-Path (Join-Path $_.FullName 'x86\stampinf.exe'))
-            } | Select-Object -First 1
-          if (-not $kit) { throw 'No Windows Kit contains signtool, inf2cat, and stampinf' }
-          $kitbin = $kit.FullName
+          $kitbin = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin\$env:DROIDVM_KIT_VERSION"
           $signtool = Join-Path $kitbin 'x64\signtool.exe'
           $inf2cat  = Join-Path $kitbin 'x86\inf2cat.exe'
           $stampinf = Join-Path $kitbin 'x86\stampinf.exe'
-          Write-Host "Packaging with Windows Kit $($kit.Name)"
+          $missingTools = @($signtool, $inf2cat, $stampinf) |
+            Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }
+          if ($missingTools) {
+            throw "Windows Kit $env:DROIDVM_KIT_VERSION packaging tools are incomplete: $($missingTools -join '; ')"
+          }
+          Write-Host "Packaging with Windows Kit $env:DROIDVM_KIT_VERSION"
 
           New-Item -ItemType Directory -Force out | Out-Null
           $pfx = "out\DroidVM_Test.pfx"
@@ -258,11 +257,11 @@ jobs:
             $ok = $true
             foreach ($b in $d.bins) {
               $f = Pick $d.root $b
-              if ($f) { Copy-Item $f.FullName $dest -Force } else { Write-Host "::warning::$($d.n): 缺 $b"; $ok=$false }
+              if ($f -and $f.Length -gt 0) { Copy-Item $f.FullName $dest -Force } else { Write-Host "::warning::$($d.n): 缺少非空的 $b"; $ok=$false }
             }
             # 取 inf（優先 ARM64 已 stamp；否則 source 模板）
             $infF = PickInf $d.root $d.inf
-            if ($infF) { Copy-Item $infF.FullName (Join-Path $dest $d.inf) -Force } else { Write-Host "::warning::$($d.n): 缺 $($d.inf)"; $ok=$false }
+            if ($infF -and $infF.Length -gt 0) { Copy-Item $infF.FullName (Join-Path $dest $d.inf) -Force } else { Write-Host "::warning::$($d.n): 缺少非空的 $($d.inf)"; $ok=$false }
             if (-not $ok) { throw "$($d.n) ARM64 package is incomplete" }
             $infPath = Join-Path $dest $d.inf
             # 把 .inx 模板的 INX_* token 換掉。上游是用 package project（vioinput/package、
@@ -309,8 +308,10 @@ jobs:
             # 產 cat + 簽
             & $inf2cat /driver:$dest /os:$env:OSMASK
             if ($LASTEXITCODE -ne 0) { throw "inf2cat failed for $($d.n)" }
-            $catFiles = Get-ChildItem -LiteralPath $dest -Filter '*.cat' -File
-            if (-not $catFiles) { throw "inf2cat produced no catalog for $($d.n)" }
+            $catFiles = @(Get-ChildItem -LiteralPath $dest -Filter '*.cat' -File)
+            if ($catFiles.Count -eq 0) { throw "inf2cat produced no catalog for $($d.n)" }
+            $emptyCatalogs = @($catFiles | Where-Object { $_.Length -eq 0 })
+            if ($emptyCatalogs.Count -ne 0) { throw "inf2cat produced an empty catalog for $($d.n)" }
             foreach ($cat in $catFiles) {
               & $signtool sign /fd SHA256 /f $pfx /p "$pfxPw" $cat.FullName
               if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($cat.FullName)" }
@@ -330,6 +331,12 @@ jobs:
           $packageDirs = Get-ChildItem out\drivers -Directory
           if ($packageDirs.Count -ne $drv.Count) {
             throw "Expected $($drv.Count) complete ARM64 driver packages, found $($packageDirs.Count)"
+          }
+          $stagedFiles = @(Get-ChildItem -LiteralPath out -Recurse -File)
+          if ($stagedFiles.Count -eq 0) { throw 'ARM64 bundle staging is empty' }
+          $emptyFiles = @($stagedFiles | Where-Object { $_.Length -eq 0 })
+          if ($emptyFiles.Count -ne 0) {
+            throw "ARM64 bundle contains empty files: $($emptyFiles.FullName -join '; ')"
           }
 
       - name: Upload drivers artifact

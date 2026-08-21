@@ -39,6 +39,9 @@ on:
       - "vioscsi/**"
       - ".github/workflows/viogpuwddm-arm64-ci.yml"
 
+env:
+  DROIDVM_KIT_VERSION: "10.0.28000.0"
+
 jobs:
   contract-check:
     runs-on: windows-2025-vs2026
@@ -53,9 +56,9 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
           $requiredFiles = @(
-            (Join-Path $kitRoot 'Include\10.0.28000.0\km\ntddk.h'),
-            (Join-Path $kitRoot 'bin\10.0.28000.0\x86\tracewpp.exe'),
-            (Join-Path $kitRoot 'lib\10.0.28000.0\km\arm64\ntoskrnl.lib')
+            (Join-Path $kitRoot "Include\$env:DROIDVM_KIT_VERSION\km\ntddk.h"),
+            (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\tracewpp.exe"),
+            (Join-Path $kitRoot "lib\$env:DROIDVM_KIT_VERSION\km\arm64\ntoskrnl.lib")
           )
           if (($requiredFiles | Where-Object { -not (Test-Path $_) }).Count -eq 0) {
             Write-Host 'Windows SDK/WDK 28000 is already available.'
@@ -72,7 +75,7 @@ jobs:
             --disable-interactivity
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $missing = $requiredFiles | Where-Object { -not (Test-Path $_) }
-          if ($missing) { throw "Windows SDK/WDK 28000 remains incomplete: $($missing -join '; ')" }
+          if ($missing) { throw "Windows SDK/WDK $env:DROIDVM_KIT_VERSION remains incomplete: $($missing -join '; ')" }
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
@@ -134,7 +137,8 @@ jobs:
             '/m',
             '/p:ApiValidator_Enable=false',
             '/p:SpectreMitigation=false',
-            '/p:SignMode=Off'
+            '/p:SignMode=Off',
+            "/p:WindowsTargetPlatformVersion=$env:DROIDVM_KIT_VERSION"
           )
           $projects = @(
             @{ Path = 'VirtIO/VirtioLib.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
@@ -161,6 +165,7 @@ jobs:
         run: |
           msbuild viogpu/viogpuwddm/viogpuwddm.vcxproj /m `
             /p:Configuration="Win11 Release" /p:Platform=ARM64 `
+            /p:WindowsTargetPlatformVersion="$env:DROIDVM_KIT_VERSION" `
             /p:ApiValidator_Enable=false `
             /p:SpectreMitigation=false /p:SignMode=Off
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
