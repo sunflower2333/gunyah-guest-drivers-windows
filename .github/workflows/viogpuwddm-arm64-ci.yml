@@ -43,6 +43,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Ensure Windows SDK and WDK 28000
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+          $requiredFiles = @(
+            (Join-Path $kitRoot 'Include\10.0.28000.0\km\ntddk.h'),
+            (Join-Path $kitRoot 'bin\10.0.28000.0\x86\tracewpp.exe'),
+            (Join-Path $kitRoot 'lib\10.0.28000.0\km\arm64\ntoskrnl.lib')
+          )
+          if (($requiredFiles | Where-Object { -not (Test-Path $_) }).Count -eq 0) {
+            Write-Host 'Windows SDK/WDK 28000 is already available.'
+            exit 0
+          }
+
+          winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget `
+            --exact --silent --accept-package-agreements --accept-source-agreements `
+            --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          winget install --id Microsoft.WindowsWDK.10.0.28000 --source winget `
+            --exact --silent --accept-package-agreements --accept-source-agreements `
+            --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
         with:
