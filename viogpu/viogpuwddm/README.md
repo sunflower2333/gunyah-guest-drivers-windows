@@ -19,10 +19,14 @@ negotiates the required VirtIO-GPU features, validates the Native Context
 capset, exposes an exact-revision WDK-independent UMD/KMD snapshot, creates a
 Host Native Context and its blob-0 control resource, obtains the context VA
 range through exact `GET_PARAM` requests, and validates allocation, context,
-Escape, and Render identities against a stable reset generation. This still
-does not implement the product's guest-backed allocation or submit data path.
-`DriverEntry` remains fail-closed and returns `STATUS_NOT_SUPPORTED`; no
-artifact from this project may be installed or loaded.
+Escape, and Render identities against a stable reset generation. The source
+path also covers guest-backed VidMm placement and Host blob ownership,
+Patch/SubmitCommand, ring-1 fence publication and retirement, and retry-safe
+allocation teardown. These remain compile-only source contracts: Host GPU
+execution, Windows loading, runtime fence retirement, and pool behavior are
+unverified. `DriverEntry` remains fail-closed and returns
+`STATUS_NOT_SUPPORTED`; no artifact from this project may be installed or
+loaded.
 
 The fixture in `viogpu/tests/wddm-private-abi/` locks only the current pre-v1
 snapshot for independent KMD and UMD endpoint regression checks. It does not
@@ -45,13 +49,13 @@ generations, faults, or VA ranges poison the transport. Only after both values
 pass page-alignment and overflow checks are `VaStart` and `VaSize` published;
 failure, destroy, and reset clear them. `GET_CONTEXT_INFO` therefore exposes the
 Host-created context slice rather than substituting the adapter-wide capset
-range. Before version 1 can be published, the ABI must still define
-requested-IOVA bind/unbind/query behavior plus the real guest-backed allocation
-and teardown lifecycle. The UMD must query and cache the response before
-selecting any BO IOVA or submitting, then discard it when the generation
-changes. Escape is not a submit path. Create-time private data is UMD-to-KMD
-input and must not be treated as an output channel. D3DKMT allocation and
-context handles remain the UMD's opaque identities.
+range. Before version 1 can be published, the requested-IOVA
+bind/unbind/query semantics and guest-backed allocation/teardown ABI still need
+device-runtime validation and a frozen contract. The UMD must query and cache
+the response before selecting any BO IOVA or submitting, then discard it when
+the generation changes. Escape is not a submit path. Create-time private data
+is UMD-to-KMD input and must not be treated as an output channel. D3DKMT
+allocation and context handles remain the UMD's opaque identities.
 
 Except for the context-info response fields described above, the snapshot
 contains no Windows pointers or handles, physical or IOVA addresses, or
@@ -114,9 +118,9 @@ for those intervals before unmapping.
 
 The full target's single CPU-visible VidMm segment is published from the exact
 `gpu_guest` physical range. The stable Display-Only target retains its existing
-nonpaged/contiguous fallback. This establishes only segment provenance; VidMm
-placement, guest-backed blob creation, requested IOVA, and allocation teardown
-remain unimplemented.
+nonpaged/contiguous fallback. The compile-only full target now has source paths
+for VidMm placement, guest-backed blob creation, requested IOVA ownership, and
+allocation teardown, but none has device-runtime proof.
 
 The client now registers `EventCategoryTargetDeviceChange` with the callback's
 own viogpu `DRIVER_OBJECT`. An active `drm2kgsl_host` or `gpu_guest` pool vetoes
@@ -166,7 +170,7 @@ fallback storage for VirtIO bookkeeping and does not acknowledge
 remains compile-only until a product DMA mapping contract is proven. The target
 still tears down fail-closed and retains its adapter on ownership proof
 failure. This remains an explicit registration blocker alongside the missing
-P2 guest-backed BO teardown implementation.
+P2 device-runtime proof for guest-backed BO operation and teardown.
 
 `VioGpuWddmBuildInitializationData` wires the existing display adapter,
 interrupt, power, cursor, EDID, and VidPN lifecycle into a full-miniport
