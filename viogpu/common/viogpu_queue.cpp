@@ -34,6 +34,97 @@
 #include "viogpu_queue.tmh"
 #endif
 
+BOOLEAN VioGpuArmVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer)
+{
+    if (buffer == NULL)
+    {
+        return FALSE;
+    }
+    KeClearEvent(&buffer->terminal_callback_event);
+    BOOLEAN armed = InterlockedCompareExchange(&buffer->terminal_callback_state,
+                                               VioGpuVbufferTerminalArmed,
+                                               VioGpuVbufferTerminalUnarmed) == VioGpuVbufferTerminalUnarmed;
+    if (!armed)
+    {
+        KeSetEvent(&buffer->terminal_callback_event, IO_NO_INCREMENT, FALSE);
+    }
+    return armed;
+}
+
+VIOGPU_VBUFFER_TERMINAL_CLAIM VioGpuClaimVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer)
+{
+    if (buffer == NULL)
+    {
+        return VioGpuVbufferTerminalClaimLost;
+    }
+
+    LONG previous = InterlockedCompareExchange(&buffer->terminal_callback_state,
+                                               VioGpuVbufferTerminalClaimed,
+                                               VioGpuVbufferTerminalArmed);
+    if (previous == VioGpuVbufferTerminalArmed)
+    {
+        return VioGpuVbufferTerminalClaimWon;
+    }
+    return previous == VioGpuVbufferTerminalUnarmed ? VioGpuVbufferTerminalClaimUnarmed
+                                                     : VioGpuVbufferTerminalClaimLost;
+}
+
+VOID VioGpuDetachVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer)
+{
+    if (buffer == NULL)
+    {
+        return;
+    }
+    buffer->complete_cb = NULL;
+    buffer->complete_ctx = NULL;
+    buffer->cancel_cb = NULL;
+    buffer->cancel_ctx = NULL;
+    buffer->queue_error_cb = NULL;
+    buffer->queue_error_ctx = NULL;
+}
+
+VOID VioGpuCompleteVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer)
+{
+    if (buffer == NULL)
+    {
+        return;
+    }
+    LONG state = InterlockedCompareExchange(&buffer->terminal_callback_state,
+                                            VioGpuVbufferTerminalCompleted,
+                                            VioGpuVbufferTerminalClaimed);
+    if (state == VioGpuVbufferTerminalClaimed || state == VioGpuVbufferTerminalCompleted)
+    {
+        KeSetEvent(&buffer->terminal_callback_event, IO_NO_INCREMENT, FALSE);
+    }
+}
+
+BOOLEAN VioGpuWaitForVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer)
+{
+    if (buffer == NULL)
+    {
+        return FALSE;
+    }
+    LONG state = InterlockedCompareExchange(&buffer->terminal_callback_state, 0, 0);
+    if (state != VioGpuVbufferTerminalClaimed)
+    {
+        return state == VioGpuVbufferTerminalCompleted || state == VioGpuVbufferTerminalUnarmed;
+    }
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return FALSE;
+    }
+
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
+    return KeWaitForSingleObject(&buffer->terminal_callback_event,
+                                 Executive,
+                                 KernelMode,
+                                 FALSE,
+                                 &timeout) == STATUS_SUCCESS &&
+           InterlockedCompareExchange(&buffer->terminal_callback_state, 0, 0) ==
+               VioGpuVbufferTerminalCompleted;
+}
+
 static BOOLEAN BuildSGElement(VirtIOBufferDescriptor *sg, PVOID buf, ULONG size)
 {
     if (size != 0 && MmIsAddressValid(buf))
@@ -1754,15 +1845,21 @@ void CtrlQueue::DrainNativeSubmitBacklog(void)
         PLIST_ENTRY entry = RemoveHeadList(&quarantined);
         PGPU_VBUFFER failedBuffer = CONTAINING_RECORD(entry, GPU_VBUFFER, native_submit_link);
         InitializeListHead(&failedBuffer->native_submit_link);
-        void (*errorCallback)(void *) = failedBuffer->queue_error_cb;
-        void *errorContext = failedBuffer->queue_error_ctx;
-        failedBuffer->queue_error_cb = NULL;
-        failedBuffer->queue_error_ctx = NULL;
-        if (errorCallback != NULL)
+        VIOGPU_VBUFFER_TERMINAL_CLAIM claim = VioGpuClaimVbufferTerminalCallbacks(failedBuffer);
+        if (claim != VioGpuVbufferTerminalClaimLost)
         {
-            errorCallback(errorContext);
+            void (*errorCallback)(void *) = failedBuffer->queue_error_cb;
+            void *errorContext = failedBuffer->queue_error_ctx;
+            VioGpuDetachVbufferTerminalCallbacks(failedBuffer);
+            if (errorCallback != NULL)
+            {
+                errorCallback(errorContext);
+            }
         }
-        ReleaseBuffer(failedBuffer);
+        if (claim != VioGpuVbufferTerminalClaimLost)
+        {
+            ReleaseBuffer(failedBuffer);
+        }
     }
 }
 
@@ -1982,12 +2079,13 @@ BOOLEAN VioGpuBuf::Init(_In_ UINT cnt)
     return TRUE;
 }
 
-void VioGpuBuf::Close(void)
+BOOLEAN VioGpuBuf::Close(void)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
     LIST_ENTRY buffers;
     InitializeListHead(&buffers);
+    BOOLEAN drained = TRUE;
 
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_SpinLock, &oldIrql);
@@ -1995,8 +2093,6 @@ void VioGpuBuf::Close(void)
     {
         LIST_ENTRY *entry = RemoveHeadList(&m_InUseBufs);
         PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
-        buffer->complete_cb = NULL;
-        buffer->complete_ctx = NULL;
         buffer->response_size = 0;
         InsertTailList(&buffers, entry);
     }
@@ -2013,15 +2109,26 @@ void VioGpuBuf::Close(void)
     {
         LIST_ENTRY *entry = RemoveHeadList(&buffers);
         PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
-        void (*cancelCallback)(void *) = buffer->cancel_cb;
-        void *cancelContext = buffer->cancel_ctx;
-        buffer->cancel_cb = NULL;
-        buffer->cancel_ctx = NULL;
-        buffer->queue_error_cb = NULL;
-        buffer->queue_error_ctx = NULL;
-        if (cancelCallback != NULL)
+        VIOGPU_VBUFFER_TERMINAL_CLAIM claim = VioGpuClaimVbufferTerminalCallbacks(buffer);
+        if (claim != VioGpuVbufferTerminalClaimLost)
         {
-            cancelCallback(cancelContext);
+            void (*cancelCallback)(void *) = buffer->cancel_cb;
+            void *cancelContext = buffer->cancel_ctx;
+            VioGpuDetachVbufferTerminalCallbacks(buffer);
+            if (cancelCallback != NULL)
+            {
+                cancelCallback(cancelContext);
+            }
+            VioGpuCompleteVbufferTerminalCallbacks(buffer);
+        }
+        else if (!VioGpuWaitForVbufferTerminalCallbacks(buffer))
+        {
+            KeAcquireSpinLock(&m_SpinLock, &oldIrql);
+            InsertTailList(&m_InUseBufs, &buffer->list_entry);
+            ++m_uCount;
+            KeReleaseSpinLock(&m_SpinLock, oldIrql);
+            drained = FALSE;
+            continue;
         }
         if (buffer->resp_buf != NULL && buffer->resp_size > MAX_INLINE_RESP_SIZE)
         {
@@ -2035,6 +2142,7 @@ void VioGpuBuf::Close(void)
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    return drained;
 }
 
 PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void *resp_buf)
@@ -2090,6 +2198,7 @@ PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void 
     }
     memset(pbuf, 0, VBUFFER_SIZE);
     KeInitializeEvent(&pbuf->completion_event, NotificationEvent, FALSE);
+    KeInitializeEvent(&pbuf->terminal_callback_event, NotificationEvent, TRUE);
     ASSERT(size <= MAX_INLINE_CMD_SIZE);
 
     pbuf->buf = (char *)((ULONG_PTR)pbuf + sizeof(*pbuf));
@@ -2158,10 +2267,7 @@ void VioGpuBuf::FreeBuf(_In_ PGPU_VBUFFER pbuf)
 
     if (found)
     {
-        pbuf->cancel_cb = NULL;
-        pbuf->cancel_ctx = NULL;
-        pbuf->queue_error_cb = NULL;
-        pbuf->queue_error_ctx = NULL;
+        VioGpuDetachVbufferTerminalCallbacks(pbuf);
         if (pbuf->resp_buf != NULL && pbuf->resp_size > MAX_INLINE_RESP_SIZE)
         {
             response = pbuf->resp_buf;
@@ -2185,6 +2291,7 @@ void VioGpuBuf::FreeBuf(_In_ PGPU_VBUFFER pbuf)
     if (!found)
     {
         DbgPrint(TRACE_LEVEL_WARNING, ("<--- %s ignored unowned buf = %p\n", __FUNCTION__, pbuf));
+        VioGpuCompleteVbufferTerminalCallbacks(pbuf);
         return;
     }
 
@@ -2193,10 +2300,12 @@ void VioGpuBuf::FreeBuf(_In_ PGPU_VBUFFER pbuf)
 
     if (freeBuffer)
     {
+        VioGpuCompleteVbufferTerminalCallbacks(pbuf);
         FreeMemory(pbuf);
     }
     else
     {
+        VioGpuCompleteVbufferTerminalCallbacks(pbuf);
         KeAcquireSpinLock(&m_SpinLock, &OldIrql);
         InsertTailList(&m_FreeBufs, &pbuf->list_entry);
         KeReleaseSpinLock(&m_SpinLock, OldIrql);
@@ -2219,8 +2328,6 @@ void VioGpuBuf::ReclaimBuffers(void)
     {
         LIST_ENTRY *entry = RemoveHeadList(&m_InUseBufs);
         PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
-        buffer->complete_cb = NULL;
-        buffer->complete_ctx = NULL;
         buffer->response_size = 0;
         InsertTailList(&reclaimed, entry);
     }
@@ -2236,15 +2343,24 @@ void VioGpuBuf::ReclaimBuffers(void)
     {
         LIST_ENTRY *entry = RemoveHeadList(&reclaimed);
         PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
-        void (*cancelCallback)(void *) = buffer->cancel_cb;
-        void *cancelContext = buffer->cancel_ctx;
-        buffer->cancel_cb = NULL;
-        buffer->cancel_ctx = NULL;
-        buffer->queue_error_cb = NULL;
-        buffer->queue_error_ctx = NULL;
-        if (cancelCallback != NULL)
+        VIOGPU_VBUFFER_TERMINAL_CLAIM claim = VioGpuClaimVbufferTerminalCallbacks(buffer);
+        if (claim != VioGpuVbufferTerminalClaimLost)
         {
-            cancelCallback(cancelContext);
+            void (*cancelCallback)(void *) = buffer->cancel_cb;
+            void *cancelContext = buffer->cancel_ctx;
+            VioGpuDetachVbufferTerminalCallbacks(buffer);
+            if (cancelCallback != NULL)
+            {
+                cancelCallback(cancelContext);
+            }
+            VioGpuCompleteVbufferTerminalCallbacks(buffer);
+        }
+        else if (!VioGpuWaitForVbufferTerminalCallbacks(buffer))
+        {
+            KeAcquireSpinLock(&m_SpinLock, &oldIrql);
+            InsertTailList(&m_InUseBufs, &buffer->list_entry);
+            KeReleaseSpinLock(&m_SpinLock, oldIrql);
+            continue;
         }
         if (buffer->resp_buf != NULL && buffer->resp_size > MAX_INLINE_RESP_SIZE)
         {

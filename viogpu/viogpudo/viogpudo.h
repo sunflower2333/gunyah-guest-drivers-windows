@@ -114,7 +114,10 @@ struct VIOGPU_NATIVE_PASSIVE_WORK
 {
     LIST_ENTRY Link;
     VIOGPU_NATIVE_PASSIVE_ROUTINE Routine;
+    VIOGPU_NATIVE_PASSIVE_ROUTINE CancelRoutine;
     PVOID Context;
+    volatile LONG *CancelRequested;
+    UINT FenceId;
     volatile LONG State;
     volatile LONG Retired;
 };
@@ -290,10 +293,23 @@ class VioGpuAdapter : IVioGpuPCI
                                                        _In_ ULONGLONG placementOffset,
                                                        _In_ SIZE_T backingSize,
                                                        _In_ ULONGLONG poolGeneration,
-                                                       _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState);
+                                                       _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                       _Inout_ ULONGLONG *resourceResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                 _Inout_ ULONGLONG *resourceResetGeneration,
                                                  _Out_ BOOLEAN *released);
+    BOOLEAN Reconcile2DResourceAfterReset(_Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                          _Inout_ ULONGLONG *resourceResetGeneration,
+                                          _Out_ BOOLEAN *retired);
+    VIOGPU_HOST_CONTEXT_RESULT Present2DResource(_In_ UINT resourceId,
+                                                 _In_ ULONGLONG offset,
+                                                 _In_ UINT width,
+                                                 _In_ UINT height,
+                                                 _In_ UINT x,
+                                                 _In_ UINT y,
+                                                 _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                 _Inout_ ULONGLONG *resourceResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,
                                             _In_ UINT width,
@@ -409,6 +425,8 @@ class VioGpuAdapter : IVioGpuPCI
     void InvalidateNativeContextRegistrationsLocked(void);
     void RetireAllNativeContextOwnersLocked(void);
     void RetireNativeContextOwnerLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner);
+    void Publish2DResetRetirementLocked(void);
+    void Reconcile2DScanoutAfterResetLocked(void);
     UINT AllocateNativeContextIdLocked(void);
 #if defined(VIOGPU_WDDM_CI_ONLY)
     UINT AllocateNativeResourceIdLocked(void);
@@ -487,8 +505,11 @@ class VioGpuAdapter : IVioGpuPCI
 #if defined(VIOGPU_WDDM_CI_ONLY)
     UINT m_NextNativeResourceId;
     KMUTEX m_2DScanoutMutex;
+    BOOLEAN m_2DResourceIdsInitialized;
     UINT m_2DScanoutResourceId;
     BOOLEAN m_2DScanoutUnknown;
+    ULONGLONG m_2DScanoutResetGeneration;
+    DECLSPEC_ALIGN(8) volatile LONG64 m_2DRetiredResetGeneration;
     mutable KSPIN_LOCK m_NativeSubmitRundownLock;
     mutable EX_RUNDOWN_REF m_NativeSubmitRundown;
     BOOLEAN m_NativeSubmitClosing;
@@ -548,6 +569,16 @@ class VioGpuDod
     LIST_ENTRY m_NativePassiveQueue;
     WORK_QUEUE_ITEM m_NativePassiveWorkItem;
     BOOLEAN m_NativePassiveWorkerQueued;
+    VIOGPU_NATIVE_PASSIVE_WORK *m_NativePassiveActiveWork;
+    volatile LONG m_NativePassiveClosing;
+    KEVENT m_NativePassiveIdleEvent;
+    WORK_QUEUE_ITEM m_WddmDrainWorkItem;
+    volatile LONG m_WddmDrainWorkerQueued;
+    volatile LONG m_WddmDrainRequested;
+    KEVENT m_WddmDrainIdleEvent;
+    KSPIN_LOCK m_WddmPresentLock;
+    LIST_ENTRY m_WddmPresentTransactions;
+    volatile LONG m_WddmPresentClosing;
 #endif
 
     USHORT m_PersistentDispMode0Width;
@@ -697,10 +728,23 @@ class VioGpuDod
                                                        _In_ ULONGLONG placementOffset,
                                                        _In_ SIZE_T backingSize,
                                                        _In_ ULONGLONG poolGeneration,
-                                                       _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState);
+                                                       _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                       _Inout_ ULONGLONG *resourceResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                 _Inout_ ULONGLONG *resourceResetGeneration,
                                                  _Out_ BOOLEAN *released);
+    BOOLEAN Reconcile2DResourceAfterReset(_Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                          _Inout_ ULONGLONG *resourceResetGeneration,
+                                          _Out_ BOOLEAN *retired);
+    VIOGPU_HOST_CONTEXT_RESULT Present2DResource(_In_ UINT resourceId,
+                                                 _In_ ULONGLONG offset,
+                                                 _In_ UINT width,
+                                                 _In_ UINT height,
+                                                 _In_ UINT x,
+                                                 _In_ UINT y,
+                                                 _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                 _Inout_ ULONGLONG *resourceResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,
                                             _In_ UINT width,
@@ -710,7 +754,7 @@ class VioGpuDod
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
     BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize);
     int QueueNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ ULONGLONG fenceId);
-    void ReleaseNativeSubmitBuffer(_In_ PGPU_VBUFFER buffer);
+    BOOLEAN ReleaseNativeSubmitBuffer(_In_ PGPU_VBUFFER buffer);
     BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration) const;
     UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
     BOOLEAN AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requestedIova,
@@ -734,6 +778,9 @@ class VioGpuDod
     VOID RequestHardwareResetAtAnyIrql(void)
     {
         InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
+#if defined(VIOGPU_WDDM_CI_ONLY)
+        RequestWddmSubmissionDrainAtAnyIrql();
+#endif
     }
     BOOLEAN IsHardwareInterruptDispatchAllowed(void) const
     {
@@ -761,8 +808,19 @@ class VioGpuDod
     void ResetNativeFenceTracker(void);
     void InvalidateNativeFenceTracker(void);
     void CompleteNativeFenceReset(void);
-    BOOLEAN QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
+    BOOLEAN QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work, _In_ UINT fenceId);
+    VOID CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
     VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP CancelNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
+    VOID CloseNativePassiveQueue(void);
+    BOOLEAN WaitForNativePassiveQueueIdle(void);
+    BOOLEAN OpenNativePassiveQueue(void);
+    VOID RequestWddmSubmissionDrainAtAnyIrql(void);
+    BOOLEAN WaitForWddmSubmissionDrain(void);
+    VOID CloseWddmPresentTransactions(void);
+    BOOLEAN OpenWddmPresentTransactions(void);
+    BOOLEAN RegisterWddmPresentTransaction(_Inout_ LIST_ENTRY *link);
+    BOOLEAN UnregisterWddmPresentTransaction(_Inout_ LIST_ENTRY *link);
+    PLIST_ENTRY PopWddmPresentTransactionForReset(void);
     UINT QueryNativeCompletedFence(void) const
     {
         return static_cast<UINT>(InterlockedCompareExchange(const_cast<volatile LONG *>(&m_NativeCompletedFence),
@@ -775,6 +833,9 @@ class VioGpuDod
 #if defined(VIOGPU_WDDM_CI_ONLY)
     static VOID NativePassiveWorker(_In_opt_ PVOID context);
     VOID RunNativePassiveWorker(void);
+    static VOID WddmSubmissionDrainWorker(_In_opt_ PVOID context);
+    VOID QueueWddmSubmissionDrainWorker(void);
+    VOID RunWddmSubmissionDrainWorker(void);
 #endif
     BOOLEAN CheckHardware();
     NTSTATUS UnwindFailedStart(_In_ NTSTATUS failureStatus);

@@ -68,6 +68,12 @@ typedef struct virtio_gpu_vbuffer
     void (*queue_error_cb)(void *ctx);
     void *queue_error_ctx;
 
+    /* Completion, reset cancellation, and permanent backlog failure all race
+     * for one higher-level submission owner.  Only the path which changes
+     * Armed to Claimed may detach and invoke a terminal callback. */
+    volatile LONG terminal_callback_state;
+    KEVENT terminal_callback_event;
+
     /* A native submit may wait in the software backlog while the control
      * virtqueue has no free descriptor.  This link is owned by CtrlQueue,
      * not by VioGpuBuf's in-use/free lists. */
@@ -79,6 +85,27 @@ typedef struct virtio_gpu_vbuffer
     LONG64 synchronous_epoch_state;
 } GPU_VBUFFER, *PGPU_VBUFFER;
 // #pragma pack()
+
+enum VIOGPU_VBUFFER_TERMINAL_STATE : LONG
+{
+    VioGpuVbufferTerminalUnarmed = 0,
+    VioGpuVbufferTerminalArmed,
+    VioGpuVbufferTerminalClaimed,
+    VioGpuVbufferTerminalCompleted,
+};
+
+enum VIOGPU_VBUFFER_TERMINAL_CLAIM : LONG
+{
+    VioGpuVbufferTerminalClaimUnarmed = 0,
+    VioGpuVbufferTerminalClaimWon,
+    VioGpuVbufferTerminalClaimLost,
+};
+
+BOOLEAN VioGpuArmVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer);
+VIOGPU_VBUFFER_TERMINAL_CLAIM VioGpuClaimVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer);
+VOID VioGpuDetachVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer);
+VOID VioGpuCompleteVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer);
+BOOLEAN VioGpuWaitForVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer);
 
 enum VIOGPU_SYNCHRONOUS_STATE : LONG
 {
@@ -118,7 +145,7 @@ class VioGpuBuf
     void FreeBuf(_In_ PGPU_VBUFFER pbuf);
     BOOLEAN Init(_In_ UINT cnt);
     void ReclaimBuffers(void);
-    void Close(void);
+    BOOLEAN Close(void);
     BOOLEAN HasAllocationOwner(void) const
     {
         return m_uCount != 0;

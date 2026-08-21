@@ -23,8 +23,8 @@ Escape, and Render identities against a stable reset generation. The source
 path also covers guest-backed VidMm placement and Host blob ownership,
 Patch/SubmitCommand, ring-1 fence publication and retirement, and retry-safe
 allocation teardown. These remain compile-only source contracts: Host GPU
-execution, Windows loading, runtime fence retirement, and pool behavior are
-unverified. `DriverEntry` remains fail-closed and returns
+execution, Windows loading, runtime fence retirement, Present, and pool
+behavior are unverified. `DriverEntry` remains fail-closed and returns
 `STATUS_NOT_SUPPORTED`; no artifact from this project may be installed or
 loaded.
 
@@ -69,19 +69,24 @@ Render ranges are bounded by the logical UMD-declared allocation size, not
 page-aligned VidMm backing padding. Open/close and destroy also reject
 unsupported flags, resource-private data, and duplicate handle arrays before
 releasing objects. `CreateContext` accepts only the single-engine affinity mask
-`1` and a current nonzero reset-generation token. `Render` bounds command input
-to 64 KiB, copies command and patch inputs to nonpaged snapshots, validates their
-shared allocation identity, rejects writes through read-only opens and
-overlapping 8-byte patch slots, rechecks the reset generation, and only then
-publishes its DMA output. UMD-selected patch slot IDs may be nonzero; reserved
-patch bits must be zero.
+`1`. A Native context uses flags zero plus the exact current private-data and
+nonzero reset-generation token. Exact System and GDI context flags are also
+accepted without private data; they do not create a Host Native Context. Native
+`Render` bounds command input to 64 KiB, copies command and patch inputs to
+nonpaged snapshots, validates their shared allocation identity, rejects writes
+through read-only opens and overlapping 8-byte patch slots, rechecks the reset
+generation, and only then publishes its DMA output. UMD-selected patch slot IDs
+may be nonzero; reserved patch bits must be zero.
 
-`Patch` validates and writes KMD-owned resource IDs and requested IOVAs only
-after paging placement, generation, and allocation ownership checks. It does
-not itself submit work. `SubmitCommand` queues the prepared native command and
-reports completion through the ring-1 fence path, but this remains compile-only:
-Host GPU retirement, Windows loading, and WDDM runtime behavior are unverified.
-The validation slice must not be described as a working or installable driver.
+`Render` consumes every nonzero allocation-list `SegmentId` as prepatch input,
+validates its current placement and Native Context ownership, and writes the
+KMD-owned resource ID and requested IOVA while still returning the complete
+patch list. `Patch` can repatch every reference after paging; when all references
+were prepatched, `SubmitCommand` may legally receive the prepared command without
+an intervening Patch call. It queues the native command and reports completion
+through the ring-1 fence path, but this remains compile-only: Host GPU retirement,
+Windows loading, and WDDM runtime behavior are unverified. The validation slice
+must not be described as a working or installable driver.
 
 The product baseline is `udmabuf=true` with independent `drm-host` and
 `gpu-guest` boot pools. The product transport must fail closed unless
@@ -206,8 +211,48 @@ The callback table intentionally leaves these DDI slots unset:
 
 It also does not register the KMDOD-only `DxgkDdiPresentDisplayOnly` callback.
 
-Present and VidPN source-address programming remain fail-stop skeletons. The
-preemption callback validates the single node/engine contract, reports
+Standard paging now covers primary, GDI shadow, and staging allocations. It
+uses context-zero paging records, copies or fills the `gpu_guest` placement
+under one mapping generation, keeps each allocation's low-range local resource
+ID stable, and recreates primary 2D Host backing after a confirmed reset epoch.
+`DxgkDdiSetVidPnSourceAddress` validates and selects only a resident standard
+primary with current 2D backing.
+
+The source also implements a synchronous CPU-copy `DxgkDdiPresent` path. A
+Native context may present only an exact live native allocation identity; a GDI
+context may present only a resident CPU-visible non-primary standard allocation
+whose context and reset identity fields are zero. The destination must be a
+resident standard primary with current 2D backing, opened writable. Build and
+Patch validate bounded rectangles, allocation opens, placements, pool
+generations, and patch records. Build uses each nonzero allocation-list
+`SegmentId` to prepatch its placement while still returning both patch records;
+Submit may skip Patch only when both source and destination were prepatched.
+The private-data buffer is treated as uninitialized output until publication;
+its input-only pointer and remaining-size fields are not advanced by multipass.
+Present consumes at most 256 destination subrectangles per pass,
+advances `MultipassOffset`, and returns
+`STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER` until the original list is complete;
+DMA or patch-list capacity exhaustion returns the same retry status without
+publishing a transaction. Cancel accepts an owner only when both the complete
+nonpaging private record and the exact DMA submission range match. Submit queues
+a passive transaction that copies the selected rows in `gpu_guest`, issues the
+2D transfer/flush, and reports the scheduler fence.
+Built, Patched, Queued, and Executing transactions retain context, allocation,
+adapter-registry, and operation references until one terminal retirement. Stop,
+D-state, TDR, and system-display takeover close and drain the registry before
+transport teardown. D0 reset recovery first closes and drains any transaction
+left by an any-IRQL reset notification, then reopens publication only after the
+Active reset epoch is proven. Reopening is idempotent in an already-open Active
+epoch, while a failed closed-to-open transition restores the outer reset gate.
+If an ordinary D1/D2/D3 hardware transition fails after the registry drain, the
+registry remains closed and the outer reset gate is requested; only a later D0
+recovery may publish a coherent Active epoch again.
+This is source-only. The focused local contract, checker syntax, ARM64 workflow
+YAML parsing, and diff-format checks pass; the ARM64 build for this slice is
+still pending. These checks are not Windows/KMT/Host runtime proof and do not
+make the KMD loadable or installable.
+
+The preemption callback validates the single node/engine contract, reports
 `DXGK_INTERRUPT_DMA_PREEMPTED` only when the native fence queue is already
 empty, and gates the adapter for TDR when work is in flight or the interrupt
 notification cannot be synchronized. `PreemptionAware` deliberately remains
@@ -217,28 +262,59 @@ advances the reset fence only after teardown succeeds; restart reuses the
 checked D0 recovery state machine. Render patch/submit and paging now use
 bounded private records; paging transfers consume their MDL during
 `DxgkDdiBuildPagingBuffer`, then a cancellable passive worker publishes guest
-pool placement and host BO ownership. These paths are compile-only and do not
-prove runtime preemption, TDR, or Present behavior.
+pool placement and host BO ownership. Paging cancellation signals every
+recognized transaction even after the passive worker owns the batch. A
+structurally valid private range publishes its record count before deep record
+validation so earlier recognizable owners can release allocation references if
+a later record is stale or malformed.
+
+Submission-fault recovery no longer trusts the callback identity as a
+prerequisite for reset. A zero fence or nonzero node/engine identity first
+closes the outer hardware epoch, invalidates the pending native fence tracker,
+and fails the inner Native Context transport. Only the scheduler's
+`DXGK_INTERRUPT_DMA_FAULTED` notification is suppressed when its identity
+cannot be represented legally.
+
+The current source deliberately leaves five runtime assumptions unproven. A
+Built paging record does not take the driver's allocation reference until
+Submit claims the complete batch; it relies on VidMm retaining the allocation,
+DMA buffer, and KMD private record until Patch, SubmitCommand, or CancelCommand.
+Render and Present interpret each `PatchOffset` relative to that submission's
+DMA start, which still needs a nonzero-submission-offset KMT test. Each Present
+multipass retry is assumed to retain every previously published private record
+until its corresponding submission retires. CPU row copies and paging copies
+also assume cache coherence between the Normal-WB `gpu_guest` mapping and Host
+KGSL access; this slice adds no explicit CPU/GPU cache-maintenance primitive.
+Finally, batch rollback clears matching in-progress paging state but cannot undo
+placement or Host ownership already confirmed by an earlier executed record;
+the ensuing scheduler fault and adapter reset are the only recovery boundary.
+These are explicit runtime gates, and the current paths are compile-only source
+evidence that does not prove preemption, TDR, paging, or Present behavior.
 Mandatory full-graphics WDDM
 1.2 semantics that are absent or unproven include video-memory offer/reclaim,
 GPU preemption and FlipOnVSyncMmIo, per-engine TDR, optimized rotation, direct
-flip, GDI hardware acceleration, seamless state transitions/PnP, and display
-container ID behavior. The current `CreateContext` flag check also rejects
-system and GDI contexts; it is a narrow UMD-context scaffold rather than a
-general WDDM 1.2 context contract. Because the inherited query path still
-reports WDDM 1.2 while these semantics are incomplete, registration must remain
-unreachable. Successful compilation does not establish that the driver can
-register, start, render, recover, or satisfy the mandatory WDDM 1.2 feature
-contract.
+flip, GDI hardware acceleration beyond the CPU-copy baseline, seamless state
+transitions/PnP, and display container ID behavior. System contexts currently
+exist only to satisfy typed lifecycle ownership; GDI contexts support the
+bounded Present baseline, not a complete WDDM 1.2 GDI acceleration contract.
+Because the inherited query path still reports WDDM 1.2 while these semantics
+are incomplete, registration must remain unreachable. Successful compilation
+does not establish that the driver can register, start, render, recover, or
+satisfy the mandatory WDDM 1.2 feature contract.
 
 The stable display-only driver remains `viogpudo` and WDDM 1.2.
 
-Run the focused safety contract with:
+The source, checker, workflow, and documentation phase is frozen. The focused
+safety contract for the current slice is:
 
 ```text
 python viogpu/viogpuwddm/check-contract.py
 ```
 
-The mutation suite is intentionally not part of ordinary push or pull-request
-CI. Run the ARM64 workflow manually with `run_mutation=true` only at a major
-contract boundary.
+The ARM64 workflows use `windows-2025-vs2026`, conditionally install the pinned
+Windows SDK/WDK 28000 packages with the runner's `winget`, verify the required
+ARM64 kit files, and emit ARM64 driver targets only. Their x64 tools are
+runner-side cross-build and ABI-fixture tools, not product targets. The mutation
+suite is intentionally not wired into ordinary or manual CI; do not run it until
+the implementation phase is complete and a major contract-boundary validation
+is explicitly requested.

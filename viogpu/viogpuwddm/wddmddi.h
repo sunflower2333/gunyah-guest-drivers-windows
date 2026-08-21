@@ -13,6 +13,7 @@
 class VioGpuDod;
 
 VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData);
+VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 
 struct VIOGPU_WDDM_KMD_DMA_PRIVATE
 {
@@ -37,6 +38,7 @@ enum : USHORT
     VioGpuWddmDmaPrivateVersion = 1,
     VioGpuWddmDmaKindRender = 1,
     VioGpuWddmDmaKindPaging = 2,
+    VioGpuWddmDmaKindPresent = 3,
 };
 
 enum : UINT
@@ -74,8 +76,26 @@ struct VIOGPU_WDDM_PAGING_DMA_PACKET
     ULONGLONG TransferSize;
 };
 
+struct VIOGPU_WDDM_PRESENT_DMA_PACKET
+{
+    ULONG Signature;
+    USHORT Version;
+    USHORT Size;
+    UINT Flags;
+    UINT SourceResourceId;
+    UINT DestinationResourceId;
+    UINT RectCount;
+    UINT Reserved;
+    ULONGLONG SourcePlacementOffset;
+    ULONGLONG DestinationPlacementOffset;
+    ULONGLONG SourcePoolGeneration;
+    ULONGLONG DestinationPoolGeneration;
+    ULONGLONG DestinationResetGeneration;
+};
+
 static_assert(sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) == 72, "unexpected WDDM DMA private size");
 static_assert(sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET) == 72, "unexpected WDDM paging packet size");
+static_assert(sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) == 72, "unexpected WDDM present packet size");
 
 struct VIOGPU_WDDM_RESOURCE
 {
@@ -134,6 +154,7 @@ struct VIOGPU_WDDM_ALLOCATION
     UINT ResourceId;
     UINT BlobId;
     VIOGPU_2D_RESOURCE_STATE Resource2DState;
+    ULONGLONG Resource2DResetGeneration;
     ULONGLONG PlacementOffset;
     ULONGLONG PoolGeneration;
     VIOGPU_WDDM_ALLOCATION_HOST_STATE HostState;
@@ -230,6 +251,13 @@ struct VIOGPU_WDDM_DEVICE
     volatile LONG ReferenceState;
 };
 
+enum VIOGPU_WDDM_CONTEXT_TYPE : LONG
+{
+    VioGpuWddmContextNative = 0,
+    VioGpuWddmContextSystem,
+    VioGpuWddmContextGdi,
+};
+
 struct VIOGPU_WDDM_CONTEXT
 {
     ULONG Signature;
@@ -246,9 +274,68 @@ struct VIOGPU_WDDM_CONTEXT
     volatile LONG CompletedUmdFence;
     VIOGPU_WDDM_DEVICE *Device;
     HANDLE RuntimeContext;
+    VIOGPU_WDDM_CONTEXT_TYPE Type;
     UINT NodeOrdinal;
     UINT EngineAffinity;
     VIOGPU_NATIVE_CONTEXT_REGISTRATION NativeContext;
+};
+
+enum VIOGPU_WDDM_CONTEXT_SUBMISSION_KIND : ULONG
+{
+    VioGpuWddmContextSubmissionRender = 1,
+    VioGpuWddmContextSubmissionPresent = 2,
+};
+
+struct VIOGPU_WDDM_CONTEXT_SUBMISSION_ENTRY
+{
+    LIST_ENTRY Link;
+    VIOGPU_WDDM_CONTEXT_SUBMISSION_KIND Kind;
+    PVOID Owner;
+    VIOGPU_WDDM_CONTEXT *Context;
+};
+
+enum VIOGPU_WDDM_PRESENT_STATE : LONG
+{
+    VioGpuWddmPresentInvalid = 0,
+    VioGpuWddmPresentBuilt,
+    VioGpuWddmPresentPatched,
+    VioGpuWddmPresentQueued,
+    VioGpuWddmPresentExecuting,
+    VioGpuWddmPresentFinished,
+    VioGpuWddmPresentCancelled,
+};
+
+struct VIOGPU_WDDM_PRESENT_TRANSACTION
+{
+    ULONG Signature;
+    volatile LONG ReferenceCount;
+    volatile LONG State;
+    volatile LONG CancelRequested;
+    volatile LONG WorkReferenceHeld;
+    VIOGPU_WDDM_CONTEXT_SUBMISSION_ENTRY ContextEntry;
+    LIST_ENTRY AdapterLink;
+    VIOGPU_NATIVE_PASSIVE_WORK Work;
+    VIOGPU_WDDM_CONTEXT *Context;
+    VioGpuDod *Adapter;
+    VIOGPU_WDDM_ALLOCATION *Source;
+    VIOGPU_WDDM_ALLOCATION *Destination;
+    PVOID DmaBuffer;
+    UINT DmaBufferSize;
+    VIOGPU_WDDM_KMD_DMA_PRIVATE *PrivateData;
+    UINT PrivateDataSize;
+    UINT SourceAllocationIndex;
+    UINT DestinationAllocationIndex;
+    RECT SourceRect;
+    RECT DestinationRect;
+    RECT *DestinationSubRects;
+    UINT RectCount;
+    ULONGLONG SourcePlacementOffset;
+    ULONGLONG SourcePoolGeneration;
+    ULONGLONG DestinationPlacementOffset;
+    ULONGLONG DestinationPoolGeneration;
+    ULONGLONG DestinationResetGeneration;
+    UINT FenceId;
+    BOOLEAN FullyPrepatched;
 };
 
 struct VIOGPU_WDDM_SUBMISSION_REFERENCE
@@ -265,14 +352,23 @@ struct VIOGPU_WDDM_SUBMISSION_REFERENCE
 enum VIOGPU_WDDM_SUBMISSION_STATE : LONG
 {
     VioGpuWddmSubmissionPrepared = 0,
-    VioGpuWddmSubmissionQueued,
+    VioGpuWddmSubmissionPatching,
+    VioGpuWddmSubmissionPatched,
+    VioGpuWddmSubmissionSubmitClaimed,
+    VioGpuWddmSubmissionEngineQueued,
+    VioGpuWddmSubmissionHostIssued,
     VioGpuWddmSubmissionQuarantined,
 };
 
 struct VIOGPU_WDDM_SUBMISSION
 {
     ULONG Signature;
-    LIST_ENTRY ContextLink;
+    volatile LONG ReferenceCount;
+    volatile LONG State;
+    volatile LONG CancelRequested;
+    volatile LONG WorkReferenceHeld;
+    VIOGPU_WDDM_CONTEXT_SUBMISSION_ENTRY ContextEntry;
+    VIOGPU_NATIVE_PASSIVE_WORK Work;
     VIOGPU_WDDM_CONTEXT *Context;
     PVOID DmaBuffer;
     UINT DmaBufferSize;
@@ -290,7 +386,7 @@ struct VIOGPU_WDDM_SUBMISSION
     UINT CommandStreamSize;
     UINT CommandStreamOffset;
     BOOLEAN PatchApplied;
-    volatile LONG State;
+    BOOLEAN FullyPrepatched;
     UINT AllocationCount;
     VIOGPU_WDDM_ALLOCATION *Allocations[VioGpuWddmSubmissionAllocationLimit];
     VIOGPU_WDDM_SUBMISSION_REFERENCE References[VioGpuWddmSubmissionAllocationLimit];
