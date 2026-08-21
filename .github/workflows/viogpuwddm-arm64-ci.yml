@@ -43,19 +43,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Windows SDK and WDK 28000
-        shell: pwsh
-        run: |
-          winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget `
-            --exact --silent --accept-package-agreements --accept-source-agreements `
-            --disable-interactivity
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          winget install --id Microsoft.WindowsWDK.10.0.28000 --source winget `
-            --exact --silent --accept-package-agreements --accept-source-agreements `
-            --disable-interactivity
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
         with:
