@@ -208,8 +208,6 @@ void CtrlQueue::PoisonSynchronousRequests(void)
     }
 }
 
-PAGED_CODE_SEG_BEGIN
-
 static BOOLEAN IsPlainControlResponse(PGPU_CTRL_HDR response, ULONG expectedType)
 {
     return response != NULL && response->type == expectedType && response->flags == 0 && response->fence_id == 0 &&
@@ -383,6 +381,8 @@ void CtrlQueue::CompleteSynchronousRequestTeardown(void)
         }
     }
 }
+
+PAGED_CODE_SEG_BEGIN
 
 BOOLEAN CtrlQueue::QueryDisplayInfo(UINT id, _Out_ PULONG xres, _Out_ PULONG yres)
 {
@@ -581,6 +581,8 @@ void CtrlQueue::AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
+PAGED_CODE_SEG_END
+
 BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer)
 {
     BOOLEAN submitted = FALSE;
@@ -589,8 +591,6 @@ BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN rele
 
 BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted)
 {
-    PAGED_CODE();
-
     if (buf == NULL || release_buffer == NULL || submitted == NULL)
     {
         return FALSE;
@@ -645,8 +645,6 @@ BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN rele
 
 VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitSynchronousNoDataLocked(PGPU_VBUFFER buf)
 {
-    PAGED_CODE();
-
     if (buf == NULL)
     {
         return VioGpuHostContextNotSubmitted;
@@ -686,6 +684,8 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitSynchronousNoDataLocked(PGPU_VBUFFER
     }
     return result;
 }
+
+PAGED_CODE_SEG_BEGIN
 
 VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateResource2DSynchronous(UINT resource_id,
                                                                   UINT format,
@@ -822,6 +822,8 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefResourceSynchronous(UINT resource_id)
     return result;
 }
 
+PAGED_CODE_SEG_END
+
 VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetScanoutSynchronous(UINT scanout_id,
                                                             UINT resource_id,
                                                             UINT width,
@@ -829,8 +831,6 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetScanoutSynchronous(UINT scanout_id,
                                                             UINT x,
                                                             UINT y)
 {
-    PAGED_CODE();
-
     BOOLEAN disable = resource_id == 0 && width == 0 && height == 0 && x == 0 && y == 0;
     if (scanout_id >= VIRTIO_GPU_MAX_SCANOUTS ||
         (!disable && (!IsStandard2DResourceId(resource_id) || !IsValid2DRectangle(width, height, x, y))) ||
@@ -859,6 +859,8 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetScanoutSynchronous(UINT scanout_id,
     EndSynchronousRequest();
     return result;
 }
+
+PAGED_CODE_SEG_BEGIN
 
 VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::TransferToHost2DSynchronous(UINT resource_id,
                                                                   ULONGLONG offset,

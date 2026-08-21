@@ -1780,6 +1780,105 @@ def check_wddm_standard_primary_paging() -> None:
         fail("standard primary data movement must stay in one exact guest-pool generation")
 
 
+def check_wddm_standard_primary_scanout() -> None:
+    queue_source = QUEUE_SOURCE_PATH.read_text(encoding="utf-8")
+    queue = canonical_code(QUEUE_CODE)
+    set_scanout_start = queue_source.find("VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetScanoutSynchronous")
+    if set_scanout_start < 0:
+        fail("standard primary scanout must expose one synchronous control transaction")
+    previous_page_end = queue_source.rfind("PAGED_CODE_SEG_END", 0, set_scanout_start)
+    previous_page_begin = queue_source.rfind("PAGED_CODE_SEG_BEGIN", 0, set_scanout_start)
+    next_page_begin = queue_source.find("PAGED_CODE_SEG_BEGIN", set_scanout_start)
+    if previous_page_end < previous_page_begin or next_page_begin < set_scanout_start:
+        fail("SetScanoutSynchronous must stay in the nonpaged code segment")
+    nonpaged_bodies = {
+        "SubmitSynchronousLocked(three arguments)": function_body_with_parameters(
+            "CtrlQueue::SubmitSynchronousLocked",
+            "PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted",
+            QUEUE_CODE,
+        ),
+        "SubmitSynchronousNoDataLocked": function_body("CtrlQueue::SubmitSynchronousNoDataLocked", QUEUE_CODE),
+        "SetScanoutSynchronous": function_body("CtrlQueue::SetScanoutSynchronous", QUEUE_CODE),
+    }
+    for method_name, body in nonpaged_bodies.items():
+        if "PAGED_CODE();" in body:
+            fail(f"nonpaged source-address path must not call a pageable queue method: {method_name}")
+    set_queue = canonical_code(function_body("CtrlQueue::SetScanoutSynchronous", QUEUE_CODE))
+    if set_queue.count("SubmitSynchronousNoDataLocked(vbuf)") != 1:
+        fail("nonpaged scanout must retain exact synchronous response classification")
+
+    adapter_header = canonical_code(VIOGPU_HEADER_CODE)
+    for fragment in (
+        "KMUTEXm_2DScanoutMutex;",
+        "UINTm_2DScanoutResourceId;",
+        "BOOLEANm_2DScanoutUnknown;",
+    ):
+        if adapter_header.count(fragment) != 1:
+            fail(f"adapter must retain one serialized 2D scanout owner: {fragment}")
+
+    set_host = canonical_code(function_body("VioGpuAdapter::Set2DScanout", VIOGPU_CODE))
+    for fragment in (
+        "KeGetCurrentIrql()!=PASSIVE_LEVEL",
+        "KeWaitForSingleObject(&m_2DScanoutMutex,Executive,KernelMode,FALSE,&timeout)",
+        "*previousResourceId=m_2DScanoutResourceId;",
+        "if(m_2DScanoutUnknown)",
+        "m_CtrlQueue.SetScanoutSynchronous(scanoutId,resourceId,width,height,0,0)",
+        "if(result==VioGpuHostContextConfirmed){m_2DScanoutResourceId=resourceId;}",
+        "elseif(result==VioGpuHostContextUnknown)",
+        "m_2DScanoutUnknown=TRUE;",
+        "FailNativeContextAtAnyIrql();",
+        "KeReleaseMutex(&m_2DScanoutMutex,FALSE);",
+    ):
+        if fragment not in set_host:
+            fail(f"2D scanout switch must retain confirmed-only serialized ownership: {fragment}")
+    if "m_2DScanoutResourceId=resourceId;" in set_host.split("if(result==VioGpuHostContextConfirmed)", 1)[0]:
+        fail("2D scanout ownership must not publish before Host confirmation")
+
+    query_host = canonical_code(function_body("VioGpuAdapter::Query2DScanoutResource", VIOGPU_CODE))
+    for fragment in (
+        "BOOLEANvalid=!m_2DScanoutUnknown;",
+        "*active=m_2DScanoutResourceId==resourceId;",
+        "KeReleaseMutex(&m_2DScanoutMutex,FALSE);",
+    ):
+        if query_host.count(fragment) != 1:
+            fail(f"2D scanout ownership query must fail closed: {fragment}")
+
+    set_ddi = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
+    for fragment in (
+        "KeGetCurrentIrql()!=PASSIVE_LEVEL",
+        "setVidPnSourceAddress->VidPnSourceId!=0",
+        "setVidPnSourceAddress->ContextCount!=0",
+        "setVidPnSourceAddress->Flags.Value!=1",
+        "setVidPnSourceAddress->PrimarySegment!=VIOGPU_WDDM_SEGMENT_ID",
+        "IsStandardPrimaryAllocation(allocation)",
+        "allocation->Resource2DState!=VioGpu2DResourceBackingAttached",
+        "!allocation->PlacementValid",
+        "allocation->PagingState!=VioGpuWddmAllocationPagingIdle",
+        "setVidPnSourceAddress->PrimaryAddress.QuadPart)!=allocation->PlacementOffset",
+        "adapter->Set2DScanout(0,allocation->ResourceId,allocation->Width,allocation->Height,&previousResourceId)",
+        "result==VioGpuHostContextConfirmed?STATUS_SUCCESS:STATUS_DEVICE_NOT_READY",
+    ):
+        if fragment not in set_ddi:
+            fail(f"SetVidPnSourceAddress must retain the exact mode-change primary contract: {fragment}")
+    if "STATUS_NOT_SUPPORTED" in set_ddi:
+        fail("SetVidPnSourceAddress must no longer reject the completed standard primary mode-change path")
+
+    destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
+    standard_execute = canonical_code(function_body("ExecuteStandardPrimaryPagingTransaction", WDDM_DDI_CODE))
+    standard_build = canonical_code(function_body("BuildStandardPrimaryPagingBuffer", WDDM_DDI_CODE))
+    if destroy_allocation.count("Query2DScanoutResource(allocation->ResourceId,&active)") != 1:
+        fail("DestroyAllocation must not unref a scanout-owned primary")
+    if standard_execute.count("Query2DScanoutResource(allocation->ResourceId,&active)") != 1 or \
+       standard_build.count("Query2DScanoutResource(allocation->ResourceId,&active)") != 1:
+        fail("standard primary page-out and discard must reject scanout-owned backing before copy and execution")
+
+    query_caps = canonical_code(function_body("VioGpuDod::QueryAdapterInfo", VIOGPU_CODE))
+    wddm_query_caps = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
+    if "RtlZeroMemory(pDriverCaps,pQueryAdapterInfo->OutputDataSize);" not in query_caps or \
+       "FlipOnVSyncMmIo" in query_caps or "FlipOnVSyncMmIo" in wddm_query_caps:
+        fail("the synchronous PASSIVE_LEVEL scanout path must not advertise MMIO flip capability")
+
+
 def check_native_context_ownership() -> None:
     queue_header = canonical_code(strip_cpp_comments_and_literals(QUEUE_HEADER_SOURCE))
     wire_header = canonical_code(WIRE_HEADER_CODE)
@@ -5453,6 +5552,7 @@ def main() -> None:
     check_synchronous_2d_control_transactions()
     check_wddm_2d_resource_ownership()
     check_wddm_standard_primary_paging()
+    check_wddm_standard_primary_scanout()
     check_native_context_ownership()
     check_wddm_private_abi(root)
     check_wddm_paging_transaction_gate()

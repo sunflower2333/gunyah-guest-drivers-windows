@@ -2722,16 +2722,24 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
                         }
                         else if (IsStandardPrimaryAllocation(allocation) && allocation->ResourceId != 0)
                         {
-                            BOOLEAN released = FALSE;
-                            VIOGPU_HOST_CONTEXT_RESULT result = adapter->Destroy2DResource(allocation->ResourceId,
-                                                                                          &allocation->Resource2DState,
-                                                                                          &released);
-                            if (released)
+                            BOOLEAN active = FALSE;
+                            if (!adapter->Query2DScanoutResource(allocation->ResourceId, &active) || active)
                             {
-                                ClearNativePlacement(allocation);
+                                status = STATUS_GRAPHICS_ALLOCATION_BUSY;
                             }
-                            status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS
-                                                                                       : STATUS_DEVICE_NOT_READY;
+                            else
+                            {
+                                BOOLEAN released = FALSE;
+                                VIOGPU_HOST_CONTEXT_RESULT result = adapter->Destroy2DResource(allocation->ResourceId,
+                                                                                              &allocation->Resource2DState,
+                                                                                              &released);
+                                if (released)
+                                {
+                                    ClearNativePlacement(allocation);
+                                }
+                                status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS
+                                                                                           : STATUS_DEVICE_NOT_READY;
+                            }
                         }
                         else if (IsStandardPrimaryAllocation(allocation) &&
                                  (allocation->Resource2DState != VioGpu2DResourceNone || !allocation->Destroying))
@@ -3276,6 +3284,14 @@ NTSTATUS ExecuteStandardPrimaryPagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRAN
     if (NT_SUCCESS(status) && (pageIn || pageOut) && !transaction->TransferDataComplete)
     {
         status = STATUS_INVALID_DEVICE_STATE;
+    }
+    if (NT_SUCCESS(status) && (pageOut || discard))
+    {
+        BOOLEAN active = FALSE;
+        if (!transaction->Adapter->Query2DScanoutResource(allocation->ResourceId, &active) || active)
+        {
+            status = STATUS_GRAPHICS_ALLOCATION_BUSY;
+        }
     }
 
     if (NT_SUCCESS(status) && pageIn)
@@ -3924,6 +3940,15 @@ NTSTATUS BuildStandardPrimaryPagingBuffer(_In_ VioGpuDod *adapter,
          allocation->Resource2DState == VioGpu2DResourceUnknown))
     {
         status = STATUS_DEVICE_NOT_READY;
+    }
+    if (NT_SUCCESS(status) &&
+        (packetFlags & (VioGpuWddmPagingFlagPageOut | VioGpuWddmPagingFlagDiscard)) != 0)
+    {
+        BOOLEAN active = FALSE;
+        if (!adapter->Query2DScanoutResource(allocation->ResourceId, &active) || active)
+        {
+            status = STATUS_GRAPHICS_ALLOCATION_BUSY;
+        }
     }
     if (NT_SUCCESS(status))
     {
@@ -5623,7 +5648,56 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRestartFromTimeout(CONST HAND
 _Use_decl_annotations_ NTSTATUS APIENTRY
 VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOURCEADDRESS *setVidPnSourceAddress)
 {
-    UNREFERENCED_PARAMETER(hAdapter);
-    UNREFERENCED_PARAMETER(setVidPnSourceAddress);
-    return STATUS_NOT_SUPPORTED;
+    VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    if (adapter == NULL || setVidPnSourceAddress == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        setVidPnSourceAddress->VidPnSourceId != 0 || setVidPnSourceAddress->ContextCount != 0 ||
+        setVidPnSourceAddress->Flags.Value != 1U)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    UINT previousResourceId = 0;
+    if (setVidPnSourceAddress->hAllocation == NULL)
+    {
+        if (setVidPnSourceAddress->PrimarySegment != 0 || setVidPnSourceAddress->PrimaryAddress.QuadPart != 0)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        VIOGPU_HOST_CONTEXT_RESULT result = adapter->Set2DScanout(0, 0, 0, 0, &previousResourceId);
+        return result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+    }
+
+    VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(setVidPnSourceAddress->hAllocation);
+    if (allocation == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
+        allocation->Adapter != adapter || setVidPnSourceAddress->PrimarySegment != VIOGPU_WDDM_SEGMENT_ID ||
+        setVidPnSourceAddress->PrimaryAddress.QuadPart < 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    NTSTATUS status = AcquireAllocationLifecycle(allocation);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    if (allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE || allocation->Adapter != adapter ||
+        !IsStandardPrimaryAllocation(allocation) || allocation->ResourceId == 0 ||
+        allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || allocation->BlobId != 0 ||
+        allocation->Resource2DState != VioGpu2DResourceBackingAttached || !allocation->PlacementValid ||
+        allocation->PagingState != VioGpuWddmAllocationPagingIdle ||
+        static_cast<ULONGLONG>(setVidPnSourceAddress->PrimaryAddress.QuadPart) != allocation->PlacementOffset)
+    {
+        status = STATUS_INVALID_PARAMETER;
+    }
+    else
+    {
+        VIOGPU_HOST_CONTEXT_RESULT result = adapter->Set2DScanout(0,
+                                                                 allocation->ResourceId,
+                                                                 allocation->Width,
+                                                                 allocation->Height,
+                                                                 &previousResourceId);
+        status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+    }
+    KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+    return status;
 }

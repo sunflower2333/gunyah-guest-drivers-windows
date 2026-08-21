@@ -294,6 +294,12 @@ class VioGpuAdapter : IVioGpuPCI
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                  _Out_ BOOLEAN *released);
+    VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
+                                            _In_ UINT resourceId,
+                                            _In_ UINT width,
+                                            _In_ UINT height,
+                                            _Out_ UINT *previousResourceId);
+    BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
                                                            _In_ UINT resourceId,
@@ -480,6 +486,9 @@ class VioGpuAdapter : IVioGpuPCI
     UINT m_NextNativeContextId;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     UINT m_NextNativeResourceId;
+    KMUTEX m_2DScanoutMutex;
+    UINT m_2DScanoutResourceId;
+    BOOLEAN m_2DScanoutUnknown;
     mutable KSPIN_LOCK m_NativeSubmitRundownLock;
     mutable EX_RUNDOWN_REF m_NativeSubmitRundown;
     BOOLEAN m_NativeSubmitClosing;
@@ -692,6 +701,12 @@ class VioGpuDod
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                  _Out_ BOOLEAN *released);
+    VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
+                                            _In_ UINT resourceId,
+                                            _In_ UINT width,
+                                            _In_ UINT height,
+                                            _Out_ UINT *previousResourceId);
+    BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
     BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize);
     int QueueNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ ULONGLONG fenceId);

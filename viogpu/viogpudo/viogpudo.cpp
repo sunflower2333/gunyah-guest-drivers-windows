@@ -1037,6 +1037,53 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Destroy2DResource(_In_ UINT resourceId,
     return result;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
+                                                   _In_ UINT resourceId,
+                                                   _In_ UINT width,
+                                                   _In_ UINT height,
+                                                   _Out_ UINT *previousResourceId)
+{
+    if (previousResourceId == NULL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    *previousResourceId = 0;
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    VIOGPU_HOST_CONTEXT_RESULT result = !IsHardwareResetRequested() && adapter != NULL
+                                            ? adapter->Set2DScanout(scanoutId,
+                                                                   resourceId,
+                                                                   width,
+                                                                   height,
+                                                                   previousResourceId)
+                                            : VioGpuHostContextNotSubmitted;
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return result;
+}
+
+BOOLEAN VioGpuDod::Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active)
+{
+    if (active == NULL)
+    {
+        return FALSE;
+    }
+    *active = FALSE;
+    if (!ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return FALSE;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    BOOLEAN valid = !IsHardwareResetRequested() && adapter != NULL &&
+                    adapter->Query2DScanoutResource(resourceId, active);
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return valid;
+}
+
 UINT VioGpuDod::AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration)
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))
@@ -3618,6 +3665,9 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_NextNativeContextId = 1;
 #if defined(VIOGPU_WDDM_CI_ONLY)
     m_NextNativeResourceId = VIOGPU_NATIVE_RESOURCE_ID_START;
+    KeInitializeMutex(&m_2DScanoutMutex, 0);
+    m_2DScanoutResourceId = 0;
+    m_2DScanoutUnknown = FALSE;
     KeInitializeSpinLock(&m_NativeSubmitRundownLock);
     ExInitializeRundownProtection(&m_NativeSubmitRundown);
     m_NativeSubmitClosing = FALSE;
@@ -4203,6 +4253,87 @@ UINT VioGpuAdapter::AllocateNativeContextIdLocked(void)
 }
 
 #if defined(VIOGPU_WDDM_CI_ONLY)
+PAGED_CODE_SEG_END
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
+                                                       _In_ UINT resourceId,
+                                                       _In_ UINT width,
+                                                       _In_ UINT height,
+                                                       _Out_ UINT *previousResourceId)
+{
+    if (previousResourceId == NULL || scanoutId >= VIRTIO_GPU_MAX_SCANOUTS ||
+        (resourceId == 0 ? width != 0 || height != 0 : resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || width == 0 ||
+                                                               height == 0) ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    *previousResourceId = 0;
+
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&m_2DScanoutMutex, Executive, KernelMode, FALSE, &timeout);
+    if (status != STATUS_SUCCESS)
+    {
+        m_2DScanoutUnknown = TRUE;
+        FailNativeContextAtAnyIrql();
+        return VioGpuHostContextUnknown;
+    }
+    *previousResourceId = m_2DScanoutResourceId;
+    if (m_2DScanoutUnknown)
+    {
+        KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+        return VioGpuHostContextUnknown;
+    }
+
+    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(scanoutId,
+                                                                         resourceId,
+                                                                         width,
+                                                                         height,
+                                                                         0,
+                                                                         0);
+    if (result == VioGpuHostContextConfirmed)
+    {
+        m_2DScanoutResourceId = resourceId;
+    }
+    else if (result == VioGpuHostContextUnknown)
+    {
+        m_2DScanoutUnknown = TRUE;
+        FailNativeContextAtAnyIrql();
+    }
+    KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+    return result;
+}
+
+BOOLEAN VioGpuAdapter::Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active)
+{
+    if (active == NULL || resourceId == 0 || resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return FALSE;
+    }
+    *active = FALSE;
+
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&m_2DScanoutMutex, Executive, KernelMode, FALSE, &timeout);
+    if (status != STATUS_SUCCESS)
+    {
+        m_2DScanoutUnknown = TRUE;
+        FailNativeContextAtAnyIrql();
+        return FALSE;
+    }
+    BOOLEAN valid = !m_2DScanoutUnknown;
+    if (valid)
+    {
+        *active = m_2DScanoutResourceId == resourceId;
+    }
+    KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+    return valid;
+}
+
+PAGED_CODE_SEG_BEGIN
+
 UINT VioGpuAdapter::Allocate2DResourceId(void)
 {
     PAGED_CODE();
