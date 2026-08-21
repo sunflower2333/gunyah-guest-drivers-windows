@@ -1683,6 +1683,103 @@ def check_wddm_2d_resource_ownership() -> None:
         fail("DestroyAllocation must release Host 2D ownership and its local ID before deleting the allocation")
 
 
+def check_wddm_standard_primary_paging() -> None:
+    validator = canonical_code(function_body("ValidatePagingDmaPacket", WDDM_DDI_CODE))
+    for fragment in (
+        "BOOLEANhasContext=packet->ContextId!=0;",
+        "if(hasContext?packet->ResourceId<VIOGPU_NATIVE_RESOURCE_ID_START:packet->ResourceId>=VIOGPU_NATIVE_RESOURCE_ID_START)",
+        "packet->ResourceId==0",
+        "packet->ResourceId==MAXUINT",
+    ):
+        if validator.count(fragment) != 1:
+            fail(f"paging packets must keep standard and native resource identity disjoint: {fragment}")
+    if "(!pageIn&&!pageOut)||!hasContext" in validator:
+        fail("paging packet validation must allow context-zero standard primary transfers")
+    if "VioGpuWddmPagingFlagAllocationIdle)==0&&hasContext" in validator:
+        fail("paging packet validation must allow context-zero standard primary fills")
+
+    build = canonical_code(function_body("VioGpuWddmBuildPagingBuffer", WDDM_DDI_CODE))
+    branch = (
+        "if(IsStandardPrimaryAllocation(allocation))"
+        "{returnBuildStandardPrimaryPagingBuffer(adapter,pagingBuffer,allocation,segmentAddress,transferMdl,"
+        "mdlOffset,transferOffset,transferSize,fillPattern,packetFlags);}"
+    )
+    if build.count(branch) != 1:
+        fail("BuildPagingBuffer must route only standard primaries into their separate paging transaction")
+    if build.count("if(!IsNativeAllocation(allocation)||") != 1:
+        fail("BuildPagingBuffer must retain the native-only gate after the standard primary branch")
+
+    standard_build = canonical_code(function_body("BuildStandardPrimaryPagingBuffer", WDDM_DDI_CODE))
+    for fragment in (
+        "!IsStandardPrimaryAllocation(allocation)",
+        "allocation->ResourceId>=VIOGPU_NATIVE_RESOURCE_ID_START",
+        "allocation->BlobId!=0",
+        "allocation->NativeContext!=NULL",
+        "allocation->HostState!=VioGpuWddmAllocationHostNone",
+        "QueryStandardPlacementPoolGeneration(adapter,",
+        "AcquireAllocationSubmissionReference(allocation,adapter)",
+        "ResolveTransferMdlAddress(transferMdl,mdlOffset,transferSize,&systemAddress);",
+        "CopyStandardPlacement(allocation,",
+        "packet->ContextId=0;",
+        "packet->ContextGeneration=0;",
+        "packet->ResetGeneration=0;",
+        "transaction->ContextId=0;",
+        "transaction->ContextGeneration=0;",
+        "transaction->ResetGeneration=0;",
+        "transaction->TransferDataComplete=transferDataComplete;",
+        "InterlockedExchange(&transaction->ReferenceHeld,1);",
+        "pagingPrivate->Work.Routine=NativePagingBatchWorker;",
+    ):
+        if fragment not in standard_build:
+            fail(f"standard primary paging build must retain exact deferred ownership: {fragment}")
+    if "Create2DResourceBacking(" in standard_build or "Destroy2DResource(" in standard_build:
+        fail("BuildPagingBuffer must not mutate standard primary Host ownership before SubmitCommand")
+
+    dispatch = canonical_code(function_body("ExecutePagingTransaction", WDDM_DDI_CODE))
+    dispatch_sequence = (
+        dispatch.find("VIOGPU_WDDM_ALLOCATION*allocation=transaction->Allocation;"),
+        dispatch.find("if(transaction->ContextId==0)"),
+        dispatch.find("returnExecuteStandardPrimaryPagingTransaction(transaction);"),
+        dispatch.find("AcquireAllocationNativeContextSnapshot(allocation,&snapshot)"),
+    )
+    if min(dispatch_sequence) < 0 or list(dispatch_sequence) != sorted(dispatch_sequence):
+        fail("paging execution must route context-zero packets before acquiring native context ownership")
+
+    execute = canonical_code(function_body("ExecuteStandardPrimaryPagingTransaction", WDDM_DDI_CODE))
+    for fragment in (
+        "transaction->ContextId!=0",
+        "allocation->Resource2DState==VioGpu2DResourceUnknown",
+        "AddPagingRange(allocation,transaction->TransferOffset,transaction->TransferSize,&pagingRange);",
+        "allocation->PagingCoveredBytes!=allocation->BackingSize",
+        "ResolveStandard2DFormat(allocation->Format,&virtioFormat)",
+        "transaction->Adapter->Create2DResourceBacking(",
+        "allocation->Resource2DState==VioGpu2DResourceBackingAttached",
+        "PublishStandardPlacement(allocation,transaction->PlacementOffset,transaction->PoolGeneration);",
+        "transaction->Adapter->Destroy2DResource(allocation->ResourceId,",
+        "if(released){ClearNativePlacement(allocation);}",
+        "ClearNativePagingState(allocation);",
+    ):
+        if fragment not in execute:
+            fail(f"standard primary paging execution must retain transactional placement ownership: {fragment}")
+    if execute.count("result==VioGpuHostContextConfirmed&&released") != 2:
+        fail("standard primary page-out and discard may release placement only after confirmed UNREF")
+
+    query_pool = canonical_code(function_body("QueryStandardPlacementPoolGeneration", WDDM_DDI_CODE))
+    copy_pool = canonical_code(function_body("CopyStandardPlacement", WDDM_DDI_CODE))
+    fill_pool = canonical_code(function_body("FillStandardPlacement", WDDM_DDI_CODE))
+    for owner, body in (("query", query_pool), ("copy", copy_pool), ("fill", fill_pool)):
+        for fragment in (
+            "AcquireGpuGuestPoolMapping(&mapping)",
+            "mapping.GetBaseAddress()!=NULL",
+            "mapping.Release();",
+        ):
+            if fragment not in body:
+                fail(f"standard primary {owner} must retain a bounded guest-pool mapping lease: {fragment}")
+    if "mapping.GetGeneration()==expectedPoolGeneration" not in copy_pool or \
+       "mapping.GetGeneration()==expectedPoolGeneration" not in fill_pool:
+        fail("standard primary data movement must stay in one exact guest-pool generation")
+
+
 def check_native_context_ownership() -> None:
     queue_header = canonical_code(strip_cpp_comments_and_literals(QUEUE_HEADER_SOURCE))
     wire_header = canonical_code(WIRE_HEADER_CODE)
@@ -5355,6 +5452,7 @@ def main() -> None:
     check_queue_failure_semantics()
     check_synchronous_2d_control_transactions()
     check_wddm_2d_resource_ownership()
+    check_wddm_standard_primary_paging()
     check_native_context_ownership()
     check_wddm_private_abi(root)
     check_wddm_paging_transaction_gate()
