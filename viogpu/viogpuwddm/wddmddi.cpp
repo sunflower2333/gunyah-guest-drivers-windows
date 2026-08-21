@@ -3,6 +3,11 @@
 #include "../common/baseobj.h"
 #include "../viogpudo/viogpudo.h"
 
+BOOLEAN QueryStandardPlacementPoolGeneration(_In_ VioGpuDod *adapter,
+                                             _In_ ULONGLONG placementOffset,
+                                             _In_ SIZE_T backingSize,
+                                             _Out_ ULONGLONG *poolGeneration);
+
 namespace
 {
 const ULONG VIOGPU_WDDM_RESOURCE_SIGNATURE = 'rWGV';
@@ -2105,11 +2110,6 @@ BOOLEAN ResolveStandard2DFormat(D3DDDIFORMAT format, _Out_ UINT *virtioFormat)
     }
 }
 
-BOOLEAN QueryStandardPlacementPoolGeneration(_In_ VioGpuDod *adapter,
-                                             _In_ ULONGLONG placementOffset,
-                                             _In_ SIZE_T backingSize,
-                                             _Out_ ULONGLONG *poolGeneration);
-
 VOID PublishNativePlacement(VIOGPU_WDDM_ALLOCATION *allocation,
                             const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
                             ULONGLONG segmentOffset,
@@ -2432,6 +2432,27 @@ BOOLEAN ValidateRenderDmaSubmissionRange(_In_ const VIOGPU_WDDM_SUBMISSION *subm
     return submission != NULL && dmaBuffer != NULL && submissionStart <= submissionEnd &&
            submissionEnd <= dmaBufferSize && submissionEnd - submissionStart == submission->CommandLength &&
            submission->DmaBuffer == static_cast<BYTE *>(dmaBuffer) + submissionStart &&
+           submission->DmaBufferSize == dmaBufferSize - submissionStart;
+}
+
+BOOLEAN ValidatePresentSubmitDmaRange(_In_ const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
+                                      _In_ UINT dmaBufferSize,
+                                      _In_ UINT submissionStart,
+                                      _In_ UINT submissionEnd)
+{
+    return transaction != NULL && transaction->DmaBuffer != NULL && submissionStart <= submissionEnd &&
+           submissionEnd <= dmaBufferSize &&
+           submissionEnd - submissionStart == sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) &&
+           transaction->DmaBufferSize == dmaBufferSize - submissionStart;
+}
+
+BOOLEAN ValidateRenderSubmitDmaRange(_In_ const VIOGPU_WDDM_SUBMISSION *submission,
+                                     _In_ UINT dmaBufferSize,
+                                     _In_ UINT submissionStart,
+                                     _In_ UINT submissionEnd)
+{
+    return submission != NULL && submission->DmaBuffer != NULL && submissionStart <= submissionEnd &&
+           submissionEnd <= dmaBufferSize && submissionEnd - submissionStart == submission->CommandLength &&
            submission->DmaBufferSize == dmaBufferSize - submissionStart;
 }
 
@@ -6570,8 +6591,16 @@ VOID RetireDmaOwner(_In_ VioGpuDod *adapter,
             LONG state = InterlockedCompareExchange(&transaction->State, 0, 0);
             BOOLEAN expected = expectedPresentState < 0 ? state == VioGpuWddmPresentBuilt || state == VioGpuWddmPresentPatched
                                                         : state == expectedPresentState;
-            if (expected && transaction->PrivateDataSize == privateBufferSize - privateStart &&
-                ValidatePresentDmaSubmissionRange(transaction, dmaBuffer, dmaBufferSize, dmaStart, dmaEnd))
+            BOOLEAN dmaRangeValid = dmaBuffer == NULL ? ValidatePresentSubmitDmaRange(transaction,
+                                                                                      dmaBufferSize,
+                                                                                      dmaStart,
+                                                                                      dmaEnd)
+                                                      : ValidatePresentDmaSubmissionRange(transaction,
+                                                                                          dmaBuffer,
+                                                                                          dmaBufferSize,
+                                                                                          dmaStart,
+                                                                                          dmaEnd);
+            if (expected && transaction->PrivateDataSize == privateBufferSize - privateStart && dmaRangeValid)
             {
                 RetirePresentTransaction(transaction, state, VioGpuWddmPresentCancelled);
             }
@@ -6591,8 +6620,16 @@ VOID RetireDmaOwner(_In_ VioGpuDod *adapter,
                                                     &submission)))
         {
             LONG state = InterlockedCompareExchange(&submission->State, 0, 0);
-            BOOLEAN exact = ValidateRenderDmaSubmissionRange(submission, dmaBuffer, dmaBufferSize, dmaStart, dmaEnd) &&
-                            submission->DmaPrivateDataSize == privateBufferSize - privateStart &&
+            BOOLEAN dmaRangeValid = dmaBuffer == NULL ? ValidateRenderSubmitDmaRange(submission,
+                                                                                     dmaBufferSize,
+                                                                                     dmaStart,
+                                                                                     dmaEnd)
+                                                      : ValidateRenderDmaSubmissionRange(submission,
+                                                                                         dmaBuffer,
+                                                                                         dmaBufferSize,
+                                                                                         dmaStart,
+                                                                                         dmaEnd);
+            BOOLEAN exact = dmaRangeValid && submission->DmaPrivateDataSize == privateBufferSize - privateStart &&
                             (state == VioGpuWddmSubmissionPrepared || state == VioGpuWddmSubmissionPatched);
             if (exact)
             {
@@ -7368,7 +7405,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
 VOID RetireUnsubmittedDmaOwner(_In_ VioGpuDod *adapter, _In_ const DXGKARG_SUBMITCOMMAND *submitCommand)
 {
     RetireDmaOwner(adapter,
-                   submitCommand->pDmaBuffer,
+                   NULL,
                    submitCommand->DmaBufferSize,
                    submitCommand->DmaBufferSubmissionStartOffset,
                    submitCommand->DmaBufferSubmissionEndOffset,
@@ -7595,12 +7632,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
             BOOLEAN exact = submitCommand->hContext != NULL && submitCommand->Flags.Value == 0 &&
                             privateLength == sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) &&
                             dmaLength == sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) &&
-                            ValidatePresentDmaSubmissionRange(transaction,
-                                                              submitCommand->pDmaBuffer,
-                                                              submitCommand->DmaBufferSize,
-                                                              submitCommand->DmaBufferSubmissionStartOffset,
-                                                              submitCommand->DmaBufferSubmissionEndOffset) &&
-                            transaction->DmaBuffer == static_cast<BYTE *>(submitCommand->pDmaBuffer) + submitCommand->DmaBufferSubmissionStartOffset &&
+                            ValidatePresentSubmitDmaRange(transaction,
+                                                          submitCommand->DmaBufferSize,
+                                                          submitCommand->DmaBufferSubmissionStartOffset,
+                                                          submitCommand->DmaBufferSubmissionEndOffset) &&
+                            transaction->DmaBuffer == privateData->DmaBuffer &&
                             submitCommand->DmaBufferSize - submitCommand->DmaBufferSubmissionStartOffset == transaction->DmaBufferSize &&
                             submitCommand->DmaBufferPrivateDataSize - privateStart == transaction->PrivateDataSize &&
                             transaction->PrivateData == privateData && (patched || promotePrepatch) &&
@@ -7711,11 +7747,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                 submission->FullyPrepatched && submission->FenceId == 0;
         BOOLEAN exact = submitCommand->hContext != NULL && submitCommand->Flags.Value == 0 &&
                         privateLength == sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) &&
-                        ValidateRenderDmaSubmissionRange(submission,
-                                                         submitCommand->pDmaBuffer,
-                                                         submitCommand->DmaBufferSize,
-                                                         submitCommand->DmaBufferSubmissionStartOffset,
-                                                         submitCommand->DmaBufferSubmissionEndOffset) &&
+                        ValidateRenderSubmitDmaRange(submission,
+                                                     submitCommand->DmaBufferSize,
+                                                     submitCommand->DmaBufferSubmissionStartOffset,
+                                                     submitCommand->DmaBufferSubmissionEndOffset) &&
                         submitCommand->DmaBufferPrivateDataSize - privateStart == submission->DmaPrivateDataSize &&
                         dmaLength == submission->CommandLength && submission->Context != NULL &&
                         submission->Context->NodeOrdinal == submitCommand->NodeOrdinal &&

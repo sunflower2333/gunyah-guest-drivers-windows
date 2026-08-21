@@ -2771,9 +2771,11 @@ def check_wddm_present_contract() -> None:
         "privateData->Kind==VioGpuWddmDmaKindPresent",
         "state==VioGpuWddmPresentBuilt||state==VioGpuWddmPresentPatched",
         "transaction->PrivateDataSize==privateBufferSize-privateStart",
+        "dmaBuffer==NULL?ValidatePresentSubmitDmaRange(transaction,dmaBufferSize,dmaStart,dmaEnd):"
         "ValidatePresentDmaSubmissionRange(transaction,dmaBuffer,dmaBufferSize,dmaStart,dmaEnd)",
         "RetirePresentTransaction(transaction,state,VioGpuWddmPresentCancelled);",
         "privateData->Kind==VioGpuWddmDmaKindRender",
+        "dmaBuffer==NULL?ValidateRenderSubmitDmaRange(submission,dmaBufferSize,dmaStart,dmaEnd):"
         "ValidateRenderDmaSubmissionRange(submission,dmaBuffer,dmaBufferSize,dmaStart,dmaEnd)",
         "submission->DmaPrivateDataSize==privateBufferSize-privateStart",
         "QuarantineSubmission(submission,state,TRUE);",
@@ -2782,6 +2784,9 @@ def check_wddm_present_contract() -> None:
             fail(f"generic DMA retirement must cover each pre-submit owner: {fragment}")
 
     submit = canonical_code(function_body("VioGpuWddmSubmitCommand", WDDM_DDI_CODE))
+    retire_submit_owner = canonical_code(function_body("RetireUnsubmittedDmaOwner", WDDM_DDI_CODE))
+    if "RetireDmaOwner(adapter,NULL,submitCommand->DmaBufferSize" not in retire_submit_owner:
+        fail("Submit retirement must use private owner state without a nonexistent CPU DMA base")
     if submit.count("RetireUnsubmittedDmaOwner(adapter,submitCommand);") != 3:
         fail("SubmitCommand must retire every recoverable owner on validation, operation, or Render publication failure")
     operation_gate = submit.find("if(!adapter->AcquireNativeSubmissionOperation())")
@@ -2797,7 +2802,7 @@ def check_wddm_present_contract() -> None:
             "privateData->Kind==VioGpuWddmDmaKindPresent",
             "-1,&transaction);",
             "transaction->FullyPrepatched",
-            "ValidatePresentDmaSubmissionRange(transaction,",
+            "ValidatePresentSubmitDmaRange(transaction,",
             "transaction->FenceId=submitCommand->SubmissionFenceId;",
             "InterlockedCompareExchange(&transaction->State,VioGpuWddmPresentPatched,VioGpuWddmPresentBuilt)",
             "AcquirePresentWorkReference(transaction)",
@@ -2883,6 +2888,30 @@ def check_wddm_present_contract() -> None:
             WDDM_DDI_CODE,
         )
     )
+    submit_range_parameters = (
+        "_In_ const {owner_type} *{owner}, _In_ UINT dmaBufferSize, "
+        "_In_ UINT submissionStart, _In_ UINT submissionEnd"
+    )
+    submit_present_range = canonical_code(
+        function_body_with_parameters(
+            "ValidatePresentSubmitDmaRange",
+            submit_range_parameters.format(
+                owner_type="VIOGPU_WDDM_PRESENT_TRANSACTION",
+                owner="transaction",
+            ),
+            WDDM_DDI_CODE,
+        )
+    )
+    submit_render_range = canonical_code(
+        function_body_with_parameters(
+            "ValidateRenderSubmitDmaRange",
+            submit_range_parameters.format(
+                owner_type="VIOGPU_WDDM_SUBMISSION",
+                owner="submission",
+            ),
+            WDDM_DDI_CODE,
+        )
+    )
     for fragment in (
         "submissionEnd-submissionStart==sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET)",
         "transaction->DmaBuffer==static_cast<BYTE*>(dmaBuffer)+submissionStart",
@@ -2897,6 +2926,20 @@ def check_wddm_present_contract() -> None:
     ):
         if fragment not in exact_render_range:
             fail(f"Render Cancel DMA range validation must remain exact: {fragment}")
+    for fragment in (
+        "transaction->DmaBuffer!=NULL",
+        "submissionEnd-submissionStart==sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET)",
+        "transaction->DmaBufferSize==dmaBufferSize-submissionStart",
+    ):
+        if fragment not in submit_present_range:
+            fail(f"Present Submit DMA range validation must not require a missing CPU base: {fragment}")
+    for fragment in (
+        "submission->DmaBuffer!=NULL",
+        "submissionEnd-submissionStart==submission->CommandLength",
+        "submission->DmaBufferSize==dmaBufferSize-submissionStart",
+    ):
+        if fragment not in submit_render_range:
+            fail(f"Render Submit DMA range validation must not require a missing CPU base: {fragment}")
     for fragment in (
         "privateData->Kind==VioGpuWddmDmaKindRender",
         "submission->DmaPrivateDataSize==cancelCommand->DmaBufferPrivateDataSize-privateStart",
@@ -4378,8 +4421,10 @@ def check_wddm_paging_transaction_gate() -> None:
         fail("CancelCommand must be able to resolve a batch across ownership-state races")
     if "dmaBuffer==NULL?static_cast<VIOGPU_WDDM_PAGING_DMA_PACKET*>(header->Packet)" not in resolve:
         fail("SubmitCommand paging resolution must use private packet ownership without a CPU DMA pointer")
-    if "ResolvePagingBatch(NULL,submitCommand->DmaBufferSize" not in submit:
+    if re.search(r"submitCommand->pDmaBuffer(?!PrivateData)", submit):
         fail("SubmitCommand must not read a nonexistent pDmaBuffer member")
+    if "ResolvePagingBatch(NULL,submitCommand->DmaBufferSize" not in submit:
+        fail("SubmitCommand paging resolution must use its private packet pointer")
     if "VioGpuWddmPagingTransactionAny" not in cancel:
         fail("CancelCommand must resolve both Built and Queued paging records")
     if "ownership!=VioGpuNativePassiveOwnershipWorkerOwned" in cancel:
@@ -5912,7 +5957,7 @@ def check_wddm_submission_lifetime() -> None:
             "status=ResolveSubmissionPrivateData(",
             "submission->PatchApplied",
             "submission->FullyPrepatched",
-            "ValidateRenderDmaSubmissionRange(submission,",
+            "ValidateRenderSubmitDmaRange(submission,",
             "VioGpuWddmSubmissionSubmitClaimed",
             "submission->FenceId=submitCommand->SubmissionFenceId;KeMemoryBarrier();",
             "RecordContextUmdFence(submission->Context,submission->UmdFenceId)",

@@ -279,6 +279,12 @@ structurally valid private range publishes its record count before deep record
 validation so earlier recognizable owners can release allocation references if
 a later record is stale or malformed.
 
+`DXGKARG_SUBMITCOMMAND` does not expose a CPU DMA-buffer base. Render and
+Present Submit therefore validate submission offsets and sizes against the
+KMD-private owner's retained DMA pointer; paging resolves its retained packet
+pointer directly. Patch and Cancel still use their supplied CPU DMA base for an
+exact pointer-plus-offset identity check.
+
 Submission-fault recovery no longer trusts the callback identity as a
 prerequisite for reset. A zero fence or nonzero node/engine identity first
 closes the outer hardware epoch, invalidates the pending native fence tracker,
