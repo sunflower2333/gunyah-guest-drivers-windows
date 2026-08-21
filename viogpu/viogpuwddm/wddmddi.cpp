@@ -1647,7 +1647,8 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
     adapterInfo->GpuId = capset.msm.gpu_id;
     adapterInfo->ChipId = capset.msm.chip_id;
     adapterInfo->GmemSize = capset.msm.gmem_size;
-    adapterInfo->PriorityCount = capset.msm.priorities;
+    // Each WDDM context owns one host submitqueue, created at priority zero.
+    adapterInfo->PriorityCount = 1;
     adapterInfo->GmemBase = capset.msm.gmem_base;
     adapterInfo->HighestBankBit = capset.msm.highest_bank_bit;
     adapterInfo->HasCachedCoherentMemory = capset.msm.has_cached_coherent;

@@ -2143,6 +2143,11 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "adapter->QueryNativeContextReadiness(&capset,NULL,NULL,&resetGeneration)"
     ) != 1:
         fail("UMDRIVERPRIVATE must publish the stable 64-bit readiness reset generation")
+    if (
+        query.count("adapterInfo->PriorityCount=1;") != 1
+        or "adapterInfo->PriorityCount=capset.msm.priorities;" in query
+    ):
+        fail("UMDRIVERPRIVATE must expose only the context-owned priority-zero submitqueue")
     if any(token in query for token in ("va_start", "va_size", "ContextId", "ResourceId", "PhysicalAddress")):
         fail("UMDRIVERPRIVATE must not expose VA ranges or KMD/transport identities")
     query_dispatch = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
