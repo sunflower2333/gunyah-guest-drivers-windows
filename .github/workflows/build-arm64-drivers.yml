@@ -38,7 +38,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: x64
+
+      - name: Verify x64 MSBuild host
+        shell: pwsh
+        run: |
+          $msbuild = (Get-Command msbuild -ErrorAction Stop).Source
+          Write-Host "MSBuild host: $msbuild"
+          if ($msbuild -notmatch '\\amd64\\MSBuild\.exe$') {
+            throw "Expected x64 MSBuild host, got: $msbuild"
+          }
 
       # 診斷：列出可用的 Driver 平台工具集 / WDK，方便 build 失敗時定位
       - name: Diagnose toolchain
@@ -89,7 +100,7 @@ jobs:
           $minor = 58000 + [int]$n
           if ($minor -gt 65535) { Write-Host "::warning::driver minor $minor 超過 65535，請開新 epoch 或 bump 第三段"; $minor = 65535 }
           Write-Host "Driver version = 100.6.101.$minor"
-          $common = @('/m','/p:ApiValidator_Enable=false','/p:InfVerif_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
+          $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
                       "/p:_BUILD_MINOR_VERSION_=$minor")
           $jobs = @(
             @{ p='NetKVM/Mof/Mof.vcxproj';                  c='Header';        plat='x64'   ; dep=$true },
