@@ -4133,6 +4133,7 @@ def check_wddm_submission_lifetime() -> None:
     record_fence = canonical_code(function_body("VioGpuDod::RecordNativeSubmissionFence", VIOGPU_CODE))
     for fragment in (
         "m_NativeFenceCount<VioGpuNativeFenceTrackerCapacity",
+        "static_cast<LONG>(fenceId-submitted)>0",
         "m_NativeFences[index].FenceId==fenceId",
         "m_NativeFences[tail].State=VioGpuNativeFencePending;",
         "++m_NativeFenceCount;",

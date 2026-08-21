@@ -602,7 +602,9 @@ BOOLEAN VioGpuDod::RecordNativeSubmissionFence(_In_ UINT fenceId)
 
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
-    BOOLEAN valid = m_NativeFenceCount < VioGpuNativeFenceTrackerCapacity;
+    UINT submitted = static_cast<UINT>(m_NativeSubmittedFence);
+    BOOLEAN valid = m_NativeFenceCount < VioGpuNativeFenceTrackerCapacity &&
+                    (submitted == 0 || static_cast<LONG>(fenceId - submitted) > 0);
     for (UINT offset = 0; valid && offset < m_NativeFenceCount; ++offset)
     {
         UINT index = (m_NativeFenceHead + offset) % VioGpuNativeFenceTrackerCapacity;
