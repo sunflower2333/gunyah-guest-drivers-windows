@@ -73,8 +73,9 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiSystemDisplayWrite = VioGpuDodSystemDisplayWrite;
 }
 
+#pragma optimize("", off)
 extern "C" NTSTATUS VioGpuWddmInitializeMiniport(_In_ DRIVER_OBJECT *driverObject,
-                                                  _In_ UNICODE_STRING *registryPath) __declspec(noinline)
+                                                  _In_ UNICODE_STRING *registryPath)
 {
     PAGED_CODE();
 
@@ -92,6 +93,7 @@ extern "C" NTSTATUS VioGpuWddmInitializeMiniport(_In_ DRIVER_OBJECT *driverObjec
 
     return status;
 }
+#pragma optimize("", on)
 
 extern "C" NTSTATUS DriverEntry(_In_ DRIVER_OBJECT *driverObject, _In_ UNICODE_STRING *registryPath)
 {
