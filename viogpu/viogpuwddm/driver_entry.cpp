@@ -74,8 +74,7 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
 }
 
 #pragma optimize("", off)
-extern "C" NTSTATUS VioGpuWddmInitializeMiniport(_In_ DRIVER_OBJECT *driverObject,
-                                                  _In_ UNICODE_STRING *registryPath)
+extern "C" NTSTATUS VioGpuWddmInitializeMiniport(_In_ DRIVER_OBJECT *driverObject, _In_ UNICODE_STRING *registryPath)
 {
     PAGED_CODE();
 
