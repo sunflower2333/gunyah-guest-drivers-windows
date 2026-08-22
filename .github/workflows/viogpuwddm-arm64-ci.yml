@@ -210,6 +210,7 @@ jobs:
           })
           if ($helperLines.Count -ne 1) {
             $mapLines | Where-Object { $_ -match 'Miniport|DxgkInitialize' } | Select-Object -First 20 | ForEach-Object { Write-Host "MAP candidate: $_" }
+            $mapLines | Where-Object { $_ -match 'driver_entry\.obj' } | Select-Object -First 40 | ForEach-Object { Write-Host "driver_entry provenance: $_" }
             Write-Error "linker map must retain exactly one registration helper from driver_entry.obj"
             exit 1
           }
