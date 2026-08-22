@@ -886,7 +886,7 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
         )
 
     segment_branches = (
-        "#ifdefined(VIOGPU_WDDM_CI_ONLY)"
+        "#ifdefined(VIOGPU_NATIVE_CONTEXT)"
         "returnm_GpuGuestPool.QueryPhysicalRange(physicalAddress,size);"
         "#else"
         "UNREFERENCED_PARAMETER(physicalAddress);"
@@ -954,11 +954,11 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
     guarded_header = compact(adapter_header_text)
     require_once(
         guarded_header,
-        '#ifdefined(VIOGPU_WDDM_CI_ONLY)#include"viogpu_named_pool.h"#endif',
-        "stable Display-Only target must not include the compile-only named-pool client",
+        '#ifdefined(VIOGPU_NATIVE_CONTEXT)#include"viogpu_named_pool.h"#endif',
+        "stable Display-Only target must not include the Native Context named-pool client",
     )
     for token in ("VioGpuDrmHostPoolm_DrmHostPool;", "VioGpuGuestPoolm_GpuGuestPool;"):
-        require_once(guarded_header, token, "full WDDM target must own both compile-only named-pool clients")
+        require_once(guarded_header, token, "full WDDM target must own both Native Context named-pool clients")
     require_once(
         guarded_header,
         "staticVOIDNamedPoolFailureCallback(_In_opt_PVOIDcontext);",
@@ -967,7 +967,7 @@ def check_adapter(adapter_text: str, adapter_header_text: str) -> None:
     require_once(
         guarded_header,
         "VOIDRequestHardwareResetAtAnyIrql(void){InterlockedExchange(&m_HardwareResetState,"
-        "VioGpuHardwareResetRequested);#ifdefined(VIOGPU_WDDM_CI_ONLY)"
+        "VioGpuHardwareResetRequested);#ifdefined(VIOGPU_NATIVE_CONTEXT)"
         "RequestWddmSubmissionDrainAtAnyIrql();#endif}",
         "named-pool loss must close the outer hardware gate and defer submission drain",
     )
@@ -994,7 +994,7 @@ def check_project_and_workflow(workflow: str) -> None:
         "ARM64 workflow must run the named-pool checker exactly once",
     )
     if "droidvmpool.sys" in workflow:
-        fail("compile-only workflow must not upload or install the provider")
+        fail("full-miniport workflow must not upload or install the provider outside the signed product bundle")
 
 
 def main() -> None:

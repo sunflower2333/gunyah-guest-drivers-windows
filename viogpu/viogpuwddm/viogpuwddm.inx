@@ -1,0 +1,83 @@
+;
+; viogpuwddm.inf - DroidVM VirtIO GPU Native Context miniport
+;
+
+[Version]
+Signature = "$Windows NT$"
+Class = Display
+ClassGuid = {4d36e968-e325-11ce-bfc1-08002be10318}
+Provider = %DroidVM%
+DriverVer = 08/22/2026, 0.1.0.0
+CatalogFile = viogpuwddm.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = INX_PLATFORM_DRIVERS_DIR
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+viogpuwddm.sys = 1,,
+
+[Manufacturer]
+%DroidVM% = VioGpuWddm,NT$ARCH$.10.0...22621
+
+[VioGpuWddm.NT$ARCH$.10.0...22621]
+%VioGpuWddm.DeviceDesc% = VioGpuWddm_Install, PCI\VEN_1AF4&DEV_1050
+
+[VioGpuWddm_Install.NT]
+FeatureScore = F8
+CopyFiles = VioGpuWddm_CopyFiles
+AddReg = VioGpuWddm_DeviceSettings
+
+[VioGpuWddm_CopyFiles]
+viogpuwddm.sys,,,2
+
+[VioGpuWddm_Install.NT.Services]
+AddService = VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog
+
+[VioGpuWddm_Install.NT.HW]
+AddReg = VioGpuWddm_Msix
+
+[VioGpuWddm_Service]
+DisplayName = %VioGpuWddm.ServiceDesc%
+ServiceType = %SERVICE_KERNEL_DRIVER%
+StartType = %SERVICE_DEMAND_START%
+ErrorControl = %SERVICE_ERROR_NORMAL%
+ServiceBinary = %INX_PLATFORM_DRIVERS_DIR%\viogpuwddm.sys
+
+[VioGpuWddm_EventLog]
+AddReg = VioGpuWddm_EventLog.AddReg
+
+[VioGpuWddm_EventLog.AddReg]
+HKR,,EventMessageFile,%REG_EXPAND_SZ%,"%%SystemRoot%%\System32\IoLogMsg.dll"
+HKR,,TypesSupported,%REG_DWORD%,7
+
+[VioGpuWddm_DeviceSettings]
+HKR,,HWCursor,%REG_DWORD%,0
+HKR,,FlexResolution,%REG_DWORD%,1
+HKR,,UsePhysicalMemory,%REG_DWORD%,0
+HKR,,UsePresentProgress,%REG_DWORD%,0
+
+[VioGpuWddm_Msix]
+HKR,"Interrupt Management",,0x00000010
+HKR,"Interrupt Management\MessageSignaledInterruptProperties",,0x00000010
+HKR,"Interrupt Management\MessageSignaledInterruptProperties",MSISupported,%REG_DWORD%,1
+HKR,"Interrupt Management\MessageSignaledInterruptProperties",MessageNumberLimit,%REG_DWORD%,4
+HKR,"Interrupt Management\Affinity Policy",,0x00000010
+HKR,"Interrupt Management\Affinity Policy",DevicePolicy,%REG_DWORD%,5
+HKR,"Interrupt Management\Affinity Policy",DevicePriority,%REG_DWORD%,3
+
+[Strings]
+DroidVM = "DroidVM"
+DiskName = "DroidVM VirtIO GPU Native Context Installation Disk"
+VioGpuWddm.DeviceDesc = "DroidVM VirtIO GPU Native Context"
+VioGpuWddm.ServiceDesc = "DroidVM VirtIO GPU Native Context Miniport"
+
+SPSVCINST_ASSOCSERVICE = 0x00000002
+SERVICE_KERNEL_DRIVER = 0x1
+SERVICE_DEMAND_START = 0x3
+SERVICE_ERROR_NORMAL = 0x1
+REG_EXPAND_SZ = 0x00020000
+REG_DWORD = 0x00010001

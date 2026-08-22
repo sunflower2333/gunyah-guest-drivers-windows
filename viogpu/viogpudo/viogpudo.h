@@ -31,7 +31,7 @@
 
 #include "viogpu.h"
 #include "viogpu_queue.h"
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
 #include "viogpu_named_pool.h"
 #endif
 
@@ -75,7 +75,7 @@ typedef struct _CURRENT_MODE
 
 class VioGpuDod;
 
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
 enum : UINT
 {
     VioGpuNativeFenceTrackerCapacity = 4096,
@@ -141,7 +141,7 @@ struct VIOGPU_NATIVE_CONTEXT_OWNER
     ULONGLONG ResetGeneration;
     UINT ContextId;
     volatile LONG AllocationCount;
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     UINT ControlResourceId;
     ULONG ControlPoolOffset;
     ULONG ControlBlobSize;
@@ -274,7 +274,7 @@ class VioGpuAdapter : IVioGpuPCI
     }
     PDXGKRNL_INTERFACE GetDxgkInterface(void);
     BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     /* Independent from the outer device rundown: D-state transitions keep
      * m_HardwareOperations open, but must still quiesce every WDDM native
      * submitter before the transport resets/deletes its virtqueues. */
@@ -355,7 +355,7 @@ class VioGpuAdapter : IVioGpuPCI
     static void DereferenceNativeContextAdapter(_In_ VioGpuAdapter *adapter);
     static BOOLEAN IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
     BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration);
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize)
     {
         return m_CtrlQueue.PrepareNativeSubmit(contextId, command, commandSize);
@@ -428,7 +428,7 @@ class VioGpuAdapter : IVioGpuPCI
     void Publish2DResetRetirementLocked(void);
     void Reconcile2DScanoutAfterResetLocked(void);
     UINT AllocateNativeContextIdLocked(void);
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     UINT AllocateNativeResourceIdLocked(void);
     VIOGPU_HOST_CONTEXT_RESULT QueryNativeContextParameterLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner,
                                                                  _In_ ULONG parameter,
@@ -442,7 +442,7 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN CompleteNativeContextInitialization(void);
     NTSTATUS NegotiateNativeContextFeatures(void);
     NTSTATUS ProbeNativeContextReadiness(void);
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     NTSTATUS ConnectDrmHostPool(void);
     NTSTATUS ConnectGpuGuestPool(void);
     static VOID NamedPoolFailureCallback(_In_opt_ PVOID context);
@@ -488,7 +488,7 @@ class VioGpuAdapter : IVioGpuPCI
 
     VirtIODevice m_VioDev;
     CPciResources m_PciResources;
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     VioGpuDrmHostPool m_DrmHostPool;
     VioGpuGuestPool m_GpuGuestPool;
 #endif
@@ -502,7 +502,7 @@ class VioGpuAdapter : IVioGpuPCI
     LIST_ENTRY m_NativeContextRegistry;
     EX_RUNDOWN_REF m_NativeContextReferences;
     UINT m_NextNativeContextId;
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     UINT m_NextNativeResourceId;
     KMUTEX m_2DScanoutMutex;
     BOOLEAN m_2DResourceIdsInitialized;
@@ -558,7 +558,7 @@ class VioGpuDod
     mutable EX_RUNDOWN_REF m_HardwareOperations;
     BOOLEAN m_HardwareRundownCompleted;
     mutable volatile LONG m_HardwareResetState;
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     KSPIN_LOCK m_NativeFenceLock;
     UINT m_NativeFenceHead;
     UINT m_NativeFenceCount;
@@ -717,7 +717,7 @@ class VioGpuDod
         return &m_DxgkInterface;
     }
     BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     BOOLEAN AcquireGpuGuestPoolMapping(_Out_ VioGpuGuestPoolMapping *mapping) const;
     UINT Allocate2DResourceId(void);
     BOOLEAN Release2DResourceId(_In_ UINT resourceId);
@@ -784,7 +784,7 @@ class VioGpuDod
     VOID RequestHardwareResetAtAnyIrql(void)
     {
         InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
         RequestWddmSubmissionDrainAtAnyIrql();
 #endif
     }
@@ -793,7 +793,7 @@ class VioGpuDod
         LONG state = InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareActive);
         return state == VioGpuHardwareActive || state == VioGpuHardwareRecovering;
     }
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     BOOLEAN AcquireNativeSubmissionOperation(void) const;
     void ReleaseNativeSubmissionOperation(void) const;
     void NotifyNativeSubmissionCompletion(_In_ UINT fenceId,
@@ -842,7 +842,7 @@ class VioGpuDod
 #endif
 
   private:
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     static VOID NativePassiveWorker(_In_opt_ PVOID context);
     VOID RunNativePassiveWorker(void);
     static VOID WddmSubmissionDrainWorker(_In_opt_ PVOID context);

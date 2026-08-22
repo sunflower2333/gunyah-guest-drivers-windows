@@ -136,7 +136,7 @@ VOID VioGpuDodUnload(VOID)
     PAGED_CODE();
     DbgPrint(TRACE_LEVEL_INFORMATION, ("<--> %s\n", __FUNCTION__));
     WPP_CLEANUP(NULL);
-#if defined(VIOGPU_WDDM_CI_ONLY)
+#if defined(VIOGPU_NATIVE_CONTEXT)
     VioGpuClearNamedPoolNotificationDriverObject();
 #endif
 }

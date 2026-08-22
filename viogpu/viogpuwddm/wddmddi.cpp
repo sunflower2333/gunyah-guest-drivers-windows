@@ -3460,11 +3460,17 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     if (NT_SUCCESS(status) && pQueryAdapterInfo->Type == DXGKQAITYPE_DRIVERCAPS)
     {
         DXGK_DRIVERCAPS *driverCaps = static_cast<DXGK_DRIVERCAPS *>(pQueryAdapterInfo->pOutputData);
+        /* This target uses the Win8 callback table for the Native Context
+         * plumbing, but reports the legacy WDDM profile.  The WDDM 1.2
+         * mandatory feature caps remain disabled until their real hardware
+         * contracts exist. */
+        driverCaps->WDDMVersion = DXGKDDI_WDDMv1;
         driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes = 1;
         driverCaps->SchedulingCaps.MultiEngineAware = 1;
         driverCaps->SchedulingCaps.PreemptionAware = 0;
         driverCaps->SchedulingCaps.CancelCommandAware = 1;
         driverCaps->SupportPerEngineTDR = 0;
+        driverCaps->SupportSmoothRotation = FALSE;
     }
 
     return status;

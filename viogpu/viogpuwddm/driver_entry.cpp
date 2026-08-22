@@ -8,7 +8,7 @@
 #pragma code_seg("INIT")
 
 static_assert(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WIN8,
-              "viogpuwddm must remain on the WDDM 1.2 interface");
+              "viogpuwddm must use the Win8 DDI table for Native Context callbacks");
 
 VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData)
 {
@@ -73,8 +73,7 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiSystemDisplayWrite = VioGpuDodSystemDisplayWrite;
 }
 
-extern "C" NTSTATUS VioGpuWddmInitializeMiniportCompileOnly(_In_ DRIVER_OBJECT *driverObject,
-                                                            _In_ UNICODE_STRING *registryPath)
+extern "C" NTSTATUS VioGpuWddmInitializeMiniport(_In_ DRIVER_OBJECT *driverObject, _In_ UNICODE_STRING *registryPath)
 {
     PAGED_CODE();
 
@@ -96,13 +95,7 @@ extern "C" NTSTATUS VioGpuWddmInitializeMiniportCompileOnly(_In_ DRIVER_OBJECT *
 extern "C" NTSTATUS DriverEntry(_In_ DRIVER_OBJECT *driverObject, _In_ UNICODE_STRING *registryPath)
 {
     PAGED_CODE();
-
-    UNREFERENCED_PARAMETER(driverObject);
-    UNREFERENCED_PARAMETER(registryPath);
-
-    // Keep the registration helper unreachable until the full WDDM 1.2
-    // contract and its Windows/KMT/Host runtime behavior are validated.
-    return STATUS_NOT_SUPPORTED;
+    return VioGpuWddmInitializeMiniport(driverObject, registryPath);
 }
 
 #pragma code_seg(pop)

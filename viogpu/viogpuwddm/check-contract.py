@@ -34,9 +34,10 @@ VIRTIO_COMMON_PATH = VIRTIO_DIR / "VirtIOPCICommon.c"
 VIRTIO_MODERN_PATH = VIRTIO_DIR / "VirtIOPCIModern.c"
 VIRTIO_LEGACY_PATH = VIRTIO_DIR / "VirtIOPCILegacy.c"
 PROJECT = PROJECT_DIR / "viogpuwddm.vcxproj"
+INF_TEMPLATE = PROJECT_DIR / "viogpuwddm.inx"
 WPP_NON_OWNER_TEMPLATE = PROJECT_DIR / "wpp-non-owner.tpl"
 NAMESPACE = {"msbuild": "http://schemas.microsoft.com/developer/msbuild/2003"}
-REGISTRATION_HELPER = "VioGpuWddmInitializeMiniportCompileOnly"
+REGISTRATION_HELPER = "VioGpuWddmInitializeMiniport"
 WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "viogpuwddm-arm64-ci.yml").resolve()
 PRODUCT_WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "build-arm64-drivers.yml").resolve()
 
@@ -693,12 +694,10 @@ def check_driver_entry_gate() -> None:
     normalized = re.sub(r"\s+", " ", body).strip()
     expected = (
         "PAGED_CODE(); "
-        "UNREFERENCED_PARAMETER(driverObject); "
-        "UNREFERENCED_PARAMETER(registryPath); "
-        "return STATUS_NOT_SUPPORTED;"
+        "return VioGpuWddmInitializeMiniport(driverObject, registryPath);"
     )
     if normalized != expected:
-        fail("DriverEntry must contain only the exact compile-only fail-closed statement sequence")
+        fail("DriverEntry must contain only the exact full-miniport registration call")
 
 
 def check_viogpudo_code_segment_contract() -> None:
@@ -735,7 +734,7 @@ def check_viogpudo_code_segment_contract() -> None:
         or VIOGPU_CODE[first_open.end() : first_declaration].strip()
         or VIOGPU_CODE[first_last_end + 1 : first_close.start()].strip()
     ):
-        fail("the WDDM CI bridge must occupy the complete first default-.text range")
+        fail("the WDDM Native Context bridge must occupy the complete first default-.text range")
     for function_name in (
         "VioGpuDod::AcquireGpuGuestPoolMapping",
         "VioGpuDod::QueueNativeSubmit",
@@ -748,14 +747,14 @@ def check_viogpudo_code_segment_contract() -> None:
     ):
         _, function_start, function_end = function_body_span(function_name, VIOGPU_CODE)
         if not first_open.end() < function_start < function_end < first_close.start():
-            fail(f"WDDM CI bridge routine must remain in default .text: {function_name}")
+            fail(f"WDDM Native Context bridge routine must remain in default .text: {function_name}")
 
     dpc_declaration = VIOGPU_CODE.find("static ULONG VioGpuReadSharedU32", dpc_open.end())
     _, _, dpc_last_end = function_body_span("VioGpuDod::SystemDisplayWrite", VIOGPU_CODE)
     dpc_prefix = VIOGPU_CODE[dpc_open.end() : dpc_declaration]
     if (
         dpc_declaration < 0
-        or compact_code(dpc_prefix) != "#ifdefined(VIOGPU_WDDM_CI_ONLY)"
+        or compact_code(dpc_prefix) != "#ifdefined(VIOGPU_NATIVE_CONTEXT)"
         or not dpc_open.end() < dpc_declaration < dpc_last_end < dpc_close.start()
         or VIOGPU_CODE[dpc_last_end + 1 : dpc_close.start()].strip()
     ):
@@ -775,7 +774,7 @@ def check_viogpudo_code_segment_contract() -> None:
 
 def check_arm64_workflow_contract() -> None:
     workflows = {
-        "compile-only contract": WORKFLOW_PATH,
+        "Native Context full-miniport": WORKFLOW_PATH,
         "product drivers": PRODUCT_WORKFLOW_PATH,
     }
     sources: dict[str, str] = {}
@@ -785,6 +784,7 @@ def check_arm64_workflow_contract() -> None:
         r"Include\$env:DROIDVM_KIT_VERSION\km\ntddk.h",
         r"bin\$env:DROIDVM_KIT_VERSION\x86\tracewpp.exe",
         r"lib\$env:DROIDVM_KIT_VERSION\km\arm64\ntoskrnl.lib",
+        r"Tools\x64\infverif.exe",
         "winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget",
         "winget install --id Microsoft.WindowsWDK.10.0.28000 --source winget",
         "--exact --silent --accept-package-agreements --accept-source-agreements",
@@ -797,6 +797,7 @@ def check_arm64_workflow_contract() -> None:
         sources[label] = source
         for fragment in required_toolchain_fragments:
             expected_count = 2 if fragment in (
+                r"Tools\x64\infverif.exe",
                 "--exact --silent --accept-package-agreements --accept-source-agreements",
                 "--disable-interactivity",
             ) else 1
@@ -806,14 +807,24 @@ def check_arm64_workflow_contract() -> None:
                     f"with winget: {fragment}"
                 )
 
-    contract_platforms = re.findall(r"\bPlatform\s*=\s*'([^']+)'", sources["compile-only contract"])
+        if source.count("& $infverif /w /v") != 1:
+            fail(f"{label} workflow must run InfVerif /w /v exactly once on the Native Context INF")
+
+    contract_platforms = re.findall(r"\bPlatform\s*=\s*'([^']+)'", sources["Native Context full-miniport"])
     product_platforms = re.findall(r"\bplat\s*=\s*'([^']+)'", sources["product drivers"])
     if not contract_platforms or set(contract_platforms) != {"ARM64"}:
-        fail(f"compile-only workflow driver projects must all target ARM64: {contract_platforms or ['none']}")
+        fail(f"full-miniport workflow driver projects must all target ARM64: {contract_platforms or ['none']}")
     if not product_platforms or set(product_platforms) != {"ARM64"}:
         fail(f"product workflow driver projects must all target ARM64: {product_platforms or ['none']}")
-    if sources["compile-only contract"].count("/p:Platform=ARM64") != 1:
+    if sources["Native Context full-miniport"].count("/p:Platform=ARM64") != 1:
         fail("the full WDDM contract target must be built explicitly for ARM64")
+    if sources["Native Context full-miniport"].count("$reader.ReadUInt16() -ne 0xaa64") != 1:
+        fail("the full-miniport workflow must verify the linked SYS PE machine as ARM64")
+    if sources["product drivers"].count("viogpu/viogpuwddm/viogpuwddm.vcxproj") != 1:
+        fail("the signed ARM64 product workflow must build the Native Context full miniport exactly once")
+    product_package = "@{ n='viogpuwddm'; root='viogpu/viogpuwddm'; bins=@('viogpuwddm.sys'); inf='viogpuwddm.inf' }"
+    if sources["product drivers"].count(product_package) != 1:
+        fail("the signed ARM64 product workflow must stage exactly one viogpuwddm SYS/INF package")
 
     repository_root = PROJECT_DIR.parent.parent
     obsolete_rdma_paths = (
@@ -839,7 +850,7 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
         )
     )
     if len(helper_definitions) != 1:
-        fail("compile-only registration helper must have exactly one C-linkage definition")
+        fail("registration helper must have exactly one C-linkage definition")
 
     body, helper_start, helper_end = function_body_span(REGISTRATION_HELPER)
     normalized = re.sub(r"\s+", " ", body).strip()
@@ -854,12 +865,16 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
         "return status;"
     )
     if normalized != expected:
-        fail("compile-only registration helper must contain only the exact initialization and cleanup sequence")
+        fail("registration helper must contain only the exact initialization and cleanup sequence")
 
     helper_occurrences = source_occurrences(sources, rf"\b{REGISTRATION_HELPER}\b")
-    if len(helper_occurrences) != 1 or helper_occurrences[0][0] != DRIVER_SOURCE_PATH:
+    if len(helper_occurrences) != 2 or any(path != DRIVER_SOURCE_PATH for path, _ in helper_occurrences):
         locations = ", ".join(path.as_posix() for path, _ in helper_occurrences)
-        fail(f"registration helper must occur only at its driver_entry.cpp definition; found: {locations or 'none'}")
+        fail(f"registration helper must occur only at its definition and DriverEntry call; found: {locations or 'none'}")
+
+    driver_entry = canonical_code(function_body("DriverEntry"))
+    if driver_entry != "PAGED_CODE();returnVioGpuWddmInitializeMiniport(driverObject,registryPath);":
+        fail("DriverEntry must call the registration helper exactly once")
 
     initialize_calls = source_occurrences(sources, r"\bDxgkInitialize\s*\(")
     if len(initialize_calls) != 1:
@@ -868,7 +883,7 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
 
     call_path, call_offset = initialize_calls[0]
     if call_path != DRIVER_SOURCE_PATH or not helper_start <= call_offset < helper_end:
-        fail("the target's only DxgkInitialize call must be inside the compile-only registration helper")
+        fail("the target's only DxgkInitialize call must be inside the registration helper")
 
     unload_definitions = [
         (path, source)
@@ -998,9 +1013,8 @@ def check_native_context_readiness(
         "VIRTIO_GPU_F_RESOURCE_BLOB",
         "VIRTIO_GPU_F_CONTEXT_INIT",
         # The product Native Context data path needs the guest-handle contract
-        # exposed only by crosvm when udmabuf=true.  DriverEntry remains
-        # unreachable in this compile-only target, but the source contract must
-        # still fail closed if that feature is absent.
+        # exposed only by crosvm when udmabuf=true. StartDevice must fail closed
+        # if that feature is absent.
         "VIRTIO_GPU_F_CREATE_GUEST_HANDLE",
     )
 
@@ -6201,10 +6215,12 @@ def check_wddm_submission_lifetime() -> None:
     if len(notify_failure_blocks) != 1 or "adapter->ResetDevice();" not in notify_failure_blocks[0]:
         fail("a failed preemption interrupt notification must gate the adapter for TDR")
     driver_caps = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
+    if driver_caps.count("driverCaps->WDDMVersion=DXGKDDI_WDDMv1;") != 1:
+        fail("the Native Context target must report the legacy WDDM profile until WDDM 1.2 caps exist")
     if driver_caps.count("driverCaps->SchedulingCaps.PreemptionAware=0;") != 1:
-        fail("the reset-only Native Context path must not advertise Windows 8 hardware preemption")
+        fail("the legacy Native Context profile must not advertise Windows 8 hardware preemption")
     if driver_caps.count("driverCaps->SupportPerEngineTDR=0;") != 1:
-        fail("the Native Context path must not advertise per-engine TDR without a Host engine reset primitive")
+        fail("the legacy Native Context profile must not advertise per-engine TDR without a Host engine reset primitive")
 
     reset_timeout = canonical_code(function_body("VioGpuDod::ResetFromTimeout", VIOGPU_CODE))
     require_order(
@@ -7301,7 +7317,7 @@ def check_project_safety(root: ET.Element) -> None:
         if token.strip()
     ]
     for required in (
-        "VIOGPU_WDDM_CI_ONLY=1",
+        "VIOGPU_NATIVE_CONTEXT=1",
         "VIOGPU_EXTERNAL_DRIVER_ENTRY=1",
     ):
         if definitions.count(required) != 1:
@@ -7320,41 +7336,41 @@ def check_project_safety(root: ET.Element) -> None:
         DRIVER_CODE,
     )
     if len(static_asserts) != 1:
-        fail("driver_entry.cpp must assert the Win8/WDDM 1.2 interface exactly once")
+        fail("driver_entry.cpp must assert the Win8 DDI table exactly once")
 
     sign_modes = [
         (element.text or "").strip() for element in root.findall(".//msbuild:SignMode", NAMESPACE)
     ]
     if not sign_modes or any(sign_mode != "Off" for sign_mode in sign_modes):
-        fail(f"compile-only project must set every SignMode to Off; found: {sign_modes or ['none']}")
+        fail(f"driver build must remain unsigned before package signing; found SignMode: {sign_modes or ['none']}")
 
     optimize_references = [
         (element.text or "").strip()
         for element in root.findall(".//msbuild:Link/msbuild:OptimizeReferences", NAMESPACE)
     ]
-    if optimize_references != ["false"]:
-        fail("compile-only project must disable reference optimization so the unreachable helper is linked")
+    if optimize_references != ["true"]:
+        fail("registered full-miniport project must enable reference optimization")
 
     forced_symbols = [
         (element.text or "").strip()
         for element in root.findall(".//msbuild:Link/msbuild:ForceSymbolReferences", NAMESPACE)
     ]
-    if forced_symbols != [REGISTRATION_HELPER]:
-        fail("compile-only project must force-link only the unreachable registration helper")
+    if forced_symbols:
+        fail("registered full-miniport project must not force-link an unreachable registration helper")
 
     generate_map_files = [
         (element.text or "").strip()
         for element in root.findall(".//msbuild:Link/msbuild:GenerateMapFile", NAMESPACE)
     ]
     if generate_map_files != ["true"]:
-        fail("compile-only project must generate one linker map for retention evidence")
+        fail("full-miniport project must generate one linker map for provenance evidence")
 
     map_file_names = [
         (element.text or "").strip()
         for element in root.findall(".//msbuild:Link/msbuild:MapFileName", NAMESPACE)
     ]
     if map_file_names != [r"$(OutDir)$(TargetName).map"]:
-        fail("compile-only project must emit its linker map beside the compile-only driver")
+        fail("full-miniport project must emit its linker map beside the driver")
 
     driver_items = [
         element
@@ -7362,7 +7378,7 @@ def check_project_safety(root: ET.Element) -> None:
         if element.attrib["Include"].replace("\\", "/").endswith("/viogpudo/driver.cpp")
     ]
     if len(driver_items) != 1:
-        fail("compile-only project must contain exactly one inherited viogpudo driver.cpp input")
+        fail("full-miniport project must contain exactly one inherited viogpudo driver.cpp input")
 
     non_owner_templates = driver_items[0].findall(
         "msbuild:WppGenerateUsingTemplateFile", NAMESPACE
@@ -7386,11 +7402,47 @@ def check_project_safety(root: ET.Element) -> None:
         for element in root.findall(".//msbuild:None[@Include]", NAMESPACE)
     ]
     if template_inputs.count("wpp-non-owner.tpl") != 1:
-        fail("compile-only project must track the WPP non-owner template exactly once")
+        fail("full-miniport project must track the WPP non-owner template exactly once")
 
-    inputs = [element.attrib.get("Include", "").lower() for element in root.iter()]
-    if any(path.endswith((".inf", ".inx")) for path in inputs):
-        fail("compile-only project must not contain INF or INX inputs")
+    inf_inputs = [
+        element.attrib.get("Include", "").replace("\\", "/")
+        for element in root.findall(".//msbuild:Inf[@Include]", NAMESPACE)
+    ]
+    if inf_inputs != ["viogpuwddm.inx"]:
+        fail("full-miniport project must contain exactly the ARM64 viogpuwddm INX input")
+
+    output_dirs = [
+        (element.text or "").strip()
+        for element in root.findall(".//msbuild:OutDir", NAMESPACE)
+    ]
+    if output_dirs != ["objfre_win11_arm64\\arm64\\"]:
+        fail(f"full-miniport project must use the product ARM64 output directory: {output_dirs or ['none']}")
+
+
+def check_installation_contract() -> None:
+    if not INF_TEMPLATE.is_file():
+        fail("full-miniport ARM64 INX is missing")
+    source = INF_TEMPLATE.read_text(encoding="utf-8")
+    compact = canonical_code(source)
+    required = (
+        'Signature="$WindowsNT$"',
+        "Class=Display",
+        "ClassGuid={4d36e968-e325-11ce-bfc1-08002be10318}",
+        "DriverVer=08/22/2026,0.1.0.0",
+        "CatalogFile=viogpuwddm.cat",
+        "%DroidVM%=VioGpuWddm,NT$ARCH$.10.0...22621",
+        "%VioGpuWddm.DeviceDesc%=VioGpuWddm_Install,PCI\\VEN_1AF4&DEV_1050",
+        "FeatureScore=F8",
+        "AddService=VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog",
+        "ServiceBinary=%INX_PLATFORM_DRIVERS_DIR%\\viogpuwddm.sys",
+        "MSISupported,%REG_DWORD%,1",
+        "MessageNumberLimit,%REG_DWORD%,4",
+    )
+    for fragment in required:
+        if compact.count(fragment) != 1:
+            fail(f"full-miniport INX must contain exactly one installation contract fragment: {fragment}")
+    if re.search(r"(?i)nt(?:amd64|x86)|viogpudo\.sys|include\s*=\s*msdv\.inf", source):
+        fail("full-miniport INX must remain ARM64-tokenized and independent of the display-only package")
 
 
 def main() -> None:
@@ -7425,7 +7477,8 @@ def main() -> None:
     check_adapter_lifecycle()
     check_worker_thread_lifetime()
     check_project_safety(root)
-    print("viogpuwddm compile-only safety contract: PASS")
+    check_installation_contract()
+    print("viogpuwddm Native Context full-miniport contract: PASS")
 
 
 if __name__ == "__main__":

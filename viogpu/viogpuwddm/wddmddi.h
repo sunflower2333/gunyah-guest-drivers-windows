@@ -4,10 +4,10 @@
 #include "../viogpudo/viogpudo.h"
 #include "../shared/viogpu_wddm_abi.h"
 
-// This target remains compile-only until the full WDDM 1.2 contract and its
-// Windows/KMT/Host runtime behavior have been validated end to end.
-#if !defined(VIOGPU_WDDM_CI_ONLY)
-#error viogpuwddm is not installable yet; build it only with VIOGPU_WDDM_CI_ONLY
+// Select the crosvm Native Context implementation when this header is used by
+// the full graphics miniport. The display-only target leaves it undefined.
+#if !defined(VIOGPU_NATIVE_CONTEXT)
+#error viogpuwddm requires VIOGPU_NATIVE_CONTEXT
 #endif
 
 class VioGpuDod;

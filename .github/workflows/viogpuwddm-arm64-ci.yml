@@ -1,4 +1,4 @@
-name: Check viogpu full WDDM ARM64 contract
+name: Build viogpu Native Context full WDDM ARM64
 
 # The only driver target is ARM64.  x64 is used solely by runner-side host
 # tools (MSBuild and the ABI fixture executables), never as a driver target.
@@ -58,7 +58,8 @@ jobs:
           $requiredFiles = @(
             (Join-Path $kitRoot "Include\$env:DROIDVM_KIT_VERSION\km\ntddk.h"),
             (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\tracewpp.exe"),
-            (Join-Path $kitRoot "lib\$env:DROIDVM_KIT_VERSION\km\arm64\ntoskrnl.lib")
+            (Join-Path $kitRoot "lib\$env:DROIDVM_KIT_VERSION\km\arm64\ntoskrnl.lib"),
+            (Join-Path $kitRoot 'Tools\x64\infverif.exe')
           )
           if (($requiredFiles | Where-Object { -not (Test-Path $_) }).Count -eq 0) {
             Write-Host 'Windows SDK/WDK 28000 is already available.'
@@ -118,7 +119,7 @@ jobs:
         shell: cmd
         run: droidvmpool\tests\interface-abi\run-msvc.cmd
 
-      - name: Check full WDDM compile-only safety contract
+      - name: Check Native Context full-miniport contract
         shell: pwsh
         run: python viogpu/viogpuwddm/check-contract.py
 
@@ -160,7 +161,7 @@ jobs:
             if ($exitCode -ne 0) { exit $exitCode }
           }
 
-      - name: Build full WDDM contract target
+      - name: Build Native Context full-miniport target
         shell: pwsh
         run: |
           msbuild viogpu/viogpuwddm/viogpuwddm.vcxproj /m `
@@ -170,22 +171,22 @@ jobs:
             /p:SpectreMitigation=false /p:SignMode=Off
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Check compile-only registration helper linkage
+      - name: Check registered full-miniport linkage
         shell: pwsh
         run: |
-          $map = "viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.map"
-          $driver = "viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.sys"
+          $map = "viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.map"
+          $driver = "viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.sys"
 
           foreach ($path in @($map, $driver)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              Write-Error "missing compile-only linkage evidence: $path"
+              Write-Error "missing full-miniport linkage evidence: $path"
               exit 1
             }
           }
 
           $mapLines = Get-Content -LiteralPath $map
           $helperLines = @($mapLines | Where-Object {
-            $_ -match "^\s*[0-9A-F]+:[0-9A-F]+\s+VioGpuWddmInitializeMiniportCompileOnly\s+[0-9A-F]+\s+f\s+.*\bdriver_entry\.obj\s*$"
+            $_ -match "^\s*[0-9A-F]+:[0-9A-F]+\s+VioGpuWddmInitializeMiniport\s+[0-9A-F]+\s+f\s+.*\bdriver_entry\.obj\s*$"
           })
           if ($helperLines.Count -ne 1) {
             Write-Error "linker map must retain exactly one registration helper from driver_entry.obj"
@@ -203,13 +204,46 @@ jobs:
           $initializeLines
           $helperLines
 
-      - name: Upload compile-only artifact
+      - name: Validate ARM64 full-miniport INF and PE
+        shell: pwsh
+        run: |
+          $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+          $infverif = Join-Path $kitRoot 'Tools\x64\infverif.exe'
+          $root = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'
+          $inf = Join-Path $root 'viogpuwddm.inf'
+          $driver = Join-Path $root 'viogpuwddm.sys'
+          foreach ($path in @($infverif, $inf, $driver)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "missing full-miniport package evidence: $path"
+            }
+          }
+
+          & $infverif /w /v $inf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $stream = [IO.File]::OpenRead((Resolve-Path $driver))
+          try {
+            $reader = [IO.BinaryReader]::new($stream)
+            if ($reader.ReadUInt16() -ne 0x5a4d) { throw 'driver does not have an MZ header' }
+            $stream.Position = 0x3c
+            $peOffset = $reader.ReadUInt32()
+            if ($peOffset -gt $stream.Length - 6) { throw 'driver has an invalid PE header offset' }
+            $stream.Position = $peOffset
+            if ($reader.ReadUInt32() -ne 0x00004550) { throw 'driver does not have a PE signature' }
+            if ($reader.ReadUInt16() -ne 0xaa64) { throw 'driver PE machine is not ARM64 (AA64)' }
+          }
+          finally {
+            $stream.Dispose()
+          }
+
+      - name: Upload unsigned full-miniport artifact
         uses: actions/upload-artifact@v4
         with:
-          name: viogpuwddm-arm64-ci-do-not-install
+          name: viogpuwddm-arm64-unsigned
           path: |
-            viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.sys
-            viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.pdb
-            viogpu/viogpuwddm/objfre_win11_arm64_ci/arm64/viogpuwddm.map
+            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.sys
+            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.pdb
+            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.map
+            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.inf
             viogpu/viogpuwddm/README.md
           if-no-files-found: error

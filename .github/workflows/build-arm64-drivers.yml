@@ -39,7 +39,8 @@ jobs:
             (Join-Path $kitRoot "lib\$env:DROIDVM_KIT_VERSION\km\arm64\ntoskrnl.lib"),
             (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x64\signtool.exe"),
             (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\inf2cat.exe"),
-            (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\stampinf.exe")
+            (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\stampinf.exe"),
+            (Join-Path $kitRoot 'Tools\x64\infverif.exe')
           )
           if (($required | Where-Object { -not (Test-Path $_) }).Count -ne 0) {
             winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget `
@@ -158,6 +159,7 @@ jobs:
             @{ p='viogpu/viogpusc/viogpusc.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpures/viogpures.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpudo/viogpudo.vcxproj';        c='Win11 Release'; plat='ARM64' },
+            @{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64' },
             @{ p='viostor/viostor.vcxproj';                 c='Win11 Release'; plat='ARM64' },
             @{ p='vioscsi/vioscsi.vcxproj';                 c='Win11 Release'; plat='ARM64' },
             @{ p='vioserial/sys/vioser.vcxproj';            c='Win11 Release'; plat='ARM64' },
@@ -195,7 +197,8 @@ jobs:
           $signtool = Join-Path $kitbin 'x64\signtool.exe'
           $inf2cat  = Join-Path $kitbin 'x86\inf2cat.exe'
           $stampinf = Join-Path $kitbin 'x86\stampinf.exe'
-          $missingTools = @($signtool, $inf2cat, $stampinf) |
+          $infverif = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Tools\x64\infverif.exe'
+          $missingTools = @($signtool, $inf2cat, $stampinf, $infverif) |
             Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }
           if ($missingTools) {
             throw "Windows Kit $env:DROIDVM_KIT_VERSION packaging tools are incomplete: $($missingTools -join '; ')"
@@ -232,6 +235,7 @@ jobs:
             @{ n='NetKVM';    root='NetKVM';    bins=@('netkvm.sys','netkvmp.exe'); inf='netkvm.inf' },
             @{ n='vioinput';  root='vioinput';  bins=@('vioinput.sys','viohidkmdf.sys'); inf='vioinput.inf' },
             @{ n='viogpu';    root='viogpu';    bins=@('viogpudo.sys','viogpudo.pdb','viogpuap.exe','viogpuap.pdb','vgpusrv.exe','vgpusrv.pdb','viogpures.exe','viogpures.pdb'); inf='viogpudo.inf' },
+            @{ n='viogpuwddm'; root='viogpu/viogpuwddm'; bins=@('viogpuwddm.sys'); inf='viogpuwddm.inf' },
             @{ n='droidvmpool'; root='droidvmpool'; bins=@('droidvmpool.sys'); inf='droidvmpool.inf' },
             @{ n='pvmpower';  root='pvmpower';  bins=@('pvmpower.sys'); inf='pvmpower.inf' }
           )
@@ -297,6 +301,10 @@ jobs:
             }
             if ((Get-Content $infPath -Raw) -match 'NT(?:ARM64|AMD64|x86)(?:\.\d+){2,}\.\.\.\d+\.\d+\.\d+') {
               throw "$($d.n): $($d.inf) contains a duplicated TargetOSVersion decoration"
+            }
+            if ($d.n -eq 'viogpuwddm') {
+              & $infverif /w /v $infPath
+              if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
             }
             # 簽所有 PE
             $peFiles = Get-ChildItem -LiteralPath $dest -File |
