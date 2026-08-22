@@ -39,8 +39,7 @@ jobs:
             (Join-Path $kitRoot "lib\$env:DROIDVM_KIT_VERSION\km\arm64\ntoskrnl.lib"),
             (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x64\signtool.exe"),
             (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\inf2cat.exe"),
-            (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\stampinf.exe"),
-            (Join-Path $kitRoot 'Tools\x64\infverif.exe')
+            (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION\x86\stampinf.exe")
           )
           if (($required | Where-Object { -not (Test-Path $_) }).Count -ne 0) {
             winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget `
@@ -56,6 +55,26 @@ jobs:
           }
           $missing = $required | Where-Object { -not (Test-Path $_) }
           if ($missing) { throw "Windows SDK/WDK $env:DROIDVM_KIT_VERSION remains incomplete: $($missing -join '; ')" }
+
+          $toolRoots = @(
+            (Join-Path $kitRoot 'Tools'),
+            (Join-Path $kitRoot "bin\$env:DROIDVM_KIT_VERSION")
+          ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+          $infverifCandidates = foreach ($root in $toolRoots) {
+            Get-ChildItem -LiteralPath $root -Recurse -Filter 'InfVerif.exe' -File -ErrorAction SilentlyContinue
+          }
+          $infverif = $infverifCandidates |
+            Sort-Object @{ Expression = {
+              if ($_.FullName -match '\\x64\\') { 0 }
+              elseif ($_.FullName -match '\\arm64\\') { 1 }
+              else { 2 }
+            } }, FullName |
+            Select-Object -First 1
+          if (-not $infverif) {
+            throw "Windows Kit $env:DROIDVM_KIT_VERSION has no discoverable InfVerif.exe under Tools or versioned bin"
+          }
+          "INFVERIF_PATH=$($infverif.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "InfVerif: $($infverif.FullName)"
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
@@ -197,7 +216,7 @@ jobs:
           $signtool = Join-Path $kitbin 'x64\signtool.exe'
           $inf2cat  = Join-Path $kitbin 'x86\inf2cat.exe'
           $stampinf = Join-Path $kitbin 'x86\stampinf.exe'
-          $infverif = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Tools\x64\infverif.exe'
+          $infverif = $env:INFVERIF_PATH
           $missingTools = @($signtool, $inf2cat, $stampinf, $infverif) |
             Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }
           if ($missingTools) {

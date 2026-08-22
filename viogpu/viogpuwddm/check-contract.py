@@ -784,7 +784,10 @@ def check_arm64_workflow_contract() -> None:
         r"Include\$env:DROIDVM_KIT_VERSION\km\ntddk.h",
         r"bin\$env:DROIDVM_KIT_VERSION\x86\tracewpp.exe",
         r"lib\$env:DROIDVM_KIT_VERSION\km\arm64\ntoskrnl.lib",
-        r"Tools\x64\infverif.exe",
+        "$toolRoots = @(",
+        "Get-ChildItem -LiteralPath $root -Recurse -Filter 'InfVerif.exe'",
+        "INFVERIF_PATH=",
+        "$env:INFVERIF_PATH",
         "winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget",
         "winget install --id Microsoft.WindowsWDK.10.0.28000 --source winget",
         "--exact --silent --accept-package-agreements --accept-source-agreements",
@@ -797,7 +800,10 @@ def check_arm64_workflow_contract() -> None:
         sources[label] = source
         for fragment in required_toolchain_fragments:
             expected_count = 2 if fragment in (
-                r"Tools\x64\infverif.exe",
+                "$toolRoots = @(",
+                "Get-ChildItem -LiteralPath $root -Recurse -Filter 'InfVerif.exe'",
+                "INFVERIF_PATH=",
+                "$env:INFVERIF_PATH",
                 "--exact --silent --accept-package-agreements --accept-source-agreements",
                 "--disable-interactivity",
             ) else 1
@@ -806,6 +812,9 @@ def check_arm64_workflow_contract() -> None:
                     f"{label} workflow must pin, install, and verify the ARM64 WDK "
                     f"with winget: {fragment}"
                 )
+
+        if r"Tools\x64\infverif.exe" in source:
+            fail(f"{label} workflow must discover the versioned InfVerif.exe path")
 
         if source.count("& $infverif /w /v") != 1:
             fail(f"{label} workflow must run InfVerif /w /v exactly once on the Native Context INF")
