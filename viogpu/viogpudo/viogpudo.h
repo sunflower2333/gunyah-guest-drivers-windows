@@ -78,6 +78,67 @@ enum : UINT
     VioGpuNativeFenceTrackerCapacity = 4096,
 };
 
+enum VIOGPU_NATIVE_START_STAGE : DWORD
+{
+    VioGpuNativeStartEntered = 0x0100,
+    VioGpuNativeStartPreconditions = 0x0110,
+    VioGpuNativeStartDeviceInformation = 0x0120,
+    VioGpuNativeStartHardwareIdentity = 0x0130,
+    VioGpuNativeStartAdapterAllocation = 0x0140,
+    VioGpuNativeStartRegistryConfiguration = 0x0150,
+    VioGpuNativeStartBeginInitialization = 0x0200,
+    VioGpuNativeStartPciResources = 0x0210,
+    VioGpuNativeStartVirtioPreconditions = 0x0300,
+    VioGpuNativeStartVirtioDevice = 0x0310,
+    VioGpuNativeStartVirtioVersion = 0x0320,
+    VioGpuNativeStartVirtioNativeFeatures = 0x0330,
+    VioGpuNativeStartVirtioSetFeatures = 0x0340,
+    VioGpuNativeStartVirtioFindQueues = 0x0350,
+    VioGpuNativeStartVirtioQueueObjects = 0x0360,
+    VioGpuNativeStartVirtioQueueBacklog = 0x0370,
+    VioGpuNativeStartVirtioConfig = 0x0380,
+    VioGpuNativeStartHostVisibleRegion = 0x0400,
+    VioGpuNativeStartQueueBuffer = 0x0410,
+    VioGpuNativeStartResourceIds = 0x0420,
+    VioGpuNativeStartQueueInterrupts = 0x0430,
+    VioGpuNativeStartDriverReady = 0x0440,
+    VioGpuNativeStartSynchronousRequests = 0x0450,
+    VioGpuNativeStartCapsetFeatureState = 0x0500,
+    VioGpuNativeStartCapsetCount = 0x0510,
+    VioGpuNativeStartCapsetInfoQuery = 0x0520,
+    VioGpuNativeStartCapsetInfoUnique = 0x0530,
+    VioGpuNativeStartCapsetInfoLayout = 0x0540,
+    VioGpuNativeStartCapsetPayloadQuery = 0x0550,
+    VioGpuNativeStartCapsetPayloadValidation = 0x0560,
+    VioGpuNativeStartCapsetPublish = 0x0570,
+    VioGpuNativeStartModeList = 0x0600,
+    VioGpuNativeStartFrameSegment = 0x0610,
+    VioGpuNativeStartCursorSegment = 0x0620,
+    VioGpuNativeStartWorkThread = 0x0700,
+    VioGpuNativeStartCompleteInitialization = 0x0710,
+    VioGpuNativeStartHardwareInformation = 0x0800,
+    VioGpuNativeStartPostDisplayOwnership = 0x0810,
+    VioGpuNativeStartFinalState = 0x0820,
+    VioGpuNativeStartComplete = 0x0FFF,
+};
+
+enum VIOGPU_NATIVE_START_DETAIL : DWORD
+{
+    VioGpuNativeStartDetailNone = 0,
+    VioGpuNativeStartDetailMissingVirgl = 1U << 0,
+    VioGpuNativeStartDetailMissingResourceBlob = 1U << 1,
+    VioGpuNativeStartDetailMissingContextInit = 1U << 2,
+    VioGpuNativeStartDetailMissingGuestHandle = 1U << 3,
+    VioGpuNativeStartDetailInvalidWireVersion = 1U << 8,
+    VioGpuNativeStartDetailInvalidContextType = 1U << 9,
+    VioGpuNativeStartDetailInvalidPadding = 1U << 10,
+    VioGpuNativeStartDetailInvalidMsmVersion = 1U << 11,
+    VioGpuNativeStartDetailInvalidPriorities = 1U << 12,
+    VioGpuNativeStartDetailInvalidVaStart = 1U << 13,
+    VioGpuNativeStartDetailInvalidVaSize = 1U << 14,
+    VioGpuNativeStartDetailInvalidVaRange = 1U << 15,
+};
+
 enum VIOGPU_NATIVE_FENCE_STATE : LONG
 {
     VioGpuNativeFenceFree = 0,
@@ -825,6 +886,7 @@ class VioGpuDod
                                                             0,
                                                             0));
     }
+    VOID RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage, _In_ NTSTATUS status, _In_ DWORD detail);
 #endif
 
   private:

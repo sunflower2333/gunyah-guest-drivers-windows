@@ -40,6 +40,9 @@ NAMESPACE = {"msbuild": "http://schemas.microsoft.com/developer/msbuild/2003"}
 REGISTRATION_HELPER = "VioGpuWddmInitializeMiniport"
 WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "viogpuwddm-arm64-ci.yml").resolve()
 PRODUCT_WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "build-arm64-drivers.yml").resolve()
+START_DIAGNOSTIC_SCRIPT_PATH = (
+    PROJECT_DIR.parent.parent / ".install_scripts" / "viogpu-native-start-diagnostics.ps1"
+).resolve()
 
 
 def strip_cpp_comments_and_literals(source: str) -> str:
@@ -893,6 +896,141 @@ def check_retired_pool_absence() -> None:
         fail(f"production source/build wiring must not reference retired Windows pools: {references}")
 
 
+def check_native_start_diagnostics() -> None:
+    expected_stages = {
+        "VioGpuNativeStartEntered": 0x0100,
+        "VioGpuNativeStartPreconditions": 0x0110,
+        "VioGpuNativeStartDeviceInformation": 0x0120,
+        "VioGpuNativeStartHardwareIdentity": 0x0130,
+        "VioGpuNativeStartAdapterAllocation": 0x0140,
+        "VioGpuNativeStartRegistryConfiguration": 0x0150,
+        "VioGpuNativeStartBeginInitialization": 0x0200,
+        "VioGpuNativeStartPciResources": 0x0210,
+        "VioGpuNativeStartVirtioPreconditions": 0x0300,
+        "VioGpuNativeStartVirtioDevice": 0x0310,
+        "VioGpuNativeStartVirtioVersion": 0x0320,
+        "VioGpuNativeStartVirtioNativeFeatures": 0x0330,
+        "VioGpuNativeStartVirtioSetFeatures": 0x0340,
+        "VioGpuNativeStartVirtioFindQueues": 0x0350,
+        "VioGpuNativeStartVirtioQueueObjects": 0x0360,
+        "VioGpuNativeStartVirtioQueueBacklog": 0x0370,
+        "VioGpuNativeStartVirtioConfig": 0x0380,
+        "VioGpuNativeStartHostVisibleRegion": 0x0400,
+        "VioGpuNativeStartQueueBuffer": 0x0410,
+        "VioGpuNativeStartResourceIds": 0x0420,
+        "VioGpuNativeStartQueueInterrupts": 0x0430,
+        "VioGpuNativeStartDriverReady": 0x0440,
+        "VioGpuNativeStartSynchronousRequests": 0x0450,
+        "VioGpuNativeStartCapsetFeatureState": 0x0500,
+        "VioGpuNativeStartCapsetCount": 0x0510,
+        "VioGpuNativeStartCapsetInfoQuery": 0x0520,
+        "VioGpuNativeStartCapsetInfoUnique": 0x0530,
+        "VioGpuNativeStartCapsetInfoLayout": 0x0540,
+        "VioGpuNativeStartCapsetPayloadQuery": 0x0550,
+        "VioGpuNativeStartCapsetPayloadValidation": 0x0560,
+        "VioGpuNativeStartCapsetPublish": 0x0570,
+        "VioGpuNativeStartModeList": 0x0600,
+        "VioGpuNativeStartFrameSegment": 0x0610,
+        "VioGpuNativeStartCursorSegment": 0x0620,
+        "VioGpuNativeStartWorkThread": 0x0700,
+        "VioGpuNativeStartCompleteInitialization": 0x0710,
+        "VioGpuNativeStartHardwareInformation": 0x0800,
+        "VioGpuNativeStartPostDisplayOwnership": 0x0810,
+        "VioGpuNativeStartFinalState": 0x0820,
+        "VioGpuNativeStartComplete": 0x0FFF,
+    }
+    observed_stages = {
+        name: int(value, 16)
+        for name, value in re.findall(
+            r"\b(VioGpuNativeStart[A-Za-z0-9]+)\s*=\s*(0x[0-9A-Fa-f]+)\s*,",
+            VIOGPU_HEADER_SOURCE,
+        )
+        if not name.startswith("VioGpuNativeStartDetail")
+    }
+    if observed_stages != expected_stages:
+        fail(f"native StartDevice diagnostic stage ABI drifted: {observed_stages}")
+    if len(set(observed_stages.values())) != len(observed_stages):
+        fail("native StartDevice diagnostic stage values must remain unique")
+    for stage in expected_stages:
+        if len(re.findall(rf"\b{stage}\b", VIOGPU_SOURCE + VIOGPU_HEADER_SOURCE)) < 2:
+            fail(f"native StartDevice diagnostic stage is defined but not recorded: {stage}")
+
+    required_details = (
+        "VioGpuNativeStartDetailMissingVirgl",
+        "VioGpuNativeStartDetailMissingResourceBlob",
+        "VioGpuNativeStartDetailMissingContextInit",
+        "VioGpuNativeStartDetailMissingGuestHandle",
+        "VioGpuNativeStartDetailInvalidWireVersion",
+        "VioGpuNativeStartDetailInvalidContextType",
+        "VioGpuNativeStartDetailInvalidPadding",
+        "VioGpuNativeStartDetailInvalidMsmVersion",
+        "VioGpuNativeStartDetailInvalidPriorities",
+        "VioGpuNativeStartDetailInvalidVaStart",
+        "VioGpuNativeStartDetailInvalidVaSize",
+        "VioGpuNativeStartDetailInvalidVaRange",
+    )
+    for detail in required_details:
+        if len(re.findall(rf"\b{detail}\b", VIOGPU_SOURCE + VIOGPU_HEADER_SOURCE)) < 2:
+            fail(f"native StartDevice diagnostic detail is not populated: {detail}")
+
+    recorder = function_body("VioGpuDod::RecordNativeStartDiagnostic", VIOGPU_SOURCE)
+    if "IoOpenDeviceRegistryKey" not in recorder or "PLUGPLAY_REGKEY_DRIVER" not in recorder:
+        fail("native StartDevice diagnostics must persist on the device driver registry key")
+    writes = (
+        'WriteRegistryDWORD(deviceKey, L"NativeStartStatus", &statusValue)',
+        'WriteRegistryDWORD(deviceKey, L"NativeStartDetail", &detail)',
+        'WriteRegistryDWORD(deviceKey, L"NativeStartStage", &stageValue)',
+    )
+    write_offsets = [compact_code(recorder).find(compact_code(write)) for write in writes]
+    if any(offset < 0 for offset in write_offsets) or write_offsets != sorted(write_offsets):
+        fail("native StartDevice diagnostic must write status/detail before the stage commit marker")
+    if recorder.count("ZwClose(deviceKey)") != 1:
+        fail("native StartDevice diagnostic must close exactly one device registry handle")
+    if not re.search(
+        r"\bVOID\s+VioGpuDod::RecordNativeStartDiagnostic\s*\(", VIOGPU_SOURCE
+    ):
+        fail("native StartDevice diagnostic must remain a best-effort void operation")
+
+    start = function_body("VioGpuDod::StartDevice", VIOGPU_CODE)
+    if not re.search(
+        r"VIOGPU_RECORD_NATIVE_START\s*\(\s*this\s*,\s*VioGpuNativeStartComplete\s*,"
+        r"\s*STATUS_SUCCESS\s*,\s*VioGpuNativeStartDetailNone\s*\)",
+        start,
+        re.DOTALL,
+    ):
+        fail("successful StartDevice must publish the terminal native-start breadcrumb")
+    unwind = function_body("VioGpuDod::UnwindFailedStart", VIOGPU_CODE)
+    if "VIOGPU_RECORD_NATIVE_START" in unwind:
+        fail("failed-start unwind must not overwrite the root-cause native-start breadcrumb")
+
+    if not START_DIAGNOSTIC_SCRIPT_PATH.is_file():
+        fail("native StartDevice diagnostic reader is missing")
+    reader = START_DIAGNOSTIC_SCRIPT_PATH.read_text(encoding="utf-8")
+    reader_stage_block = re.search(
+        r"^\$stageNames\s*=\s*@\{(?P<body>.*?)^\}", reader, re.MULTILINE | re.DOTALL
+    )
+    if reader_stage_block is None:
+        fail("native StartDevice diagnostic reader stage map is missing")
+    reader_stages = {
+        int(value, 16): name
+        for value, name in re.findall(
+            r"^\s*(0x[0-9A-Fa-f]+)\s*=\s*'([A-Za-z0-9]+)'\s*$",
+            reader_stage_block.group("body"),
+            re.MULTILINE,
+        )
+    }
+    expected_reader_stages = {
+        value: name.removeprefix("VioGpuNativeStart") for name, value in expected_stages.items()
+    }
+    if reader_stages != expected_reader_stages:
+        fail(f"native StartDevice diagnostic reader stage map drifted: {reader_stages}")
+    for value_name in ("NativeStartStage", "NativeStartStatus", "NativeStartDetail"):
+        if reader.count(value_name) < 2:
+            fail(f"native StartDevice diagnostic reader must require and report {value_name}")
+    if re.search(r"\b(?:Set-ItemProperty|New-ItemProperty|Remove-ItemProperty|pnputil|devcon)\b", reader, re.IGNORECASE):
+        fail("native StartDevice diagnostic reader must remain read-only")
+
+
 def check_registration_helper(sources: dict[Path, str]) -> None:
     helper_definitions = list(
         re.finditer(
@@ -1147,13 +1285,16 @@ def check_native_context_readiness(
     ):
         fail("readiness probe must accept host capsets larger than the 112-byte Windows prefix")
 
-    selection_sequence = (
-        "if(info.capset_id!=VIRTIO_GPU_CAPSET_DRM){continue;}"
-        "if(found){returnSTATUS_NOT_SUPPORTED;}"
-        "selectedInfo=info;found=TRUE;"
+    selection = re.search(
+        r"if\(info\.capset_id!=VIRTIO_GPU_CAPSET_DRM\)\{continue;\}"
+        r"if\(found\)\{(?P<duplicate>.*?)returnSTATUS_NOT_SUPPORTED;\}"
+        r"selectedInfo=info;found=TRUE;",
+        probe_compact,
     )
-    if selection_sequence not in probe_compact:
+    if selection is None:
         fail("readiness probe must select exactly one capset ID 6")
+    if "VioGpuNativeStartCapsetInfoUnique" not in selection.group("duplicate"):
+        fail("duplicate capset ID 6 rejection must retain its diagnostic stage")
 
     ready_assignments = re.findall(r"\bm_NativeContextReadiness\s*\.\s*Ready\s*=\s*TRUE\s*;", viogpu_code)
     if len(ready_assignments) != 1:
@@ -6913,36 +7054,51 @@ def check_adapter_lifecycle() -> None:
 
     start = function_body("VioGpuDod::StartDevice", VIOGPU_CODE)
     start_compact = canonical_code(start)
-    active_guard = "if(IsDriverActive()){returnSTATUS_ALREADY_INITIALIZED;}"
     allocation = "m_pHWDevice=new(NonPagedPoolNx)VioGpuAdapter(this);"
+    active_blocks = [
+        (body, start_offset)
+        for condition, body, start_offset, _ in if_blocks(start)
+        if canonical_code(condition) == "IsDriverActive()"
+        and canonical_code(body).endswith("returnSTATUS_ALREADY_INITIALIZED;")
+    ]
     retained_blocks = [
         start_offset
         for condition, body, start_offset, _ in if_blocks(start)
         if canonical_code(condition) in ("m_pHWDevice!=NULL", "m_pHWDevice")
-        and canonical_code(body) == "returnSTATUS_DEVICE_NOT_READY;"
+        and canonical_code(body).endswith("returnSTATUS_DEVICE_NOT_READY;")
     ]
-    if start_compact.count(active_guard) != 1:
+    if len(active_blocks) != 1 or "VioGpuNativeStartPreconditions" not in active_blocks[0][0]:
         fail("StartDevice must reject reentry while the retained adapter is still active")
     if len(retained_blocks) != 1 or start_compact.count(allocation) != 1:
         fail("StartDevice must reject a retained adapter before allocating its replacement")
     mode_reset = start_compact.find("RtlZeroMemory(&m_CurrentMode,sizeof(m_CurrentMode))")
     interface_copy = start_compact.find("RtlCopyMemory(&m_DxgkInterface")
     allocation_offset = start_compact.find(allocation)
+    active_offset = len(canonical_code(start[: active_blocks[0][1]]))
     retained_offset = len(canonical_code(start[: retained_blocks[0]]))
     if min(mode_reset, interface_copy, allocation_offset) < 0 or not (
-        start_compact.find(active_guard) < retained_offset < interface_copy < mode_reset < allocation_offset
+        active_offset < retained_offset < interface_copy < mode_reset < allocation_offset
     ):
         fail("StartDevice must reject retained ownership before replacing DXGK or mode state")
 
-    begin_recovery = (
+    initial_recovery = (
         "LONGstartResetState=InterlockedCompareExchange(&m_HardwareResetState,"
         "VioGpuHardwareRecovering,VioGpuHardwareActive);"
+    )
+    stopped_recovery = (
         "if(startResetState==VioGpuHardwareResetRequested){"
         "startResetState=InterlockedCompareExchange(&m_HardwareResetState,"
         "VioGpuHardwareRecovering,VioGpuHardwareResetRequested);}"
-        "if(startResetState!=VioGpuHardwareActive&&startResetState!=VioGpuHardwareResetRequested)"
-        "{returnSTATUS_DEVICE_NOT_READY;}"
     )
+    recovery_reject_condition = (
+        "startResetState!=VioGpuHardwareActive&&startResetState!=VioGpuHardwareResetRequested"
+    )
+    recovery_reject_blocks = [
+        (body, start_offset)
+        for condition, body, start_offset, _ in if_blocks(start)
+        if canonical_code(condition) == recovery_reject_condition
+        and canonical_code(body).endswith("returnSTATUS_DEVICE_NOT_READY;")
+    ]
     rollback_recovery = (
         "InterlockedCompareExchange(&m_HardwareResetState,startResetState,"
         "VioGpuHardwareRecovering);"
@@ -6953,11 +7109,18 @@ def check_adapter_lifecycle() -> None:
     )
     final_publish_offset = start_compact.find(final_publish, allocation_offset)
     started_offset = start_compact.find("m_Flags.DriverStarted=TRUE;", final_publish_offset)
+    initial_recovery_offset = start_compact.find(initial_recovery)
+    stopped_recovery_offset = start_compact.find(stopped_recovery, initial_recovery_offset)
+    recovery_reject_offset = (
+        len(canonical_code(start[: recovery_reject_blocks[0][1]])) if len(recovery_reject_blocks) == 1 else -1
+    )
     if (
-        start_compact.count(begin_recovery) != 1
+        start_compact.count(initial_recovery) != 1
+        or start_compact.count(stopped_recovery) != 1
+        or len(recovery_reject_blocks) != 1
         or start_compact.count(rollback_recovery) != 3
         or start_compact.count(final_publish) != 1
-        or not retained_offset < start_compact.find(begin_recovery) < interface_copy
+        or not retained_offset < initial_recovery_offset < stopped_recovery_offset < recovery_reject_offset < interface_copy
         or final_publish_offset < allocation_offset
         or started_offset < final_publish_offset
     ):
@@ -6965,13 +7128,24 @@ def check_adapter_lifecycle() -> None:
 
     allocation_failure_end = start.find("Status = GetRegisterInfo()")
     pre_adapter_failures = start[:allocation_failure_end]
-    rollback_returns = re.findall(
-        r"\bInterlockedCompareExchange\s*\(\s*&m_HardwareResetState\s*,\s*startResetState\s*,\s*"
-        r"VioGpuHardwareRecovering\s*\)\s*;\s*return\s+(?:Status|STATUS_GRAPHICS_DRIVER_MISMATCH)\s*;",
-        pre_adapter_failures,
-        re.DOTALL,
-    )
-    if len(rollback_returns) != 3:
+    rollback_offsets = [
+        match.start()
+        for match in re.finditer(
+            r"\bInterlockedCompareExchange\s*\(\s*&m_HardwareResetState\s*,\s*startResetState\s*,\s*"
+            r"VioGpuHardwareRecovering\s*\)\s*;",
+            pre_adapter_failures,
+            re.DOTALL,
+        )
+    ]
+    rollback_returns = []
+    for offset in rollback_offsets:
+        return_match = re.search(
+            r"\breturn\s+(?:Status|STATUS_GRAPHICS_DRIVER_MISMATCH)\s*;",
+            pre_adapter_failures[offset:],
+        )
+        if return_match is not None:
+            rollback_returns.append(return_match.group(0))
+    if len(rollback_offsets) != 3 or len(rollback_returns) != 3:
         fail("every pre-adapter StartDevice failure must roll back only its own Recovering claim")
 
     failed_start_cleanup = re.findall(
@@ -7569,6 +7743,7 @@ def main() -> None:
     check_viogpudo_code_segment_contract()
     check_arm64_workflow_contract()
     check_retired_pool_absence()
+    check_native_start_diagnostics()
     check_registration_helper(sources)
     check_callback_table()
     check_virtio_reset_contract()
