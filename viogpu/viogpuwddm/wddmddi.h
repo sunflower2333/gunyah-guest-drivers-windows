@@ -44,7 +44,11 @@ enum : USHORT
 
 enum : UINT
 {
-    VioGpuWddmSubmissionAllocationLimit = 128,
+    /* Legacy MSM submits must carry every live BO because shader-visible raw
+     * IOVAs do not provide a complete resource dependency graph.  This value
+     * matches the UMD and still fits, with 256 command records, in the 64 KiB
+     * Native Context DMA buffer. */
+    VioGpuWddmSubmissionAllocationLimit = 1024,
     /* Keep the context-scoped UMD fence queue bounded at the same order of
      * magnitude as the Host scheduler tracker.  A full queue fails closed
      * instead of allowing an untracked completion endpoint. */
@@ -72,7 +76,6 @@ struct VIOGPU_WDDM_PAGING_DMA_PACKET
     UINT Reserved;
     ULONGLONG ResetGeneration;
     ULONGLONG PlacementOffset;
-    ULONGLONG PoolGeneration;
     ULONGLONG TransferOffset;
     ULONGLONG TransferSize;
 };
@@ -89,14 +92,12 @@ struct VIOGPU_WDDM_PRESENT_DMA_PACKET
     UINT Reserved;
     ULONGLONG SourcePlacementOffset;
     ULONGLONG DestinationPlacementOffset;
-    ULONGLONG SourcePoolGeneration;
-    ULONGLONG DestinationPoolGeneration;
     ULONGLONG DestinationResetGeneration;
 };
 
 static_assert(sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) == 72, "unexpected WDDM DMA private size");
-static_assert(sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET) == 72, "unexpected WDDM paging packet size");
-static_assert(sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) == 72, "unexpected WDDM present packet size");
+static_assert(sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET) == 64, "unexpected WDDM paging packet size");
+static_assert(sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) == 56, "unexpected WDDM present packet size");
 
 struct VIOGPU_WDDM_DEBUG_SNAPSHOT
 {
@@ -129,25 +130,11 @@ struct VIOGPU_WDDM_ALLOCATION_RANGE
     BOOLEAN Linked;
 };
 
-struct VIOGPU_WDDM_PAGING_RANGE
-{
-    LIST_ENTRY Link;
-    SIZE_T Offset;
-    SIZE_T Length;
-};
-
 enum VIOGPU_WDDM_ALLOCATION_HOST_STATE : LONG
 {
     VioGpuWddmAllocationHostNone = 0,
     VioGpuWddmAllocationHostLive,
     VioGpuWddmAllocationHostUnknown,
-};
-
-enum VIOGPU_WDDM_ALLOCATION_PAGING_STATE : LONG
-{
-    VioGpuWddmAllocationPagingIdle = 0,
-    VioGpuWddmAllocationPagingIn,
-    VioGpuWddmAllocationPagingOut,
 };
 
 struct VIOGPU_WDDM_ALLOCATION
@@ -172,17 +159,19 @@ struct VIOGPU_WDDM_ALLOCATION
     VIOGPU_2D_RESOURCE_STATE Resource2DState;
     ULONGLONG Resource2DResetGeneration;
     ULONGLONG PlacementOffset;
-    ULONGLONG PoolGeneration;
+    PPFN_NUMBER AperturePfns;
+    PUCHAR ApertureMappedPages;
+    SIZE_T AperturePageCount;
+    SIZE_T ApertureMappedPageCount;
+    SIZE_T ApertureBasePage;
+    PMDL ApertureMdl;
+    PVOID ApertureAddress;
     VIOGPU_WDDM_ALLOCATION_HOST_STATE HostState;
     LONG BoundGeneration;
     ULONGLONG BoundResetGeneration;
     UINT BoundContextId;
     BOOLEAN PlacementValid;
-    VIOGPU_WDDM_ALLOCATION_PAGING_STATE PagingState;
-    ULONGLONG PagingPlacementOffset;
-    ULONGLONG PagingPoolGeneration;
-    LIST_ENTRY PagingRanges;
-    SIZE_T PagingCoveredBytes;
+    BOOLEAN ApertureBaseValid;
     UINT Pitch;
     UINT Width;
     UINT Height;
@@ -218,7 +207,6 @@ struct VIOGPU_WDDM_PAGING_TRANSACTION
     SIZE_T TransferOffset;
     SIZE_T TransferSize;
     ULONGLONG PlacementOffset;
-    ULONGLONG PoolGeneration;
     UINT ResourceId;
     UINT ContextId;
     LONG ContextGeneration;
@@ -346,9 +334,7 @@ struct VIOGPU_WDDM_PRESENT_TRANSACTION
     RECT *DestinationSubRects;
     UINT RectCount;
     ULONGLONG SourcePlacementOffset;
-    ULONGLONG SourcePoolGeneration;
     ULONGLONG DestinationPlacementOffset;
-    ULONGLONG DestinationPoolGeneration;
     ULONGLONG DestinationResetGeneration;
     UINT FenceId;
     BOOLEAN FullyPrepatched;
@@ -404,8 +390,7 @@ struct VIOGPU_WDDM_SUBMISSION
     BOOLEAN PatchApplied;
     BOOLEAN FullyPrepatched;
     UINT AllocationCount;
-    VIOGPU_WDDM_ALLOCATION *Allocations[VioGpuWddmSubmissionAllocationLimit];
-    VIOGPU_WDDM_SUBMISSION_REFERENCE References[VioGpuWddmSubmissionAllocationLimit];
+    VIOGPU_WDDM_SUBMISSION_REFERENCE *References;
 };
 
 struct VIOGPU_WDDM_OPEN_ALLOCATION

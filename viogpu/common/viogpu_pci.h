@@ -8,7 +8,7 @@
 class CPciBar
 {
   public:
-    CPciBar(PHYSICAL_ADDRESS BasePA, ULONG uSize, bool bPortSpace, bool bIoMapped)
+    CPciBar(PHYSICAL_ADDRESS BasePA, ULONGLONG uSize, bool bPortSpace, bool bIoMapped)
         : m_BasePA(BasePA), m_uSize(uSize), m_BaseVA(nullptr), m_bPortSpace(bPortSpace), m_bIoMapped(bIoMapped)
     {
         ASSERT(!m_bPortSpace || m_BasePA.HighPart == 0);
@@ -23,7 +23,7 @@ class CPciBar
         ASSERT(m_BaseVA == nullptr);
     }
 
-    ULONG GetSize()
+    ULONGLONG GetSize() const
     {
         return m_uSize;
     }
@@ -46,7 +46,7 @@ class CPciBar
 
   private:
     PHYSICAL_ADDRESS m_BasePA;
-    ULONG m_uSize;
+    ULONGLONG m_uSize;
     PVOID m_BaseVA;
     bool m_bPortSpace;
     bool m_bIoMapped;
@@ -57,7 +57,7 @@ class CPciResources
   public:
     CPciResources()
         : m_pDxgkInterface(nullptr), m_InterruptFlags(0), m_InterruptMessageCount(0),
-          m_InterruptMessageCountKnown(FALSE)
+          m_InterruptMessageCountKnown(FALSE), m_HostVisibleBar(MAXUINT), m_HostVisibleOffset(0), m_HostVisibleSize(0)
     {
     }
 
@@ -77,7 +77,7 @@ class CPciResources
     bool Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pResList);
     NTSTATUS Close(void);
 
-    ULONG GetBarSize(UINT bar)
+    ULONGLONG GetBarSize(UINT bar)
     {
         ASSERT(bar < PCI_TYPE0_ADDRESSES);
         return m_Bars[bar].GetSize();
@@ -114,12 +114,20 @@ class CPciResources
     }
 
     PVOID GetMappedAddress(UINT bar, ULONG uOffset);
+    BOOLEAN QueryHostVisibleRegion(_Out_ PUINT bar, _Out_ PULONGLONG offset, _Out_ PULONGLONG size) const;
+    NTSTATUS MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
+                                   _In_ SIZE_T length,
+                                   _Outptr_result_bytebuffer_(length) PVOID *address);
+    NTSTATUS UnmapHostVisibleAddress(_In_ PVOID address);
 
   private:
     PDXGKRNL_INTERFACE m_pDxgkInterface;
     USHORT m_InterruptFlags;
     ULONG m_InterruptMessageCount;
     BOOLEAN m_InterruptMessageCountKnown;
+    UINT m_HostVisibleBar;
+    ULONGLONG m_HostVisibleOffset;
+    ULONGLONG m_HostVisibleSize;
     CPciBar m_Bars[PCI_TYPE0_ADDRESSES];
 };
 

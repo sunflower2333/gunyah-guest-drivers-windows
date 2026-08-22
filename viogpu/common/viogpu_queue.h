@@ -135,6 +135,7 @@ enum VIOGPU_2D_RESOURCE_STATE : LONG
 #define MAX_INLINE_RESP_SIZE            24
 #define VBUFFER_SIZE                    (sizeof(GPU_VBUFFER) + MAX_INLINE_CMD_SIZE + MAX_INLINE_RESP_SIZE)
 #define VIOGPU_NATIVE_CONTROL_BLOB_SIZE 0x4000U
+#define VIOGPU_MAX_BACKING_ENTRIES      16384U
 
 class VioGpuBuf
 {
@@ -340,8 +341,9 @@ class CtrlQueue : public VioGpuQueue
                                                      UINT blob_id,
                                                      ULONGLONG size,
                                                      UINT blob_flags,
-                                                     const GPU_MEM_ENTRY *entry);
-    VIOGPU_HOST_CONTEXT_RESULT MapNativeControlBlob(UINT resource_id, _Out_ PULONG pool_offset);
+                                                     const GPU_MEM_ENTRY *entries,
+                                                     UINT entry_count);
+    VIOGPU_HOST_CONTEXT_RESULT MapNativeControlBlob(UINT resource_id, ULONGLONG offset);
     VIOGPU_HOST_CONTEXT_RESULT UnmapNativeControlBlob(UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT UnrefNativeResource(UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT SubmitNativeControl(UINT context_id, const void *command, UINT command_size);

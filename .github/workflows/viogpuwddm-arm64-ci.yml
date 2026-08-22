@@ -14,7 +14,6 @@ on:
       - "viogpu/viogpudo/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
-      - "droidvmpool/**"
       - "NetKVM/Common/**"
       - "NetKVM/wlh/**"
       - "NetKVM/NetKVM-VS2015.vcxproj"
@@ -31,7 +30,6 @@ on:
       - "viogpu/viogpudo/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
-      - "droidvmpool/**"
       - "NetKVM/Common/**"
       - "NetKVM/wlh/**"
       - "NetKVM/NetKVM-VS2015.vcxproj"
@@ -133,21 +131,9 @@ jobs:
         shell: cmd
         run: viogpu\tests\wddm-private-abi\run-msvc.cmd
 
-      - name: Check DroidVM pool provider ABI
-        shell: cmd
-        run: droidvmpool\tests\interface-abi\run-msvc.cmd
-
       - name: Check Native Context full-miniport contract
         shell: pwsh
         run: python viogpu/viogpuwddm/check-contract.py
-
-      - name: Check DroidVM pool provider contract
-        shell: pwsh
-        run: python droidvmpool/check-contract.py
-
-      - name: Check viogpu named-pool client contract
-        shell: pwsh
-        run: python viogpu/viogpuwddm/check-named-pool.py
 
       - name: Build shared dependencies and guest drivers
         shell: pwsh
@@ -164,7 +150,6 @@ jobs:
             @{ Path = 'VirtIO/WDF/VirtioLib-WDF.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'NetKVM/CoInstaller/netkvmco-vs2015.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'NetKVM/ProtocolService/ProtocolService.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
-            @{ Path = 'droidvmpool/droidvmpool.vcxproj'; Configuration = 'Release'; Platform = 'ARM64' },
             @{ Path = 'viostor/viostor.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'vioscsi/vioscsi.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'NetKVM/NetKVM-VS2015.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' }

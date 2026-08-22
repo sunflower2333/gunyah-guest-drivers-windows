@@ -215,7 +215,8 @@ PAGED_CODE_SEG_END
 size_t pci_get_resource_len(void *context, int bar)
 {
     IVioGpuPCI *pdev = static_cast<IVioGpuPCI *>(context);
-    return pdev->GetPciResources()->GetBarSize(bar);
+    ULONGLONG size = pdev->GetPciResources()->GetBarSize(bar);
+    return size > MAXULONG_PTR ? MAXULONG_PTR : static_cast<size_t>(size);
 }
 
 void *pci_map_address_range(void *context, int bar, size_t offset, size_t maxlen)
@@ -291,6 +292,11 @@ VirtIOSystemOps VioGpuSystemOps = {
 PVOID CPciBar::GetVA(PDXGKRNL_INTERFACE pDxgkInterface)
 {
     NTSTATUS Status;
+    if (m_uSize == 0 || m_uSize > MAXULONG)
+    {
+        return nullptr;
+    }
+    ULONG length = static_cast<ULONG>(m_uSize);
     if (m_BaseVA == nullptr)
     {
         if (m_bPortSpace)
@@ -299,7 +305,7 @@ PVOID CPciBar::GetVA(PDXGKRNL_INTERFACE pDxgkInterface)
             {
                 Status = pDxgkInterface->DxgkCbMapMemory(pDxgkInterface->DeviceHandle,
                                                          m_BasePA,
-                                                         m_uSize,
+                                                         length,
                                                          TRUE,
                                                          FALSE,
                                                          MmNonCached,
@@ -324,7 +330,7 @@ PVOID CPciBar::GetVA(PDXGKRNL_INTERFACE pDxgkInterface)
         {
             Status = pDxgkInterface->DxgkCbMapMemory(pDxgkInterface->DeviceHandle,
                                                      m_BasePA,
-                                                     m_uSize,
+                                                     length,
                                                      FALSE,
                                                      FALSE,
                                                      MmNonCached,
@@ -392,6 +398,9 @@ NTSTATUS CPciResources::Close(void)
     m_InterruptFlags = 0;
     m_InterruptMessageCount = 0;
     m_InterruptMessageCountKnown = FALSE;
+    m_HostVisibleBar = MAXUINT;
+    m_HostVisibleOffset = 0;
+    m_HostVisibleSize = 0;
     m_pDxgkInterface = nullptr;
     return STATUS_SUCCESS;
 }
@@ -513,12 +522,44 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
                     }
                     break;
                 case CmResourceTypeMemory:
+                case CmResourceTypeMemoryLarge:
                     {
-                        PHYSICAL_ADDRESS Start = pResDescriptor->u.Port.Start;
-                        ULONG len = pResDescriptor->u.Port.Length;
+                        PHYSICAL_ADDRESS Start = {};
+                        ULONGLONG len = 0;
+                        if (pResDescriptor->Type == CmResourceTypeMemory)
+                        {
+                            Start = pResDescriptor->u.Memory.Start;
+                            len = pResDescriptor->u.Memory.Length;
+                        }
+                        else
+                        {
+                            switch (pResDescriptor->Flags & CM_RESOURCE_MEMORY_LARGE)
+                            {
+                                case CM_RESOURCE_MEMORY_LARGE_40:
+                                    Start = pResDescriptor->u.Memory40.Start;
+                                    len = static_cast<ULONGLONG>(pResDescriptor->u.Memory40.Length40) << 8;
+                                    break;
+                                case CM_RESOURCE_MEMORY_LARGE_48:
+                                    Start = pResDescriptor->u.Memory48.Start;
+                                    len = static_cast<ULONGLONG>(pResDescriptor->u.Memory48.Length48) << 16;
+                                    break;
+                                case CM_RESOURCE_MEMORY_LARGE_64:
+                                    Start = pResDescriptor->u.Memory64.Start;
+                                    len = static_cast<ULONGLONG>(pResDescriptor->u.Memory64.Length64) << 32;
+                                    break;
+                                default:
+                                    break;
+                            }
+                        }
+                        if (len == 0)
+                        {
+                            DbgPrint(TRACE_LEVEL_ERROR,
+                                     ("Unsupported or empty memory resource flags 0x%X\n", pResDescriptor->Flags));
+                            break;
+                        }
                         bar = virtio_get_bar_index(&pci_config, Start);
                         DbgPrint(TRACE_LEVEL_FATAL,
-                                 ("Found IO memory at %08I64X(%d) bar %d\n", Start.QuadPart, len, bar));
+                                 ("Found IO memory at %08I64X(%I64u) bar %d\n", Start.QuadPart, len, bar));
                         if (bar < 0)
                         {
                             break;
@@ -546,7 +587,109 @@ bool CPciResources::Init(PDXGKRNL_INTERFACE pDxgkInterface, PCM_RESOURCE_LIST pR
         DbgPrint(TRACE_LEVEL_FATAL, ("[%s] resource enumeration failed\n", __FUNCTION__));
         return false;
     }
+
+    UCHAR capabilityOffset = pci_config.u.type0.CapabilitiesPtr;
+    for (UINT capabilityCount = 0; capabilityOffset >= sizeof(PCI_COMMON_HEADER) && capabilityCount < 48;
+         ++capabilityCount)
+    {
+        struct virtio_pci_cap64 capability = {};
+        BytesRead = 0;
+        Status = m_pDxgkInterface->DxgkCbReadDeviceSpace(m_pDxgkInterface->DeviceHandle,
+                                                         DXGK_WHICHSPACE_CONFIG,
+                                                         &capability,
+                                                         capabilityOffset,
+                                                         sizeof(capability),
+                                                         &BytesRead);
+        if (!NT_SUCCESS(Status) || BytesRead < sizeof(struct virtio_pci_cap))
+        {
+            break;
+        }
+
+        UCHAR nextOffset = capability.cap.cap_next;
+        if (capability.cap.cap_vndr == PCI_CAPABILITY_ID_VENDOR_SPECIFIC &&
+            capability.cap.cap_len >= sizeof(capability) &&
+            capability.cap.cfg_type == VIRTIO_PCI_CAP_SHARED_MEMORY_CFG && capability.cap.id == 1 &&
+            capability.cap.bar < PCI_TYPE0_ADDRESSES && BytesRead == sizeof(capability))
+        {
+            ULONGLONG regionOffset = (static_cast<ULONGLONG>(capability.offset_hi) << 32) | capability.cap.offset;
+            ULONGLONG regionSize = (static_cast<ULONGLONG>(capability.length_hi) << 32) | capability.cap.length;
+            ULONGLONG barSize = m_Bars[capability.cap.bar].GetSize();
+            if (regionSize >= PAGE_SIZE && (regionSize & (PAGE_SIZE - 1)) == 0 && regionOffset <= barSize &&
+                regionSize <= barSize - regionOffset && (regionOffset & (PAGE_SIZE - 1)) == 0)
+            {
+                m_HostVisibleBar = capability.cap.bar;
+                m_HostVisibleOffset = regionOffset;
+                m_HostVisibleSize = regionSize;
+            }
+            break;
+        }
+
+        if (nextOffset == 0 || nextOffset == capabilityOffset || (nextOffset & (sizeof(ULONG) - 1)) != 0)
+        {
+            break;
+        }
+        capabilityOffset = nextOffset;
+    }
     return true;
+}
+
+BOOLEAN CPciResources::QueryHostVisibleRegion(_Out_ PUINT bar, _Out_ PULONGLONG offset, _Out_ PULONGLONG size) const
+{
+    if (bar == NULL || offset == NULL || size == NULL || m_HostVisibleBar >= PCI_TYPE0_ADDRESSES ||
+        m_HostVisibleSize < PAGE_SIZE)
+    {
+        return FALSE;
+    }
+    *bar = m_HostVisibleBar;
+    *offset = m_HostVisibleOffset;
+    *size = m_HostVisibleSize;
+    return TRUE;
+}
+
+NTSTATUS CPciResources::MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
+                                              _In_ SIZE_T length,
+                                              _Outptr_result_bytebuffer_(length) PVOID *address)
+{
+    if (address == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *address = NULL;
+    if (m_pDxgkInterface == nullptr || m_pDxgkInterface->DxgkCbMapMemory == nullptr ||
+        m_HostVisibleBar >= PCI_TYPE0_ADDRESSES || length == 0 || length > MAXULONG ||
+        (length & (PAGE_SIZE - 1)) != 0 || (regionOffset & (PAGE_SIZE - 1)) != 0 || regionOffset > m_HostVisibleSize ||
+        length > m_HostVisibleSize - regionOffset || m_HostVisibleOffset > MAXULONGLONG - regionOffset)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    ULONGLONG barOffset = m_HostVisibleOffset + regionOffset;
+    ULONGLONG barSize = m_Bars[m_HostVisibleBar].GetSize();
+    PHYSICAL_ADDRESS barAddress = m_Bars[m_HostVisibleBar].GetPA();
+    if (barAddress.QuadPart < 0 || barOffset > barSize || length > barSize - barOffset ||
+        static_cast<ULONGLONG>(barAddress.QuadPart) > MAXULONGLONG - barOffset)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    PHYSICAL_ADDRESS physicalAddress = {};
+    physicalAddress.QuadPart = static_cast<LONGLONG>(static_cast<ULONGLONG>(barAddress.QuadPart) + barOffset);
+    return m_pDxgkInterface->DxgkCbMapMemory(m_pDxgkInterface->DeviceHandle,
+                                             physicalAddress,
+                                             static_cast<ULONG>(length),
+                                             FALSE,
+                                             FALSE,
+                                             MmCached,
+                                             address);
+}
+
+NTSTATUS CPciResources::UnmapHostVisibleAddress(_In_ PVOID address)
+{
+    if (address == NULL || m_pDxgkInterface == nullptr || m_pDxgkInterface->DxgkCbUnmapMemory == nullptr)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    return m_pDxgkInterface->DxgkCbUnmapMemory(m_pDxgkInterface->DeviceHandle, address);
 }
 
 PVOID CPciResources::GetMappedAddress(UINT bar, ULONG uOffset)

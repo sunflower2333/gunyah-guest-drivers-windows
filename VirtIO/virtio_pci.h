@@ -93,22 +93,24 @@
 #endif /* VIRTIO_PCI_NO_LEGACY */
 
 /* The bit of the ISR which indicates a device configuration change. */
-#define VIRTIO_PCI_ISR_CONFIG     0x2
+#define VIRTIO_PCI_ISR_CONFIG            0x2
 /* Vector value used to disable MSI for queue */
-#define VIRTIO_MSI_NO_VECTOR      0xffff
+#define VIRTIO_MSI_NO_VECTOR             0xffff
 
 /* IDs for different capabilities.  Must all exist. */
 
 /* Common configuration */
-#define VIRTIO_PCI_CAP_COMMON_CFG 1
+#define VIRTIO_PCI_CAP_COMMON_CFG        1
 /* Notifications */
-#define VIRTIO_PCI_CAP_NOTIFY_CFG 2
+#define VIRTIO_PCI_CAP_NOTIFY_CFG        2
 /* ISR access */
-#define VIRTIO_PCI_CAP_ISR_CFG    3
+#define VIRTIO_PCI_CAP_ISR_CFG           3
 /* Device specific configuration */
-#define VIRTIO_PCI_CAP_DEVICE_CFG 4
+#define VIRTIO_PCI_CAP_DEVICE_CFG        4
 /* PCI configuration access */
-#define VIRTIO_PCI_CAP_PCI_CFG    5
+#define VIRTIO_PCI_CAP_PCI_CFG           5
+/* Additional shared memory capability */
+#define VIRTIO_PCI_CAP_SHARED_MEMORY_CFG 8
 
 /* This is the PCI capability header: */
 struct virtio_pci_cap {
@@ -117,9 +119,16 @@ struct virtio_pci_cap {
     __u8 cap_len;    /* Generic PCI field: capability length */
     __u8 cfg_type;   /* Identifies the structure. */
     __u8 bar;        /* Where to find it. */
-    __u8 padding[3]; /* Pad to full dword. */
+    __u8 id;         /* Multiple capabilities of the same type. */
+    __u8 padding[2]; /* Pad to full dword. */
     __le32 offset;   /* Offset within bar. */
     __le32 length;   /* Length of the structure, in bytes. */
+};
+
+struct virtio_pci_cap64 {
+    struct virtio_pci_cap cap;
+    __le32 offset_hi;
+    __le32 length_hi;
 };
 
 struct virtio_pci_notify_cap {

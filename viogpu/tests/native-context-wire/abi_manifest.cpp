@@ -118,10 +118,6 @@ struct abi_msm_ccmd_ioctl_simple_submitqueue_close_rsp
 #endif
 #endif
 
-#ifndef VIRTIO_GPU_MAP_INFO_POOL
-#define VIRTIO_GPU_MAP_INFO_POOL 0x80000000U
-#endif
-
 static void Emit(const char *name, unsigned long long value)
 {
     printf("%s=%llu\n", name, value);

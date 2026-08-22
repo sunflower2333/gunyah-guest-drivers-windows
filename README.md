@@ -6,16 +6,19 @@ hypervisor on an Android phone), on top of upstream virtio-win.
 
 ## How it works
 
-The DroidVM Native Context path uses the explicitly provisioned
-`drm2kgsl_host` and `gpu_guest` named pools. The viogpu compile-only target
-connects those providers before VirtIO initialization and keeps all pool
-ownership and teardown fail-closed. Ordinary VirtIO buffers use the stock
-nonpaged/contiguous allocation path.
+The DroidVM Native Context product path targets an unprotected VM. Ordinary
+VirtIO buffers use the upstream nonpaged/contiguous allocation path, while the
+full viogpu miniport receives ordinary guest RAM from VidMm and describes those
+pages to VirtIO GPU with standard scatter/gather backing.
 
 - **WDF drivers** (vioinput, ...) are routed centrally by
   `VirtIO/WDF` (Dma.c / VirtIOWdf.c).
-- **viogpu** contains the compile-only Windows Native Context contract for
-  the Turnip/crosvm path. It is not an installable product driver yet.
+- **viogpu** contains the Windows Native Context full-miniport source for the
+  Turnip/crosvm path. "Full miniport" identifies the registration/DDI model,
+  not a WDDM 1.2 capability claim: the current target uses the Win8 callback
+  table but reports the legacy `DXGKDDI_WDDMv1` profile. ARM64 source, build,
+  and package gates have passed; Windows/KMT/Host/GPU runtime remains
+  unverified, so the package is not approved for installation.
 
 ## Driver status
 
@@ -39,7 +42,7 @@ Legend:
 | Balloon | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viomem | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viofs | ⚠️ | VirtIO-WDF routing in place, data path unreviewed |
-| viogpu | ⚠️ | Native Context WDDM contract is compile-only and fail-closed |
+| viogpu | ⚠️ | Native Context full-miniport package is ARM64 build-validated, reports legacy `DXGKDDI_WDDMv1`, and remains runtime-unverified/do-not-install |
 | pvpanic | ❌ | not ported |
 | fwcfg  | ❌ | not ported |
 | ivshmem | ❌ | not ported |

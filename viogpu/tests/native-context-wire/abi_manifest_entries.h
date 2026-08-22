@@ -32,7 +32,6 @@ ABI_VALUE(virtio.blob_mem.host3d_guest, VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST, 3);
 ABI_VALUE(virtio.blob_flag.mappable, VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE, 1);
 ABI_VALUE(virtio.blob_flag.create_guest_handle, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, 8);
 ABI_VALUE(virtio.map.cache_cached, VIRTIO_GPU_MAP_CACHE_CACHED, 1);
-ABI_VALUE(virtio.map.pool, VIRTIO_GPU_MAP_INFO_POOL, 2147483648ULL);
 
 ABI_VALUE(msm.flag.scanout, MSM_BO_SCANOUT, 1);
 ABI_VALUE(msm.flag.gpu_read_only, MSM_BO_GPU_READONLY, 2);

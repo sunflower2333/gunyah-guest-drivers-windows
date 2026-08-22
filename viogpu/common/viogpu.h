@@ -176,7 +176,7 @@ typedef struct virtio_gpu_resp_map_info
 {
     GPU_CTRL_HDR hdr;
     ULONG map_info;
-    ULONG pool_offset;
+    ULONG padding;
 } GPU_RESP_MAP_INFO, *PGPU_RESP_MAP_INFO;
 #pragma pack()
 

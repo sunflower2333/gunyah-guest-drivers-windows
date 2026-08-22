@@ -31,9 +31,6 @@
 
 #include "viogpu.h"
 #include "viogpu_queue.h"
-#if defined(VIOGPU_NATIVE_CONTEXT)
-#include "viogpu_named_pool.h"
-#endif
 
 #pragma pack(push)
 #pragma pack(1)
@@ -143,10 +140,10 @@ struct VIOGPU_NATIVE_CONTEXT_OWNER
     volatile LONG AllocationCount;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     UINT ControlResourceId;
-    ULONG ControlPoolOffset;
+    ULONGLONG ControlBarOffset;
+    PVOID ControlAddress;
     ULONG ControlBlobSize;
     ULONG LastControlSeqno;
-    ULONGLONG ControlPoolGeneration;
     UINT SubmitQueueId;
     BOOLEAN ControlResourceCreated;
     BOOLEAN ControlMapped;
@@ -273,7 +270,6 @@ class VioGpuAdapter : IVioGpuPCI
         return m_FrameSegment.GetSize();
     }
     PDXGKRNL_INTERFACE GetDxgkInterface(void);
-    BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     /* Independent from the outer device rundown: D-state transitions keep
      * m_HardwareOperations open, but must still quiesce every WDDM native
@@ -282,17 +278,15 @@ class VioGpuAdapter : IVioGpuPCI
     void ReleaseNativeSubmitOperation(void) const;
     void CompleteNativeSubmitRundown(void);
     BOOLEAN ReinitializeNativeSubmitRundown(void);
-    BOOLEAN AcquireDrmHostPoolMapping(_Out_ VioGpuDrmHostPoolMapping *mapping) const;
-    BOOLEAN AcquireGpuGuestPoolMapping(_Out_ VioGpuGuestPoolMapping *mapping) const;
     UINT Allocate2DResourceId(void);
     BOOLEAN Release2DResourceId(_In_ UINT resourceId);
     VIOGPU_HOST_CONTEXT_RESULT Create2DResourceBacking(_In_ UINT resourceId,
                                                        _In_ UINT format,
                                                        _In_ UINT width,
                                                        _In_ UINT height,
-                                                       _In_ ULONGLONG placementOffset,
                                                        _In_ SIZE_T backingSize,
-                                                       _In_ ULONGLONG poolGeneration,
+                                                       _In_reads_(entryCount) const GPU_MEM_ENTRY *entries,
+                                                       _In_ UINT entryCount,
                                                        _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                        _Inout_ ULONGLONG *resourceResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
@@ -323,8 +317,8 @@ class VioGpuAdapter : IVioGpuPCI
                                                            _In_ ULONGLONG logicalSize,
                                                            _In_ SIZE_T backingSize,
                                                            _In_ ULONGLONG requestedIova,
-                                                           _In_ ULONGLONG segmentOffset,
-                                                           _In_ ULONGLONG poolGeneration,
+                                                           _In_reads_(entryCount) const GPU_MEM_ENTRY *entries,
+                                                           _In_ UINT entryCount,
                                                            _In_ UINT msmFlags,
                                                            _In_ UINT blobFlags,
                                                            _Out_ BOOLEAN *ownershipRetained);
@@ -423,7 +417,7 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS StopNativeContextTransportLocked(void);
     NTSTATUS SynchronizeInterruptMessages(void);
     void InvalidateNativeContextRegistrationsLocked(void);
-    void RetireAllNativeContextOwnersLocked(void);
+    NTSTATUS RetireAllNativeContextOwnersLocked(void);
     void RetireNativeContextOwnerLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner);
     void Publish2DResetRetirementLocked(void);
     void Reconcile2DScanoutAfterResetLocked(void);
@@ -443,9 +437,7 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS NegotiateNativeContextFeatures(void);
     NTSTATUS ProbeNativeContextReadiness(void);
 #if defined(VIOGPU_NATIVE_CONTEXT)
-    NTSTATUS ConnectDrmHostPool(void);
-    NTSTATUS ConnectGpuGuestPool(void);
-    static VOID NamedPoolFailureCallback(_In_opt_ PVOID context);
+    BOOLEAN AllocateNativeControlSlotLocked(_Out_ PULONGLONG offset, _Out_ PVOID *address);
 #endif
     NTSTATUS StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pDispInfo);
     NTSTATUS FailNativeContextInitialization(NTSTATUS status);
@@ -488,10 +480,6 @@ class VioGpuAdapter : IVioGpuPCI
 
     VirtIODevice m_VioDev;
     CPciResources m_PciResources;
-#if defined(VIOGPU_NATIVE_CONTEXT)
-    VioGpuDrmHostPool m_DrmHostPool;
-    VioGpuGuestPool m_GpuGuestPool;
-#endif
     UINT64 m_u64HostFeatures;
     UINT64 m_u64GuestFeatures;
     UINT32 m_u32NumCapsets;
@@ -716,18 +704,16 @@ class VioGpuDod
     {
         return &m_DxgkInterface;
     }
-    BOOLEAN QueryVidMmSegment(PPHYSICAL_ADDRESS physicalAddress, SIZE_T *size) const;
 #if defined(VIOGPU_NATIVE_CONTEXT)
-    BOOLEAN AcquireGpuGuestPoolMapping(_Out_ VioGpuGuestPoolMapping *mapping) const;
     UINT Allocate2DResourceId(void);
     BOOLEAN Release2DResourceId(_In_ UINT resourceId);
     VIOGPU_HOST_CONTEXT_RESULT Create2DResourceBacking(_In_ UINT resourceId,
                                                        _In_ UINT format,
                                                        _In_ UINT width,
                                                        _In_ UINT height,
-                                                       _In_ ULONGLONG placementOffset,
                                                        _In_ SIZE_T backingSize,
-                                                       _In_ ULONGLONG poolGeneration,
+                                                       _In_reads_(entryCount) const GPU_MEM_ENTRY *entries,
+                                                       _In_ UINT entryCount,
                                                        _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                        _Inout_ ULONGLONG *resourceResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,

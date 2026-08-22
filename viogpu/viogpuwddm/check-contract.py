@@ -204,7 +204,7 @@ def canonical_code(source: str) -> str:
     code = re.sub(r"\bnullptr\b", "NULL", code)
     code = re.sub(r"\bfalse\b", "FALSE", code)
     code = re.sub(r"\btrue\b", "TRUE", code)
-    code = re.sub(r"(?<=\d)[uU]\b", "", code)
+    code = re.sub(r"(?<![A-Za-z0-9_])(0[xX][0-9A-Fa-f]+|[0-9]+)[uU]\b", r"\1", code)
     return code
 
 
@@ -724,9 +724,7 @@ def check_viogpudo_code_segment_contract() -> None:
     if first_close is None or dpc_close is None or first_close.start() >= dpc_open.start():
         fail("viogpudo default-.text ranges must each close with the next code_seg(pop)")
 
-    first_declaration = VIOGPU_CODE.find(
-        "BOOLEAN VioGpuDod::AcquireGpuGuestPoolMapping", first_open.end()
-    )
+    first_declaration = VIOGPU_CODE.find("PGPU_VBUFFER VioGpuDod::PrepareNativeSubmit", first_open.end())
     _, _, first_last_end = function_body_span("VioGpuDod::AllocateNativeResourceId", VIOGPU_CODE)
     if (
         first_declaration < 0
@@ -736,7 +734,8 @@ def check_viogpudo_code_segment_contract() -> None:
     ):
         fail("the WDDM Native Context bridge must occupy the complete first default-.text range")
     for function_name in (
-        "VioGpuDod::AcquireGpuGuestPoolMapping",
+        "VioGpuDod::PrepareNativeSubmit",
+        "VioGpuDod::RefreshNativeSubmit",
         "VioGpuDod::QueueNativeSubmit",
         "VioGpuDod::ReleaseNativeSubmitBuffer",
         "VioGpuDod::NotifyNativeSchedulerInterrupt",
@@ -831,21 +830,67 @@ def check_arm64_workflow_contract() -> None:
     if sources["product drivers"].count(product_package) != 1:
         fail("the signed ARM64 product workflow must stage exactly one viogpuwddm SYS/INF package")
 
+
+def check_retired_pool_absence() -> None:
     repository_root = PROJECT_DIR.parent.parent
-    obsolete_rdma_paths = (
+    retired_paths = (
         repository_root / "rdmapool",
+        repository_root / "droidvmpool",
         repository_root / "viogpu" / "common" / "viogpu_rdma.cpp",
         repository_root / "viogpu" / "common" / "viogpu_rdma.h",
+        repository_root / "viogpu" / "common" / "viogpu_named_pool.cpp",
+        repository_root / "viogpu" / "common" / "viogpu_named_pool.h",
+        repository_root / "viogpu" / "viogpuwddm" / "check-named-pool.py",
         repository_root / "viogpu" / "viogpuwddm" / "test-rdma-contract.py",
         repository_root / "NetKVM" / "Common" / "ParaNdis_RdmaPool.cpp",
         repository_root / "NetKVM" / "Common" / "ParaNdis_RdmaPool.h",
     )
-    present = [path.relative_to(repository_root).as_posix() for path in obsolete_rdma_paths if path.exists()]
+    present = [path.relative_to(repository_root).as_posix() for path in retired_paths if path.exists()]
     if present:
-        fail(f"obsolete restricted-DMA pool sources must remain removed: {present}")
-    workflow_text = "\n".join(sources.values())
-    if re.search(r"(?i)rdmapool|rdma[_-]?pool|viogpu_rdma|test-rdma-contract", workflow_text):
-        fail("ARM64 workflows must not reference the retired restricted-DMA pool path")
+        fail(f"protected/restricted DMA pool sources must remain removed: {present}")
+
+    source_roots = (
+        repository_root / ".github" / "workflows",
+        repository_root / ".install_scripts",
+        repository_root / "VirtIO",
+        repository_root / "NetKVM",
+        repository_root / "viogpu",
+        repository_root / "vioscsi",
+        repository_root / "viostor",
+        repository_root / "pvmpower",
+    )
+    source_suffixes = {
+        ".c",
+        ".cc",
+        ".cmd",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".inf",
+        ".inx",
+        ".props",
+        ".ps1",
+        ".sln",
+        ".targets",
+        ".vcxproj",
+        ".yaml",
+        ".yml",
+    }
+    retired_token = re.compile(
+        r"(?i)rdma[_-]?pool|rdmapool|viogpu_rdma|droidvmpool|drvm0001|"
+        r"viogpu_named_pool|named[ _-]?pool|drm2kgsl_host|gpu_guest"
+    )
+    references = []
+    for source_root in source_roots:
+        if not source_root.exists():
+            continue
+        for path in source_root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in source_suffixes or path == Path(__file__).resolve():
+                continue
+            if retired_token.search(path.read_text(encoding="utf-8", errors="ignore")):
+                references.append(path.relative_to(repository_root).as_posix())
+    if references:
+        fail(f"production source/build wiring must not reference retired Windows pools: {references}")
 
 
 def check_registration_helper(sources: dict[Path, str]) -> None:
@@ -863,10 +908,9 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
         "PAGED_CODE(); "
         "DRIVER_INITIALIZATION_DATA initialData; "
         "VioGpuWddmBuildInitializationData(&initialData); "
-        "VioGpuSetNamedPoolNotificationDriverObject(driverObject); "
         "WPP_INIT_TRACING(driverObject, registryPath); "
         "NTSTATUS status = DxgkInitialize(driverObject, registryPath, &initialData); "
-        "if (!NT_SUCCESS(status)) { WPP_CLEANUP(NULL); VioGpuClearNamedPoolNotificationDriverObject(); } "
+        "if (!NT_SUCCESS(status)) { WPP_CLEANUP(NULL); } "
         "return status;"
     )
     if normalized != expected:
@@ -900,12 +944,6 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
     unload_body = function_body("VioGpuDodUnload", unload_definitions[0][1])
     if len(re.findall(r"\bWPP_CLEANUP\s*\(\s*NULL\s*\)\s*;", unload_body)) != 1:
         fail("registered unload callback must clean up WPP exactly once after successful initialization")
-    unload_cleanup = unload_body.find("WPP_CLEANUP(NULL);")
-    unload_driver_object = unload_body.find("VioGpuClearNamedPoolNotificationDriverObject();")
-    if unload_cleanup < 0 or unload_driver_object < unload_cleanup:
-        fail("registered unload must clear named-pool notification DriverObject after WPP cleanup")
-
-
 def check_callback_table() -> None:
     body = function_body("VioGpuWddmBuildInitializationData")
     zero_initialization = re.findall(
@@ -1217,35 +1255,18 @@ def check_native_context_readiness(
         fail("ProbeNativeContextReadiness must have one definition and only the transport call site")
     transport_start = function_body("VioGpuAdapter::StartNativeContextTransport", viogpu_code)
     require_call_count(transport_start, "ProbeNativeContextReadiness", 1, "transport start")
-    require_call_count(transport_start, "ConnectDrmHostPool", 1, "transport start")
-    require_call_count(transport_start, "ConnectGpuGuestPool", 1, "transport start")
     transport_start_compact = compact_code(transport_start)
-    host_connect_offset = transport_start_compact.find("status=ConnectDrmHostPool();")
-    host_failure_offset = transport_start_compact.find(
-        "if(!NT_SUCCESS(status)){returnstatus;}", host_connect_offset
-    )
-    guest_connect_offset = transport_start_compact.find("status=ConnectGpuGuestPool();")
-    guest_failure_offset = transport_start_compact.find(
-        "if(!NT_SUCCESS(status)){returnstatus;}", guest_connect_offset
-    )
     virtio_init_offset = transport_start_compact.find("status=VioGpuAdapterInit(pDispInfo);")
-    if min(
-        host_connect_offset,
-        host_failure_offset,
-        guest_connect_offset,
-        guest_failure_offset,
-        virtio_init_offset,
-    ) < 0 or not (
-        host_connect_offset
-        < host_failure_offset
-        < guest_connect_offset
-        < guest_failure_offset
-        < virtio_init_offset
+    shared_memory_offset = transport_start_compact.find(
+        "m_PciResources.QueryHostVisibleRegion(&hostVisibleBar,&hostVisibleOffset,&hostVisibleSize)"
+    )
+    buffer_offset = transport_start_compact.find("m_GpuBuf.Init(allocation)")
+    if min(virtio_init_offset, shared_memory_offset, buffer_offset) < 0 or not (
+        virtio_init_offset < shared_memory_offset < buffer_offset
     ):
-        fail("Native Context transport must connect drm2kgsl_host and gpu_guest before initializing VirtIO")
+        fail("Native Context transport must validate the standard host-visible BAR after VirtIO PCI initialization")
     hw_init_compact = compact_code(hw_init)
     probe_offset = compact_code(transport_start).find("status=ProbeNativeContextReadiness();")
-    buffer_offset = compact_code(transport_start).find("m_GpuBuf.Init(allocation)")
     idr_offset = compact_code(transport_start).find("m_Idr.Init(1,VIOGPU_NATIVE_RESOURCE_ID_START)")
     if min(probe_offset, buffer_offset, idr_offset) < 0 or not (buffer_offset < idr_offset < probe_offset):
         fail("HWInit must probe only after control buffers and the ID allocator are initialized")
@@ -1318,8 +1339,6 @@ def check_native_context_readiness(
         ("m_FrameSegment.Close()", "frame segment teardown"),
         ("m_CursorSegment.Close()", "cursor segment teardown"),
         ("m_GpuBuf.Close()", "control-buffer allocator teardown"),
-        ("status=m_GpuGuestPool.Disconnect()", "gpu_guest connection release"),
-        ("status=m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
         ("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)", "offline publication"),
     ):
         if fragment not in stop_compact:
@@ -1419,32 +1438,20 @@ def check_native_context_readiness(
         ("m_FrameSegment.Close()", "frame segment teardown"),
         ("m_CursorSegment.Close()", "cursor segment teardown"),
         ("m_GpuBuf.Close()", "control-buffer allocator teardown"),
-        ("status=m_GpuGuestPool.Disconnect()", "gpu_guest connection release"),
-        ("status=m_DrmHostPool.Disconnect()", "drm2kgsl_host connection release"),
         ("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)", "offline publication"),
     )
     teardown_offsets = [(stop_compact.find(fragment), description) for fragment, description in teardown_order]
     for (offset, description), (next_offset, next_description) in zip(teardown_offsets, teardown_offsets[1:]):
         if offset > next_offset:
             fail(f"transport teardown must perform {description} before {next_description}")
-    guest_disconnect = stop_compact.find("status=m_GpuGuestPool.Disconnect()")
-    guest_failure = stop_compact.find(
-        "if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", guest_disconnect
-    )
-    host_disconnect = stop_compact.find("status=m_DrmHostPool.Disconnect()")
-    host_failure = stop_compact.find(
-        "if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", host_disconnect
-    )
     offline_publish = stop_compact.find("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)")
-    if min(guest_disconnect, guest_failure, host_disconnect, host_failure, offline_publish) < 0 or not (
-        guest_disconnect < guest_failure < host_disconnect < host_failure < offline_publish
-    ):
-        fail("transport teardown must retain the adapter when named-pool notification teardown fails")
     buffer_drain = stop_compact.find("if(!m_GpuBuf.Close())")
     buffer_drain_failure = stop_compact.find(
         "FailNativeContextAtAnyIrql();returnSTATUS_DEVICE_NOT_READY;", buffer_drain
     )
-    if min(buffer_drain, buffer_drain_failure) < 0 or not buffer_drain < buffer_drain_failure < guest_disconnect:
+    if min(buffer_drain, buffer_drain_failure, offline_publish) < 0 or not (
+        buffer_drain < buffer_drain_failure < offline_publish
+    ):
         fail("transport teardown must retain the adapter when terminal control-buffer ownership cannot drain")
     failed_path = stop_compact.find("if(state==VioGpuNativeContextFailed)")
     failed_transition = stop_compact.find(
@@ -1506,6 +1513,29 @@ def check_native_context_readiness(
         or not reset_status_canonical_offset < publish_2d_retirement < retire_native_owners < final_barrier < delete_queues
     ):
         fail("transport teardown must publish reset-proven retirement before the final barrier and queue deletion")
+
+    retire_all = canonical_code(function_body("VioGpuAdapter::RetireAllNativeContextOwnersLocked", VIOGPU_CODE))
+    require_order(
+        retire_all,
+        (
+            "PLIST_ENTRYentry=m_NativeContextRegistry.Flink;",
+            "if(owner->ControlAddress!=NULL)",
+            "m_PciResources.UnmapHostVisibleAddress(owner->ControlAddress)",
+            "if(!NT_SUCCESS(status)){returnstatus;}",
+            "owner->ControlAddress=NULL;",
+            "owner->ControlBarOffset=0;",
+            "RemoveEntryList(entry);",
+            "deleteowner;",
+            "returnSTATUS_SUCCESS;",
+        ),
+        "reset retirement must unmap each retained control BAR slot before deleting its owner",
+    )
+    retire_call = stop_canonical.find("status=RetireAllNativeContextOwnersLocked();", publish_2d_retirement)
+    retire_failure = stop_canonical.find(
+        "if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", retire_call
+    )
+    if min(retire_call, retire_failure, final_barrier) < 0 or not retire_call < retire_failure < final_barrier:
+        fail("transport teardown must preserve owners and stop before queue deletion when BAR-slot unmap fails")
     if compact_code(reset).count("FailNativeContextAtAnyIrql()") != 1:
         fail("ResetDevice must fail closed through the nonpaged native-context failure path exactly once")
     destructor_compact = compact_code(destructor)
@@ -1854,7 +1884,7 @@ def check_synchronous_2d_control_transactions() -> None:
 
     attach = canonical_code(function_body("CtrlQueue::AttachBackingSynchronous", QUEUE_CODE))
     attach_sequence = (
-        attach.find("entry_count>PAGE_SIZE/sizeof(*entries)"),
+        attach.find("entry_count>VIOGPU_MAX_BACKING_ENTRIES"),
         attach.find("PGPU_MEM_ENTRYownedEntries="),
         attach.find("RtlCopyMemory(ownedEntries,entries,entriesSize);"),
         attach.find("command->hdr.type=VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;"),
@@ -1905,19 +1935,17 @@ def check_wddm_2d_resource_ownership() -> None:
 
     create_host = canonical_code(function_body("VioGpuAdapter::Create2DResourceBacking", VIOGPU_CODE))
     create_sequence = (
-        create_host.find("AcquireGpuGuestPoolMapping(&mapping)"),
-        create_host.find("entry.addr=(ULONGLONG)baseAddress.QuadPart+placementOffset;"),
+        create_host.find("entries==NULL||entryCount==0"),
         create_host.find("m_CtrlQueue.CreateResource2DSynchronous(resourceId,format,width,height)"),
         create_host.find("*resourceState=VioGpu2DResourceCreated;"),
-        create_host.find("m_CtrlQueue.AttachBackingSynchronous(resourceId,&entry,1)"),
+        create_host.find("m_CtrlQueue.AttachBackingSynchronous(resourceId,entries,entryCount)"),
         create_host.find("*resourceState=VioGpu2DResourceBackingAttached;"),
     )
     if min(create_sequence) < 0 or list(create_sequence) != sorted(create_sequence):
-        fail("2D primary creation must validate guest-pool backing before ordered create and attach ownership")
+        fail("2D primary creation must validate VidMm SG backing before ordered create and attach ownership")
     for fragment in (
-        "mapping.GetGeneration()==poolGeneration",
-        "(baseAddress.QuadPart&(PAGE_SIZE-1))==0",
-        "entry.length=(ULONG)backingSize;",
+        "backingSize>MAXULONG",
+        "(backingSize&(PAGE_SIZE-1))!=0",
         "rollback=m_CtrlQueue.UnrefResourceSynchronous(resourceId);",
         "if(rollback==VioGpuHostContextConfirmed)",
         "*resourceState=VioGpu2DResourceNone;",
@@ -2035,6 +2063,31 @@ def check_wddm_2d_resource_ownership() -> None:
 
 
 def check_wddm_standard_paging() -> None:
+    allocation_info = canonical_code(function_body("InitializeAllocationInfo", WDDM_DDI_CODE))
+    for fragment in (
+        "BOOLEANcpuVisible=(allocation->Flags&VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE)!=0;",
+        "BOOLEANprimary=(allocation->Flags&VIOGPU_WDDM_ALLOCATION_PRIMARY)!=0;",
+        "allocationInfo->Flags.CpuVisible=cpuVisible;",
+        "allocationInfo->Flags.PermanentSysMem=cpuVisible&&!primary;",
+        "allocationInfo->Flags.Cached=cpuVisible&&!primary;",
+        "allocationInfo->Flags.SynchronousPaging=TRUE;",
+    ):
+        if allocation_info.count(fragment) != 1:
+            fail(f"ordinary VidMm allocation backing must retain its exact visibility contract: {fragment}")
+
+    query_segment = canonical_code(function_body("QuerySegment", WDDM_DDI_CODE))
+    for fragment in (
+        "descriptor->BaseAddress.QuadPart=0;",
+        "descriptor->CpuTranslatedAddress.QuadPart=0;",
+        "descriptor->Size=VIOGPU_WDDM_APERTURE_SIZE;",
+        "descriptor->CommitLimit=VIOGPU_WDDM_APERTURE_SIZE;",
+        "descriptor->Flags.CpuVisible=FALSE;",
+        "descriptor->Flags.Aperture=TRUE;",
+        "descriptor->Flags.CacheCoherent=TRUE;",
+    ):
+        if query_segment.count(fragment) != 1:
+            fail(f"VidMm must see one non-CPU-linear cache-coherent aperture: {fragment}")
+
     placement = canonical_code(
         function_body_with_parameters(
             "ValidateNativePlacement",
@@ -2060,142 +2113,155 @@ def check_wddm_standard_paging() -> None:
         fail("paging packet validation must allow context-zero standard fills")
 
     build = canonical_code(function_body("VioGpuWddmBuildPagingBuffer", WDDM_DDI_CODE))
-    branch = (
-        "if(IsStandardAllocation(allocation))"
-        "{returnBuildStandardPagingBuffer(adapter,pagingBuffer,allocation,segmentAddress,transferMdl,"
-        "mdlOffset,transferOffset,transferSize,fillPattern,packetFlags);}"
-    )
-    if build.count(branch) != 1:
-        fail("BuildPagingBuffer must route every standard allocation into its separate paging transaction")
-    if build.count("if(!IsNativeAllocation(allocation)||") != 1:
-        fail("BuildPagingBuffer must retain the native-only gate after the standard branch")
-
-    standard_build = canonical_code(function_body("BuildStandardPagingBuffer", WDDM_DDI_CODE))
     for fragment in (
-        "!IsStandardAllocation(allocation)",
-        "allocation->ResourceId>=VIOGPU_NATIVE_RESOURCE_ID_START",
-        "allocation->BlobId!=0",
-        "allocation->NativeContext!=NULL",
-        "allocation->HostState!=VioGpuWddmAllocationHostNone",
-        "QueryStandardPlacementPoolGeneration(adapter,",
+        "pagingBuffer->Operation==DXGK_OPERATION_MAP_APERTURE_SEGMENT",
+        "pagingBuffer->MapApertureSegment.SegmentId!=VIOGPU_WDDM_SEGMENT_ID",
+        "(pagingBuffer->MapApertureSegment.Flags.Value&~1)!=0",
+        "MapApertureAllocation(adapter,allocation,",
+        "pagingBuffer->MapApertureSegment.pMdl",
+        "pagingBuffer->MapApertureSegment.MdlOffset",
+        "pagingBuffer->Operation==DXGK_OPERATION_UNMAP_APERTURE_SEGMENT",
+        "UnmapApertureAllocation(adapter,allocation,",
+        "pagingBuffer->UnmapApertureSegment.DummyPage",
+        "(pagingBuffer->Transfer.Flags.Value&~0x1C)!=0",
+        "(pagingBuffer->DiscardContent.Flags.Value&~1)!=0",
+        "returnBuildSoftwarePagingTransaction(adapter,",
+    ):
+        if fragment not in build:
+            fail(f"aperture paging must use VidMm MDLs and the shared software transaction path: {fragment}")
+
+    map_allocation = canonical_code(function_body("MapApertureAllocation", WDDM_DDI_CODE))
+    for fragment in (
+        "ADDRESS_AND_SIZE_TO_SPAN_PAGES(MmGetMdlVirtualAddress(mdl),MmGetMdlByteCount(mdl))",
+        "SIZE_TallocationPage=static_cast<SIZE_T>(mdlOffset);",
+        "BOOLEANbaseResolved=offsetInPages>=allocationPage;",
+        "SIZE_TbasePage=baseResolved?offsetInPages-allocationPage:0;",
+        "allocationPageCount<=aperturePageCount-basePage",
+        "allocation->ApertureBaseValid?allocation->ApertureBasePage==basePage",
+        "BOOLEANhostPlacementConsistent=",
+        "allocation->HostState==VioGpuWddmAllocationHostNone&&!allocation->PlacementValid",
+        "allocation->HostState==VioGpuWddmAllocationHostLive&&allocation->PlacementValid",
+        "PFN_NUMBERpfn=mdlPfns[static_cast<SIZE_T>(mdlOffset)+page];",
+        "currentState==VioGpuWddmAperturePageMapped",
+        "currentState!=VioGpuWddmAperturePageMapped",
+        "allocation->AperturePfns[allocationPageIndex]=mdlPfns[static_cast<SIZE_T>(mdlOffset)+page];",
+        "allocation->ApertureMappedPages[allocationPageIndex]=VioGpuWddmAperturePageMapped;",
+        "allocation->ApertureMappedPageCount+=pagesBecomingMapped;",
+        "allocation->ApertureMappedPageCount!=allocation->AperturePageCount",
+        "AllocateApertureBackingEntries(allocation,&entries,&entryCount)",
+        "EnsureApertureCpuMapping(allocation)",
+        "snapshot.Adapter->CreateNativeGuestAllocation(",
+        "adapter->Create2DResourceBacking(",
+    ):
+        if fragment not in map_allocation:
+            fail(f"aperture map must attach ordinary VidMm page backing: {fragment}")
+    if "RtlMoveMemory(allocation->AperturePfns" in map_allocation or "rebasePages" in map_allocation:
+        fail("aperture page identity must derive from MdlOffset, not mutate with partial-map call order")
+    sg = canonical_code(function_body("BuildPfnEntries", WDDM_DDI_CODE))
+    for fragment in (
+        "static_cast<ULONGLONG>(pfn)>(MAXULONGLONG>>PAGE_SHIFT)",
+        "ULONGLONGphysicalAddress=static_cast<ULONGLONG>(pfn)<<PAGE_SHIFT;",
+        "previous->addr+previous->length==physicalAddress",
+        "entries[*entryCount].addr=physicalAddress;",
+        "entries[*entryCount].length=PAGE_SIZE;",
+        "entries[*entryCount].padding=0;",
+    ):
+        if fragment not in sg:
+            fail(f"VidMm PFN backing must become bounded VirtIO SG entries: {fragment}")
+
+    allocate_sg = canonical_code(function_body("AllocateApertureBackingEntries", WDDM_DDI_CODE))
+    for fragment in (
+        "allocation->ApertureMappedPageCount!=allocation->AperturePageCount",
+        "allocation->ApertureMappedPages[page]!=VioGpuWddmAperturePageMapped",
+        "VIOGPU_MAX_BACKING_ENTRIES",
+        "BuildPfnEntries(allocation->AperturePfns,allocation->AperturePageCount,newEntries,entryCapacity,entryCount)",
+        "ExFreePoolWithTag(newEntries,);",
+    ):
+        if fragment not in allocate_sg:
+            fail(f"allocation SG ownership must remain bounded and complete: {fragment}")
+
+    cpu_mapping = canonical_code(function_body("EnsureApertureCpuMapping", WDDM_DDI_CODE))
+    for fragment in (
+        "IoAllocateMdl(NULL,static_cast<ULONG>(allocation->BackingSize),FALSE,FALSE,NULL)",
+        "RtlCopyMemory(MmGetMdlPfnArray(mdl),allocation->AperturePfns,",
+        "mdl->MdlFlags|=MDL_PAGES_LOCKED;",
+        "MmMapLockedPagesSpecifyCache(mdl,KernelMode,MmCached,NULL,FALSE,NormalPagePriority|MdlMappingNoExecute)",
+        "allocation->ApertureMdl=mdl;",
+        "allocation->ApertureAddress=address;",
+    ):
+        if fragment not in cpu_mapping:
+            fail(f"CPU aperture access must use one driver-owned PFN MDL mapping: {fragment}")
+
+    release_cpu = canonical_code(function_body("ReleaseApertureCpuMapping", WDDM_DDI_CODE))
+    require_order(
+        release_cpu,
+        (
+            "MmUnmapLockedPages(allocation->ApertureAddress,allocation->ApertureMdl);",
+            "allocation->ApertureMdl->MdlFlags&=~MDL_PAGES_LOCKED;",
+            "IoFreeMdl(allocation->ApertureMdl);",
+        ),
+        "driver-owned CPU aperture mapping must unmap before freeing its synthetic MDL",
+    )
+
+    unmap_allocation = canonical_code(function_body("UnmapApertureAllocation", WDDM_DDI_CODE))
+    for fragment in (
+        "dummyPage.QuadPart<0",
+        "numberOfPages>(VIOGPU_WDDM_APERTURE_SIZE>>PAGE_SHIFT)-offsetInPages",
+        "snapshot.Adapter->DestroyNativeGuestAllocation(",
+        "adapter->Destroy2DResource(",
+        "nativeAllocation&&allocation->HostState!=VioGpuWddmAllocationHostNone&&!snapshotAcquired",
+        "ReleaseApertureCpuMapping(allocation);",
+        "static_cast<ULONGLONG>(dummyPage.QuadPart)>>PAGE_SHIFT",
+        "allocation->ApertureMappedPages[allocationPageIndex]=VioGpuWddmAperturePageDummy;",
+        "allocation->ApertureMappedPageCount-=mappedPagesToRemove;",
+        "allocation->AperturePfns[allocationPageIndex]=dummyPfn;",
+        "allocation->ApertureMappedPageCount==0",
+        "allocation->ApertureBaseValid=FALSE;",
+    ):
+        if fragment not in unmap_allocation:
+            fail(f"partial aperture unmap must retire host ownership and install DummyPage state: {fragment}")
+    host_release = min(
+        unmap_allocation.find("snapshot.Adapter->DestroyNativeGuestAllocation("),
+        unmap_allocation.find("adapter->Destroy2DResource("),
+    )
+    release_mapping = unmap_allocation.find("ReleaseApertureCpuMapping(allocation);", host_release)
+    replace_pfn = unmap_allocation.find("allocation->AperturePfns[allocationPageIndex]=dummyPfn;", release_mapping)
+    if min(host_release, release_mapping, replace_pfn) < 0 or not host_release < release_mapping < replace_pfn:
+        fail("aperture unmap must retire host ownership before changing retained PFNs")
+
+    destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
+    destroy_host = destroy_allocation.find(
+        "status=ReleaseAllocationHostOwnership(allocation,&snapshot,snapshotAcquired);"
+    )
+    destroy_placement = destroy_allocation.find("ClearNativePlacement(allocation);", destroy_host)
+    destroy_mapping = destroy_allocation.find("ReleaseApertureMapping(allocation);", destroy_placement)
+    if min(destroy_host, destroy_placement, destroy_mapping) < 0 or not (
+        destroy_host < destroy_placement < destroy_mapping
+    ):
+        fail("native allocation destroy must release Host ownership, placement, and retained MDL state in order")
+
+    software = canonical_code(function_body("BuildSoftwarePagingTransaction", WDDM_DDI_CODE))
+    for fragment in (
         "ResolveTransferMdlAddress(transferMdl,mdlOffset,transferSize,&systemAddress);",
-        "CopyStandardPlacement(allocation,",
-        "packet->ContextId=0;",
-        "packet->ContextGeneration=0;",
-        "packet->ResetGeneration=0;",
-        "transaction->ContextId=0;",
-        "transaction->ContextGeneration=0;",
-        "transaction->ResetGeneration=0;",
+        "CopyAperturePlacement(allocation,",
+        "FillAperturePlacement(allocation,transferSize,fillPattern);",
+        "packet->ContextId=nativeAllocation?allocation->ContextId:0;",
+        "transaction->ContextId=packet->ContextId;",
         "transaction->TransferDataComplete=transferDataComplete;",
         "AcquireAllocationSubmissionReference(allocation,adapter);",
         "InterlockedExchange(&transaction->ReferenceHeld,1);",
-        "pagingPrivate->Work.Routine=NativePagingBatchWorker;",
-        "allocation->PoolGeneration!=currentPoolGeneration",
+        "InterlockedExchange(&transaction->State,VioGpuWddmPagingTransactionBuilt);",
     ):
-        if fragment not in standard_build:
-            fail(f"standard paging build must retain exact Build ownership: {fragment}")
-    if "allocation->PoolGeneration=currentPoolGeneration;" in standard_build:
-        fail("resident standard paging must not relabel placement across a guest-pool generation change")
+        if fragment not in software:
+            fail(f"software paging must retain exact MDL transfer ownership: {fragment}")
     require_order(
-        standard_build,
+        software,
         (
             "AcquireAllocationSubmissionReference(allocation,adapter);",
             "InterlockedExchange(&transaction->ReferenceHeld,1);",
             "InterlockedExchange(&transaction->State,VioGpuWddmPagingTransactionBuilt);",
         ),
-        "a standard paging record must acquire its allocation owner before publishing Built",
-    )
-    if "Create2DResourceBacking(" in standard_build or "Destroy2DResource(" in standard_build:
-        fail("BuildPagingBuffer must not mutate standard Host ownership before SubmitCommand")
-
-    dispatch = canonical_code(function_body("ExecutePagingTransaction", WDDM_DDI_CODE))
-    dispatch_sequence = (
-        dispatch.find("VIOGPU_WDDM_ALLOCATION*allocation=transaction->Allocation;"),
-        dispatch.find("if(transaction->ContextId==0)"),
-        dispatch.find("returnExecuteStandardPagingTransaction(transaction);"),
-        dispatch.find("AcquireAllocationNativeContextSnapshot(allocation,&snapshot)"),
-    )
-    if min(dispatch_sequence) < 0 or list(dispatch_sequence) != sorted(dispatch_sequence):
-        fail("paging execution must route context-zero packets before acquiring native context ownership")
-
-    execute = canonical_code(function_body("ExecuteStandardPagingTransaction", WDDM_DDI_CODE))
-    for fragment in (
-        "transaction->ContextId!=0",
-        "BOOLEANprimary=IsStandardPrimaryAllocation(allocation);",
-        "allocation->Resource2DState==VioGpu2DResourceUnknown",
-        "(!primary&&allocation->Resource2DState!=VioGpu2DResourceNone)",
-        "AddPagingRange(allocation,transaction->TransferOffset,transaction->TransferSize,&pagingRange);",
-        "allocation->PagingCoveredBytes!=allocation->BackingSize",
-        "ResolveStandard2DFormat(allocation->Format,&virtioFormat)",
-        "transaction->Adapter->Create2DResourceBacking(",
-        "allocation->Resource2DState==VioGpu2DResourceBackingAttached",
-        "PublishStandardPlacement(allocation,transaction->PlacementOffset,transaction->PoolGeneration);",
-        "transaction->Adapter->Destroy2DResource(allocation->ResourceId,",
-        "if(released){ClearNativePlacement(allocation);}",
-        "ClearNativePagingState(allocation);",
-    ):
-        if fragment not in execute:
-            fail(f"standard paging execution must retain transactional placement ownership: {fragment}")
-    if execute.count("result==VioGpuHostContextConfirmed&&released") != 2:
-        fail("standard primary page-out and discard may release placement only after confirmed UNREF")
-    for fragment in (
-        "if(NT_SUCCESS(status)&&transferEnd&&!primary)",
-        "if(NT_SUCCESS(status)&&!primary)",
-        "elseif(!primary){ClearNativePlacement(allocation);ClearNativePagingState(allocation);}",
-    ):
-        if fragment not in execute:
-            fail(f"shadow/staging paging must publish or discard placement without creating Host 2D state: {fragment}")
-
-    query_pool = canonical_code(
-        function_body_with_parameters(
-            "QueryStandardPlacementPoolGeneration",
-            "_In_ VioGpuDod *adapter, _In_ ULONGLONG placementOffset, _In_ SIZE_T backingSize, "
-            "_Out_ ULONGLONG *poolGeneration",
-            WDDM_DDI_CODE,
-        )
-    )
-    copy_pool = canonical_code(
-        function_body_with_parameters(
-            "CopyStandardPlacement",
-            "VIOGPU_WDDM_ALLOCATION *allocation, ULONGLONG segmentOffset, SIZE_T allocationOffset, "
-            "SIZE_T transferSize, ULONGLONG expectedPoolGeneration, PVOID systemAddress, BOOLEAN toSegment, "
-            "ULONGLONG *poolGeneration",
-            WDDM_DDI_CODE,
-        )
-    )
-    fill_pool = canonical_code(
-        function_body_with_parameters(
-            "FillStandardPlacement",
-            "VIOGPU_WDDM_ALLOCATION *allocation, ULONGLONG segmentOffset, SIZE_T fillSize, UINT pattern, "
-            "ULONGLONG expectedPoolGeneration, ULONGLONG *poolGeneration",
-            WDDM_DDI_CODE,
-        )
-    )
-    for owner, body in (("query", query_pool), ("copy", copy_pool), ("fill", fill_pool)):
-        for fragment in (
-            "AcquireGpuGuestPoolMapping(&mapping)",
-            "mapping.GetBaseAddress()!=NULL",
-            "mapping.Release();",
-        ):
-            if fragment not in body:
-                fail(f"standard {owner} must retain a bounded guest-pool mapping lease: {fragment}")
-    if "mapping.GetGeneration()==expectedPoolGeneration" not in copy_pool or \
-       "mapping.GetGeneration()==expectedPoolGeneration" not in fill_pool:
-        fail("standard data movement must stay in one exact guest-pool generation")
-    standard_copy_barrier = (
-        "if(toSegment){RtlCopyMemory(segmentAddress,systemAddress,transferSize);KeMemoryBarrier();}"
-        "else{KeMemoryBarrier();RtlCopyMemory(systemAddress,segmentAddress,transferSize);}"
-    )
-    if copy_pool.count(standard_copy_barrier) != 1:
-        fail("standard paging copies must order CPU writes after page-in and CPU reads before page-out")
-    require_order(
-        fill_pool,
-        (
-            "RtlCopyMemory(static_cast<PUCHAR>(segmentAddress)+offset,&pattern,sizeof(pattern));",
-            "KeMemoryBarrier();",
-            "*poolGeneration=mapping.GetGeneration();",
-        ),
-        "standard paging fill must publish CPU writes before releasing its pool generation",
+        "a paging record must acquire its allocation owner before publishing Built",
     )
 
 
@@ -2281,7 +2347,6 @@ def check_wddm_standard_primary_scanout() -> None:
         "EnsureStandard2DAllocationBacking(allocation)",
         "allocation->Resource2DState!=VioGpu2DResourceBackingAttached",
         "!allocation->PlacementValid",
-        "allocation->PagingState!=VioGpuWddmAllocationPagingIdle",
         "setVidPnSourceAddress->PrimaryAddress.QuadPart)!=allocation->PlacementOffset",
         "adapter->Set2DScanout(0,allocation->ResourceId,allocation->Width,allocation->Height,&previousResourceId)",
         "result==VioGpuHostContextConfirmed?STATUS_SUCCESS:STATUS_DEVICE_NOT_READY",
@@ -2292,13 +2357,11 @@ def check_wddm_standard_primary_scanout() -> None:
         fail("SetVidPnSourceAddress must no longer reject the completed standard primary mode-change path")
 
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
-    standard_execute = canonical_code(function_body("ExecuteStandardPagingTransaction", WDDM_DDI_CODE))
-    standard_build = canonical_code(function_body("BuildStandardPagingBuffer", WDDM_DDI_CODE))
+    unmap_allocation = canonical_code(function_body("UnmapApertureAllocation", WDDM_DDI_CODE))
     if destroy_allocation.count("Query2DScanoutResource(allocation->ResourceId,&active)") != 1:
         fail("DestroyAllocation must not unref a scanout-owned primary")
-    if standard_execute.count("Query2DScanoutResource(allocation->ResourceId,&active)") != 1 or \
-       standard_build.count("Query2DScanoutResource(allocation->ResourceId,&active)") != 1:
-        fail("standard primary page-out and discard must reject scanout-owned backing before copy and execution")
+    if unmap_allocation.count("Query2DScanoutResource(allocation->ResourceId,&active)") != 1:
+        fail("standard primary aperture unmap must reject scanout-owned backing")
 
     query_caps = canonical_code(function_body("VioGpuDod::QueryAdapterInfo", VIOGPU_CODE))
     wddm_query_caps = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
@@ -2325,7 +2388,7 @@ def check_wddm_present_contract() -> None:
     transaction = canonical_code(transaction_matches[0])
     for fragment in (
         "VioGpuWddmDmaKindPresent=3,",
-        "static_assert(sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET)==72,",
+        "static_assert(sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET)==56,",
         "VioGpuWddmContextNative=0,VioGpuWddmContextSystem,VioGpuWddmContextGdi,",
         "VioGpuWddmPresentInvalid=0,VioGpuWddmPresentBuilt,VioGpuWddmPresentPatched,"
         "VioGpuWddmPresentQueued,VioGpuWddmPresentExecuting,VioGpuWddmPresentFinished,"
@@ -2344,8 +2407,6 @@ def check_wddm_present_contract() -> None:
         "UINTReserved;",
         "ULONGLONGSourcePlacementOffset;",
         "ULONGLONGDestinationPlacementOffset;",
-        "ULONGLONGSourcePoolGeneration;",
-        "ULONGLONGDestinationPoolGeneration;",
         "ULONGLONGDestinationResetGeneration;",
     ):
         if packet.count(field) != 1:
@@ -2390,8 +2451,8 @@ def check_wddm_present_contract() -> None:
         "packet->SourceResourceId!=transaction->Source->ResourceId",
         "packet->DestinationResourceId!=transaction->Destination->ResourceId",
         "packet->RectCount!=transaction->RectCount",
-        "packet->SourcePoolGeneration!=transaction->SourcePoolGeneration",
-        "packet->DestinationPoolGeneration!=transaction->DestinationPoolGeneration",
+        "packet->SourcePlacementOffset!=transaction->SourcePlacementOffset",
+        "packet->DestinationPlacementOffset!=transaction->DestinationPlacementOffset",
         "packet->DestinationResetGeneration!=transaction->DestinationResetGeneration",
     ):
         if fragment not in validate_packet:
@@ -2430,13 +2491,11 @@ def check_wddm_present_contract() -> None:
     reconcile_gdi = canonical_code(
         function_body_with_parameters("ReconcileGdiSourcePlacementAfterReset", allocation_parameter, WDDM_DDI_CODE)
     )
-    if ensure_primary.count("allocation->PoolGeneration==poolGeneration") != 1 or \
-       "allocation->PoolGeneration!=poolGeneration" not in ensure_primary or \
-       "returnallocation->PoolGeneration==poolGeneration;" not in reconcile_gdi:
-        fail("reset reconciliation must not relabel resident primary or GDI placement across pool generations")
-    if "allocation->PoolGeneration=poolGeneration;" in ensure_primary or \
-       "allocation->PoolGeneration=poolGeneration;" in reconcile_gdi:
-        fail("Present reset reconciliation may validate but never rewrite resident pool generation")
+    if "allocation->ApertureMdl!=NULL" not in ensure_primary or \
+       "allocation->ApertureAddress!=NULL" not in ensure_primary or \
+       "allocation->ApertureMdl!=NULL" not in reconcile_gdi or \
+       "allocation->ApertureAddress!=NULL" not in reconcile_gdi:
+        fail("Present reset reconciliation must retain the VidMm MDL backing identity")
 
     geometry = canonical_code(
         function_body_with_parameters(
@@ -2469,7 +2528,7 @@ def check_wddm_present_contract() -> None:
         "sourceBottom>sourceRect->bottom",
     ):
         if fragment not in geometry:
-            fail(f"Present geometry must remain bounded before any pool copy: {fragment}")
+            fail(f"Present geometry must remain bounded before any aperture copy: {fragment}")
     for fragment in (
         "*prepatched=FALSE;",
         "entry->Reserved!=0",
@@ -2861,9 +2920,7 @@ def check_wddm_present_contract() -> None:
     for fragment in (
         "AcquireAllocationLifecycle(source)",
         "AcquireAllocationLifecycle(destination)",
-        "AcquireGpuGuestPoolMapping(&mapping)",
-        "mapping.GetGeneration()==source->PoolGeneration",
-        "mapping.GetGeneration()==destination->PoolGeneration",
+        "source->ApertureAddress==NULL||destination->ApertureAddress==NULL",
         "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
         "transaction->Adapter->Present2DResource(",
         "result!=VioGpuHostContextConfirmed",
@@ -2876,10 +2933,9 @@ def check_wddm_present_contract() -> None:
         (
             "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
             "KeMemoryBarrier();",
-            "mapping.Release();",
             "transaction->Adapter->Present2DResource(",
         ),
-        "Present must publish CPU row writes before releasing the pool lease and notifying Host",
+        "Present must publish CPU row writes before notifying Host",
     )
     if execute.count("KeMemoryBarrier();") != 1:
         fail("Present must retain exactly one CPU-to-Host ordering barrier after its row-copy batch")
@@ -3180,20 +3236,19 @@ def check_native_context_ownership() -> None:
 
     map_blob = canonical_code(function_body("CtrlQueue::MapNativeControlBlob", QUEUE_CODE))
     for fragment in (
-        "response->map_info==(VIRTIO_GPU_MAP_INFO_POOL|VIRTIO_GPU_MAP_CACHE_CACHED)",
-        "response->pool_offset!=0",
-        "(response->pool_offset&(PAGE_SIZE-1))==0",
+        "response->map_info==VIRTIO_GPU_MAP_CACHE_CACHED",
+        "response->padding==0",
     ):
         if map_blob.count(fragment) != 1:
-            fail(f"control blob map must accept only the exact cached named-pool response: {fragment}")
+            fail(f"control blob map must accept only the standard cached shared-memory response: {fragment}")
 
     native_header = canonical_code(VIOGPU_HEADER_CODE)
     for field in (
         "UINTControlResourceId;",
-        "ULONGControlPoolOffset;",
+        "ULONGLONGControlBarOffset;",
+        "PVOIDControlAddress;",
         "ULONGControlBlobSize;",
         "ULONGLastControlSeqno;",
-        "ULONGLONGControlPoolGeneration;",
         "BOOLEANControlResourceCreated;",
         "BOOLEANControlMapped;",
         "BOOLEANSubmitQueueCreated;",
@@ -3274,16 +3329,10 @@ def check_native_context_ownership() -> None:
         )
     )
     for owner, body in (("seed", seed), ("copy", copy), ("fault snapshot", faults_clear)):
-        if body.count("adapter->AcquireDrmHostPoolMapping(&mapping)") != 1 or body.count("mapping.Release();") != 1:
-            fail(f"native response {owner} must own exactly one short named-pool lease")
+        if body.count("VioGpuResolveNativeControlWindow(owner,") != 1:
+            fail(f"native response {owner} must resolve exactly one mapped host-visible BAR window")
         if "KeWaitForSingleObject" in body or "SubmitNativeControl" in body or "PAGED_CODE" in body:
-            fail(f"native response {owner} must remain non-waiting and nonpageable while leased")
-        enter = body.find("KeEnterGuardedRegion();")
-        acquire = body.find("adapter->AcquireDrmHostPoolMapping(&mapping)")
-        release = body.find("mapping.Release();")
-        leave = body.find("KeLeaveGuardedRegion();")
-        if min(enter, acquire, release, leave) < 0 or not enter < acquire < release < leave:
-            fail(f"native response {owner} must keep APCs disabled for the complete short lease")
+            fail(f"native response {owner} must remain non-waiting and nonpageable")
     seed_order = (
         seed.find("RtlZeroMemory(response,responseSize);"),
         seed.find(
@@ -3296,11 +3345,7 @@ def check_native_context_ownership() -> None:
     )
     if min(seed_order) < 0 or list(seed_order) != sorted(seed_order):
         fail("native response seed must install an invalid return sentinel before publishing the exact length")
-    seed_generation = "owner->ControlPoolGeneration=mapping.GetGeneration();"
-    if seed.count(seed_generation) != 1:
-        fail("native response seed must capture one named-pool generation")
     copy_sequence = (
-        copy.find("owner->ControlPoolGeneration==mapping.GetGeneration()"),
         copy.find("VioGpuReadSharedU32(&shmem->base.seqno)==sequence"),
         copy.find("KeMemoryBarrier();"),
         copy.find("RtlCopyMemory(response,sharedResponse,responseSize);"),
@@ -3309,12 +3354,20 @@ def check_native_context_ownership() -> None:
     if min(copy_sequence) < 0 or list(copy_sequence) != sorted(copy_sequence):
         fail("native response copy must acquire seqno before copying and validating the response")
     for fragment in (
-        "owner->ControlPoolGeneration==mapping.GetGeneration()",
         "VioGpuReadSharedU32(&shmem->async_error)==0",
         "VioGpuReadSharedU32(&shmem->global_faults)==0",
     ):
         if faults_clear.count(fragment) != 1:
-            fail(f"native fault snapshot must validate its exact short-lease state: {fragment}")
+            fail(f"native fault snapshot must validate its mapped control state: {fragment}")
+
+    resolve = canonical_code(function_body("VioGpuResolveNativeControlWindow", VIOGPU_CODE))
+    for fragment in (
+        "owner->ControlAddress==NULL",
+        "(owner->ControlBarOffset&(PAGE_SIZE-1))!=0",
+        "PUCHARblob=static_cast<PUCHAR>(owner->ControlAddress);",
+    ):
+        if resolve.count(fragment) != 1:
+            fail(f"control responses must stay inside the assigned host-visible BAR slot: {fragment}")
 
     query_param = canonical_code(function_body("VioGpuAdapter::QueryNativeContextParameterLocked", VIOGPU_CODE))
     query_sequence = (
@@ -3325,9 +3378,9 @@ def check_native_context_ownership() -> None:
         query_param.find("VioGpuConsumeNativeControlResponse(this,owner,sequence,parameter,value)"),
     )
     if min(query_sequence) < 0 or list(query_sequence) != sorted(query_sequence):
-        fail("GET_PARAM must release its seed lease before submit and reacquire only after VirtIO completion")
-    if "AcquireDrmHostPoolMapping" in query_param or query_param.count("m_CtrlQueue.PoisonSynchronousRequests();") != 2:
-        fail("GET_PARAM must not hold a pool lease across submit and must poison malformed shared-memory state")
+        fail("GET_PARAM must seed the BAR response before submit and consume it only after VirtIO completion")
+    if query_param.count("m_CtrlQueue.PoisonSynchronousRequests();") != 2:
+        fail("GET_PARAM must poison malformed shared-memory state")
     for fragment in (
         "request.hdr.cmd=MSM_CCMD_IOCTL_SIMPLE;",
         "request.hdr.len=sizeof(request);",
@@ -3440,7 +3493,11 @@ def check_native_context_ownership() -> None:
     creation_sequence = (
         create.find("m_CtrlQueue.CreateNativeContext(contextId)"),
         create.find("m_CtrlQueue.CreateNativeControlBlob(contextId,resourceId)"),
-        create.find("m_CtrlQueue.MapNativeControlBlob(resourceId,&poolOffset)"),
+        create.find("AllocateNativeControlSlotLocked(&controlOffset,&controlAddress)"),
+        create.find("owner->ControlBarOffset=controlOffset;"),
+        create.find("owner->ControlAddress=controlAddress;"),
+        create.find("m_CtrlQueue.MapNativeControlBlob(resourceId,controlOffset)"),
+        create.find("owner->ControlMapped=TRUE;"),
         create.find("QueryNativeContextParameterLocked(owner,MSM_PARAM_VA_START,&vaStart)"),
         create.find("QueryNativeContextParameterLocked(owner,MSM_PARAM_VA_SIZE,&vaSize)"),
         create.find("CreateNativeSubmitQueueLocked(owner,&submitQueueId)"),
@@ -3505,12 +3562,13 @@ def check_native_context_ownership() -> None:
     cleanup_sequence = (
         cleanup.find("CloseNativeSubmitQueueLocked(owner)"),
         cleanup.find("m_CtrlQueue.UnmapNativeControlBlob(owner->ControlResourceId)"),
+        cleanup.find("m_PciResources.UnmapHostVisibleAddress(owner->ControlAddress)"),
         cleanup.find("m_CtrlQueue.UnrefNativeResource(owner->ControlResourceId)"),
         cleanup.find("m_CtrlQueue.DestroyNativeContext(owner->ContextId)"),
     )
     if min(cleanup_sequence) < 0 or list(cleanup_sequence) != sorted(cleanup_sequence):
-        fail("normal native teardown must close submitqueue, unmap, unref, then destroy the Host context")
-    if cleanup.count("returnVioGpuHostContextUnknown;") != 6 or cleanup.count(
+        fail("normal native teardown must close submitqueue, unmap blob and BAR, unref, then destroy the Host context")
+    if cleanup.count("returnVioGpuHostContextUnknown;") != 7 or cleanup.count(
         "returnVioGpuHostContextConfirmed;"
     ) != 1:
         fail("native teardown must retain ownership after every non-confirmed cleanup stage")
@@ -4119,7 +4177,6 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     for forbidden in (
         "HostState",
         "PlacementValid",
-        "PoolGeneration",
         "ResourceId",
         "BlobId",
         "BoundGeneration",
@@ -4264,7 +4321,10 @@ def check_wddm_paging_transaction_gate() -> None:
     ):
         if fragment not in paging_header:
             fail(f"paging transaction ABI must expose {fragment}")
-    build = canonical_code(function_body("VioGpuWddmBuildPagingBuffer", WDDM_DDI_CODE))
+    build_dispatch = canonical_code(function_body("VioGpuWddmBuildPagingBuffer", WDDM_DDI_CODE))
+    if "returnBuildSoftwarePagingTransaction(adapter," not in build_dispatch:
+        fail("BuildPagingBuffer must route standard and native software records through one ownership helper")
+    build = canonical_code(function_body("BuildSoftwarePagingTransaction", WDDM_DDI_CODE))
     if build.count("AcquireAllocationSubmissionReference(allocation,adapter)") != 1:
         fail("native BuildPagingBuffer must acquire one allocation submission reference before publication")
     if "InterlockedExchange(&transaction->State,VioGpuWddmPagingTransactionBuilt);" not in build:
@@ -4272,15 +4332,13 @@ def check_wddm_paging_transaction_gate() -> None:
     build_state_sequence = (
         build.find("AcquireAllocationSubmissionReference(allocation,adapter)"),
         build.find("InterlockedExchange(&transaction->ReferenceHeld,1);"),
-        build.find("InterlockedExchange(&transaction->ExecutionStarted,0);"),
-        build.find("InterlockedExchange(&transaction->CancelRequested,0);"),
         build.find("InterlockedExchange(&transaction->State,VioGpuWddmPagingTransactionBuilt);"),
     )
     if min(build_state_sequence) < 0 or list(build_state_sequence) != sorted(build_state_sequence):
         fail("BuildPagingBuffer must acquire and initialize ownership before publishing Built")
     if "NativePagingBatchWorker" not in build:
         fail("BuildPagingBuffer must initialize the passive paging worker owner")
-    build_copy = build.find("CopyNativePlacement(allocation,")
+    build_copy = build.find("CopyAperturePlacement(allocation,")
     build_publish = build.find("InterlockedExchange(&transaction->State,VioGpuWddmPagingTransactionBuilt);")
     if min(build_copy, build_publish) < 0 or build_copy > build_publish:
         fail("BuildPagingBuffer must consume the transfer MDL before publishing Built")
@@ -4345,7 +4403,7 @@ def check_wddm_paging_transaction_gate() -> None:
         )
     )
     if "ReleasePagingTransactionReference(" in finish:
-        fail("an executed paging record must retain its allocation reference until batch rollback is impossible")
+        fail("an executed paging record must retain its allocation reference until worker terminal handling")
     release = canonical_code(function_body("ReleasePagingTransactionReference", WDDM_DDI_CODE))
     if "InterlockedCompareExchange(&transaction->ReferenceHeld,0,1)==1" not in release:
         fail("paging terminal paths must converge on one allocation-reference release")
@@ -4397,13 +4455,12 @@ def check_wddm_paging_transaction_gate() -> None:
         "InterlockedExchange(&pagingPrivate->Transaction.ExecutionStarted,1);",
         "VioGpuWddmPagingTransactionExecuting,VioGpuWddmPagingTransactionCancelled",
         "VioGpuWddmPagingTransactionExecuting,VioGpuWddmPagingTransactionFinished",
-        "RollbackPagingBatch(",
         "ReleasePagingTransactionReference(&pagingPrivate->Transaction);",
         "adapter->CompleteNativePassiveWork(&first->Work);",
         "adapter->ReleaseNativeSubmissionOperation();",
     ):
         if fragment not in batch_worker:
-            fail(f"paging worker must retain claim, rollback, and terminal ownership: {fragment}")
+            fail(f"paging worker must retain claim and terminal ownership: {fragment}")
     if batch_worker.count(
         "InterlockedCompareExchange(&pagingPrivate->Transaction.CancelRequested,0,0)!=0"
     ) != 2:
@@ -4412,13 +4469,9 @@ def check_wddm_paging_transaction_gate() -> None:
         "VioGpuWddmPagingTransactionExecuting,VioGpuWddmPagingTransactionQueued"
     )
     worker_execute = batch_worker.find("status=ExecutePagingTransaction(&pagingPrivate->Transaction);")
-    worker_rollback = batch_worker.find("RollbackPagingBatch(")
     worker_release = batch_worker.find("ReleasePagingTransactionReference(&pagingPrivate->Transaction);")
-    if min(worker_claim, worker_execute, worker_rollback, worker_release) < 0 or not (
-        worker_claim < worker_execute < worker_rollback < worker_release
-    ):
-        fail("paging worker must claim before execution and retain references through failure rollback")
-
+    if min(worker_claim, worker_execute, worker_release) < 0 or not worker_claim < worker_execute < worker_release:
+        fail("paging worker must claim before execution and retain references through terminal cleanup")
     resolve = canonical_code(
         function_body_with_parameters(
             "ResolvePagingBatch",
@@ -4565,11 +4618,8 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "LONGContextGeneration;",
         "ULONGLONGContextResetGeneration;",
         "UINTContextId;",
-        "VIOGPU_WDDM_ALLOCATION_PAGING_STATEPagingState;",
-        "ULONGLONGPagingPlacementOffset;",
-        "ULONGLONGPagingPoolGeneration;",
-        "LIST_ENTRYPagingRanges;",
-        "SIZE_TPagingCoveredBytes;",
+        "PMDLApertureMdl;",
+        "PVOIDApertureAddress;",
         "VIOGPU_WDDM_ALLOCATION_RANGE*ContextRange;",
     ):
         if allocation_header.count(field) != 1:
@@ -4728,8 +4778,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
 
     create_host = canonical_code(function_body("VioGpuAdapter::CreateNativeGuestAllocation", VIOGPU_CODE))
     host_sequence = (
-        create_host.find("entry.addr=(ULONGLONG)baseAddress.QuadPart+segmentOffset;"),
-        create_host.find("entry.length=(ULONG)backingSize;"),
+        create_host.find("entries==NULL||entryCount==0"),
         create_host.find("request.flags=msmFlags|MSM_BO_GUEST_ALLOC;"),
         create_host.find("TryReferenceNativeAllocationCount(snapshot->Owner)"),
         create_host.find("m_CtrlQueue.SubmitNativeControl(snapshot->ContextId,&request,sizeof(request))"),
@@ -4742,6 +4791,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "backingSize>MAXULONG",
         "backingSize<PAGE_SIZE",
         "logicalSize<=(ULONGLONG)backingSize-PAGE_SIZE",
+        "entries==NULL||entryCount==0",
         "capset.msm.has_cached_coherent==0",
         "(msmFlags&MSM_BO_CACHED_COHERENT)==0",
         "(blobFlags&VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE)==0",
@@ -4779,9 +4829,6 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         fail("failed blob creation must attempt exactly one GEM_NEW resource rollback")
     if "rollback==VioGpuHostContextRejected" in create_host:
         fail("INVALID_RESOURCE_ID cannot prove that an unattached GEM_NEW blob object was released")
-    if "baseAddress.QuadPart&(PAGE_SIZE-1)" not in create_host:
-        fail("guest-backed SG entry must prove that the named-pool physical base is page aligned")
-
     destroy_host = canonical_code(function_body("VioGpuAdapter::DestroyNativeGuestAllocation", VIOGPU_CODE))
     if "result==VioGpuHostContextConfirmed||result==VioGpuHostContextRejected" in destroy_host:
         fail("guest allocation teardown cannot treat INVALID_RESOURCE_ID as released ownership")
@@ -4801,107 +4848,37 @@ def check_wddm_guest_allocation_lifecycle() -> None:
 
     create_blob = canonical_code(function_body("CtrlQueue::CreateNativeGuestBlob", QUEUE_CODE))
     blob_sequence = (
-        create_blob.find("PGPU_MEM_ENTRYownedEntry="),
-        create_blob.find("*ownedEntry=*entry;"),
+        create_blob.find("for(UINTindex=0;index<entry_count;++index)"),
+        create_blob.find("entryBytes+=entries[index].length;"),
+        create_blob.find("if(entryBytes!=size)"),
+        create_blob.find("PGPU_MEM_ENTRYownedEntries="),
+        create_blob.find("RtlCopyMemory(ownedEntries,entries,entriesSize);"),
         create_blob.find("command->blob_mem=VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST;"),
         create_blob.find("command->blob_flags=blob_flags;"),
-        create_blob.find("command->nr_entries=1;"),
-        create_blob.find("vbuf->data_buf=ownedEntry;"),
+        create_blob.find("command->nr_entries=entry_count;"),
+        create_blob.find("vbuf->data_buf=ownedEntries;"),
         create_blob.find("SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)"),
     )
     if min(blob_sequence) < 0 or list(blob_sequence) != sorted(blob_sequence):
-        fail("RESOURCE_CREATE_BLOB must submit one queue-owned HOST3D_GUEST SG entry")
+        fail("RESOURCE_CREATE_BLOB must validate and submit the complete queue-owned HOST3D_GUEST SG table")
 
     paging = canonical_code(function_body("VioGpuWddmBuildPagingBuffer", WDDM_DDI_CODE))
     if "pagingBuffer->Transfer.TransferOffset!=0" in paging or "TransferSize!=allocation->BackingSize" in paging:
         fail("BuildPagingBuffer must accept VidMm sub-transfers instead of requiring a whole allocation")
-    for fragment in (
-        "transferOffset=pagingBuffer->Transfer.TransferOffset;",
-        "transferMdl=pagingBuffer->Transfer.Source.pMdl;",
-        "transferSize=pagingBuffer->Transfer.TransferSize;",
-        "transferOffset>allocation->BackingSize",
-        "ResolveTransferMdlAddress(transferMdl,mdlOffset,transferSize,&systemAddress);",
-        "CopyNativePlacement(allocation,",
-        "transaction->TransferDataComplete=transferDataComplete;",
-        "transaction->PoolGeneration=poolGeneration;",
-        "AcquireAllocationSubmissionReference(allocation,adapter);",
-        "InterlockedExchange(&transaction->ReferenceHeld,1);",
-    ):
-        if fragment not in paging:
-            fail(f"BuildPagingBuffer must retain exact Build-owned transfer state: {fragment}")
-    if "AddPagingRange(" in paging or "CreateNativeGuestAllocation(" in paging:
-        fail("BuildPagingBuffer must not publish paging progress or host ownership before SubmitCommand")
     worker = canonical_code(function_body("ExecutePagingTransaction", WDDM_DDI_CODE))
     for fragment in (
-        "AddPagingRange(allocation,",
-        "QueryNativePlacementPoolGeneration(&snapshot,",
+        "allocation->ApertureMdl!=NULL",
+        "allocation->ApertureAddress!=NULL",
         "!transaction->TransferDataComplete",
-        "FillNativePlacement(allocation,",
-        "snapshot.Adapter->CreateNativeGuestAllocation(",
-        "ReleaseAllocationHostOwnership(allocation,&snapshot,TRUE)",
-        "ClearNativePagingState(allocation)",
     ):
         if fragment not in worker:
-            fail(f"passive paging execution must retain the operation: {fragment}")
-    for fragment in (
-        "BOOLEANcontinuingPageIn=",
-        "if(continuingPageIn)",
-        "elseif(!continuingPageIn)",
-        "BOOLEANcontinuingPageOut=",
-        "if(continuingPageOut)",
-        "elseif(!continuingPageOut)",
-    ):
-        if fragment not in worker:
-            fail(f"paging execution must accept repeated TransferStart only for the active transfer: {fragment}")
-
-    pool_mapping = canonical_code(function_body("AcquireNativeGuestPoolMapping", WDDM_DDI_CODE))
-    if "snapshot->Adapter->AcquireGpuGuestPoolMapping(mapping)" not in pool_mapping:
-        fail("paging pool access must use the snapshot-owned adapter lease directly")
-    for helper_name in (
-        "CopyNativePlacement",
-        "FillNativePlacement",
-        "QueryNativePlacementPoolGeneration",
-    ):
-        helper = canonical_code(function_body(helper_name, WDDM_DDI_CODE))
-        if "AcquireNativeGuestPoolMapping(snapshot,&mapping)" not in helper:
-            fail(f"{helper_name} must preserve native-context then pool-lease lock ordering")
-        if "allocation->Adapter->AcquireGpuGuestPoolMapping" in helper or "adapter->AcquireGpuGuestPoolMapping" in helper:
-            fail(f"{helper_name} must not re-enter VioGpuDod hardware rundown under a context snapshot")
-    copy_native = canonical_code(function_body("CopyNativePlacement", WDDM_DDI_CODE))
-    native_copy_barrier = (
-        "if(toSegment){RtlCopyMemory(segmentAddress,systemAddress,transferSize);KeMemoryBarrier();}"
-        "else{KeMemoryBarrier();RtlCopyMemory(systemAddress,segmentAddress,transferSize);}"
-    )
-    if copy_native.count(native_copy_barrier) != 1:
-        fail("native paging copies must order CPU writes after page-in and CPU reads before page-out")
-    fill_native = canonical_code(function_body("FillNativePlacement", WDDM_DDI_CODE))
-    require_order(
-        fill_native,
-        (
-            "RtlCopyMemory(static_cast<PUCHAR>(segmentAddress)+offset,&pattern,sizeof(pattern));",
-            "KeMemoryBarrier();",
-            "*poolGeneration=mapping.GetGeneration();",
-        ),
-        "native paging fill must publish CPU writes before releasing its pool generation",
-    )
+            fail(f"passive paging execution must validate the retained VidMm backing: {fragment}")
     if "pagingBuffer->MultipassOffset!=0" in paging or "pagingBuffer->MultipassOffset=" in paging:
         fail("atomic paging markers must leave MultipassOffset unchanged")
-    capacity = paging.find(
-        "if(dmaSize<sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET)||dmaPrivateSize<sizeof(VIOGPU_WDDM_PAGING_PRIVATE))"
-    )
-    if capacity < 0:
-        fail("BuildPagingBuffer must snapshot and check both DMA capacities")
-    publication = paging.find("RtlZeroMemory(packet,sizeof(*packet));")
-    private_publication = paging.find("RtlZeroMemory(pagingPrivate,sizeof(*pagingPrivate));", publication)
-    cursor_publication = paging.find("pagingBuffer->pDmaBuffer=static_cast<BYTE*>(dmaBuffer)+sizeof(*packet);", private_publication)
-    private_cursor = paging.find(
-        "pagingBuffer->pDmaBufferPrivateData=static_cast<BYTE*>(dmaPrivateBuffer)+sizeof(*pagingPrivate);",
-        cursor_publication,
-    )
-    if min(publication, private_publication, cursor_publication, private_cursor) < 0:
-        fail("BuildPagingBuffer must publish one packet/private record and advance both cursors")
-    if not (capacity < publication < private_publication < cursor_publication < private_cursor):
-        fail("BuildPagingBuffer must publish metadata only after ownership acquisition")
+    software_paging = canonical_code(function_body("BuildSoftwarePagingTransaction", WDDM_DDI_CODE))
+    if "ResolveTransferMdlAddress(transferMdl,mdlOffset,transferSize,&systemAddress);" not in software_paging or \
+       "CopyAperturePlacement(allocation," not in software_paging:
+        fail("BuildPagingBuffer transfers must copy through the retained VidMm MDL mapping")
 
     private_matches = re.findall(
         r"\bstruct\s+VIOGPU_WDDM_KMD_DMA_PRIVATE\s*\{(.*?)\}\s*;",
@@ -4945,7 +4922,6 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "UINTReserved;",
         "ULONGLONGResetGeneration;",
         "ULONGLONGPlacementOffset;",
-        "ULONGLONGPoolGeneration;",
         "ULONGLONGTransferOffset;",
         "ULONGLONGTransferSize;",
     ):
@@ -4965,9 +4941,10 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "privateData->Kind!=VioGpuWddmDmaKindPaging",
         "privateData->Packet!=privateData->DmaBuffer",
         "privateData->Submission!=pagingPrivate",
+        "BOOLEANhasContext=packet->ContextId!=0;",
         "packet->ResourceId<VIOGPU_NATIVE_RESOURCE_ID_START",
+        "packet->ResourceId>=VIOGPU_NATIVE_RESOURCE_ID_START",
         "packet->ResourceId==MAXUINT",
-        "packet->PoolGeneration==0",
         "packet->TransferOffset>MAXUINT",
         "packet->TransferSize>MAXULONG",
         "(packet->PlacementOffset&(PAGE_SIZE-1))!=0",
@@ -4992,16 +4969,18 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     if "pagingBuffer->MultipassOffset!=0" in paging or "pagingBuffer->MultipassOffset=" in paging:
         fail("atomic paging markers must leave MultipassOffset unchanged")
     capacity = paging.find(
-        "if(dmaSize<sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET)||"
-        "dmaPrivateSize<sizeof(VIOGPU_WDDM_PAGING_PRIVATE))"
+        "pagingBuffer->DmaSize<sizeof(VIOGPU_WDDM_PAGING_DMA_PACKET)||"
+        "pagingBuffer->DmaBufferPrivateDataSize<sizeof(VIOGPU_WDDM_PAGING_PRIVATE)"
     )
     if capacity < 0:
         fail("BuildPagingBuffer must snapshot and check both DMA capacities")
-    publication = paging.find("RtlZeroMemory(packet,sizeof(*packet));")
-    private_publication = paging.find("RtlZeroMemory(pagingPrivate,sizeof(*pagingPrivate));", publication)
-    cursor_publication = paging.find("pagingBuffer->pDmaBuffer=static_cast<BYTE*>(dmaBuffer)+sizeof(*packet);", private_publication)
-    private_cursor = paging.find(
-        "pagingBuffer->pDmaBufferPrivateData=static_cast<BYTE*>(dmaPrivateBuffer)+sizeof(*pagingPrivate);",
+    publication = software_paging.find("RtlZeroMemory(packet,sizeof(*packet));")
+    private_publication = software_paging.find("RtlZeroMemory(pagingPrivate,sizeof(*pagingPrivate));", publication)
+    cursor_publication = software_paging.find(
+        "pagingBuffer->pDmaBuffer=static_cast<BYTE*>(dmaBuffer)+sizeof(*packet);", private_publication
+    )
+    private_cursor = software_paging.find(
+        "pagingBuffer->pDmaBufferPrivateData=static_cast<BYTE*>(privateBuffer)+sizeof(*pagingPrivate);",
         cursor_publication,
     )
     if min(publication, private_publication, cursor_publication, private_cursor) < 0:
@@ -5021,11 +5000,11 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "privateData->PacketLength=sizeof(*packet);",
         "privateData->Reserved=0;",
         "pagingBuffer->DmaSize=dmaSize-sizeof(*packet);",
-        "pagingBuffer->DmaBufferPrivateDataSize=dmaPrivateSize-sizeof(*pagingPrivate);",
+        "pagingBuffer->DmaBufferPrivateDataSize=privateSize-sizeof(*pagingPrivate);",
     ):
-        if paging.count(fragment) != 1:
+        if software_paging.count(fragment) != 1:
             fail(f"BuildPagingBuffer packet publication must retain exact metadata/cursors: {fragment}")
-    if not (capacity < publication < private_publication < cursor_publication < private_cursor):
+    if not (0 <= capacity and 0 <= publication < private_publication < cursor_publication < private_cursor):
         fail("BuildPagingBuffer must publish metadata only after operation success and in cursor order")
 
     render = canonical_code(function_body("VioGpuWddmRender", WDDM_DDI_CODE))
@@ -5300,6 +5279,10 @@ def check_wddm_context_lifetime() -> None:
 
 
 def check_wddm_submission_lifetime() -> None:
+    resolve_submission_parameters = (
+        "PVOID privateDataBase, UINT privateDataSize, UINT submissionStart, UINT submissionEnd, "
+        "VioGpuDod *adapter, HANDLE runtimeContext, VIOGPU_WDDM_SUBMISSION **submissionOut"
+    )
     allocation_matches = re.findall(
         r"\bstruct\s+VIOGPU_WDDM_ALLOCATION\s*\{(.*?)\}\s*;", WDDM_DDI_HEADER_CODE, re.DOTALL
     )
@@ -5351,19 +5334,22 @@ def check_wddm_submission_lifetime() -> None:
         "BOOLEANPatchApplied;",
         "BOOLEANFullyPrepatched;",
         "volatileLONGState;",
-        "VIOGPU_WDDM_ALLOCATION*Allocations[VioGpuWddmSubmissionAllocationLimit];",
-        "VIOGPU_WDDM_SUBMISSION_REFERENCEReferences[VioGpuWddmSubmissionAllocationLimit];",
+        "VIOGPU_WDDM_SUBMISSION_REFERENCE*References;",
     ):
         if submission_header.count(field) != 1:
             fail(f"submission record must retain exactly one nonpaged ownership field: {field}")
     header = canonical_code(WDDM_DDI_HEADER_CODE)
-    if header.count("VioGpuWddmSubmissionAllocationLimit=128,") != 1:
+    if header.count("VioGpuWddmSubmissionAllocationLimit=1024,") != 1:
         fail("submission record must use the bounded allocation-reference limit")
     source = canonical_code(WDDM_DDI_SOURCE)
     if source.count(
         "constUINTVIOGPU_WDDM_ALLOCATION_LIST_SIZE=VioGpuWddmSubmissionAllocationLimit;"
     ) != 1:
         fail("the VidSch allocation list must match the bounded submission-reference limit")
+    if source.count(
+        "constUINTVIOGPU_WDDM_PATCH_LIST_SIZE=VioGpuWddmSubmissionAllocationLimit;"
+    ) != 1:
+        fail("the VidSch patch list must match the bounded submission-reference limit")
     if WDDM_DDI_SOURCE.count("const ULONG VIOGPU_WDDM_SUBMISSION_SIGNATURE = 'sWGV';") != 1:
         fail("submission record must have one private signature")
 
@@ -5579,7 +5565,6 @@ def check_wddm_submission_lifetime() -> None:
             "if(status!=STATUS_SUCCESS)",
             "status=DetachAllocationNativeContext(allocation);",
             "InterlockedDecrement(&allocation->Resource->AllocationCount);",
-            "ClearPagingRanges(allocation);",
             "deleteallocation;",
         ),
         "DestroyAllocation must complete all fallible detaches before deleting any allocation",
@@ -5614,6 +5599,7 @@ def check_wddm_submission_lifetime() -> None:
             "InitializeListHead(&submission->ContextEntry.Link);",
             "submission->ContextEntry.Kind=VioGpuWddmContextSubmissionRender;",
             "submission->FullyPrepatched=fullyPrepatched;",
+            "submission->References=new(NonPagedPoolNx)VIOGPU_WDDM_SUBMISSION_REFERENCE[allocationCount];",
             "for(UINTindex=0;index<allocationCount;++index)",
             "KeAcquireSpinLock(&context->SubmissionLock,&oldIrql);",
             "privateData->Submission=submission;",
@@ -5627,6 +5613,25 @@ def check_wddm_submission_lifetime() -> None:
         "prepared submission must publish private-data identity and all callbacks under the context lock",
     )
     publish_body = function_body("PublishPreparedSubmission", WDDM_DDI_CODE)
+    free_submission_storage = canonical_code(function_body("FreeRenderSubmissionStorage", WDDM_DDI_CODE))
+    require_order(
+        free_submission_storage,
+        (
+            "delete[]submission->References;",
+            "submission->References=NULL;",
+        ),
+        "Render submission variable storage must have one idempotent cleanup helper",
+    )
+    if publish.count("FreeRenderSubmissionStorage(submission);") != 4:
+        fail("prepared submission publication must release variable storage on every post-allocation failure")
+    resolve_submission = canonical_code(
+        function_body_with_parameters(
+            "ResolveSubmissionPrivateData", resolve_submission_parameters, WDDM_DDI_CODE
+        )
+    )
+    for fragment in ("submission->References==NULL",):
+        if fragment not in resolve_submission:
+            fail(f"submission resolution must validate variable reference storage: {fragment}")
     arm_blocks = []
     for condition, body, _, block_end in if_blocks(publish_body):
         if canonical_code(condition) != "VioGpuArmVbufferTerminalCallbacks(virtioBuffer)":
@@ -5718,7 +5723,8 @@ def check_wddm_submission_lifetime() -> None:
             "LONGreferences=InterlockedDecrement(&submission->ReferenceCount);",
             "references==0",
             "VioGpuWddmSubmissionQuarantined",
-            "ReleaseAllocationSubmissionReference(submission->Allocations[index]);",
+            "ReleaseAllocationSubmissionReference(submission->References[index].Allocation);",
+            "FreeRenderSubmissionStorage(submission);",
             "ReleaseContextSubmissionReference(context);",
             "submission->Context=NULL;",
             "submission->Signature=0;",
@@ -5763,8 +5769,7 @@ def check_wddm_submission_lifetime() -> None:
     resolve_render = canonical_code(
         function_body_with_parameters(
             "ResolveSubmissionPrivateData",
-            "PVOID privateDataBase, UINT privateDataSize, UINT submissionStart, UINT submissionEnd, "
-            "VioGpuDod *adapter, HANDLE runtimeContext, VIOGPU_WDDM_SUBMISSION **submissionOut",
+            resolve_submission_parameters,
             WDDM_DDI_CODE,
         )
     )
@@ -5913,7 +5918,8 @@ def check_wddm_submission_lifetime() -> None:
     for fragment in (
         "allocation->HostState==VioGpuWddmAllocationHostLive",
         "allocation->PlacementValid",
-        "allocation->PoolGeneration!=0",
+        "allocation->ApertureMdl!=NULL",
+        "allocation->ApertureAddress!=NULL",
         "allocation->ResourceId>=VIOGPU_NATIVE_RESOURCE_ID_START",
         "allocation->BlobId!=0",
         "allocation->BoundContextId==submission->ContextId",
@@ -5952,6 +5958,8 @@ def check_wddm_submission_lifetime() -> None:
         patch,
         (
             "ResolveSubmissionPrivateData(",
+            "patchedResourceIds=new(NonPagedPoolNx)UINT[submission->AllocationCount];",
+            "patchedIovas=new(NonPagedPoolNx)ULONGLONG[submission->AllocationCount];",
             "IsPatchOffsetForSubmission(patch->PatchOffset,expectedPatchOffset,patchArguments->DmaBufferSubmissionStartOffset)",
             "allocation->PrivateData.RequestedIova<=MAXULONGLONG-reference->AllocationOffset",
             "patchedResourceIds[index]=allocation->ResourceId;",
@@ -5960,12 +5968,17 @@ def check_wddm_submission_lifetime() -> None:
             "RtlCopyMemory(patchAddress,&patchedIovas[index],sizeof(patchedIovas[index]));",
             "adapter->RefreshNativeSubmit(submission->VirtioBuffer,submission->CommandStream,submission->CommandStreamSize)",
             "submission->FenceId=patchArguments->SubmissionFenceId;KeMemoryBarrier();submission->PatchApplied=TRUE;",
+            "delete[]patchedIovas;",
+            "delete[]patchedResourceIds;",
         ),
         "Patch must validate placement, write resource IDs and requested IOVAs, refresh payload and publish the WDDM fence",
     )
     if "ReleasePreparedSubmission(submission);" not in patch:
         fail("Patch failure must quarantine the prepared submission")
-    if not patch.endswith("DereferenceRenderSubmission(submission);}adapter->ReleaseNativeSubmissionOperation();returnstatus;"):
+    if not patch.endswith(
+        "DereferenceRenderSubmission(submission);}delete[]patchedIovas;delete[]patchedResourceIds;"
+        "adapter->ReleaseNativeSubmissionOperation();returnstatus;"
+    ):
         fail("Patch must release its resolver reference after success or quarantine failure")
 
     submit_body = function_body("VioGpuWddmSubmitCommand", WDDM_DDI_CODE)
@@ -6500,7 +6513,7 @@ def check_wddm_submission_lifetime() -> None:
             "m_CtrlQueue.Close();",
             "if(!m_GpuBuf.Close())",
         ),
-        "teardown must detach software backlog links before buffer cancellation and backing-pool close",
+        "teardown must detach software backlog links before buffer cancellation and queue backing close",
     )
 
 
@@ -6616,12 +6629,16 @@ def check_pci_resource_lifetime() -> None:
         "USHORTm_InterruptFlags;",
         "ULONGm_InterruptMessageCount;",
         "BOOLEANm_InterruptMessageCountKnown;",
+        "UINTm_HostVisibleBar;",
+        "ULONGLONGm_HostVisibleOffset;",
+        "ULONGLONGm_HostVisibleSize;",
     ):
         if pci_header.count(member) != 1:
-            fail(f"PCI resources must retain exactly one interrupt ownership field: {member}")
+            fail(f"PCI resources must retain exactly one ownership field: {member}")
     constructor = (
         "CPciResources():m_pDxgkInterface(NULL),m_InterruptFlags(0),"
-        "m_InterruptMessageCount(0),m_InterruptMessageCountKnown(FALSE){}"
+        "m_InterruptMessageCount(0),m_InterruptMessageCountKnown(FALSE),"
+        "m_HostVisibleBar(MAXUINT),m_HostVisibleOffset(0),m_HostVisibleSize(0){}"
     )
     getter = "ULONGGetInterruptMessageCount(){returnm_InterruptMessageCount;}"
     known_getter = "BOOLEANHasKnownInterruptMessageCount(){returnm_InterruptMessageCountKnown;}"
@@ -6668,6 +6685,9 @@ def check_pci_resource_lifetime() -> None:
     clear_flags = "m_InterruptFlags=0;"
     clear_messages = "m_InterruptMessageCount=0;"
     clear_message_trust = "m_InterruptMessageCountKnown=FALSE;"
+    clear_host_bar = "m_HostVisibleBar=MAXUINT;"
+    clear_host_offset = "m_HostVisibleOffset=0;"
+    clear_host_size = "m_HostVisibleSize=0;"
     clear_owner = "m_pDxgkInterface=NULL;"
     loops = list(re.finditer(r"for\(UINTbar=0;bar<PCI_TYPE0_ADDRESSES;(?:\+\+bar|bar\+\+)\)", close))
     loop_offset = loops[0].start() if len(loops) == 2 else -1
@@ -6678,7 +6698,10 @@ def check_pci_resource_lifetime() -> None:
     flags_offset = close.find(clear_flags, reset_offset)
     messages_offset = close.find(clear_messages, flags_offset)
     message_trust_offset = close.find(clear_message_trust, messages_offset)
-    owner_offset = close.find(clear_owner, message_trust_offset)
+    host_bar_offset = close.find(clear_host_bar, message_trust_offset)
+    host_offset_offset = close.find(clear_host_offset, host_bar_offset)
+    host_size_offset = close.find(clear_host_size, host_offset_offset)
+    owner_offset = close.find(clear_owner, host_size_offset)
     if min(
         loop_offset,
         unmap_offset,
@@ -6688,6 +6711,9 @@ def check_pci_resource_lifetime() -> None:
         flags_offset,
         messages_offset,
         message_trust_offset,
+        host_bar_offset,
+        host_offset_offset,
+        host_size_offset,
         owner_offset,
     ) < 0 or not (
         loop_offset
@@ -6698,6 +6724,9 @@ def check_pci_resource_lifetime() -> None:
         < flags_offset
         < messages_offset
         < message_trust_offset
+        < host_bar_offset
+        < host_offset_offset
+        < host_size_offset
         < owner_offset
     ):
         fail("PCI close must retain interrupt ownership until every BAR unmap succeeds")
@@ -6707,6 +6736,9 @@ def check_pci_resource_lifetime() -> None:
         or close.count(clear_flags) != 1
         or close.count(clear_messages) != 1
         or close.count(clear_message_trust) != 1
+        or close.count(clear_host_bar) != 1
+        or close.count(clear_host_offset) != 1
+        or close.count(clear_host_size) != 1
         or close.count(clear_owner) != 1
     ):
         fail("PCI close must use one full unmap pass followed by one metadata reset pass")
@@ -6775,6 +6807,72 @@ def check_pci_resource_lifetime() -> None:
         or len(variable_write_offsets(PCI_SOURCE, "m_InterruptMessageCountKnown")) != 2
     ):
         fail("interrupt ownership metadata may only be acquired in Init and cleared by successful Close")
+
+    capability_contract = (
+        "structvirtio_pci_cap64capability={};",
+        "capability.cap.cap_vndr==PCI_CAPABILITY_ID_VENDOR_SPECIFIC",
+        "capability.cap.cfg_type==VIRTIO_PCI_CAP_SHARED_MEMORY_CFG",
+        "capability.cap.id==1",
+        "capability.cap.bar<PCI_TYPE0_ADDRESSES",
+        "regionSize>=PAGE_SIZE",
+        "regionOffset<=barSize",
+        "regionSize<=barSize-regionOffset",
+        "m_HostVisibleBar=capability.cap.bar;",
+        "m_HostVisibleOffset=regionOffset;",
+        "m_HostVisibleSize=regionSize;",
+    )
+    for fragment in capability_contract:
+        if init_compact.count(fragment) != 1:
+            fail(f"PCI initialization must discover one bounded standard host-visible region: {fragment}")
+    for field in ("m_HostVisibleBar", "m_HostVisibleOffset", "m_HostVisibleSize"):
+        if len(variable_write_offsets(init, field)) != 1 or len(variable_write_offsets(PCI_SOURCE, field)) != 2:
+            fail(f"host-visible PCI metadata may only be acquired in Init and cleared by successful Close: {field}")
+
+    for fragment in (
+        "caseCmResourceTypeMemoryLarge:",
+        "pResDescriptor->Flags&CM_RESOURCE_MEMORY_LARGE",
+        "caseCM_RESOURCE_MEMORY_LARGE_40:",
+        "static_cast<ULONGLONG>(pResDescriptor->u.Memory40.Length40)<<8",
+        "caseCM_RESOURCE_MEMORY_LARGE_48:",
+        "static_cast<ULONGLONG>(pResDescriptor->u.Memory48.Length48)<<16",
+        "caseCM_RESOURCE_MEMORY_LARGE_64:",
+        "static_cast<ULONGLONG>(pResDescriptor->u.Memory64.Length64)<<32",
+    ):
+        if init_compact.count(fragment) != 1:
+            fail(f"PCI initialization must preserve each WDK large-memory resource width: {fragment}")
+
+    pci_header = canonical_code(PCI_HEADER_CODE)
+    for fragment in (
+        "CPciBar(PHYSICAL_ADDRESSBasePA,ULONGLONGuSize,boolbPortSpace,boolbIoMapped)",
+        "ULONGLONGGetSize()const",
+        "ULONGLONGm_uSize;",
+    ):
+        if pci_header.count(fragment) != 1:
+            fail(f"PCI BAR ownership must retain 64-bit resource lengths: {fragment}")
+    get_bar_va = canonical_code(function_body("CPciBar::GetVA", PCI_CODE))
+    if "m_uSize==0||m_uSize>MAXULONG" not in get_bar_va:
+        fail("legacy whole-BAR mapping must reject a 4 GiB or larger resource instead of truncating it")
+
+    map_host_visible = canonical_code(function_body("CPciResources::MapHostVisibleAddress", PCI_CODE))
+    for fragment in (
+        "length>MAXULONG",
+        "length>m_HostVisibleSize-regionOffset",
+        "length>barSize-barOffset",
+        "static_cast<ULONG>(length)",
+        "MmCached",
+    ):
+        if map_host_visible.count(fragment) != 1:
+            fail(f"host-visible blob slots must use one bounded subrange mapping: {fragment}")
+
+    virtio_header = canonical_code(VIRTIO_HEADER_CODE)
+    for fragment in (
+        "#defineVIRTIO_PCI_CAP_SHARED_MEMORY_CFG8",
+        "__u8id;",
+        "__u8padding[2];",
+        "structvirtio_pci_cap64{structvirtio_pci_capcap;__le32offset_hi;__le32length_hi;};",
+    ):
+        if virtio_header.count(fragment) != 1:
+            fail(f"VirtIO PCI headers must retain the standard 64-bit shared-memory capability layout: {fragment}")
 
     accepted_layout = (
         "boolinterrupt_layout_accepted=m_InterruptMessageCountKnown&&"
@@ -7061,14 +7159,6 @@ def check_adapter_lifecycle() -> None:
         fail("post-display ownership release must use one balanced protected hardware snapshot")
 
     wrapper_contracts = (
-        (
-            "VioGpuDod::QueryVidMmSegment",
-            "returnFALSE;",
-            "VioGpuAdapter*adapter=m_pHWDevice;"
-            "BOOLEANavailable=!IsHardwareResetRequested()&&adapter!=NULL&&"
-            "adapter->QueryVidMmSegment(physicalAddress,size);"
-            "ExReleaseRundownProtection(&m_HardwareOperations);returnavailable;",
-        ),
         (
             "VioGpuDod::QueryNativeContextReadiness",
             "returnFALSE;",
@@ -7478,6 +7568,7 @@ def main() -> None:
     check_driver_entry_gate()
     check_viogpudo_code_segment_contract()
     check_arm64_workflow_contract()
+    check_retired_pool_absence()
     check_registration_helper(sources)
     check_callback_table()
     check_virtio_reset_contract()
