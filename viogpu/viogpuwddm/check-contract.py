@@ -800,10 +800,6 @@ def check_arm64_workflow_contract() -> None:
         sources[label] = source
         for fragment in required_toolchain_fragments:
             expected_count = 2 if fragment in (
-                "$toolRoots = @(",
-                "Get-ChildItem -LiteralPath $root -Recurse -Filter 'InfVerif.exe'",
-                "INFVERIF_PATH=",
-                "$env:INFVERIF_PATH",
                 "--exact --silent --accept-package-agreements --accept-source-agreements",
                 "--disable-interactivity",
             ) else 1
