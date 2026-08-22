@@ -439,14 +439,6 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     {
         return UnwindFailedStart(STATUS_DEVICE_NOT_READY);
     }
-#if defined(VIOGPU_NATIVE_CONTEXT)
-    if (!OpenNativePassiveQueue() || !OpenWddmPresentTransactions())
-    {
-        RequestWddmSubmissionDrainAtAnyIrql();
-        WaitForWddmSubmissionDrain();
-        return UnwindFailedStart(STATUS_DEVICE_NOT_READY);
-    }
-#endif
     m_Flags.DriverStarted = TRUE;
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,

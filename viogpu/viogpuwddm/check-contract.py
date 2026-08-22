@@ -6881,13 +6881,10 @@ def check_adapter_lifecycle() -> None:
         r"(?:Status|STATUS_UNSUCCESSFUL|STATUS_DEVICE_NOT_READY)\s*\)\s*;",
         start,
     )
-    if len(failed_start_cleanup) != 5 or start_compact.count("UnwindFailedStart(") != 5:
+    if len(failed_start_cleanup) != 4 or start_compact.count("UnwindFailedStart(") != 4:
         fail("every post-allocation StartDevice failure must use the shared ownership-safe unwind")
-    present_open = start_compact.find(
-        "if(!OpenNativePassiveQueue()||!OpenWddmPresentTransactions())", final_publish_offset
-    )
-    if present_open < final_publish_offset or started_offset < present_open:
-        fail("StartDevice must open Present publication only after Active and before publishing DriverStarted")
+    if "OpenNativePassiveQueue()" in start_compact or "OpenWddmPresentTransactions()" in start_compact:
+        fail("StartDevice must leave submission closed until D0 establishes the Native Context transport")
     if len(variable_write_offsets(start, "m_pHWDevice")) != 1 or re.search(r"\bdelete\s+m_pHWDevice\s*;", start):
         fail("StartDevice must only allocate its adapter and delegate every deletion to the checked unwind")
 
