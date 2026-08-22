@@ -6583,11 +6583,17 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
     m_CtrlQueue.SetGpuBuf(&m_GpuBuf);
     m_CursorQueue.SetGpuBuf(&m_GpuBuf);
 
-    if (!m_2DResourceIdsInitialized && !m_Idr.Init(1, VIOGPU_NATIVE_RESOURCE_ID_START))
+    BOOLEAN initializeResourceIds = TRUE;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    initializeResourceIds = !m_2DResourceIdsInitialized;
+#endif
+    if (initializeResourceIds && !m_Idr.Init(1, VIOGPU_NATIVE_RESOURCE_ID_START))
     {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
+#if defined(VIOGPU_NATIVE_CONTEXT)
     m_2DResourceIdsInitialized = TRUE;
+#endif
 
     if (!m_CtrlQueue.EnableInterrupt() || !m_CursorQueue.EnableInterrupt())
     {

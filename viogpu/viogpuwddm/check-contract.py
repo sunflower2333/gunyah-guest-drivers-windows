@@ -1249,6 +1249,8 @@ def check_native_context_readiness(
     idr_offset = compact_code(transport_start).find("m_Idr.Init(1,VIOGPU_NATIVE_RESOURCE_ID_START)")
     if min(probe_offset, buffer_offset, idr_offset) < 0 or not (buffer_offset < idr_offset < probe_offset):
         fail("HWInit must probe only after control buffers and the ID allocator are initialized")
+    if compact_code(transport_start).count("BOOLEANinitializeResourceIds=TRUE;") != 1:
+        fail("transport start must keep a single allocator initialization gate for DOD and Native Context")
     require_call_count(hw_init, "StartWorkThread", 1, "HWInit")
     if probe_offset > transport_start_compact.find("returnSTATUS_SUCCESS;"):
         fail("transport start must complete readiness probing before returning success")
