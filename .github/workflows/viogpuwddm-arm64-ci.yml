@@ -204,17 +204,23 @@ jobs:
 
           $mapLines = Get-Content -LiteralPath $map
           $helperLines = @($mapLines | Where-Object {
-            $_ -match "^\s*[0-9A-Fa-f]+:[0-9A-Fa-f]+\s+VioGpuWddmInitializeMiniport\s+.*\sdriver_entry\.obj\s*$"
+            $tokens = @($_ -split '\s+' | Where-Object { $_ })
+            ($tokens -contains 'VioGpuWddmInitializeMiniport') -and
+              ($tokens[-1] -like '*driver_entry.obj')
           })
           if ($helperLines.Count -ne 1) {
+            $mapLines | Where-Object { $_ -match 'Miniport|DxgkInitialize' } | Select-Object -First 20 | ForEach-Object { Write-Host "MAP candidate: $_" }
             Write-Error "linker map must retain exactly one registration helper from driver_entry.obj"
             exit 1
           }
 
           $initializeLines = @($mapLines | Where-Object {
-            $_ -match "^\s*[0-9A-Fa-f]+:[0-9A-Fa-f]+\s+DxgkInitialize\s+.*\sdisplib:displib\.obj\s*$"
+            $tokens = @($_ -split '\s+' | Where-Object { $_ })
+            ($tokens -contains 'DxgkInitialize') -and
+              ($tokens[-1] -like '*displib:displib.obj')
           })
           if ($initializeLines.Count -ne 1) {
+            $mapLines | Where-Object { $_ -match 'Miniport|DxgkInitialize' } | Select-Object -First 20 | ForEach-Object { Write-Host "MAP candidate: $_" }
             Write-Error "linker map must resolve exactly one DxgkInitialize from displib:displib.obj"
             exit 1
           }
