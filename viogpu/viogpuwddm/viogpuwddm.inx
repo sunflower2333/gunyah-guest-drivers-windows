@@ -21,9 +21,9 @@ DefaultDestDir = INX_PLATFORM_DRIVERS_DIR
 viogpuwddm.sys = 1,,
 
 [Manufacturer]
-%DroidVM% = VioGpuWddm,NT$ARCH$.10.0...22621
+%DroidVM% = VioGpuWddm,NT$ARCH$
 
-[VioGpuWddm.NT$ARCH$.10.0...22621]
+[VioGpuWddm.NT$ARCH$]
 %VioGpuWddm.DeviceDesc% = VioGpuWddm_Install, PCI\VEN_1AF4&DEV_1050
 
 [VioGpuWddm_Install.NT]

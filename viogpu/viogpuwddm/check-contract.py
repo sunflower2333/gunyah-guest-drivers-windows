@@ -7344,6 +7344,20 @@ def check_project_safety(root: ET.Element) -> None:
     if not sign_modes or any(sign_mode != "Off" for sign_mode in sign_modes):
         fail(f"driver build must remain unsigned before package signing; found SignMode: {sign_modes or ['none']}")
 
+    adjust_inf = [
+        (element.text or "").strip()
+        for element in root.findall(".//msbuild:Feature_AdjustInf", NAMESPACE)
+    ]
+    if adjust_inf != ["true"]:
+        fail("full-miniport project must enable WDK INF token substitution")
+
+    inf_arch = [
+        (element.text or "").strip()
+        for element in root.findall(".//msbuild:InfArch", NAMESPACE)
+    ]
+    if inf_arch != ["$(TargetArch).10.0...22621"]:
+        fail("full-miniport project must keep the Win11 22621 InfArch decoration")
+
     optimize_references = [
         (element.text or "").strip()
         for element in root.findall(".//msbuild:Link/msbuild:OptimizeReferences", NAMESPACE)
@@ -7430,7 +7444,7 @@ def check_installation_contract() -> None:
         "ClassGuid={4d36e968-e325-11ce-bfc1-08002be10318}",
         "DriverVer=08/22/2026,0.1.0.0",
         "CatalogFile=viogpuwddm.cat",
-        "%DroidVM%=VioGpuWddm,NT$ARCH$.10.0...22621",
+        "%DroidVM%=VioGpuWddm,NT$ARCH$",
         "%VioGpuWddm.DeviceDesc%=VioGpuWddm_Install,PCI\\VEN_1AF4&DEV_1050",
         "FeatureScore=F8",
         "AddService=VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog",
@@ -7441,6 +7455,8 @@ def check_installation_contract() -> None:
     for fragment in required:
         if compact.count(fragment) != 1:
             fail(f"full-miniport INX must contain exactly one installation contract fragment: {fragment}")
+    if re.search(r"NT\$ARCH\$\.\d+\.\d+\.\.\.\d+", source):
+        fail("full-miniport INX must leave TargetOSVersion decoration to InfArch")
     if re.search(r"(?i)nt(?:amd64|x86)|viogpudo\.sys|include\s*=\s*msdv\.inf", source):
         fail("full-miniport INX must remain ARM64-tokenized and independent of the display-only package")
 

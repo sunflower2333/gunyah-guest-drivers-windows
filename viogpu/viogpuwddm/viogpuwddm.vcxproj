@@ -24,6 +24,7 @@
     <DriverType>WDM</DriverType>
     <DriverTargetPlatform>Universal</DriverTargetPlatform>
     <ALLOW_DATE_TIME>1</ALLOW_DATE_TIME>
+    <Feature_AdjustInf>true</Feature_AdjustInf>
   </PropertyGroup>
   <Import Project="$(MSBuildProjectDirectory)\..\..\build\Driver.Common.props" />
   <ImportGroup Label="ExtensionSettings" />
