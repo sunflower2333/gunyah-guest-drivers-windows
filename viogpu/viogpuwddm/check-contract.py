@@ -7430,6 +7430,13 @@ def check_project_safety(root: ET.Element) -> None:
     if inf_inputs != ["viogpuwddm.inx"]:
         fail("full-miniport project must contain exactly the ARM64 viogpuwddm INX input")
 
+    package_inputs = [
+        element.attrib.get("Include", "")
+        for element in root.findall(".//msbuild:FilesToPackage[@Include]", NAMESPACE)
+    ]
+    if package_inputs != ["$(TargetPath)"]:
+        fail("full-miniport project must package its linked SYS through FilesToPackage")
+
     output_dirs = [
         (element.text or "").strip()
         for element in root.findall(".//msbuild:OutDir", NAMESPACE)
