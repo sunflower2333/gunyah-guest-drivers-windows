@@ -6273,6 +6273,7 @@ NTSTATUS VioGpuAdapter::RetireAllNativeContextOwnersLocked(void)
     {
         PLIST_ENTRY entry = m_NativeContextRegistry.Flink;
         VIOGPU_NATIVE_CONTEXT_OWNER *owner = CONTAINING_RECORD(entry, VIOGPU_NATIVE_CONTEXT_OWNER, AdapterLink);
+#if defined(VIOGPU_NATIVE_CONTEXT)
         if (owner->ControlAddress != NULL)
         {
             NTSTATUS status = m_PciResources.UnmapHostVisibleAddress(owner->ControlAddress);
@@ -6283,6 +6284,7 @@ NTSTATUS VioGpuAdapter::RetireAllNativeContextOwnersLocked(void)
             owner->ControlAddress = NULL;
             owner->ControlBarOffset = 0;
         }
+#endif
         RemoveEntryList(entry);
         InitializeListHead(&owner->AdapterLink);
         delete owner;
