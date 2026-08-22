@@ -72,6 +72,23 @@ typedef struct _CURRENT_MODE
 
 class VioGpuDod;
 
+enum VIOGPU_NATIVE_START_DETAIL : DWORD
+{
+    VioGpuNativeStartDetailNone = 0,
+    VioGpuNativeStartDetailMissingVirgl = 1U << 0,
+    VioGpuNativeStartDetailMissingResourceBlob = 1U << 1,
+    VioGpuNativeStartDetailMissingContextInit = 1U << 2,
+    VioGpuNativeStartDetailMissingGuestHandle = 1U << 3,
+    VioGpuNativeStartDetailInvalidWireVersion = 1U << 8,
+    VioGpuNativeStartDetailInvalidContextType = 1U << 9,
+    VioGpuNativeStartDetailInvalidPadding = 1U << 10,
+    VioGpuNativeStartDetailInvalidMsmVersion = 1U << 11,
+    VioGpuNativeStartDetailInvalidPriorities = 1U << 12,
+    VioGpuNativeStartDetailInvalidVaStart = 1U << 13,
+    VioGpuNativeStartDetailInvalidVaSize = 1U << 14,
+    VioGpuNativeStartDetailInvalidVaRange = 1U << 15,
+};
+
 #if defined(VIOGPU_NATIVE_CONTEXT)
 enum : UINT
 {
@@ -120,23 +137,6 @@ enum VIOGPU_NATIVE_START_STAGE : DWORD
     VioGpuNativeStartPostDisplayOwnership = 0x0810,
     VioGpuNativeStartFinalState = 0x0820,
     VioGpuNativeStartComplete = 0x0FFF,
-};
-
-enum VIOGPU_NATIVE_START_DETAIL : DWORD
-{
-    VioGpuNativeStartDetailNone = 0,
-    VioGpuNativeStartDetailMissingVirgl = 1U << 0,
-    VioGpuNativeStartDetailMissingResourceBlob = 1U << 1,
-    VioGpuNativeStartDetailMissingContextInit = 1U << 2,
-    VioGpuNativeStartDetailMissingGuestHandle = 1U << 3,
-    VioGpuNativeStartDetailInvalidWireVersion = 1U << 8,
-    VioGpuNativeStartDetailInvalidContextType = 1U << 9,
-    VioGpuNativeStartDetailInvalidPadding = 1U << 10,
-    VioGpuNativeStartDetailInvalidMsmVersion = 1U << 11,
-    VioGpuNativeStartDetailInvalidPriorities = 1U << 12,
-    VioGpuNativeStartDetailInvalidVaStart = 1U << 13,
-    VioGpuNativeStartDetailInvalidVaSize = 1U << 14,
-    VioGpuNativeStartDetailInvalidVaRange = 1U << 15,
 };
 
 enum VIOGPU_NATIVE_FENCE_STATE : LONG
