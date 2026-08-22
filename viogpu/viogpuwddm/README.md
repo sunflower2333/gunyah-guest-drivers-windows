@@ -4,11 +4,12 @@ This project implements an ARM64 Native Context full miniport for the crosvm
 VirtIO GPU path. It uses the Win8 DDI callback table required by the current
 Native Context source, while reporting the legacy `DXGKDDI_WDDMv1` profile. It
 does not claim WDDM 1.2 capabilities: the mandatory WDDM 1.2 preemption,
-per-engine reset/TDR, direct-flip, and related contracts remain disabled until
-they are implemented and runtime-validated. The source now contains the
-registration entry point and a dedicated display-class INX, but the activation
-change has not yet passed the concentrated build, package, Windows/KMT, Host,
-and device gates:
+per-engine reset/TDR, direct-flip, and related contracts remain disabled. The
+source contains the registration entry point and a dedicated display-class INX.
+The complete activation batch has passed the local contract/format gates and
+the ARM64 compile, link, MAP, INF, signing, and package gates in the dedicated
+and product workflows. Windows/KMT, Host/GPU runtime, device execution, and
+uninstall rollback remain unverified:
 
 - `DriverEntry` calls the single `DxgkInitialize` registration helper.
 - `viogpuwddm.inx` binds ARM64 Windows 11 guests to
@@ -20,8 +21,10 @@ and device gates:
   wired. Hardware preemption, per-engine reset, smooth rotation, and driver
   color conversion are explicitly not advertised.
 
-Do not install an artifact produced from the activation work until the complete
-source batch has passed its local, ARM64 package, and guarded VM validation.
+Do not install an artifact produced from the activation work until guarded VM
+validation has passed. The current CI artifacts prove source/build/package
+gates only; they do not prove registration, loading, GPU execution, Present,
+TDR, or rollback behavior.
 
 The matching Mesa branch builds `vulkan_freedreno.dll` and an independent
 `turnip-wddm-icd.ps1` manager. The KMD package does not copy or register the
