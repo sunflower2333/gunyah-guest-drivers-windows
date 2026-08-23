@@ -1,7 +1,7 @@
 #include <windows.h>
 
-#include <d3d10umddi.h>
-#include <d3dumddi.h>
+struct D3DDDIARG_OPENADAPTER;
+struct D3D10DDIARG_OPENADAPTER;
 
 extern "C" HRESULT APIENTRY OpenAdapter(_Inout_ D3DDDIARG_OPENADAPTER *openData)
 {

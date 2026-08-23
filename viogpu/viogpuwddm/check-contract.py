@@ -859,9 +859,16 @@ def check_d3d_umd_shim_contract() -> None:
 
     source = UMD_SOURCE_PATH.read_text(encoding="utf-8")
     code = strip_cpp_comments_and_literals(source)
-    for header in ("<windows.h>", "<d3d10umddi.h>", "<d3dumddi.h>"):
-        if source.count(f"#include {header}") != 1:
-            fail(f"D3D UMD shim must use the WDK declaration from {header}")
+    if source.count("#include <windows.h>") != 1:
+        fail("D3D UMD shim must use the Windows ABI declarations")
+    for declaration in (
+        "struct D3DDDIARG_OPENADAPTER;",
+        "struct D3D10DDIARG_OPENADAPTER;",
+    ):
+        if source.count(declaration) != 1:
+            fail(f"D3D UMD shim must retain its opaque ABI parameter declaration: {declaration}")
+    if re.search(r"#\s*include\s*<d3d(?:10)?umddi\.h>", source):
+        fail("the fail-closed shim must not pull conflicting kernel DDI declarations through D3D UMD headers")
 
     signatures = {
         "OpenAdapter": "D3DDDIARG_OPENADAPTER",
@@ -874,7 +881,7 @@ def check_d3d_umd_shim_contract() -> None:
             rf'\s*_Inout_\s+{argument_type}\s*\*\s*openData\s*\)'
         )
         if len(re.findall(signature, source)) != 1:
-            fail(f"D3D UMD shim must expose one WDK-typed {function_name} definition")
+            fail(f"D3D UMD shim must expose one ABI-shaped {function_name} definition")
         body = canonical_code(function_body(function_name, code))
         if body != "UNREFERENCED_PARAMETER(openData);returnE_NOTIMPL;":
             fail(f"diagnostic D3D UMD entry point must fail closed without side effects: {function_name}")
