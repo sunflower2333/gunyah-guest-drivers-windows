@@ -47,6 +47,9 @@ PRODUCT_WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "
 START_DIAGNOSTIC_SCRIPT_PATH = (
     PROJECT_DIR.parent.parent / ".install_scripts" / "viogpu-native-start-diagnostics.ps1"
 ).resolve()
+PRESENT_DIAGNOSTIC_SCRIPT_PATH = (
+    PROJECT_DIR.parent.parent / ".install_scripts" / "viogpu-native-present-diagnostics.ps1"
+).resolve()
 
 
 def strip_cpp_comments_and_literals(source: str) -> str:
@@ -1255,6 +1258,178 @@ def check_native_query_adapter_info_diagnostics() -> None:
     ):
         if reader.count(value_name) < 2:
             fail(f"native diagnostic reader must optionally report {value_name}")
+
+
+def check_native_present_diagnostics() -> None:
+    expected_reasons = {
+        "VioGpuWddmPresentDiagnosticNone": 0,
+        "VioGpuWddmPresentDiagnosticNativeSourceIdentity": 1,
+        "VioGpuWddmPresentDiagnosticGdiSourcePlacement": 2,
+        "VioGpuWddmPresentDiagnosticGdiSourceIdentity": 3,
+        "VioGpuWddmPresentDiagnosticSourceObject": 4,
+        "VioGpuWddmPresentDiagnosticDestinationObject": 5,
+        "VioGpuWddmPresentDiagnosticSourcePlacement": 6,
+        "VioGpuWddmPresentDiagnosticDestinationBacking": 7,
+        "VioGpuWddmPresentDiagnosticDestinationPlacement": 8,
+        "VioGpuWddmPresentDiagnosticGeometry": 9,
+        "VioGpuWddmPresentDiagnosticSourcePrepatch": 10,
+        "VioGpuWddmPresentDiagnosticDestinationPrepatch": 11,
+    }
+    observed_reasons = {
+        name: int(value)
+        for name, value in re.findall(
+            r"\b(VioGpuWddmPresentDiagnostic[A-Za-z0-9]+)\s*=\s*([0-9]+)\s*,",
+            WDDM_DDI_HEADER_SOURCE,
+        )
+    }
+    if observed_reasons != expected_reasons:
+        fail(f"Present diagnostic reason ABI drifted: {observed_reasons}")
+
+    expected_fields = [
+        "ContextType",
+        "PresentFlags",
+        "SubRectCount",
+        "MultipassOffset",
+        "SourceFlags",
+        "DestinationFlags",
+        "SourceHostState",
+        "DestinationHostState",
+        "SourceResource2DState",
+        "DestinationResource2DState",
+        "SourcePlacementState",
+        "DestinationPlacementState",
+        "SourceFormat",
+        "DestinationFormat",
+        "SourceWidth",
+        "SourceHeight",
+        "SourcePitch",
+        "DestinationWidth",
+        "DestinationHeight",
+        "DestinationPitch",
+        "SourceAllocationListValue",
+        "DestinationAllocationListValue",
+        "SourceResourceId",
+        "DestinationResourceId",
+        "SourceRectLeft",
+        "SourceRectTop",
+        "SourceRectRight",
+        "SourceRectBottom",
+        "DestinationRectLeft",
+        "DestinationRectTop",
+        "DestinationRectRight",
+        "DestinationRectBottom",
+    ]
+    diagnostic_matches = re.findall(
+        r"\bstruct\s+VIOGPU_NATIVE_PRESENT_DIAGNOSTIC\s*\{(?P<body>.*?)\}\s*;",
+        VIOGPU_HEADER_SOURCE,
+        re.DOTALL,
+    )
+    if len(diagnostic_matches) != 1:
+        fail("adapter must expose exactly one persistent Present diagnostic record")
+    observed_fields = re.findall(r"\bDWORD\s+([A-Za-z0-9_]+)\s*;", diagnostic_matches[0])
+    if observed_fields != expected_fields:
+        fail(f"Present diagnostic record ABI drifted: {observed_fields}")
+
+    adapter_header = canonical_code(VIOGPU_HEADER_SOURCE)
+    declaration = (
+        "VOIDRecordNativePresentDiagnostic(_In_DWORDreason,_In_NTSTATUSstatus,"
+        "_In_constVIOGPU_NATIVE_PRESENT_DIAGNOSTIC*diagnostic);"
+    )
+    if adapter_header.count(declaration) != 1 or \
+       adapter_header.count("volatileLONGm_NativePresentDiagnosticRecorded;") != 1:
+        fail("adapter must retain one first-failure Present diagnostic recorder")
+    constructor = canonical_code(function_body("VioGpuDod::VioGpuDod", VIOGPU_CODE))
+    if constructor.count("m_NativePresentDiagnosticRecorded=0;") != 1:
+        fail("adapter construction must reset the first-failure Present diagnostic claim")
+    start_recorder = canonical_code(function_body("VioGpuDod::RecordNativeStartDiagnostic", VIOGPU_SOURCE))
+    require_order(
+        start_recorder,
+        (
+            "stage==VioGpuNativeStartEntered",
+            "InterlockedExchange(&m_NativePresentDiagnosticRecorded,0);",
+            'WriteRegistryDWORD(deviceKey,L"NativePresentReason",&presentReason)',
+            'WriteRegistryDWORD(deviceKey,L"NativeStartStatus",&statusValue)',
+            'WriteRegistryDWORD(deviceKey,L"NativeStartStage",&stageValue)',
+        ),
+        "StartDevice entry must invalidate stale Present diagnostics before publishing its stage",
+    )
+
+    recorder_body = function_body("VioGpuDod::RecordNativePresentDiagnostic", VIOGPU_SOURCE)
+    recorder = canonical_code(recorder_body)
+    for fragment in (
+        "InterlockedCompareExchange(&m_NativePresentDiagnosticRecorded,1,0)!=0",
+        "IoOpenDeviceRegistryKey(m_pPhysicalDevice,PLUGPLAY_REGKEY_DRIVER,KEY_SET_VALUE,&deviceKey)",
+        "for(UINTindex=0;index<ARRAYSIZE(values);++index)",
+        "WriteRegistryDWORD(deviceKey,values[index].Name,&value)",
+        "NTSTATUSreasonWrite=NT_SUCCESS(writeStatus)?WriteRegistryDWORD(deviceKey,",
+        "InterlockedExchange(&m_NativePresentDiagnosticRecorded,2);",
+    ):
+        if recorder.count(fragment) != 1:
+            fail(f"Present diagnostics must retain one first-failure registry transaction: {fragment}")
+    if recorder.count("InterlockedExchange(&m_NativePresentDiagnosticRecorded,0);") != 2:
+        fail("Present diagnostics must release their claim after either registry failure path")
+    if recorder_body.count("ZwClose(deviceKey)") != 1:
+        fail("Present diagnostics must close exactly one device registry handle")
+    if not re.search(r"\bVOID\s+VioGpuDod::RecordNativePresentDiagnostic\s*\(", VIOGPU_SOURCE):
+        fail("Present diagnostics must remain a best-effort void operation")
+
+    value_names = ["NativePresentStatus"] + [
+        f"NativePresent{field.removeprefix('Present')}" for field in expected_fields
+    ]
+    for value_name in value_names:
+        if recorder_body.count(f'L"{value_name}"') != 1:
+            fail(f"Present diagnostic recorder must write exactly one {value_name} value")
+    reason_write = compact_code('WriteRegistryDWORD(deviceKey, L"NativePresentReason", &reasonValue)')
+    if recorder.count(reason_write) != 1:
+        fail("Present diagnostic reason must be the single commit marker")
+    require_order(
+        recorder,
+        (
+            "for(UINTindex=0;index<ARRAYSIZE(values);++index)",
+            reason_write,
+            "ZwClose(deviceKey);",
+            "InterlockedExchange(&m_NativePresentDiagnosticRecorded,2);",
+        ),
+        "Present diagnostics must publish all values before their reason commit marker",
+    )
+
+    present = canonical_code(function_body("VioGpuWddmPresent", WDDM_DDI_CODE))
+    for reason_name in tuple(expected_reasons)[1:]:
+        if present.count(reason_name) != 1:
+            fail(f"Present must map one rejection path to {reason_name}")
+    if present.count("RecordPresentDiagnostic(context,present,source,destination,reason,status);") != 1:
+        fail("Present must persist the first classified rejection before returning it")
+
+    if not PRESENT_DIAGNOSTIC_SCRIPT_PATH.is_file():
+        fail("native Present diagnostic reader is missing")
+    reader = PRESENT_DIAGNOSTIC_SCRIPT_PATH.read_text(encoding="utf-8")
+    for value_name in ["NativePresentReason"] + value_names:
+        if reader.count(value_name) < 2:
+            fail(f"native Present diagnostic reader must require and report {value_name}")
+    reader_reason_block = re.search(
+        r"^\$reasonNames\s*=\s*@\{(?P<body>.*?)^\}", reader, re.MULTILINE | re.DOTALL
+    )
+    if reader_reason_block is None:
+        fail("native Present diagnostic reader reason map is missing")
+    reader_reasons = {
+        int(value): name
+        for value, name in re.findall(
+            r"^\s*([0-9]+)\s*=\s*'([A-Za-z0-9]+)'\s*$",
+            reader_reason_block.group("body"),
+            re.MULTILINE,
+        )
+    }
+    expected_reader_reasons = {
+        value: name.removeprefix("VioGpuWddmPresentDiagnostic")
+        for name, value in expected_reasons.items()
+        if value != 0
+    }
+    if reader_reasons != expected_reader_reasons:
+        fail(f"native Present diagnostic reader reason map drifted: {reader_reasons}")
+    if not re.search(r"\$reason\s+-eq\s+0", reader, re.IGNORECASE):
+        fail("native Present diagnostic reader must reject the no-failure marker")
+    if re.search(r"\b(?:Set-ItemProperty|New-ItemProperty|Remove-ItemProperty|pnputil|devcon)\b", reader, re.IGNORECASE):
+        fail("native Present diagnostic reader must remain read-only")
 
 
 def check_native_win7_driver_caps_contract() -> None:
@@ -3146,6 +3321,32 @@ def check_wddm_present_contract() -> None:
     ):
         if native_identity.count(fragment) != 1:
             fail(f"Native Present source must retain its exact live identity: {fragment}")
+    gdi_identity = canonical_code(function_body("HasLiveGdiPresentIdentity", WDDM_DDI_CODE))
+    for fragment in (
+        "context->Type==VioGpuWddmContextGdi",
+        "IsGdiSourceAllocation(allocation)",
+        "allocation->HostState==VioGpuWddmAllocationHostNone",
+        "allocation->BlobId==0",
+        "allocation->ResourceId!=0",
+        "allocation->ResourceId<VIOGPU_NATIVE_RESOURCE_ID_START",
+        "allocation->ContextId==0",
+        "allocation->ContextGeneration==0",
+        "allocation->ContextResetGeneration==0",
+        "allocation->Resource2DState==VioGpu2DResourceBackingAttached",
+        "allocation->Resource2DResetGeneration!=0",
+        "allocation->PlacementValid",
+        "allocation->ApertureMdl!=NULL",
+        "allocation->ApertureAddress!=NULL",
+        "allocation->ApertureMappedPageCount==allocation->AperturePageCount",
+    ):
+        if gdi_identity.count(fragment) != 1:
+            fail(f"GDI Present source must retain its exact live standard-2D identity: {fragment}")
+    for retired_fragment in (
+        "allocation->Resource2DState==VioGpu2DResourceNone",
+        "allocation->Resource2DResetGeneration==0",
+    ):
+        if retired_fragment in gdi_identity:
+            fail(f"paged-in GDI Present source must not require retired 2D identity: {retired_fragment}")
 
     allocation_parameter = "VIOGPU_WDDM_ALLOCATION *allocation"
     ensure_primary = canonical_code(
@@ -3157,8 +3358,11 @@ def check_wddm_present_contract() -> None:
     if "allocation->ApertureMdl!=NULL" not in ensure_primary or \
        "allocation->ApertureAddress!=NULL" not in ensure_primary or \
        "allocation->ApertureMdl!=NULL" not in reconcile_gdi or \
-       "allocation->ApertureAddress!=NULL" not in reconcile_gdi:
-        fail("Present reset reconciliation must retain the VidMm MDL backing identity")
+       "allocation->ApertureAddress!=NULL" not in reconcile_gdi or \
+       "EnsureStandard2DAllocationBacking(allocation)" not in reconcile_gdi or \
+       "allocation->Resource2DState==VioGpu2DResourceBackingAttached" not in reconcile_gdi or \
+       "allocation->Resource2DResetGeneration!=0" not in reconcile_gdi:
+        fail("Present reset reconciliation must retain the current attached VidMm-backed 2D identity")
 
     geometry = canonical_code(
         function_body_with_parameters(
@@ -3248,7 +3452,7 @@ def check_wddm_present_contract() -> None:
         "entry->Owner==privateData->Submission",
         "ReferencePresentTransaction(candidate)",
         "HasLiveNativePresentIdentity(transaction->Source,context,adapter)",
-        "context->Type==VioGpuWddmContextGdi&&IsGdiSourceAllocation(transaction->Source)",
+        "HasLiveGdiPresentIdentity(transaction->Source,context,adapter)",
         "privateData->ContextId==0&&privateData->Generation==0&&privateData->ResetGeneration==0",
         "transaction->Source->ContextId==0",
         "transaction->Source->ContextGeneration==0",
@@ -3453,8 +3657,8 @@ def check_wddm_present_contract() -> None:
         "AcquireAllocationSubmissionReference(source,context->Device->Adapter)",
         "AcquireAllocationSubmissionReference(destination,context->Device->Adapter)",
         "HasLiveNativePresentIdentity(source,context,context->Device->Adapter)",
-        "context->Type==VioGpuWddmContextGdi&&IsGdiSourceAllocation(source)",
-        "source->ContextId==0&&source->ContextGeneration==0&&source->ContextResetGeneration==0",
+        "gdiCandidate&&ReconcileGdiSourcePlacementAfterReset(source)",
+        "gdiPlacement&&HasLiveGdiPresentIdentity(source,context,context->Device->Adapter)",
         "IsStandardPrimaryAllocation(destination)",
         "EnsureStandard2DAllocationBacking(destination)",
         "ValidatePresentGeometry(source,destination,",
@@ -3494,6 +3698,8 @@ def check_wddm_present_contract() -> None:
             "ResolvePresentTransaction(",
             "VioGpuWddmPresentBuilt,",
             "HasLiveNativePresentIdentity(source,transaction->Context,adapter)",
+            "ReconcileGdiSourcePlacementAfterReset(source)",
+            "HasLiveGdiPresentIdentity(source,transaction->Context,adapter)",
             "!destinationOpen->ReadOnly",
             "IsStandardPrimaryAllocation(destination)",
             "EnsureStandard2DAllocationBacking(destination)",
@@ -3583,6 +3789,8 @@ def check_wddm_present_contract() -> None:
     for fragment in (
         "AcquireAllocationLifecycle(source)",
         "AcquireAllocationLifecycle(destination)",
+        "ReconcileGdiSourcePlacementAfterReset(source)",
+        "HasLiveGdiPresentIdentity(source,transaction->Context,transaction->Adapter)",
         "source->ApertureAddress==NULL||destination->ApertureAddress==NULL",
         "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
         "transaction->Adapter->Present2DResource(",
@@ -8292,6 +8500,7 @@ def main() -> None:
     check_retired_pool_absence()
     check_native_start_diagnostics()
     check_native_query_adapter_info_diagnostics()
+    check_native_present_diagnostics()
     check_native_win7_driver_caps_contract()
     check_registration_helper(sources)
     check_callback_table()

@@ -309,6 +309,22 @@ enum VIOGPU_WDDM_PRESENT_STATE : LONG
     VioGpuWddmPresentCancelled,
 };
 
+enum VIOGPU_WDDM_PRESENT_DIAGNOSTIC_REASON : DWORD
+{
+    VioGpuWddmPresentDiagnosticNone = 0,
+    VioGpuWddmPresentDiagnosticNativeSourceIdentity = 1,
+    VioGpuWddmPresentDiagnosticGdiSourcePlacement = 2,
+    VioGpuWddmPresentDiagnosticGdiSourceIdentity = 3,
+    VioGpuWddmPresentDiagnosticSourceObject = 4,
+    VioGpuWddmPresentDiagnosticDestinationObject = 5,
+    VioGpuWddmPresentDiagnosticSourcePlacement = 6,
+    VioGpuWddmPresentDiagnosticDestinationBacking = 7,
+    VioGpuWddmPresentDiagnosticDestinationPlacement = 8,
+    VioGpuWddmPresentDiagnosticGeometry = 9,
+    VioGpuWddmPresentDiagnosticSourcePrepatch = 10,
+    VioGpuWddmPresentDiagnosticDestinationPrepatch = 11,
+};
+
 struct VIOGPU_WDDM_PRESENT_TRANSACTION
 {
     ULONG Signature;

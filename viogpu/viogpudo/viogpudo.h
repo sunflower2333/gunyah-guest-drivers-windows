@@ -139,6 +139,42 @@ enum VIOGPU_NATIVE_START_STAGE : DWORD
     VioGpuNativeStartComplete = 0x0FFF,
 };
 
+struct VIOGPU_NATIVE_PRESENT_DIAGNOSTIC
+{
+    DWORD ContextType;
+    DWORD PresentFlags;
+    DWORD SubRectCount;
+    DWORD MultipassOffset;
+    DWORD SourceFlags;
+    DWORD DestinationFlags;
+    DWORD SourceHostState;
+    DWORD DestinationHostState;
+    DWORD SourceResource2DState;
+    DWORD DestinationResource2DState;
+    DWORD SourcePlacementState;
+    DWORD DestinationPlacementState;
+    DWORD SourceFormat;
+    DWORD DestinationFormat;
+    DWORD SourceWidth;
+    DWORD SourceHeight;
+    DWORD SourcePitch;
+    DWORD DestinationWidth;
+    DWORD DestinationHeight;
+    DWORD DestinationPitch;
+    DWORD SourceAllocationListValue;
+    DWORD DestinationAllocationListValue;
+    DWORD SourceResourceId;
+    DWORD DestinationResourceId;
+    DWORD SourceRectLeft;
+    DWORD SourceRectTop;
+    DWORD SourceRectRight;
+    DWORD SourceRectBottom;
+    DWORD DestinationRectLeft;
+    DWORD DestinationRectTop;
+    DWORD DestinationRectRight;
+    DWORD DestinationRectBottom;
+};
+
 enum VIOGPU_NATIVE_FENCE_STATE : LONG
 {
     VioGpuNativeFenceFree = 0,
@@ -629,6 +665,7 @@ class VioGpuDod
     KSPIN_LOCK m_WddmPresentLock;
     LIST_ENTRY m_WddmPresentTransactions;
     volatile LONG m_WddmPresentClosing;
+    volatile LONG m_NativePresentDiagnosticRecorded;
 #endif
 
     USHORT m_PersistentDispMode0Width;
@@ -893,6 +930,9 @@ class VioGpuDod
                                                 _In_ NTSTATUS status,
                                                 _In_ UINT inputDataSize,
                                                 _In_ UINT outputDataSize);
+    VOID RecordNativePresentDiagnostic(_In_ DWORD reason,
+                                       _In_ NTSTATUS status,
+                                       _In_ const VIOGPU_NATIVE_PRESENT_DIAGNOSTIC *diagnostic);
 #endif
 
   private:

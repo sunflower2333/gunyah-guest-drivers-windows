@@ -129,6 +129,26 @@ jobs:
         shell: pwsh
         run: python viogpu/viogpuwddm/check-contract.py
 
+      - name: Parse Native Context diagnostic readers
+        shell: pwsh
+        run: |
+          $scripts = @(
+            '.install_scripts/viogpu-native-start-diagnostics.ps1',
+            '.install_scripts/viogpu-native-present-diagnostics.ps1'
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $script),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -ne 0) {
+              throw "PowerShell parse failure in '$script': $($errors | Out-String)"
+            }
+          }
+
       - name: Build shared dependencies and guest drivers
         shell: pwsh
         run: |

@@ -10,11 +10,12 @@ contracts remain disabled. The source contains the registration entry point, a
 dedicated display-class INX, and an ARM64-only fail-closed D3D UMD shim.
 The last committed activation batch passed the ARM64 compile, link, MAP, INF,
 signing, and package gates in the dedicated and product workflows. Signed
-package `100.6.101.58004` was installed in the unprotected Windows VM and
-reached `StartDevice` success, but the adapter remains Code 43. The current
-Win7 DriverCaps prefix correction has local source-contract evidence only and
-still requires a new ARM64 run. KMT/Host/GPU execution, Present, TDR, and
-uninstall rollback remain unverified:
+package `100.6.101.58014` was installed in the unprotected Windows VM, starts
+the adapter, and reaches the CDD `DxgkDdiPresent` path. The display remains
+black because every observed Present is rejected before Patch or Submit. The
+current GDI-source identity correction has local source-contract evidence only
+and still requires a new ARM64 run and guarded device test. Successful 2D
+display, KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
 
 - `DriverEntry` calls the single `DxgkInitialize` registration helper.
 - `viogpuwddm.inx` binds ARM64 Windows 11 guests to
@@ -32,17 +33,27 @@ uninstall rollback remain unverified:
   color conversion are explicitly not advertised.
 
 The current Windows runtime evidence is narrower than those source contracts.
-Signed package `100.6.101.58004` has three valid DriverStore
-`UserModeDriverName` paths and reaches the persistent
-`0x0FFF/STATUS_SUCCESS` marker, but the adapter remains Code 43. Its first
-persisted failure is `DXGKQAITYPE_DRIVERCAPS`: the Win7 runtime supplies a
-528-byte output while the shared DOD implementation required the modern WDK
-`sizeof(DXGK_DRIVERCAPS)` and returned `STATUS_BUFFER_TOO_SMALL`. The current
-source defines the Win7 prefix as
-`FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps)`, asserts that it is 528 bytes,
-and zeroes and fills only that prefix for Native Context. The display-only
-target retains its existing full-structure behavior. This correction has not
-yet been compiled or runtime-validated.
+A unique ETL capture from package `100.6.101.58014` contains eight
+`DdiPresent` calls, four paging calls, and no `DdiRender`, `DdiPatch`, or
+`DdiSubmitCommand` call. All eight Present calls return
+`STATUS_NOT_SUPPORTED`; dxgkrnl reports both `Driver failed Present` and
+`PresentFromCdd ... failed`. `MapApertureAllocation` creates and attaches a 2D
+Host resource for every successfully paged-in standard allocation, including a
+CDD GDI shadow or staging source. The previous Present identity simultaneously
+required that same source to have `Resource2DState == None` and reset generation
+zero, so a legal paged-in GDI source could never pass Build.
+
+The current source instead requires the GDI source's exact standard-allocation,
+context-zero, placement, CPU mapping, low resource-ID, and attached 2D backing
+identity. Reset reconciliation recreates that backing from the current VidMm
+PFNs before accepting the source. Native allocation context, generation,
+residency, blob, and Host ownership checks are unchanged. The first classified
+Present rejection is persisted as a reason/status plus allocation, placement,
+format, rectangle, and allocation-list snapshot; `NativePresentReason` is the
+commit marker. The read-only decoder is
+`.install_scripts/viogpu-native-present-diagnostics.ps1`. None of this is device
+success evidence until a newly built package reaches Patch, Submit, a completed
+scheduler fence, Host transfer/flush, and visible pixel change.
 
 Do not install an artifact produced from the activation work until guarded VM
 validation has passed. The current CI artifacts prove source/build/package
@@ -237,8 +248,9 @@ allocation-busy status.
 The source also implements a synchronous CPU-copy `DxgkDdiPresent` path. A
 Native context may present only an exact live native allocation identity; a GDI
 context may present only a resident CPU-visible non-primary standard allocation
-whose context and reset identity fields are zero. The destination must be a
-resident standard primary with current 2D backing, opened writable. Build and
+whose context and reset identity fields are zero and whose current 2D resource
+backing is attached to the same VidMm PFNs. The destination must be a resident
+standard primary with current 2D backing, opened writable. Build and
 Patch validate bounded rectangles, allocation opens, current placements, Host
 resource state, and patch records. Build uses each nonzero allocation-list
 `SegmentId` to prepatch its placement while still returning both patch records;
@@ -266,11 +278,11 @@ epoch, while a failed closed-to-open transition restores the outer reset gate.
 If an ordinary D1/D2/D3 hardware transition fails after the registry drain, the
 registry remains closed and the outer reset gate is requested; only a later D0
 recovery may publish a coherent Active epoch again.
-The previous fail-closed slice passed its local contract, ABI, formatting, and
-ARM64 compile/link gates. Those results predate the registration, INF, feature
-selection rename, and capability corrections in the current source batch. The
-current activation batch deliberately remains untested until all of its code is
-complete; earlier results are not evidence for the loadable driver.
+The GDI-source correction passes the local contract, native-context wire ABI,
+WDDM private ABI, formatting, Python compilation, and diff gates. It has not yet
+passed the ARM64 compile/link/package workflow or device runtime. Earlier ARM64
+results and package `100.6.101.58014` predate this correction and are not
+evidence that 2D Present now works.
 
 The preemption callback validates the single node/engine contract, reports
 `DXGK_INTERRUPT_DMA_PREEMPTED` only when the native fence queue is already
