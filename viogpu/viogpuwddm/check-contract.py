@@ -785,19 +785,18 @@ def check_arm64_workflow_contract() -> None:
     }
     sources: dict[str, str] = {}
     required_toolchain_fragments = (
-        'DROIDVM_KIT_VERSION: "10.0.28000.0"',
         "runs-on: windows-2025-vs2026",
-        r"Include\$env:DROIDVM_KIT_VERSION\km\ntddk.h",
-        r"bin\$env:DROIDVM_KIT_VERSION\x86\tracewpp.exe",
-        r"lib\$env:DROIDVM_KIT_VERSION\km\arm64\ntoskrnl.lib",
+        "Locate preinstalled Windows SDK and WDK",
+        "Get-ChildItem (Join-Path $kitRoot 'Include') -Directory",
+        "[version]$include.Name",
+        r"bin\$($include.Name)\x86\tracewpp.exe",
+        r"lib\$($include.Name)\km\arm64\ntoskrnl.lib",
+        "Sort-Object Version -Descending",
+        "DROIDVM_KIT_VERSION=$kitVersion",
         "$toolRoots = @(",
         "Get-ChildItem -LiteralPath $root -Recurse -Filter 'InfVerif.exe'",
         "INFVERIF_PATH=",
         "$env:INFVERIF_PATH",
-        "winget install --id Microsoft.WindowsSDK.10.0.28000 --source winget",
-        "winget install --id Microsoft.WindowsWDK.10.0.28000 --source winget",
-        "--exact --silent --accept-package-agreements --accept-source-agreements",
-        "--disable-interactivity",
     )
     for label, path in workflows.items():
         if not path.is_file():
@@ -805,15 +804,14 @@ def check_arm64_workflow_contract() -> None:
         source = path.read_text(encoding="utf-8")
         sources[label] = source
         for fragment in required_toolchain_fragments:
-            expected_count = 2 if fragment in (
-                "--exact --silent --accept-package-agreements --accept-source-agreements",
-                "--disable-interactivity",
-            ) else 1
-            if source.count(fragment) != expected_count:
+            if source.count(fragment) != 1:
                 fail(
-                    f"{label} workflow must pin, install, and verify the ARM64 WDK "
-                    f"with winget: {fragment}"
+                    f"{label} workflow must discover and verify one preinstalled ARM64 "
+                    f"Windows SDK/WDK: {fragment}"
                 )
+
+        if re.search(r"winget\s+install\s+--id\s+Microsoft\.Windows(?:SDK|WDK)", source, re.I):
+            fail(f"{label} workflow must not install the runner's preinstalled Windows SDK/WDK")
 
         if r"Tools\x64\infverif.exe" in source:
             fail(f"{label} workflow must discover the versioned InfVerif.exe path")
