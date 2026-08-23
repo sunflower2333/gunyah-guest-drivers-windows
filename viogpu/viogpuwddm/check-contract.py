@@ -857,6 +857,16 @@ def check_arm64_workflow_contract() -> None:
     )
     if sources["product drivers"].count(product_package) != 1:
         fail("the signed ARM64 product workflow must stage one SYS/D3D-UMD/INF package")
+    product_version_fragments = (
+        "$epoch = 'cd6097248fe17b459b8587021799bd071f0f029f'",
+        'git rev-list --count "$epoch..HEAD"',
+        '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
+        "[int]$env:DROIDVM_DRIVER_MINOR -le 58000",
+        'Native Context INF does not contain expected DriverVer $infVersion',
+    )
+    for fragment in product_version_fragments:
+        if sources["product drivers"].count(fragment) != 1:
+            fail(f"the signed ARM64 product workflow must enforce monotonic package versioning: {fragment}")
 
 
 def check_d3d_umd_shim_contract() -> None:

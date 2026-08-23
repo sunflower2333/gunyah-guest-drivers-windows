@@ -148,18 +148,18 @@ jobs:
           # Driver 版號 = 100.6.101.<58000 + 自 versioning epoch 起的 commit 數>。
           # 維持第三段 101，第四段從 58000 往上長（每 commit +1），epoch 之後第一個 build = 58001，
           # 故永遠 > 現役 100.6.101.58000。16-bit 上限 65535 → 約 7500 次 build 餘裕；接近上限再開新 epoch。
-          # versioning epoch = base commit. 開關：設為空字串 '' 或 $null 即關閉自增，
-          # 第四段固定落回 58000（相當於 +0）。設為某個 commit 時，其後每個 commit +1。
-          $epoch = ''   # DISABLED：空/None => +0 => 100.6.101.58000
-          if ([string]::IsNullOrWhiteSpace($epoch)) {
-              $n = '0'
-          } else {
-              $n = (& git rev-list --count "$epoch..HEAD" | Out-String).Trim()
-              if (-not ($n -match '^[0-9]+$')) { $n = '0' }
+          # versioning epoch is the exact source revision of the installed
+          # 100.6.101.58000 Native Context package. Every product revision
+          # after it must rank above that package for deterministic PnP upgrade.
+          $epoch = 'cd6097248fe17b459b8587021799bd071f0f029f'
+          $n = (& git rev-list --count "$epoch..HEAD" | Out-String).Trim()
+          if (-not ($n -match '^[1-9][0-9]*$')) {
+            throw "invalid driver version distance from $epoch to HEAD: '$n'"
           }
           $minor = 58000 + [int]$n
-          if ($minor -gt 65535) { Write-Host "::warning::driver minor $minor 超過 65535，請開新 epoch 或 bump 第三段"; $minor = 65535 }
+          if ($minor -gt 65535) { throw "driver minor $minor exceeds 65535; start a new version epoch" }
           Write-Host "Driver version = 100.6.101.$minor"
+          "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
                       "/p:WindowsTargetPlatformVersion=$env:DROIDVM_KIT_VERSION",
                       "/p:_BUILD_MINOR_VERSION_=$minor")
@@ -207,10 +207,20 @@ jobs:
           $root = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'
           $driver = Join-Path $root 'viogpuwddm.sys'
           $umd = Join-Path $root 'viogpud3d.dll'
-          foreach ($path in @($driver, $umd)) {
+          $inf = Join-Path $root 'viogpuwddm.inf'
+          foreach ($path in @($driver, $umd, $inf)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "missing Native Context product PE: $path"
             }
+          }
+
+          if ([int]$env:DROIDVM_DRIVER_MINOR -le 58000) {
+            throw "Native Context product version must rank above installed 100.6.101.58000"
+          }
+          $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
+          $infText = Get-Content -LiteralPath $inf -Raw
+          if ($infText -notmatch "(?m)^DriverVer\s*=\s*[^,]+,\s*$([regex]::Escape($infVersion))\s*$") {
+            throw "Native Context INF does not contain expected DriverVer $infVersion"
           }
 
           function Assert-Arm64Pe([string] $path) {
