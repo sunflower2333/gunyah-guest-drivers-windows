@@ -94,6 +94,9 @@ enum virtio_gpu_ctrl_type
 #define VIRTGPU_DRM_CAPSET_DRM                   6
 #define VIRTGPU_DRM_CONTEXT_MSM                  1
 #define VIRTGPU_DRM_WIRE_FORMAT_VERSION          2
+#define VIRTGPU_CAP_BOOL_UNSUPPORTED_BY_HOST     0U
+#define VIRTGPU_CAP_BOOL_FALSE                   0xffffffffU
+#define VIRTGPU_CAP_BOOL_TRUE                    1U
 #define VIRTIO_GPU_CAPSET_DRM                    VIRTGPU_DRM_CAPSET_DRM
 #define VIRTIO_GPU_DRM_CONTEXT_MSM               VIRTGPU_DRM_CONTEXT_MSM
 #define VIRTIO_GPU_DRM_WIRE_FORMAT_VERSION       VIRTGPU_DRM_WIRE_FORMAT_VERSION

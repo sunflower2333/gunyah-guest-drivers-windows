@@ -3,6 +3,9 @@
 ABI_VALUE(protocol.capset_drm, ABI_CAPSET_ID, 6);
 ABI_VALUE(protocol.context_msm, VIRTGPU_DRM_CONTEXT_MSM, 1);
 ABI_VALUE(protocol.wire_format_version, VIRTGPU_DRM_WIRE_FORMAT_VERSION, 2);
+ABI_VALUE(protocol.cap_bool_unsupported, VIRTGPU_CAP_BOOL_UNSUPPORTED_BY_HOST, 0);
+ABI_VALUE(protocol.cap_bool_false, (uint32_t)VIRTGPU_CAP_BOOL_FALSE, 4294967295ULL);
+ABI_VALUE(protocol.cap_bool_true, VIRTGPU_CAP_BOOL_TRUE, 1);
 ABI_VALUE(protocol.context_init_capset_mask, VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK, 255);
 
 ABI_VALUE(virtio.cmd.get_capset_info, VIRTIO_GPU_CMD_GET_CAPSET_INFO, 264);

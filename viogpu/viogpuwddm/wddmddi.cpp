@@ -2652,6 +2652,19 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
         return STATUS_DEVICE_NOT_READY;
     }
 
+    UINT hasRayTracing = 0;
+    switch (capset.msm.has_raytracing)
+    {
+        case VIRTGPU_CAP_BOOL_TRUE:
+            hasRayTracing = 1;
+            break;
+        case VIRTGPU_CAP_BOOL_UNSUPPORTED_BY_HOST:
+        case VIRTGPU_CAP_BOOL_FALSE:
+            break;
+        default:
+            return STATUS_GRAPHICS_DRIVER_MISMATCH;
+    }
+
     VIOGPU_WDDM_ADAPTER_INFO *adapterInfo = static_cast<VIOGPU_WDDM_ADAPTER_INFO *>(queryAdapterInfo->pOutputData);
     InitializeAbiHeader(&adapterInfo->Header, sizeof(*adapterInfo));
     adapterInfo->Capabilities = VIOGPU_WDDM_CAPABILITIES_NONE;
@@ -2670,7 +2683,7 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
     adapterInfo->UbwcSwizzle = capset.msm.ubwc_swizzle;
     adapterInfo->MacrotileMode = capset.msm.macrotile_mode;
     adapterInfo->UcheTrapBase = capset.msm.uche_trap_base;
-    adapterInfo->HasRayTracing = capset.msm.has_raytracing;
+    adapterInfo->HasRayTracing = hasRayTracing;
     adapterInfo->MaxFrequency = capset.msm.max_freq;
     return STATUS_SUCCESS;
 }

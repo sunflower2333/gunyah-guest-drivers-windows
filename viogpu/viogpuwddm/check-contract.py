@@ -1540,6 +1540,9 @@ def check_native_context_readiness(
     require_integer_define(wire_header_code, "VIRTGPU_DRM_CAPSET_DRM", 6, "wire header")
     require_integer_define(wire_header_code, "VIRTGPU_DRM_CONTEXT_MSM", 1, "wire header")
     require_integer_define(wire_header_code, "VIRTGPU_DRM_WIRE_FORMAT_VERSION", 2, "wire header")
+    require_integer_define(wire_header_code, "VIRTGPU_CAP_BOOL_UNSUPPORTED_BY_HOST", 0, "wire header")
+    require_integer_define(wire_header_code, "VIRTGPU_CAP_BOOL_FALSE", 0xFFFFFFFF, "wire header")
+    require_integer_define(wire_header_code, "VIRTGPU_CAP_BOOL_TRUE", 1, "wire header")
     require_alias_define(wire_header_code, "VIRTIO_GPU_CAPSET_DRM", "VIRTGPU_DRM_CAPSET_DRM", "wire header")
     require_alias_define(
         wire_header_code,
@@ -4308,6 +4311,17 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         or "adapterInfo->PriorityCount=capset.msm.priorities;" in query
     ):
         fail("UMDRIVERPRIVATE must expose only the context-owned priority-zero submitqueue")
+    for fragment in (
+        "switch(capset.msm.has_raytracing)",
+        "caseVIRTGPU_CAP_BOOL_TRUE:hasRayTracing=1;break;",
+        "caseVIRTGPU_CAP_BOOL_UNSUPPORTED_BY_HOST:caseVIRTGPU_CAP_BOOL_FALSE:break;",
+        "default:returnSTATUS_GRAPHICS_DRIVER_MISMATCH;",
+        "adapterInfo->HasRayTracing=hasRayTracing;",
+    ):
+        if query.count(fragment) != 1:
+            fail(f"UMDRIVERPRIVATE must normalize the optional ray-tracing wire boolean: {fragment}")
+    if "adapterInfo->HasRayTracing=capset.msm.has_raytracing;" in query:
+        fail("UMDRIVERPRIVATE must not publish the optional wire boolean without normalization")
     if any(token in query for token in ("va_start", "va_size", "ContextId", "ResourceId", "PhysicalAddress")):
         fail("UMDRIVERPRIVATE must not expose VA ranges or KMD/transport identities")
     query_dispatch = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))

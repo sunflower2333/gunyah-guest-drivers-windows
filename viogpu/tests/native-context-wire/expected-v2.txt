@@ -1,6 +1,9 @@
 value.protocol.capset_drm=6
 value.protocol.context_msm=1
 value.protocol.wire_format_version=2
+value.protocol.cap_bool_unsupported=0
+value.protocol.cap_bool_false=4294967295
+value.protocol.cap_bool_true=1
 value.protocol.context_init_capset_mask=255
 value.virtio.cmd.get_capset_info=264
 value.virtio.cmd.get_capset=265
