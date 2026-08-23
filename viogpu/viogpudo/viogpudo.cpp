@@ -35,6 +35,8 @@
 #include "viogpum.h"
 #include "edid.h"
 
+#include <intrin.h>
+
 #if !DBG
 #include "viogpudo.tmh"
 #endif
@@ -42,6 +44,8 @@
 static UINT g_InstanceId = 0;
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
+extern "C" IMAGE_DOS_HEADER __ImageBase;
+
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 
 static const ULONG VIOGPU_WIN7_DRIVERCAPS_SIZE = FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps);
@@ -147,6 +151,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     ExInitializeRundownProtection(&m_HardwareOperations);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     KeInitializeSpinLock(&m_NativeFenceLock);
+    m_HardwareResetCallerRva = 0;
     m_NativeFenceHead = 0;
     m_NativeFenceCount = 0;
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
@@ -485,6 +490,9 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     VIOGPU_RECORD_NATIVE_START(this, VioGpuNativeStartFinalState, STATUS_PENDING, VioGpuNativeStartDetailNone);
     *pNumberOfViews = MAX_VIEWS;
     *pNumberOfChildren = MAX_CHILDREN;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    InterlockedExchange(&m_HardwareResetCallerRva, 0);
+#endif
     if (InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareRecovering) !=
         VioGpuHardwareRecovering)
     {
@@ -1917,6 +1925,7 @@ NTSTATUS VioGpuDod::SetPowerState(_In_ ULONG HardwareUid,
                                                VioGpuHardwareRecovering);
                     return STATUS_DEVICE_NOT_READY;
                 }
+                InterlockedExchange(&m_HardwareResetCallerRva, 0);
 #endif
                 if (InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareRecovering) !=
                     VioGpuHardwareRecovering)
@@ -3920,6 +3929,25 @@ void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
     }
 }
 
+__declspec(noinline) VOID VioGpuDod::RequestHardwareResetAtAnyIrql(void)
+{
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    ULONG_PTR returnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+    ULONG_PTR callerRva = returnAddress >= imageBase ? returnAddress - imageBase : 0;
+#endif
+    LONG previousState = InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (previousState == VioGpuHardwareActive && callerRva != 0 && callerRva <= MAXULONG)
+    {
+        InterlockedCompareExchange(&m_HardwareResetCallerRva, static_cast<LONG>(callerRva), 0);
+    }
+    RequestWddmSubmissionDrainAtAnyIrql();
+#else
+    UNREFERENCED_PARAMETER(previousState);
+#endif
+}
+
 VOID VioGpuDod::DpcRoutine(VOID)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
@@ -4272,9 +4300,13 @@ VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,
         DWORD Value;
     };
     DWORD statusValue = static_cast<DWORD>(status);
+    DWORD hardwareResetState = static_cast<DWORD>(QueryHardwareResetState());
+    DWORD hardwareResetCallerRva = static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetCallerRva, 0, 0));
     // clang-format off
     const DIAGNOSTIC_VALUE values[] = {
         {L"NativePresentStatus", statusValue},
+        {L"NativePresentHardwareResetState", hardwareResetState},
+        {L"NativePresentHardwareResetCallerRva", hardwareResetCallerRva},
         {L"NativePresentContextType", diagnostic->ContextType},
         {L"NativePresentFlags", diagnostic->PresentFlags},
         {L"NativePresentSubRectCount", diagnostic->SubRectCount},

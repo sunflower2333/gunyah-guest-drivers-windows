@@ -26,6 +26,8 @@ $diagnostic = Get-ItemProperty -LiteralPath $registryPath
 $valueNames = @(
     'NativePresentReason',
     'NativePresentStatus',
+    'NativePresentHardwareResetState',
+    'NativePresentHardwareResetCallerRva',
     'NativePresentContextType',
     'NativePresentFlags',
     'NativePresentSubRectCount',
@@ -91,6 +93,19 @@ function Format-Dword {
     return '0x{0:X8}' -f (ConvertTo-DwordValue $Value)
 }
 
+function Decode-HardwareResetState {
+    param([object]$Value)
+
+    [uint64]$state = ConvertTo-DwordValue $Value
+    $name = switch ($state) {
+        0 { 'Active' }
+        1 { 'ResetRequested' }
+        2 { 'Recovering' }
+        default { 'Unknown' }
+    }
+    return '{0} ({1})' -f $name, $state
+}
+
 function Decode-PlacementState {
     param([object]$Value)
 
@@ -154,6 +169,8 @@ if ([string]::IsNullOrWhiteSpace($reasonName)) {
     Reason = $reason
     ReasonName = $reasonName
     Status = Format-Dword $diagnostic.NativePresentStatus
+    HardwareResetState = Decode-HardwareResetState $diagnostic.NativePresentHardwareResetState
+    HardwareResetCallerRva = Format-Dword $diagnostic.NativePresentHardwareResetCallerRva
     ContextType = ConvertTo-DwordValue $diagnostic.NativePresentContextType
     PresentFlags = Format-Dword $diagnostic.NativePresentFlags
     SubRectCount = ConvertTo-DwordValue $diagnostic.NativePresentSubRectCount

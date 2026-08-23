@@ -1344,10 +1344,12 @@ def check_native_present_diagnostics() -> None:
         "_In_constVIOGPU_NATIVE_PRESENT_DIAGNOSTIC*diagnostic);"
     )
     if adapter_header.count(declaration) != 1 or \
-       adapter_header.count("volatileLONGm_NativePresentDiagnosticRecorded;") != 1:
+       adapter_header.count("volatileLONGm_NativePresentDiagnosticRecorded;") != 1 or \
+       adapter_header.count("volatileLONGm_HardwareResetCallerRva;") != 1:
         fail("adapter must retain one first-failure Present diagnostic recorder")
     constructor = canonical_code(function_body("VioGpuDod::VioGpuDod", VIOGPU_CODE))
-    if constructor.count("m_NativePresentDiagnosticRecorded=0;") != 1:
+    if constructor.count("m_NativePresentDiagnosticRecorded=0;") != 1 or \
+       constructor.count("m_HardwareResetCallerRva=0;") != 1:
         fail("adapter construction must reset the first-failure Present diagnostic claim")
     start_recorder = canonical_code(function_body("VioGpuDod::RecordNativeStartDiagnostic", VIOGPU_SOURCE))
     require_order(
@@ -1381,7 +1383,19 @@ def check_native_present_diagnostics() -> None:
     if not re.search(r"\bVOID\s+VioGpuDod::RecordNativePresentDiagnostic\s*\(", VIOGPU_SOURCE):
         fail("Present diagnostics must remain a best-effort void operation")
 
-    value_names = ["NativePresentStatus"] + [
+    for fragment in (
+        "DWORDhardwareResetState=static_cast<DWORD>(QueryHardwareResetState());",
+        "DWORDhardwareResetCallerRva="
+        "static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetCallerRva,0,0));",
+    ):
+        if recorder.count(fragment) != 1:
+            fail(f"Present diagnostics must snapshot reset provenance: {fragment}")
+
+    value_names = [
+        "NativePresentStatus",
+        "NativePresentHardwareResetState",
+        "NativePresentHardwareResetCallerRva",
+    ] + [
         f"NativePresent{field.removeprefix('Present')}" for field in expected_fields
     ]
     for value_name in value_names:
@@ -3638,15 +3652,29 @@ def check_wddm_present_contract() -> None:
     ):
         if fragment not in wait_drain:
             fail(f"passive submission-drain wait must retain its request/worker handshake: {fragment}")
-    reset_request = canonical_code(function_body("RequestHardwareResetAtAnyIrql", VIOGPU_HEADER_CODE))
+    reset_declaration = "__declspec(noinline)VOIDRequestHardwareResetAtAnyIrql(void);"
+    if canonical_code(VIOGPU_HEADER_CODE).count(reset_declaration) != 1:
+        fail("the any-IRQL reset request entry must remain an out-of-line noinline provenance boundary")
+    if len(re.findall(r"\b__declspec\s*\(\s*noinline\s*\)\s+VOID\s+"
+                      r"VioGpuDod::RequestHardwareResetAtAnyIrql\s*\(", VIOGPU_SOURCE)) != 1:
+        fail("the any-IRQL reset request definition must remain noinline")
+    reset_request = canonical_code(function_body("VioGpuDod::RequestHardwareResetAtAnyIrql", VIOGPU_CODE))
     require_order(
         reset_request,
         (
+            "ULONG_PTRimageBase=reinterpret_cast<ULONG_PTR>(&__ImageBase);",
+            "ULONG_PTRreturnAddress=reinterpret_cast<ULONG_PTR>(_ReturnAddress());",
+            "ULONG_PTRcallerRva=returnAddress>=imageBase?returnAddress-imageBase:0;",
             "InterlockedExchange(&m_HardwareResetState,VioGpuHardwareResetRequested);",
+            "previousState==VioGpuHardwareActive&&callerRva!=0&&callerRva<=MAXULONG",
+            "InterlockedCompareExchange(&m_HardwareResetCallerRva,static_cast<LONG>(callerRva),0);",
             "RequestWddmSubmissionDrainAtAnyIrql();",
         ),
-        "every hardware reset request must close and defer-drain WDDM submission publication",
+        "every hardware reset request must capture first-active-epoch provenance before deferred drain",
     )
+    if reset_request.count("InterlockedExchange(&m_HardwareResetState,VioGpuHardwareResetRequested);") != 1 or \
+       reset_request.count("_ReturnAddress()") != 1 or reset_request.count("&__ImageBase") != 1:
+        fail("reset provenance must retain one state publication and one module-relative caller sample")
     dpc = canonical_code(function_body("VioGpuDod::DpcRoutine", VIOGPU_CODE))
     if (
         "InterlockedCompareExchange(&m_WddmDrainRequested,0,0)!=0" not in dpc
@@ -8056,6 +8084,8 @@ def check_adapter_lifecycle() -> None:
         "InterlockedCompareExchange(&m_HardwareResetState,VioGpuHardwareActive,"
         "VioGpuHardwareRecovering)!=VioGpuHardwareRecovering"
     )
+    reset_caller_clear = "InterlockedExchange(&m_HardwareResetCallerRva,0);"
+    reset_caller_clear_offset = start_compact.find(reset_caller_clear, allocation_offset)
     final_publish_offset = start_compact.find(final_publish, allocation_offset)
     started_offset = start_compact.find("m_Flags.DriverStarted=TRUE;", final_publish_offset)
     initial_recovery_offset = start_compact.find(initial_recovery)
@@ -8068,9 +8098,10 @@ def check_adapter_lifecycle() -> None:
         or start_compact.count(stopped_recovery) != 1
         or len(recovery_reject_blocks) != 1
         or start_compact.count(rollback_recovery) != 3
+        or start_compact.count(reset_caller_clear) != 1
         or start_compact.count(final_publish) != 1
         or not retained_offset < initial_recovery_offset < stopped_recovery_offset < recovery_reject_offset < interface_copy
-        or final_publish_offset < allocation_offset
+        or not allocation_offset < reset_caller_clear_offset < final_publish_offset
         or started_offset < final_publish_offset
     ):
         fail("StartDevice must claim initial or stopped recovery, roll back to its source state, and publish only a complete adapter")
@@ -8421,7 +8452,8 @@ def check_adapter_lifecycle() -> None:
     transition_offset = power_compact.find(transition, reset_reject_offset)
     reset_failure_offset = power_compact.find(reset_failure, transition_offset)
     d_state_failure_offset = power_compact.find(d_state_failure, reset_failure_offset)
-    reset_publish_offset = power_compact.find(reset_publish, d_state_failure_offset)
+    reset_caller_clear_offset = power_compact.find(reset_caller_clear, d_state_failure_offset)
+    reset_publish_offset = power_compact.find(reset_publish, reset_caller_clear_offset)
     active_recheck_offset = power_compact.find(active_recheck, reset_publish_offset)
     if min(
         reset_claim_offset,
@@ -8434,6 +8466,7 @@ def check_adapter_lifecycle() -> None:
         transition_offset,
         reset_failure_offset,
         d_state_failure_offset,
+        reset_caller_clear_offset,
         reset_publish_offset,
         active_recheck_offset,
     ) < 0 or not (
@@ -8447,12 +8480,14 @@ def check_adapter_lifecycle() -> None:
         < transition_offset
         < reset_failure_offset
         < d_state_failure_offset
+        < reset_caller_clear_offset
         < reset_publish_offset
         < active_recheck_offset
     ):
         fail("power transitions must fail closed before D0 rebuild publishes the Active reset epoch")
     if (
         power_compact.count("BOOLEANresetRecovery=FALSE;") != 1
+        or power_compact.count(reset_caller_clear) != 1
         or power_compact.count("InterlockedCompareExchange(&m_HardwareResetState") != 6
         or power_compact.count("m_pHWDevice->ResetDevice();") != 1
         or "InterlockedExchange(&m_HardwareResetState" in power_compact

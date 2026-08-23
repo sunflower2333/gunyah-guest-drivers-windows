@@ -645,6 +645,7 @@ class VioGpuDod
     BOOLEAN m_HardwareRundownCompleted;
     mutable volatile LONG m_HardwareResetState;
 #if defined(VIOGPU_NATIVE_CONTEXT)
+    volatile LONG m_HardwareResetCallerRva;
     KSPIN_LOCK m_NativeFenceLock;
     UINT m_NativeFenceHead;
     UINT m_NativeFenceCount;
@@ -867,13 +868,7 @@ class VioGpuDod
                                                                                    VioGpuHardwareActive,
                                                                                    VioGpuHardwareActive));
     }
-    VOID RequestHardwareResetAtAnyIrql(void)
-    {
-        InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
-#if defined(VIOGPU_NATIVE_CONTEXT)
-        RequestWddmSubmissionDrainAtAnyIrql();
-#endif
-    }
+    __declspec(noinline) VOID RequestHardwareResetAtAnyIrql(void);
     BOOLEAN IsHardwareInterruptDispatchAllowed(void) const
     {
         LONG state = InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareActive);

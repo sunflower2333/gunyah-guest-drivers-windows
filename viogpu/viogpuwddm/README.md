@@ -10,13 +10,15 @@ contracts remain disabled. The source contains the registration entry point, a
 dedicated display-class INX, and an ARM64-only fail-closed D3D UMD shim.
 The last committed activation batch passed the ARM64 compile, link, MAP, INF,
 signing, and package gates in the dedicated and product workflows. Signed
-package `100.6.101.58015` was installed in the unprotected Windows VM, starts
-the adapter, and reaches the CDD `DxgkDdiPresent` path. The display remains
-black because the observed Present is rejected before Patch or Submit. The
-current pageable-GDI correction passes the focused local contract, ABI,
-formatting, and syntax gates but has not passed a new ARM64 run or guarded
-device test. Successful 2D display, KMT/Host/GPU execution, TDR, and uninstall
-rollback remain unverified:
+package `100.6.101.58020` is installed in the unprotected Windows VM, starts
+the adapter, and completes the paging system commands that faulted package
+`58019` with bug check `0x119/5`. The display remains black because the first
+observed CDD Present is rejected before Patch or Submit. Its persistent
+diagnostic reports `TransactionRegistration` with both source and destination
+resident and backed. The current source adds a module-relative first-reset
+caller diagnostic for that gate, but it has not passed a new ARM64 run or
+guarded device test. Successful 2D display, KMT/Host/GPU execution, TDR, and
+uninstall rollback remain unverified:
 
 - `DriverEntry` calls the single `DxgkInitialize` registration helper.
 - `viogpuwddm.inx` binds ARM64 Windows 11 guests to
@@ -34,18 +36,16 @@ rollback remain unverified:
   color conversion are explicitly not advertised.
 
 The current Windows runtime evidence is narrower than those source contracts.
-A unique ETL capture from package `100.6.101.58015` contains two `DdiPresent`
-calls, four paging calls, and no `DdiRender`, `DdiPatch`, or
-`DdiSubmitCommand` call. Both Present calls return `STATUS_NOT_SUPPORTED`;
-dxgkrnl reports both `Driver failed Present` and `PresentFromCdd ... failed`.
-The first-failure breadcrumb classifies the rejection as
-`GdiSourcePlacement`: the source allocation is a valid context-zero,
-CPU-visible GDI allocation with the same 1280x1024 format and pitch as the
-primary, but its allocation-list entry has `SegmentId=0`. It consequently has
-no aperture MDL/address or 2D Host backing. The package's
-`PermanentSysMem` flag prevents VidMm from paging that source into the aperture,
-while Present Build incorrectly requires residency before it has returned the
-patch records that let VidSch make the source resident.
+Package `58020` reports the first Present rejection as
+`TransactionRegistration` (`STATUS_DEVICE_NOT_READY`). The source and primary
+both have `SegmentId=1`, complete aperture placement, and current 2D Host
+backing, so the earlier pageable-GDI placement problem has been passed. The
+transaction registry now rejects because either its closing flag or the
+adapter reset state is set before the first Present can publish. The new
+diagnostic snapshots both the hardware reset state and the first caller return
+RVA from the current active epoch. The RVA is relative to `viogpuwddm.sys`,
+contains no kernel absolute address, and must be resolved against the exact
+package PDB/MAP.
 
 The current source leaves CPU-visible allocations pageable, separates static
 GDI allocation identity from live aperture/Host identity, and defers placement
