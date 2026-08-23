@@ -177,6 +177,7 @@ jobs:
             @{ p='viogpu/viogpusc/viogpusc.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpures/viogpures.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpudo/viogpudo.vcxproj';        c='Win11 Release'; plat='ARM64' },
+            @{ p='viogpu/viogpud3d/viogpud3d.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64' },
             @{ p='viostor/viostor.vcxproj';                 c='Win11 Release'; plat='ARM64' },
             @{ p='vioscsi/vioscsi.vcxproj';                 c='Win11 Release'; plat='ARM64' },
@@ -199,6 +200,47 @@ jobs:
           if ($failed.Count) {
             throw "ARM64 driver build failed: $($failed -join ', ')"
           }
+
+      - name: Validate Native Context product PE and UMD exports
+        shell: pwsh
+        run: |
+          $root = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'
+          $driver = Join-Path $root 'viogpuwddm.sys'
+          $umd = Join-Path $root 'viogpud3d.dll'
+          foreach ($path in @($driver, $umd)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "missing Native Context product PE: $path"
+            }
+          }
+
+          function Assert-Arm64Pe([string] $path) {
+            $stream = [IO.File]::OpenRead((Resolve-Path $path))
+            try {
+              $reader = [IO.BinaryReader]::new($stream)
+              if ($reader.ReadUInt16() -ne 0x5a4d) { throw "$path does not have an MZ header" }
+              $stream.Position = 0x3c
+              $peOffset = $reader.ReadUInt32()
+              if ($peOffset -gt $stream.Length - 6) { throw "$path has an invalid PE header offset" }
+              $stream.Position = $peOffset
+              if ($reader.ReadUInt32() -ne 0x00004550) { throw "$path does not have a PE signature" }
+              if ($reader.ReadUInt16() -ne 0xaa64) { throw "$path PE machine is not ARM64 (AA64)" }
+            }
+            finally {
+              $stream.Dispose()
+            }
+          }
+          Assert-Arm64Pe $driver
+          Assert-Arm64Pe $umd
+
+          $dumpbin = (Get-Command dumpbin.exe -ErrorAction Stop).Source
+          $exports = (& $dumpbin /nologo /exports $umd 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for $umd" }
+          foreach ($name in @('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')) {
+            if ([regex]::Matches($exports, "\b$([regex]::Escape($name))\b").Count -ne 1) {
+              throw "UMD export table must contain exactly one $name"
+            }
+          }
+          if ($exports -match '\bOpenAdapter12\b') { throw 'legacy UMD shim must not export OpenAdapter12' }
 
       - name: Sign + package
         shell: pwsh
@@ -252,7 +294,7 @@ jobs:
             @{ n='NetKVM';    root='NetKVM';    bins=@('netkvm.sys','netkvmp.exe'); inf='netkvm.inf' },
             @{ n='vioinput';  root='vioinput';  bins=@('vioinput.sys','viohidkmdf.sys'); inf='vioinput.inf' },
             @{ n='viogpu';    root='viogpu';    bins=@('viogpudo.sys','viogpudo.pdb','viogpuap.exe','viogpuap.pdb','vgpusrv.exe','vgpusrv.pdb','viogpures.exe','viogpures.pdb'); inf='viogpudo.inf' },
-            @{ n='viogpuwddm'; root='viogpu/viogpuwddm'; bins=@('viogpuwddm.sys'); inf='viogpuwddm.inf' },
+            @{ n='viogpuwddm'; root='viogpu/viogpuwddm'; bins=@('viogpuwddm.sys','viogpud3d.dll'); inf='viogpuwddm.inf' },
             @{ n='pvmpower';  root='pvmpower';  bins=@('pvmpower.sys'); inf='pvmpower.inf' }
           )
           # 在 root 下找最佳檔案：優先路徑含 ARM64、最新修改

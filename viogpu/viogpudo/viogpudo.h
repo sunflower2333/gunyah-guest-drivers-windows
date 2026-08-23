@@ -887,6 +887,10 @@ class VioGpuDod
                                                             0));
     }
     VOID RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage, _In_ NTSTATUS status, _In_ DWORD detail);
+    VOID RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
+                                                _In_ NTSTATUS status,
+                                                _In_ UINT inputDataSize,
+                                                _In_ UINT outputDataSize);
 #endif
 
   private:

@@ -1,11 +1,13 @@
 # viogpuwddm Native Context full miniport
 
 This project implements an ARM64 Native Context full miniport for the crosvm
-VirtIO GPU path. It uses the Win8 DDI callback table required by the current
-Native Context source, while reporting the legacy `DXGKDDI_WDDMv1` profile. It
-does not claim WDDM 1.2 capabilities: the mandatory WDDM 1.2 preemption,
-per-engine reset/TDR, direct-flip, and related contracts remain disabled. The
-source contains the registration entry point and a dedicated display-class INX.
+VirtIO GPU path. The project keeps the Win8 WDK declaration surface required by
+existing internal source, but dxgkrnl sees a
+`DXGKDDI_INTERFACE_VERSION_WIN7` registration table matching the reported
+legacy `DXGKDDI_WDDMv1` profile. It does not claim WDDM 1.2 capabilities: the
+mandatory WDDM 1.2 preemption, per-engine reset/TDR, direct-flip, and related
+contracts remain disabled. The source contains the registration entry point, a
+dedicated display-class INX, and an ARM64-only fail-closed D3D UMD shim.
 The last committed activation batch passed the ARM64 compile, link, MAP, INF,
 signing, and package gates in the dedicated and product workflows. The current
 unprotected-VM VidMm backing rewrite has local source-contract evidence only and
@@ -16,8 +18,9 @@ and uninstall rollback remain unverified:
 - `viogpuwddm.inx` binds ARM64 Windows 11 guests to
   `PCI\VEN_1AF4&DEV_1050`; the signed product workflow stages it separately from
   the stable display-only fallback. Both the focused and signed-product ARM64
-  workflows run `InfVerif /w /v`; the focused workflow also verifies the SYS
-  PE machine as `AA64` before publishing it.
+  workflows run `InfVerif /w /v`, verify the SYS and `viogpud3d.dll` PE
+  machines as `AA64`, and require exactly `OpenAdapter`, `OpenAdapter10`,
+  and `OpenAdapter10_2` from the D3D shim.
 - The INX removes a stale `RequireRestrictedDma` device setting left by older
   protected-VM packages. Merely omitting the setting does not delete it during
   an upgrade; the current unprotected path must not let dxgkrnl retain that
@@ -25,6 +28,18 @@ and uninstall rollback remain unverified:
 - Native ring-1 fence retirement and reset-generation/TDR source contracts are
   wired. Hardware preemption, per-engine reset, smooth rotation, and driver
   color conversion are explicitly not advertised.
+
+The current Windows runtime evidence is narrower than those source contracts.
+`StartDevice` reached the persistent `0x0FFF/STATUS_SUCCESS` marker, but the
+adapter remains Code 43. Registering one or four `kernel32.dll` names as
+`UserModeDriverName` changed the AddAdapter status from
+`STATUS_OBJECT_NAME_NOT_FOUND` to `STATUS_REVISION_MISMATCH`; it did not
+activate the adapter. DxgKrnl ETW then recorded one unsupported
+`QueryAdapterInfo` result, an invalid NTSTATUS report, and "Miniport did not
+provide required DDIs" before `ADAPTER_RENDER` creation failed. The current
+source therefore records the failed query type/status/sizes, registers the
+matching legacy callback table, and installs a real-shaped D3D shim instead of
+using a system DLL. None of this batch has been compiled or runtime-validated.
 
 Do not install an artifact produced from the activation work until guarded VM
 validation has passed. The current CI artifacts prove source/build/package
@@ -35,6 +50,9 @@ The matching Mesa branch builds `vulkan_freedreno.dll` and an independent
 `turnip-wddm-icd.ps1` manager. The KMD package does not copy or register the
 Vulkan ICD: kernel-driver rollback and Vulkan-loader rollback remain separate,
 and neither package silently replaces the stable `viogpudo` files.
+`viogpud3d.dll` is not Turnip and is not a rendering UMD: its three legacy
+entry points return `E_NOTIMPL` solely to provide a deterministic loader and
+revision boundary. It deliberately has no `OpenAdapter12` export.
 
 ## Native Context scope
 
@@ -181,23 +199,20 @@ share one WPP provider. `driver_entry.cpp` is the sole WPP initialization owner;
 the project-local `wpp-non-owner.tpl` lets the reused `driver.cpp` compile its
 trace calls and cleanup reference without emitting a second provider definition.
 
-The callback table intentionally leaves these DDI slots unset:
+The legacy runtime table registers the full-graphics slots that the previous
+ETW trace reported missing: ACPI notification, ETW control, palette, scanline,
+interrupt control, and `RenderKm`. Unsupported operations fail closed and
+`RenderKm` never sends CDD commands through the MSM parser. The Win8-only
+`CancelCommand`, per-engine TDR, post-display-ownership, and system-display
+callbacks remain implemented internally where needed by existing source but
+are not exposed through the Win7 registration table. The KMDOD-only
+`DxgkDdiPresentDisplayOnly` callback is also not registered.
 
-- `DxgkDdiNotifyAcpiEvent` and `DxgkDdiControlEtwLogging`.
-- `DxgkDdiSetPalette`, `DxgkDdiGetScanLine`, and `DxgkDdiControlInterrupt`.
-- `DxgkDdiGetChildContainerId`.
-- `DxgkDdiSetPowerComponentFState` and
-  `DxgkDdiPowerRuntimeControlRequest`.
-
-It also does not register the KMDOD-only `DxgkDdiPresentDisplayOnly` callback.
-The full-miniport table now registers `DxgkDdiCollectDbgInfo` and the three
-Windows 8 engine-TDR callbacks. Debug collection emits one bounded 32-byte
-snapshot using atomic reset and fence queries. The engine callbacks validate
-the single node/engine topology, but `SupportPerEngineTDR` remains zero:
-Native Context has no Host primitive that can cancel or reset one engine.
-`DxgkDdiResetEngine` therefore requests outer reset and returns failure so the
-scheduler promotes recovery to the adapter-wide timeout path; this is not
-per-engine TDR support.
+`DxgkDdiCollectDbgInfo` remains registered in the legacy table and emits one
+bounded 32-byte snapshot using atomic reset and fence queries. Adapter-wide
+timeout recovery remains available. `SupportPerEngineTDR` and
+`CancelCommandAware` are both zero because Native Context has neither a Host
+engine-reset primitive nor a registered legacy cancellation callback.
 
 Standard paging now covers primary, GDI shadow, and staging allocations. It
 uses context-zero paging records, copies or fills the VidMm-backed aperture

@@ -3243,37 +3243,130 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     }
 
     VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    NTSTATUS status = STATUS_NOT_SUPPORTED;
     if (pQueryAdapterInfo->Type == DXGKQAITYPE_UMDRIVERPRIVATE)
     {
-        return QueryUmdPrivateInfo(adapter, pQueryAdapterInfo);
+        status = QueryUmdPrivateInfo(adapter, pQueryAdapterInfo);
     }
-    if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT)
+    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT)
     {
-        return QuerySegment(adapter, pQueryAdapterInfo);
+        status = QuerySegment(adapter, pQueryAdapterInfo);
+    }
+    else
+    {
+        status = VioGpuDodQueryAdapterInfo(hAdapter, pQueryAdapterInfo);
+        if (NT_SUCCESS(status) && pQueryAdapterInfo->Type == DXGKQAITYPE_DRIVERCAPS)
+        {
+            DXGK_DRIVERCAPS *driverCaps = static_cast<DXGK_DRIVERCAPS *>(pQueryAdapterInfo->pOutputData);
+            /* The registration table advertises the matching Win7 interface.
+             * Keep every WDDM 1.2-only capability disabled. */
+            driverCaps->WDDMVersion = DXGKDDI_WDDMv1;
+            driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes = 1;
+            driverCaps->SchedulingCaps.MultiEngineAware = 1;
+            driverCaps->SchedulingCaps.PreemptionAware = 0;
+            driverCaps->SchedulingCaps.CancelCommandAware = 0;
+            driverCaps->SupportPerEngineTDR = 0;
+            driverCaps->SupportSmoothRotation = FALSE;
+        }
     }
 
-    NTSTATUS status = VioGpuDodQueryAdapterInfo(hAdapter, pQueryAdapterInfo);
-    if (NT_SUCCESS(status) && pQueryAdapterInfo->Type == DXGKQAITYPE_DRIVERCAPS)
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               NT_SUCCESS(status) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+               "viogpu WDDM QueryAdapterInfo: type=%u input=%u output=%u status=0x%08X\n",
+               pQueryAdapterInfo->Type,
+               pQueryAdapterInfo->InputDataSize,
+               pQueryAdapterInfo->OutputDataSize,
+               status);
+    if (!NT_SUCCESS(status))
     {
-        DXGK_DRIVERCAPS *driverCaps = static_cast<DXGK_DRIVERCAPS *>(pQueryAdapterInfo->pOutputData);
-        /* This target uses the Win8 callback table for the Native Context
-         * plumbing, but reports the legacy WDDM profile.  The WDDM 1.2
-         * mandatory feature caps remain disabled until their real hardware
-         * contracts exist. */
-        driverCaps->WDDMVersion = DXGKDDI_WDDMv1;
-        driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes = 1;
-        driverCaps->SchedulingCaps.MultiEngineAware = 1;
-        driverCaps->SchedulingCaps.PreemptionAware = 0;
-        driverCaps->SchedulingCaps.CancelCommandAware = 1;
-        driverCaps->SupportPerEngineTDR = 0;
-        driverCaps->SupportSmoothRotation = FALSE;
+        adapter->RecordNativeQueryAdapterInfoDiagnostic(pQueryAdapterInfo->Type,
+                                                        status,
+                                                        pQueryAdapterInfo->InputDataSize,
+                                                        pQueryAdapterInfo->OutputDataSize);
     }
-
     return status;
 }
 
 #pragma code_seg(push)
 #pragma code_seg("PAGE")
+
+_Use_decl_annotations_ NTSTATUS VioGpuWddmNotifyAcpiEvent(PVOID miniportDeviceContext,
+                                                          DXGK_EVENT_TYPE eventType,
+                                                          ULONG event,
+                                                          PVOID argument,
+                                                          PULONG acpiFlags)
+{
+    PAGED_CODE();
+    UNREFERENCED_PARAMETER(eventType);
+    UNREFERENCED_PARAMETER(event);
+    UNREFERENCED_PARAMETER(argument);
+
+    if (miniportDeviceContext == NULL || acpiFlags == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *acpiFlags = 0;
+    return STATUS_NOT_SUPPORTED;
+}
+
+_Use_decl_annotations_ VOID VioGpuWddmControlEtwLogging(BOOLEAN enable, ULONG flags, UCHAR level)
+{
+    PAGED_CODE();
+    UNREFERENCED_PARAMETER(enable);
+    UNREFERENCED_PARAMETER(flags);
+    UNREFERENCED_PARAMETER(level);
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetPalette(CONST HANDLE hAdapter,
+                                                              CONST DXGKARG_SETPALETTE *setPalette)
+{
+    PAGED_CODE();
+    if (hAdapter == NULL || setPalette == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    /* The miniport advertises only true-color scanout formats. */
+    return STATUS_NOT_SUPPORTED;
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetScanLine(CONST HANDLE hAdapter, DXGKARG_GETSCANLINE *getScanLine)
+{
+    PAGED_CODE();
+    if (hAdapter == NULL || getScanLine == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    getScanLine->InVerticalBlank = FALSE;
+    getScanLine->ScanLine = 0;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmControlInterrupt(CONST HANDLE hAdapter,
+                                                                    CONST DXGK_INTERRUPT_TYPE interruptType,
+                                                                    BOOLEAN enableInterrupt)
+{
+    PAGED_CODE();
+    UNREFERENCED_PARAMETER(enableInterrupt);
+    if (hAdapter == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    UNREFERENCED_PARAMETER(interruptType);
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRenderKm(CONST HANDLE hContext, DXGKARG_RENDER *render)
+{
+    PAGED_CODE();
+    if (hContext == NULL || render == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    /* PresentationCaps.SupportKernelModeCommandBuffer remains zero. CDD
+     * commands are not Native Context MSM submits and must never enter the
+     * Vulkan command parser. */
+    return STATUS_ILLEGAL_INSTRUCTION;
+}
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter, CONST DXGKARG_ESCAPE *escape)
 {

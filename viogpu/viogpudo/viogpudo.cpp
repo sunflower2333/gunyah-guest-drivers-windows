@@ -3992,6 +3992,52 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
                statusValue,
                detail);
 }
+
+VOID VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
+                                                       _In_ NTSTATUS status,
+                                                       _In_ UINT inputDataSize,
+                                                       _In_ UINT outputDataSize)
+{
+    PAGED_CODE();
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu QueryAdapterInfo diagnostic: registry open failed, type=%u status=0x%08X open=0x%08X\n",
+                   type,
+                   status,
+                   openStatus);
+        return;
+    }
+
+    DWORD statusValue = static_cast<DWORD>(status);
+    DWORD inputSizeValue = inputDataSize;
+    DWORD outputSizeValue = outputDataSize;
+    DWORD typeValue = type;
+    NTSTATUS statusWrite = WriteRegistryDWORD(deviceKey, L"NativeQueryAdapterInfoStatus", &statusValue);
+    NTSTATUS inputWrite = WriteRegistryDWORD(deviceKey, L"NativeQueryAdapterInfoInputSize", &inputSizeValue);
+    NTSTATUS outputWrite = WriteRegistryDWORD(deviceKey, L"NativeQueryAdapterInfoOutputSize", &outputSizeValue);
+    // Type is the commit marker for the preceding status and size fields.
+    NTSTATUS typeWrite = WriteRegistryDWORD(deviceKey, L"NativeQueryAdapterInfoType", &typeValue);
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(statusWrite) || !NT_SUCCESS(inputWrite) || !NT_SUCCESS(outputWrite) || !NT_SUCCESS(typeWrite))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu QueryAdapterInfo diagnostic: write failed, type=%u status=0x%08X "
+                   "writes=%08X/%08X/%08X/%08X\n",
+                   type,
+                   statusValue,
+                   statusWrite,
+                   inputWrite,
+                   outputWrite,
+                   typeWrite);
+    }
+}
 #endif
 
 NTSTATUS VioGpuDod::ReadRegistryDWORD(_In_ HANDLE DevInstRegKeyHandle,

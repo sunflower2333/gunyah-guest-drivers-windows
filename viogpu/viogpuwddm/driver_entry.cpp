@@ -8,12 +8,13 @@
 #pragma code_seg("INIT")
 
 static_assert(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WIN8,
-              "viogpuwddm must use the Win8 DDI table for Native Context callbacks");
+              "viogpuwddm requires Win8 declarations for its internal Native Context callbacks");
 
+/* Dxgkrnl must see a registration version consistent with DXGKDDI_WDDMv1. */
 VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData)
 {
     RtlZeroMemory(initialData, sizeof(*initialData));
-    initialData->Version = DXGKDDI_INTERFACE_VERSION;
+    initialData->Version = DXGKDDI_INTERFACE_VERSION_WIN7;
 
     initialData->DxgkDdiAddDevice = VioGpuDodAddDevice;
     initialData->DxgkDdiStartDevice = VioGpuDodStartDevice;
@@ -27,8 +28,10 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiQueryChildStatus = VioGpuDodQueryChildStatus;
     initialData->DxgkDdiQueryDeviceDescriptor = VioGpuDodQueryDeviceDescriptor;
     initialData->DxgkDdiSetPowerState = VioGpuDodSetPowerState;
+    initialData->DxgkDdiNotifyAcpiEvent = VioGpuWddmNotifyAcpiEvent;
     initialData->DxgkDdiUnload = VioGpuDodUnload;
     initialData->DxgkDdiQueryInterface = VioGpuDodQueryInterface;
+    initialData->DxgkDdiControlEtwLogging = VioGpuWddmControlEtwLogging;
 
     initialData->DxgkDdiQueryAdapterInfo = VioGpuWddmQueryAdapterInfo;
     initialData->DxgkDdiCreateDevice = VioGpuWddmCreateDevice;
@@ -42,16 +45,14 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiCreateContext = VioGpuWddmCreateContext;
     initialData->DxgkDdiDestroyContext = VioGpuWddmDestroyContext;
     initialData->DxgkDdiBuildPagingBuffer = VioGpuWddmBuildPagingBuffer;
+    initialData->DxgkDdiSetPalette = VioGpuWddmSetPalette;
     initialData->DxgkDdiRender = VioGpuWddmRender;
+    initialData->DxgkDdiRenderKm = VioGpuWddmRenderKm;
     initialData->DxgkDdiPresent = VioGpuWddmPresent;
     initialData->DxgkDdiPatch = VioGpuWddmPatch;
     initialData->DxgkDdiSubmitCommand = VioGpuWddmSubmitCommand;
-    initialData->DxgkDdiCancelCommand = VioGpuWddmCancelCommand;
     initialData->DxgkDdiPreemptCommand = VioGpuWddmPreemptCommand;
     initialData->DxgkDdiQueryCurrentFence = VioGpuWddmQueryCurrentFence;
-    initialData->DxgkDdiQueryDependentEngineGroup = VioGpuWddmQueryDependentEngineGroup;
-    initialData->DxgkDdiQueryEngineStatus = VioGpuWddmQueryEngineStatus;
-    initialData->DxgkDdiResetEngine = VioGpuWddmResetEngine;
     initialData->DxgkDdiResetFromTimeout = VioGpuWddmResetFromTimeout;
     initialData->DxgkDdiRestartFromTimeout = VioGpuWddmRestartFromTimeout;
     initialData->DxgkDdiCollectDbgInfo = VioGpuWddmCollectDbgInfo;
@@ -67,10 +68,9 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiCommitVidPn = VioGpuDodCommitVidPn;
     initialData->DxgkDdiUpdateActiveVidPnPresentPath = VioGpuDodUpdateActiveVidPnPresentPath;
     initialData->DxgkDdiRecommendMonitorModes = VioGpuDodRecommendMonitorModes;
+    initialData->DxgkDdiGetScanLine = VioGpuWddmGetScanLine;
+    initialData->DxgkDdiControlInterrupt = VioGpuWddmControlInterrupt;
     initialData->DxgkDdiQueryVidPnHWCapability = VioGpuDodQueryVidPnHWCapability;
-    initialData->DxgkDdiStopDeviceAndReleasePostDisplayOwnership = VioGpuDodStopDeviceAndReleasePostDisplayOwnership;
-    initialData->DxgkDdiSystemDisplayEnable = VioGpuDodSystemDisplayEnable;
-    initialData->DxgkDdiSystemDisplayWrite = VioGpuDodSystemDisplayWrite;
 }
 
 #pragma optimize("", off)

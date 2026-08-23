@@ -30,6 +30,19 @@ foreach ($name in @('NativeStartStage', 'NativeStartStatus', 'NativeStartDetail'
     }
 }
 
+$queryDiagnosticNames = @(
+    'NativeQueryAdapterInfoType',
+    'NativeQueryAdapterInfoStatus',
+    'NativeQueryAdapterInfoInputSize',
+    'NativeQueryAdapterInfoOutputSize'
+)
+$queryDiagnosticPresent = @(
+    $queryDiagnosticNames | Where-Object { $null -ne $diagnostic.PSObject.Properties[$_] }
+)
+if ($queryDiagnosticPresent.Count -ne 0 -and $queryDiagnosticPresent.Count -ne $queryDiagnosticNames.Count) {
+    throw "Driver key '$driverKey' contains a partial QueryAdapterInfo diagnostic."
+}
+
 $stageNames = @{
     0x0100 = 'Entered'
     0x0110 = 'Preconditions'
@@ -101,6 +114,16 @@ function ConvertTo-DwordValue {
 [uint64]$stage = ConvertTo-DwordValue $diagnostic.NativeStartStage
 [uint64]$status = ConvertTo-DwordValue $diagnostic.NativeStartStatus
 [uint64]$detail = ConvertTo-DwordValue $diagnostic.NativeStartDetail
+$queryType = $null
+$queryStatus = $null
+$queryInputSize = $null
+$queryOutputSize = $null
+if ($queryDiagnosticPresent.Count -eq $queryDiagnosticNames.Count) {
+    $queryType = '0x{0:X8}' -f (ConvertTo-DwordValue $diagnostic.NativeQueryAdapterInfoType)
+    $queryStatus = '0x{0:X8}' -f (ConvertTo-DwordValue $diagnostic.NativeQueryAdapterInfoStatus)
+    $queryInputSize = [uint64](ConvertTo-DwordValue $diagnostic.NativeQueryAdapterInfoInputSize)
+    $queryOutputSize = [uint64](ConvertTo-DwordValue $diagnostic.NativeQueryAdapterInfoOutputSize)
+}
 $stageName = $stageNames[[int]$stage]
 if ([string]::IsNullOrWhiteSpace($stageName)) {
     $stageName = 'Unknown'
@@ -123,4 +146,8 @@ if ($stage -eq 0x0330 -or $stage -eq 0x0500 -or $stage -eq 0x0560) {
     Status = ('0x{0:X8}' -f $status)
     Detail = ('0x{0:X8}' -f $detail)
     DetailMeaning = ($decodedDetail -join ',')
+    NativeQueryAdapterInfoType = $queryType
+    NativeQueryAdapterInfoStatus = $queryStatus
+    NativeQueryAdapterInfoInputSize = $queryInputSize
+    NativeQueryAdapterInfoOutputSize = $queryOutputSize
 }

@@ -12,6 +12,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
+      - "viogpu/viogpud3d/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
       - "NetKVM/Common/**"
@@ -28,6 +29,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
+      - "viogpu/viogpud3d/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
       - "NetKVM/Common/**"
@@ -152,7 +154,8 @@ jobs:
             @{ Path = 'NetKVM/ProtocolService/ProtocolService.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'viostor/viostor.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
             @{ Path = 'vioscsi/vioscsi.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
-            @{ Path = 'NetKVM/NetKVM-VS2015.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' }
+            @{ Path = 'NetKVM/NetKVM-VS2015.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' },
+            @{ Path = 'viogpu/viogpud3d/viogpud3d.vcxproj'; Configuration = 'Win11 Release'; Platform = 'ARM64' }
           )
           foreach ($project in $projects) {
             Write-Host "::group::build $($project.Path) [$($project.Configuration)|$($project.Platform)]"
@@ -222,7 +225,8 @@ jobs:
           $root = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'
           $inf = Join-Path $root 'viogpuwddm.inf'
           $driver = Join-Path $root 'viogpuwddm.sys'
-          foreach ($path in @($infverif, $inf, $driver)) {
+          $umd = Join-Path $root 'viogpud3d.dll'
+          foreach ($path in @($infverif, $inf, $driver, $umd)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "missing full-miniport package evidence: $path"
             }
@@ -231,20 +235,34 @@ jobs:
           & $infverif /w /v $inf
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          $stream = [IO.File]::OpenRead((Resolve-Path $driver))
-          try {
-            $reader = [IO.BinaryReader]::new($stream)
-            if ($reader.ReadUInt16() -ne 0x5a4d) { throw 'driver does not have an MZ header' }
-            $stream.Position = 0x3c
-            $peOffset = $reader.ReadUInt32()
-            if ($peOffset -gt $stream.Length - 6) { throw 'driver has an invalid PE header offset' }
-            $stream.Position = $peOffset
-            if ($reader.ReadUInt32() -ne 0x00004550) { throw 'driver does not have a PE signature' }
-            if ($reader.ReadUInt16() -ne 0xaa64) { throw 'driver PE machine is not ARM64 (AA64)' }
+          function Assert-Arm64Pe([string] $path) {
+            $stream = [IO.File]::OpenRead((Resolve-Path $path))
+            try {
+              $reader = [IO.BinaryReader]::new($stream)
+              if ($reader.ReadUInt16() -ne 0x5a4d) { throw "$path does not have an MZ header" }
+              $stream.Position = 0x3c
+              $peOffset = $reader.ReadUInt32()
+              if ($peOffset -gt $stream.Length - 6) { throw "$path has an invalid PE header offset" }
+              $stream.Position = $peOffset
+              if ($reader.ReadUInt32() -ne 0x00004550) { throw "$path does not have a PE signature" }
+              if ($reader.ReadUInt16() -ne 0xaa64) { throw "$path PE machine is not ARM64 (AA64)" }
+            }
+            finally {
+              $stream.Dispose()
+            }
           }
-          finally {
-            $stream.Dispose()
+          Assert-Arm64Pe $driver
+          Assert-Arm64Pe $umd
+
+          $dumpbin = (Get-Command dumpbin.exe -ErrorAction Stop).Source
+          $exports = (& $dumpbin /nologo /exports $umd 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for $umd" }
+          foreach ($name in @('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')) {
+            if ([regex]::Matches($exports, "\b$([regex]::Escape($name))\b").Count -ne 1) {
+              throw "UMD export table must contain exactly one $name"
+            }
           }
+          if ($exports -match '\bOpenAdapter12\b') { throw 'legacy UMD shim must not export OpenAdapter12' }
 
       - name: Upload unsigned full-miniport artifact
         uses: actions/upload-artifact@v4
@@ -255,5 +273,7 @@ jobs:
             viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.pdb
             viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.map
             viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.inf
+            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.dll
+            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.pdb
             viogpu/viogpuwddm/README.md
           if-no-files-found: error

@@ -36,6 +36,10 @@ VIRTIO_LEGACY_PATH = VIRTIO_DIR / "VirtIOPCILegacy.c"
 PROJECT = PROJECT_DIR / "viogpuwddm.vcxproj"
 INF_TEMPLATE = PROJECT_DIR / "viogpuwddm.inx"
 WPP_NON_OWNER_TEMPLATE = PROJECT_DIR / "wpp-non-owner.tpl"
+UMD_PROJECT_DIR = (PROJECT_DIR.parent / "viogpud3d").resolve()
+UMD_PROJECT = UMD_PROJECT_DIR / "viogpud3d.vcxproj"
+UMD_SOURCE_PATH = UMD_PROJECT_DIR / "viogpud3d.cpp"
+UMD_DEF_PATH = UMD_PROJECT_DIR / "viogpud3d.def"
 NAMESPACE = {"msbuild": "http://schemas.microsoft.com/developer/msbuild/2003"}
 REGISTRATION_HELPER = "VioGpuWddmInitializeMiniport"
 WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "viogpuwddm-arm64-ci.yml").resolve()
@@ -825,13 +829,111 @@ def check_arm64_workflow_contract() -> None:
         fail(f"product workflow driver projects must all target ARM64: {product_platforms or ['none']}")
     if sources["Native Context full-miniport"].count("/p:Platform=ARM64") != 1:
         fail("the full WDDM contract target must be built explicitly for ARM64")
-    if sources["Native Context full-miniport"].count("$reader.ReadUInt16() -ne 0xaa64") != 1:
-        fail("the full-miniport workflow must verify the linked SYS PE machine as ARM64")
+    for label, source in sources.items():
+        if source.count("$reader.ReadUInt16() -ne 0xaa64") != 1:
+            fail(f"{label} workflow must verify both Native Context PEs as ARM64")
+        if source.count("@('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')") != 1:
+            fail(f"{label} workflow must verify the exact legacy D3D UMD exports")
+        if source.count("'legacy UMD shim must not export OpenAdapter12'") != 1:
+            fail(f"{label} workflow must reject a D3D12 export from the legacy UMD shim")
+        if source.count("Assert-Arm64Pe $driver") != 1 or source.count("Assert-Arm64Pe $umd") != 1:
+            fail(f"{label} workflow must apply the AA64 gate to the SYS and D3D UMD DLL")
+    if sources["Native Context full-miniport"].count("viogpu/viogpud3d/viogpud3d.vcxproj") != 1:
+        fail("the full WDDM contract workflow must build the ARM64 D3D UMD shim exactly once")
+    if sources["product drivers"].count("viogpu/viogpud3d/viogpud3d.vcxproj") != 1:
+        fail("the signed ARM64 product workflow must build the D3D UMD shim exactly once")
     if sources["product drivers"].count("viogpu/viogpuwddm/viogpuwddm.vcxproj") != 1:
         fail("the signed ARM64 product workflow must build the Native Context full miniport exactly once")
-    product_package = "@{ n='viogpuwddm'; root='viogpu/viogpuwddm'; bins=@('viogpuwddm.sys'); inf='viogpuwddm.inf' }"
+    product_package = (
+        "@{ n='viogpuwddm'; root='viogpu/viogpuwddm'; "
+        "bins=@('viogpuwddm.sys','viogpud3d.dll'); inf='viogpuwddm.inf' }"
+    )
     if sources["product drivers"].count(product_package) != 1:
-        fail("the signed ARM64 product workflow must stage exactly one viogpuwddm SYS/INF package")
+        fail("the signed ARM64 product workflow must stage one SYS/D3D-UMD/INF package")
+
+
+def check_d3d_umd_shim_contract() -> None:
+    for path in (UMD_PROJECT, UMD_SOURCE_PATH, UMD_DEF_PATH):
+        if not path.is_file():
+            fail(f"missing ARM64 D3D UMD shim input: {path}")
+
+    source = UMD_SOURCE_PATH.read_text(encoding="utf-8")
+    code = strip_cpp_comments_and_literals(source)
+    for header in ("<windows.h>", "<d3d10umddi.h>", "<d3dumddi.h>"):
+        if source.count(f"#include {header}") != 1:
+            fail(f"D3D UMD shim must use the WDK declaration from {header}")
+
+    signatures = {
+        "OpenAdapter": "D3DDDIARG_OPENADAPTER",
+        "OpenAdapter10": "D3D10DDIARG_OPENADAPTER",
+        "OpenAdapter10_2": "D3D10DDIARG_OPENADAPTER",
+    }
+    for function_name, argument_type in signatures.items():
+        signature = (
+            rf'\bextern\s+"C"\s+HRESULT\s+APIENTRY\s+{function_name}\s*\('
+            rf'\s*_Inout_\s+{argument_type}\s*\*\s*openData\s*\)'
+        )
+        if len(re.findall(signature, source)) != 1:
+            fail(f"D3D UMD shim must expose one WDK-typed {function_name} definition")
+        body = canonical_code(function_body(function_name, code))
+        if body != "UNREFERENCED_PARAMETER(openData);returnE_NOTIMPL;":
+            fail(f"diagnostic D3D UMD entry point must fail closed without side effects: {function_name}")
+    if re.search(r"\bOpenAdapter12\b", source):
+        fail("legacy WDDMv1 D3D UMD shim must not imply D3D12 support")
+
+    dll_main = canonical_code(function_body("DllMain", code))
+    expected_dll_main = (
+        "UNREFERENCED_PARAMETER(instance);UNREFERENCED_PARAMETER(reason);"
+        "UNREFERENCED_PARAMETER(reserved);returnTRUE;"
+    )
+    if dll_main != expected_dll_main:
+        fail("D3D UMD DllMain must remain a side-effect-free loader entry point")
+
+    definition = UMD_DEF_PATH.read_text(encoding="utf-8")
+    definition_lines = [line.strip() for line in definition.splitlines() if line.strip()]
+    if definition_lines != [
+        'LIBRARY "viogpud3d"',
+        "EXPORTS",
+        "OpenAdapter",
+        "OpenAdapter10",
+        "OpenAdapter10_2",
+    ]:
+        fail("D3D UMD module definition must export exactly the three legacy entry points")
+
+    root = ET.parse(UMD_PROJECT).getroot()
+    configurations = [
+        element.attrib.get("Include", "")
+        for element in root.findall(".//msbuild:ProjectConfiguration", NAMESPACE)
+    ]
+    if configurations != ["Win11 Release|ARM64"]:
+        fail(f"D3D UMD project must remain ARM64-only: {configurations or ['none']}")
+    scalar_contract = {
+        "ConfigurationType": "DynamicLibrary",
+        "PlatformToolset": "WindowsApplicationForDrivers10.0",
+        "TargetName": "viogpud3d",
+        "ModuleDefinitionFile": "viogpud3d.def",
+    }
+    for tag, expected in scalar_contract.items():
+        values = [(element.text or "").strip() for element in root.findall(f".//msbuild:{tag}", NAMESPACE)]
+        if values != [expected]:
+            fail(f"D3D UMD project {tag} must be {expected}: {values or ['none']}")
+    path_contract = {
+        "OutDir": "../viogpuwddm/objfre_win11_arm64/arm64/",
+        "IntDir": "objfre_win11_arm64/arm64/",
+    }
+    for tag, expected in path_contract.items():
+        values = [
+            (element.text or "").strip().replace(chr(92), "/")
+            for element in root.findall(f".//msbuild:{tag}", NAMESPACE)
+        ]
+        if values != [expected]:
+            fail(f"D3D UMD project {tag} must be {expected}: {values or ['none']}")
+    compile_inputs = [
+        element.attrib.get("Include", "").replace("\\", "/")
+        for element in root.findall(".//msbuild:ClCompile[@Include]", NAMESPACE)
+    ]
+    if compile_inputs != ["viogpud3d.cpp"]:
+        fail(f"D3D UMD project must compile only its fail-closed source: {compile_inputs}")
 
 
 def check_retired_pool_absence() -> None:
@@ -1031,6 +1133,62 @@ def check_native_start_diagnostics() -> None:
         fail("native StartDevice diagnostic reader must remain read-only")
 
 
+def check_native_query_adapter_info_diagnostics() -> None:
+    declaration = canonical_code(VIOGPU_HEADER_SOURCE)
+    expected_declaration = (
+        "VOIDRecordNativeQueryAdapterInfoDiagnostic(_In_UINTtype,_In_NTSTATUSstatus,"
+        "_In_UINTinputDataSize,_In_UINToutputDataSize);"
+    )
+    if declaration.count(expected_declaration) != 1:
+        fail("adapter must declare exactly one persistent QueryAdapterInfo diagnostic recorder")
+
+    recorder = function_body("VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic", VIOGPU_SOURCE)
+    if "IoOpenDeviceRegistryKey" not in recorder or "PLUGPLAY_REGKEY_DRIVER" not in recorder:
+        fail("QueryAdapterInfo diagnostics must persist on the device driver registry key")
+    writes = (
+        'WriteRegistryDWORD(deviceKey, L"NativeQueryAdapterInfoStatus", &statusValue)',
+        'WriteRegistryDWORD(deviceKey, L"NativeQueryAdapterInfoInputSize", &inputSizeValue)',
+        'WriteRegistryDWORD(deviceKey, L"NativeQueryAdapterInfoOutputSize", &outputSizeValue)',
+        'WriteRegistryDWORD(deviceKey, L"NativeQueryAdapterInfoType", &typeValue)',
+    )
+    write_offsets = [compact_code(recorder).find(compact_code(write)) for write in writes]
+    if any(offset < 0 for offset in write_offsets) or write_offsets != sorted(write_offsets):
+        fail("QueryAdapterInfo diagnostics must write status/sizes before the type commit marker")
+    if recorder.count("ZwClose(deviceKey)") != 1:
+        fail("QueryAdapterInfo diagnostics must close exactly one device registry handle")
+    if not re.search(
+        r"\bVOID\s+VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic\s*\(", VIOGPU_SOURCE
+    ):
+        fail("QueryAdapterInfo diagnostics must remain a best-effort void operation")
+
+    query_body = function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE)
+    query = canonical_code(query_body)
+    for fragment in (
+        "NTSTATUSstatus=STATUS_NOT_SUPPORTED;",
+        "status=QueryUmdPrivateInfo(adapter,pQueryAdapterInfo);",
+        "status=QuerySegment(adapter,pQueryAdapterInfo);",
+        "status=VioGpuDodQueryAdapterInfo(hAdapter,pQueryAdapterInfo);",
+        "if(!NT_SUCCESS(status)){adapter->RecordNativeQueryAdapterInfoDiagnostic("
+        "pQueryAdapterInfo->Type,status,pQueryAdapterInfo->InputDataSize,"
+        "pQueryAdapterInfo->OutputDataSize);}",
+        "returnstatus;",
+    ):
+        if query.count(fragment) != 1:
+            fail(f"QueryAdapterInfo must retain one routed and diagnosed result path: {fragment}")
+    if query.count("return") != 2:
+        fail("QueryAdapterInfo may return early only for an invalid adapter/argument pair")
+
+    reader = START_DIAGNOSTIC_SCRIPT_PATH.read_text(encoding="utf-8")
+    for value_name in (
+        "NativeQueryAdapterInfoType",
+        "NativeQueryAdapterInfoStatus",
+        "NativeQueryAdapterInfoInputSize",
+        "NativeQueryAdapterInfoOutputSize",
+    ):
+        if reader.count(value_name) < 2:
+            fail(f"native diagnostic reader must optionally report {value_name}")
+
+
 def check_registration_helper(sources: dict[Path, str]) -> None:
     helper_definitions = list(
         re.finditer(
@@ -1092,10 +1250,10 @@ def check_callback_table() -> None:
         fail("callback table must zero DRIVER_INITIALIZATION_DATA exactly once")
 
     version_assignment = re.findall(
-        r"\binitialData\s*->\s*Version\s*=\s*DXGKDDI_INTERFACE_VERSION\s*;", body
+        r"\binitialData\s*->\s*Version\s*=\s*DXGKDDI_INTERFACE_VERSION_WIN7\s*;", body
     )
     if len(version_assignment) != 1:
-        fail("callback table must assign DXGKDDI_INTERFACE_VERSION exactly once")
+        fail("the legacy WDDMv1 callback table must assign DXGKDDI_INTERFACE_VERSION_WIN7 exactly once")
 
     callbacks = {
         "DxgkDdiAddDevice": "VioGpuDodAddDevice",
@@ -1110,8 +1268,10 @@ def check_callback_table() -> None:
         "DxgkDdiQueryChildStatus": "VioGpuDodQueryChildStatus",
         "DxgkDdiQueryDeviceDescriptor": "VioGpuDodQueryDeviceDescriptor",
         "DxgkDdiSetPowerState": "VioGpuDodSetPowerState",
+        "DxgkDdiNotifyAcpiEvent": "VioGpuWddmNotifyAcpiEvent",
         "DxgkDdiUnload": "VioGpuDodUnload",
         "DxgkDdiQueryInterface": "VioGpuDodQueryInterface",
+        "DxgkDdiControlEtwLogging": "VioGpuWddmControlEtwLogging",
         "DxgkDdiQueryAdapterInfo": "VioGpuWddmQueryAdapterInfo",
         "DxgkDdiCreateDevice": "VioGpuWddmCreateDevice",
         "DxgkDdiDestroyDevice": "VioGpuWddmDestroyDevice",
@@ -1124,16 +1284,14 @@ def check_callback_table() -> None:
         "DxgkDdiCreateContext": "VioGpuWddmCreateContext",
         "DxgkDdiDestroyContext": "VioGpuWddmDestroyContext",
         "DxgkDdiBuildPagingBuffer": "VioGpuWddmBuildPagingBuffer",
+        "DxgkDdiSetPalette": "VioGpuWddmSetPalette",
         "DxgkDdiRender": "VioGpuWddmRender",
+        "DxgkDdiRenderKm": "VioGpuWddmRenderKm",
         "DxgkDdiPresent": "VioGpuWddmPresent",
         "DxgkDdiPatch": "VioGpuWddmPatch",
         "DxgkDdiSubmitCommand": "VioGpuWddmSubmitCommand",
-        "DxgkDdiCancelCommand": "VioGpuWddmCancelCommand",
         "DxgkDdiPreemptCommand": "VioGpuWddmPreemptCommand",
         "DxgkDdiQueryCurrentFence": "VioGpuWddmQueryCurrentFence",
-        "DxgkDdiQueryDependentEngineGroup": "VioGpuWddmQueryDependentEngineGroup",
-        "DxgkDdiQueryEngineStatus": "VioGpuWddmQueryEngineStatus",
-        "DxgkDdiResetEngine": "VioGpuWddmResetEngine",
         "DxgkDdiResetFromTimeout": "VioGpuWddmResetFromTimeout",
         "DxgkDdiRestartFromTimeout": "VioGpuWddmRestartFromTimeout",
         "DxgkDdiCollectDbgInfo": "VioGpuWddmCollectDbgInfo",
@@ -1148,10 +1306,9 @@ def check_callback_table() -> None:
         "DxgkDdiCommitVidPn": "VioGpuDodCommitVidPn",
         "DxgkDdiUpdateActiveVidPnPresentPath": "VioGpuDodUpdateActiveVidPnPresentPath",
         "DxgkDdiRecommendMonitorModes": "VioGpuDodRecommendMonitorModes",
+        "DxgkDdiGetScanLine": "VioGpuWddmGetScanLine",
+        "DxgkDdiControlInterrupt": "VioGpuWddmControlInterrupt",
         "DxgkDdiQueryVidPnHWCapability": "VioGpuDodQueryVidPnHWCapability",
-        "DxgkDdiStopDeviceAndReleasePostDisplayOwnership": "VioGpuDodStopDeviceAndReleasePostDisplayOwnership",
-        "DxgkDdiSystemDisplayEnable": "VioGpuDodSystemDisplayEnable",
-        "DxgkDdiSystemDisplayWrite": "VioGpuDodSystemDisplayWrite",
     }
     for member, callback in callbacks.items():
         assignments = re.findall(
@@ -1167,7 +1324,7 @@ def check_callback_table() -> None:
 
     expected_statements = [
         "RtlZeroMemory(initialData, sizeof(*initialData));",
-        "initialData->Version = DXGKDDI_INTERFACE_VERSION;",
+        "initialData->Version = DXGKDDI_INTERFACE_VERSION_WIN7;",
         *(f"initialData->{member} = {callback};" for member, callback in callbacks.items()),
     ]
     if re.sub(r"\s+", " ", body).strip() != " ".join(expected_statements):
@@ -1175,6 +1332,88 @@ def check_callback_table() -> None:
 
     if re.search(r"\bDxgkDdiPresentDisplayOnly\b", body):
         fail("full miniport must not register the KMDOD-only PresentDisplayOnly callback")
+
+    for forbidden in (
+        "DxgkDdiCancelCommand",
+        "DxgkDdiQueryDependentEngineGroup",
+        "DxgkDdiQueryEngineStatus",
+        "DxgkDdiResetEngine",
+        "DxgkDdiStopDeviceAndReleasePostDisplayOwnership",
+        "DxgkDdiSystemDisplayEnable",
+        "DxgkDdiSystemDisplayWrite",
+    ):
+        if forbidden in body:
+            fail(f"legacy Win7 runtime registration must not expose Win8-only callback {forbidden}")
+
+
+def check_legacy_runtime_callback_contract() -> None:
+    header = canonical_code(WDDM_DDI_HEADER_CODE)
+    for declaration in (
+        "DXGKDDI_NOTIFY_ACPI_EVENTVioGpuWddmNotifyAcpiEvent;",
+        "DXGKDDI_CONTROL_ETW_LOGGINGVioGpuWddmControlEtwLogging;",
+        "DXGKDDI_SETPALETTEVioGpuWddmSetPalette;",
+        "DXGKDDI_GETSCANLINEVioGpuWddmGetScanLine;",
+        "DXGKDDI_CONTROLINTERRUPTVioGpuWddmControlInterrupt;",
+        "DXGKDDI_RENDERKMVioGpuWddmRenderKm;",
+    ):
+        if header.count(declaration) != 1:
+            fail(f"legacy runtime callback must have one WDK-typed declaration: {declaration}")
+
+    notify_acpi = canonical_code(function_body("VioGpuWddmNotifyAcpiEvent", WDDM_DDI_CODE))
+    for fragment in (
+        "PAGED_CODE();",
+        "miniportDeviceContext==NULL||acpiFlags==NULL",
+        "*acpiFlags=0;",
+        "returnSTATUS_NOT_SUPPORTED;",
+    ):
+        if notify_acpi.count(fragment) != 1:
+            fail(f"legacy ACPI callback must fail closed after clearing flags: {fragment}")
+
+    etw = canonical_code(function_body("VioGpuWddmControlEtwLogging", WDDM_DDI_CODE))
+    for fragment in (
+        "PAGED_CODE();",
+        "UNREFERENCED_PARAMETER(enable);",
+        "UNREFERENCED_PARAMETER(flags);",
+        "UNREFERENCED_PARAMETER(level);",
+    ):
+        if etw.count(fragment) != 1:
+            fail(f"legacy ETW callback must remain a side-effect-free no-op: {fragment}")
+
+    set_palette = canonical_code(function_body("VioGpuWddmSetPalette", WDDM_DDI_CODE))
+    for fragment in (
+        "hAdapter==NULL||setPalette==NULL",
+        "returnSTATUS_NOT_SUPPORTED;",
+    ):
+        if set_palette.count(fragment) != 1:
+            fail(f"true-color-only palette callback must fail closed: {fragment}")
+
+    get_scan_line = canonical_code(function_body("VioGpuWddmGetScanLine", WDDM_DDI_CODE))
+    for fragment in (
+        "hAdapter==NULL||getScanLine==NULL",
+        "getScanLine->InVerticalBlank=FALSE;",
+        "getScanLine->ScanLine=0;",
+        "returnSTATUS_NOT_IMPLEMENTED;",
+    ):
+        if get_scan_line.count(fragment) != 1:
+            fail(f"scanline callback must initialize output and fail closed: {fragment}")
+
+    control_interrupt = canonical_code(function_body("VioGpuWddmControlInterrupt", WDDM_DDI_CODE))
+    for fragment in (
+        "hAdapter==NULL",
+        "UNREFERENCED_PARAMETER(interruptType);",
+        "UNREFERENCED_PARAMETER(enableInterrupt);",
+        "returnSTATUS_NOT_IMPLEMENTED;",
+    ):
+        if control_interrupt.count(fragment) != 1:
+            fail(f"interrupt-control callback must reject unsupported control: {fragment}")
+
+    render_km = canonical_code(function_body("VioGpuWddmRenderKm", WDDM_DDI_CODE))
+    for fragment in (
+        "hContext==NULL||render==NULL",
+        "returnSTATUS_ILLEGAL_INSTRUCTION;",
+    ):
+        if render_km.count(fragment) != 1:
+            fail(f"kernel GDI command buffer callback must not enter the MSM parser: {fragment}")
 
 
 def check_native_context_readiness(
@@ -3974,7 +4213,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         fail("UMDRIVERPRIVATE must not expose VA ranges or KMD/transport identities")
     query_dispatch = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
     if query_dispatch.count("if(pQueryAdapterInfo->Type==DXGKQAITYPE_UMDRIVERPRIVATE)") != 1 or query_dispatch.count(
-        "returnQueryUmdPrivateInfo(adapter,pQueryAdapterInfo);"
+        "status=QueryUmdPrivateInfo(adapter,pQueryAdapterInfo);"
     ) != 1:
         fail("QueryAdapterInfo must dispatch UMDRIVERPRIVATE through the current pre-v1 endpoint")
 
@@ -4531,8 +4770,9 @@ def check_wddm_paging_transaction_gate() -> None:
     ):
         if fragment not in validate_reference:
             fail(f"Submit paging reference validation must retain the Built owner gate: {fragment}")
-    if "CancelCommandAware=0" in canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE)):
-        fail("driver caps must advertise CancelCommandAware once paging owners are cancellable")
+    driver_caps = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
+    if driver_caps.count("driverCaps->SchedulingCaps.CancelCommandAware=0;") != 1:
+        fail("the Win7 registration contract must not advertise the unregistered Win8 CancelCommand callback")
 
     finish = canonical_code(
         function_body_with_parameters(
@@ -7604,7 +7844,7 @@ def check_project_safety(root: ET.Element) -> None:
         DRIVER_CODE,
     )
     if len(static_asserts) != 1:
-        fail("driver_entry.cpp must assert the Win8 DDI table exactly once")
+        fail("driver_entry.cpp must assert the Win8 declaration surface exactly once")
 
     sign_modes = [
         (element.text or "").strip() for element in root.findall(".//msbuild:SignMode", NAMESPACE)
@@ -7697,8 +7937,8 @@ def check_project_safety(root: ET.Element) -> None:
         element.attrib.get("Include", "")
         for element in root.findall(".//msbuild:FilesToPackage[@Include]", NAMESPACE)
     ]
-    if package_inputs != ["$(TargetPath)"]:
-        fail("full-miniport project must package its linked SYS through FilesToPackage")
+    if package_inputs != ["$(TargetPath)", "$(OutDir)viogpud3d.dll"]:
+        fail("full-miniport project must package its linked SYS and ARM64 D3D UMD DLL")
 
     output_dirs = [
         (element.text or "").strip()
@@ -7719,15 +7959,21 @@ def check_installation_contract() -> None:
         "ClassGuid={4d36e968-e325-11ce-bfc1-08002be10318}",
         "DriverVer=08/22/2026,0.1.0.0",
         "CatalogFile=viogpuwddm.cat",
+        "viogpud3d.dll=1,,",
         "%DroidVM%=VioGpuWddm,NT$ARCH$",
         "%VioGpuWddm.DeviceDesc%=VioGpuWddm_Install,PCI\\VEN_1AF4&DEV_1050",
         "FeatureScore=F8",
+        "viogpud3d.dll,,,2",
         "DelReg=VioGpuWddm_RetiredDeviceSettings",
         "[VioGpuWddm_RetiredDeviceSettings]HKR,,RequireRestrictedDma",
         "AddService=VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog",
         "ServiceBinary=%INX_PLATFORM_DRIVERS_DIR%\\viogpuwddm.sys",
         "MSISupported,%REG_DWORD%,1",
         "MessageNumberLimit,%REG_DWORD%,4",
+        'UserModeDriverName,%REG_MULTI_SZ%,"%13%\\viogpud3d.dll",'
+        '"%13%\\viogpud3d.dll","%13%\\viogpud3d.dll"',
+        "InstalledDisplayDrivers,%REG_MULTI_SZ%,viogpud3d,viogpud3d,viogpud3d",
+        "REG_MULTI_SZ=0x00010000",
     )
     for fragment in required:
         if compact.count(fragment) != 1:
@@ -7738,6 +7984,8 @@ def check_installation_contract() -> None:
         fail("full-miniport INX must remain ARM64-tokenized and independent of the display-only package")
     if re.search(r"(?i)HKR\s*,\s*,\s*RequireRestrictedDma\s*,", source):
         fail("full-miniport INX must delete, never configure, the retired restricted-DMA value")
+    if re.search(r"(?i)UserModeDriverNameWow|OpenAdapter12", source):
+        fail("ARM64-only legacy package must not claim WoW64 or D3D12 UMD support")
 
 
 def main() -> None:
@@ -7746,10 +7994,13 @@ def main() -> None:
     check_driver_entry_gate()
     check_viogpudo_code_segment_contract()
     check_arm64_workflow_contract()
+    check_d3d_umd_shim_contract()
     check_retired_pool_absence()
     check_native_start_diagnostics()
+    check_native_query_adapter_info_diagnostics()
     check_registration_helper(sources)
     check_callback_table()
+    check_legacy_runtime_callback_contract()
     check_virtio_reset_contract()
     check_virtio_queue_allocation_cleanup()
     check_dod_reset_entrypoints()
