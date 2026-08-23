@@ -257,12 +257,20 @@ jobs:
           $dumpbin = (Get-Command dumpbin.exe -ErrorAction Stop).Source
           $exports = (& $dumpbin /nologo /exports $umd 2>&1 | Out-String)
           if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for $umd" }
-          foreach ($name in @('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')) {
-            if ([regex]::Matches($exports, "\b$([regex]::Escape($name))\b").Count -ne 1) {
-              throw "UMD export table must contain exactly one $name"
+          $exportNames = @(
+            foreach ($line in ($exports -split "`r?`n")) {
+              if ($line -match '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)') {
+                $Matches[1]
+              }
             }
+          )
+          $expectedExports = @('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')
+          $exportDelta = Compare-Object -ReferenceObject $expectedExports -DifferenceObject $exportNames
+          if ($exportDelta -or $exportNames.Count -ne $expectedExports.Count) {
+            Write-Host $exports
+            throw "UMD export table mismatch: $($exportNames -join ', ')"
           }
-          if ($exports -match '\bOpenAdapter12\b') { throw 'legacy UMD shim must not export OpenAdapter12' }
+          if ($exportNames -contains 'OpenAdapter12') { throw 'legacy UMD shim must not export OpenAdapter12' }
 
       - name: Upload unsigned full-miniport artifact
         uses: actions/upload-artifact@v4

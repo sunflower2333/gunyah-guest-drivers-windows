@@ -832,8 +832,15 @@ def check_arm64_workflow_contract() -> None:
     for label, source in sources.items():
         if source.count("$reader.ReadUInt16() -ne 0xaa64") != 1:
             fail(f"{label} workflow must verify both Native Context PEs as ARM64")
-        if source.count("@('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')") != 1:
+        if source.count("$expectedExports = @('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')") != 1:
             fail(f"{label} workflow must verify the exact legacy D3D UMD exports")
+        for fragment in (
+            "$exportNames = @(",
+            "Compare-Object -ReferenceObject $expectedExports -DifferenceObject $exportNames",
+            "$exportNames.Count -ne $expectedExports.Count",
+        ):
+            if source.count(fragment) != 1:
+                fail(f"{label} workflow must parse and compare the exact UMD export table: {fragment}")
         if source.count("'legacy UMD shim must not export OpenAdapter12'") != 1:
             fail(f"{label} workflow must reject a D3D12 export from the legacy UMD shim")
         if source.count("Assert-Arm64Pe $driver") != 1 or source.count("Assert-Arm64Pe $umd") != 1:
