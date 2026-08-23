@@ -1684,7 +1684,7 @@ NTSTATUS ResolveSubmissionPrivateData(PVOID privateDataBase,
     *submissionOut = NULL;
     if (privateDataBase == NULL || adapter == NULL || runtimeContext == NULL || submissionStart > privateDataSize ||
         submissionEnd < submissionStart || submissionEnd > privateDataSize ||
-        submissionEnd - submissionStart < sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE))
+        submissionEnd - submissionStart != sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE))
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -1740,7 +1740,7 @@ NTSTATUS ResolveSubmissionPrivateData(PVOID privateDataBase,
         submission->Context != context || submission->Context->Type != VioGpuWddmContextNative ||
         submission->Adapter != adapter || submission->DmaBuffer != privateData->DmaBuffer ||
         submission->DmaBufferSize != privateData->DmaBufferSize || submission->DmaPrivateData != privateData ||
-        submission->DmaPrivateDataSize < sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) ||
+        submission->DmaPrivateDataSize != sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) ||
         submission->CommandLength != privateData->CommandLength || submission->ContextId != privateData->ContextId ||
         submission->Generation != privateData->Generation ||
         submission->ResetGeneration != privateData->ResetGeneration || submission->CommandStream == NULL ||
@@ -2439,7 +2439,7 @@ NTSTATUS ResolvePresentTransaction(PVOID privateDataBase,
                           transaction->Source->ContextId == 0 && transaction->Source->ContextGeneration == 0 &&
                           transaction->Source->ContextResetGeneration == 0;
     if (!ValidatePresentDmaPacket(privateData, packet, transaction) ||
-        transaction->PrivateDataSize < sizeof(*privateData) || (!nativeIdentity && !gdiIdentity))
+        transaction->PrivateDataSize != sizeof(*privateData) || (!nativeIdentity && !gdiIdentity))
     {
         DereferencePresentTransaction(transaction);
         return STATUS_DEVICE_NOT_READY;
@@ -6078,7 +6078,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
                                            dmaBuffer,
                                            render->DmaSize,
                                            privateData,
-                                           render->DmaBufferPrivateDataSize,
+                                           sizeof(*privateData),
                                            render->CommandLength,
                                            virtioBuffer,
                                            fullyPrepatched,
@@ -6088,6 +6088,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
             submissionPublished = TRUE;
 
             render->pDmaBuffer = static_cast<BYTE *>(dmaBuffer) + render->CommandLength;
+            render->pDmaBufferPrivateData = static_cast<BYTE *>(render->pDmaBufferPrivateData) + sizeof(*privateData);
+            render->DmaBufferPrivateDataSize -= sizeof(*privateData);
             render->pPatchLocationListOut = patchOutput + render->PatchLocationListInSize;
             render->MultipassOffset = render->CommandLength;
 
@@ -6230,7 +6232,7 @@ VOID RetireDmaOwner(_In_ VioGpuDod *adapter,
                                                                                           dmaBufferSize,
                                                                                           dmaStart,
                                                                                           dmaEnd);
-            if (expected && transaction->PrivateDataSize == privateBufferSize - privateStart && dmaRangeValid)
+            if (expected && transaction->PrivateDataSize == privateEnd - privateStart && dmaRangeValid)
             {
                 RetirePresentTransaction(transaction, state, VioGpuWddmPresentCancelled);
             }
@@ -6259,7 +6261,7 @@ VOID RetireDmaOwner(_In_ VioGpuDod *adapter,
                                                                                          dmaBufferSize,
                                                                                          dmaStart,
                                                                                          dmaEnd);
-            BOOLEAN exact = dmaRangeValid && submission->DmaPrivateDataSize == privateBufferSize - privateStart &&
+            BOOLEAN exact = dmaRangeValid && submission->DmaPrivateDataSize == privateEnd - privateStart &&
                             (state == VioGpuWddmSubmissionPrepared || state == VioGpuWddmSubmissionPatched);
             if (exact)
             {
@@ -6290,6 +6292,21 @@ VOID RetirePatchDmaOwner(_In_ VioGpuDod *adapter, _In_ const DXGKARG_PATCH *patc
                    VioGpuWddmPresentBuilt);
 }
 
+VOID NotifyPatchSubmissionFault(_In_opt_ VioGpuDod *adapter,
+                                _In_opt_ const DXGKARG_PATCH *patchArguments,
+                                _In_ NTSTATUS status)
+{
+    if (adapter == NULL)
+    {
+        return;
+    }
+
+    UINT fenceId = patchArguments != NULL && patchArguments->SubmissionFenceId <= MAXUINT ? static_cast<UINT>(patchArguments->SubmissionFenceId)
+                                                                                          : 0;
+    UINT engineOrdinal = patchArguments == NULL ? 0 : patchArguments->EngineOrdinal;
+    adapter->NotifyNativeSubmissionFault(fenceId, status, 0, engineOrdinal, TRUE);
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, CONST DXGKARG_PATCH *patchArguments)
 {
     VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
@@ -6313,7 +6330,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         {
             RetirePatchDmaOwner(adapter, patchArguments);
         }
-        return STATUS_INVALID_PARAMETER;
+        NotifyPatchSubmissionFault(adapter, patchArguments, STATUS_INVALID_PARAMETER);
+        return STATUS_SUCCESS;
     }
 
     if (patchArguments->Flags.Value == 1)
@@ -6342,21 +6360,24 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         if (!exact)
         {
             RetirePatchDmaOwner(adapter, patchArguments);
+            NotifyPatchSubmissionFault(adapter, patchArguments, STATUS_INVALID_PARAMETER);
         }
-        return exact ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
+        return STATUS_SUCCESS;
     }
 
     if (patchArguments->hContext == NULL || patchArguments->pAllocationList == NULL ||
         patchArguments->pPatchLocationList == NULL || patchArguments->Flags.Value != 0)
     {
         RetirePatchDmaOwner(adapter, patchArguments);
-        return STATUS_INVALID_PARAMETER;
+        NotifyPatchSubmissionFault(adapter, patchArguments, STATUS_INVALID_PARAMETER);
+        return STATUS_SUCCESS;
     }
 
     if (!adapter->AcquireNativeSubmissionOperation())
     {
         RetirePatchDmaOwner(adapter, patchArguments);
-        return STATUS_DEVICE_NOT_READY;
+        NotifyPatchSubmissionFault(adapter, patchArguments, STATUS_DEVICE_NOT_READY);
+        return STATUS_SUCCESS;
     }
 
     UINT candidatePrivateLength = patchArguments->DmaBufferPrivateDataSubmissionEndOffset -
@@ -6385,9 +6406,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
              transaction->DestinationAllocationIndex >= patchArguments->AllocationListSize ||
              transaction->DmaBuffer != static_cast<BYTE *>(patchArguments->pDmaBuffer) + patchArguments->DmaBufferSubmissionStartOffset ||
              patchArguments->DmaBufferSize - patchArguments->DmaBufferSubmissionStartOffset != transaction->DmaBufferSize ||
-             patchArguments->DmaBufferPrivateDataSize - patchArguments->DmaBufferPrivateDataSubmissionStartOffset !=
-                                                                                                                 transaction->PrivateDataSize ||
-             transaction->PrivateData != candidatePrivate || transaction->FenceId != 0))
+             candidatePrivateLength != transaction->PrivateDataSize || transaction->PrivateData != candidatePrivate ||
+             transaction->FenceId != 0))
         {
             status = STATUS_INVALID_PARAMETER;
         }
@@ -6505,8 +6525,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         {
             DereferencePresentTransaction(transaction);
         }
+        if (!NT_SUCCESS(status))
+        {
+            NotifyPatchSubmissionFault(adapter, patchArguments, status);
+        }
         adapter->ReleaseNativeSubmissionOperation();
-        return status;
+        return STATUS_SUCCESS;
     }
 
     VIOGPU_WDDM_SUBMISSION *submission = NULL;
@@ -6529,8 +6553,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                         patchArguments->DmaBufferSize - patchArguments->DmaBufferSubmissionStartOffset == submission->DmaBufferSize &&
                         dmaLength == submission->CommandLength &&
                         submission->DmaPrivateData == static_cast<BYTE *>(patchArguments->pDmaBufferPrivateData) + patchArguments->DmaBufferPrivateDataSubmissionStartOffset &&
-                        patchArguments->DmaBufferPrivateDataSize - patchArguments->DmaBufferPrivateDataSubmissionStartOffset ==
-                                                                                                                            submission->DmaPrivateDataSize &&
+                        privateLength == submission->DmaPrivateDataSize &&
                         privateLength == sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) &&
                         patchArguments->PatchLocationListSubmissionLength == submission->AllocationCount &&
                         submission->FenceId == 0 && !submission->PatchApplied &&
@@ -6699,8 +6722,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
     }
     delete[] patchedIovas;
     delete[] patchedResourceIds;
+    if (!NT_SUCCESS(status))
+    {
+        NotifyPatchSubmissionFault(adapter, patchArguments, status);
+    }
     adapter->ReleaseNativeSubmissionOperation();
-    return status;
+    return STATUS_SUCCESS;
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext, DXGKARG_PRESENT *present)
@@ -6963,7 +6990,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
         transaction->DmaBuffer = present->pDmaBuffer;
         transaction->DmaBufferSize = present->DmaSize;
         transaction->PrivateData = privateData;
-        transaction->PrivateDataSize = present->DmaBufferPrivateDataSize;
+        transaction->PrivateDataSize = sizeof(*privateData);
         transaction->SourceAllocationIndex = DXGK_PRESENT_SOURCE_INDEX;
         transaction->DestinationAllocationIndex = DXGK_PRESENT_DESTINATION_INDEX;
         transaction->SourceRect = present->SrcRect;
@@ -7077,6 +7104,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     if (published)
     {
         present->pDmaBuffer = static_cast<BYTE *>(present->pDmaBuffer) + sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET);
+        present->pDmaBufferPrivateData = static_cast<BYTE *>(present->pDmaBufferPrivateData) +
+                                         sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE);
+        present->DmaBufferPrivateDataSize -= sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE);
         present->pPatchLocationListOut += 2;
         present->MultipassOffset = present->SubRectCnt == 0 ? 0U : rectOffset + rectCount;
         if (present->SubRectCnt != 0 && present->MultipassOffset < present->SubRectCnt)
@@ -7350,8 +7380,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                                           submitCommand->DmaBufferSubmissionEndOffset) &&
                             transaction->DmaBuffer == privateData->DmaBuffer &&
                             submitCommand->DmaBufferSize - submitCommand->DmaBufferSubmissionStartOffset == transaction->DmaBufferSize &&
-                            submitCommand->DmaBufferPrivateDataSize - privateStart == transaction->PrivateDataSize &&
-                            transaction->PrivateData == privateData && (patched || promotePrepatch) &&
+                            privateLength == transaction->PrivateDataSize && transaction->PrivateData == privateData &&
+                            (patched || promotePrepatch) &&
                             transaction->Context->NodeOrdinal == submitCommand->NodeOrdinal &&
                             transaction->Context->EngineAffinity == 1;
             if (!exact)
@@ -7463,9 +7493,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                                      submitCommand->DmaBufferSize,
                                                      submitCommand->DmaBufferSubmissionStartOffset,
                                                      submitCommand->DmaBufferSubmissionEndOffset) &&
-                        submitCommand->DmaBufferPrivateDataSize - privateStart == submission->DmaPrivateDataSize &&
-                        dmaLength == submission->CommandLength && submission->Context != NULL &&
-                        submission->Context->NodeOrdinal == submitCommand->NodeOrdinal &&
+                        privateLength == submission->DmaPrivateDataSize && dmaLength == submission->CommandLength &&
+                        submission->Context != NULL && submission->Context->NodeOrdinal == submitCommand->NodeOrdinal &&
                         submission->Context->EngineAffinity == 1 && (patched || promoteRenderPrepatch) &&
                         InterlockedCompareExchange(&submission->CancelRequested, 0, 0) == 0;
         if (!exact)
@@ -7663,7 +7692,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
                                                             cancelCommand->hContext,
                                                             &submission)))
                 {
-                    BOOLEAN exact = submission->DmaPrivateDataSize == cancelCommand->DmaBufferPrivateDataSize - privateStart &&
+                    BOOLEAN exact = submission->DmaPrivateDataSize == privateLength &&
                                     ValidateRenderDmaSubmissionRange(submission,
                                                                      cancelCommand->pDmaBuffer,
                                                                      cancelCommand->DmaBufferSize,
@@ -7707,8 +7736,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
             else if (privateData->Kind == VioGpuWddmDmaKindPresent)
             {
                 VIOGPU_WDDM_PRESENT_TRANSACTION *transaction = NULL;
-                if (privateStart == 0 && privateEnd == cancelCommand->DmaBufferPrivateDataSize &&
-                    NT_SUCCESS(ResolvePresentTransaction(cancelCommand->pDmaBufferPrivateData,
+                if (NT_SUCCESS(ResolvePresentTransaction(cancelCommand->pDmaBufferPrivateData,
                                                          cancelCommand->DmaBufferPrivateDataSize,
                                                          privateStart,
                                                          privateEnd,
@@ -7717,7 +7745,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
                                                          -1,
                                                          &transaction)))
                 {
-                    if (ValidatePresentDmaSubmissionRange(transaction,
+                    if (transaction->PrivateDataSize == privateLength &&
+                        ValidatePresentDmaSubmissionRange(transaction,
                                                           cancelCommand->pDmaBuffer,
                                                           cancelCommand->DmaBufferSize,
                                                           cancelCommand->DmaBufferSubmissionStartOffset,

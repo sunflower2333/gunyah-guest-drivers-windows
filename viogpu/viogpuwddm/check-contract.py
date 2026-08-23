@@ -3699,6 +3699,8 @@ def check_wddm_present_contract() -> None:
         "RegisterPresentTransaction(transaction)",
         "InsertTailList(&context->PendingSubmissions,&transaction->ContextEntry.Link);",
         "present->pDmaBuffer=static_cast<BYTE*>(present->pDmaBuffer)+sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET);",
+        "present->pDmaBufferPrivateData=static_cast<BYTE*>(present->pDmaBufferPrivateData)+sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE);",
+        "present->DmaBufferPrivateDataSize-=sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE);",
         "present->MultipassOffset=present->SubRectCnt==0?0:rectOffset+rectCount;",
         "present->MultipassOffset<present->SubRectCnt",
         "RetirePresentTransaction(transaction,VioGpuWddmPresentBuilt,VioGpuWddmPresentCancelled);",
@@ -3720,17 +3722,38 @@ def check_wddm_present_contract() -> None:
     private_zero = present.find("RtlZeroMemory(privateData,sizeof(*privateData));")
     if private_zero < 0 or "privateData->Submission" in present[:private_zero]:
         fail("Present must treat KMD private data as an uninitialized output until its success publication")
-    if variable_write_offsets(present_body, "present->pDmaBufferPrivateData") or \
-       variable_write_offsets(present_body, "present->DmaBufferPrivateDataSize"):
-        fail("Present multipass must not advance or resize its input-only private-data buffer")
+    private_pointer_writes = variable_write_offsets(present_body, "present->pDmaBufferPrivateData")
+    private_size_writes = variable_write_offsets(present_body, "present->DmaBufferPrivateDataSize")
+    publication = present_body.find("if (published)")
+    if len(private_pointer_writes) != 1 or len(private_size_writes) != 1 or publication < 0 or \
+       private_pointer_writes[0] < publication or private_size_writes[0] < publication:
+        fail("Present must consume exactly one private-data record only after publishing its transaction")
 
-    patch = canonical_code(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))
+    patch_body = function_body("VioGpuWddmPatch", WDDM_DDI_CODE)
+    patch = canonical_code(patch_body)
+    notify_patch_fault = canonical_code(function_body("NotifyPatchSubmissionFault", WDDM_DDI_CODE))
+    for fragment in (
+        "patchArguments->SubmissionFenceId<=MAXUINT",
+        "adapter->NotifyNativeSubmissionFault(fenceId,status,0,engineOrdinal,TRUE);",
+    ):
+        if fragment not in notify_patch_fault:
+            fail(f"Patch failure conversion must reset and fault the scheduler: {fragment}")
+    non_success_patch_returns = [
+        match.group(0)
+        for match in re.finditer(r"return\s+[^;]+;", patch_body)
+        if canonical_code(match.group(0)) != "returnSTATUS_SUCCESS;"
+    ]
+    if non_success_patch_returns:
+        fail("Patch must never return an error because Dxgkrnl converts every Patch failure into bugcheck 0x119/3")
+    if patch.count("NotifyPatchSubmissionFault(adapter,patchArguments,") != 6:
+        fail("Patch must convert every validation, operation, Present, Render, and paging failure into a scheduler fault")
     require_order(
         patch,
         (
             "candidatePrivate->Kind==VioGpuWddmDmaKindPresent",
             "ResolvePresentTransaction(",
             "VioGpuWddmPresentBuilt,",
+            "candidatePrivateLength!=transaction->PrivateDataSize",
             "HasLiveNativePresentIdentity(source,transaction->Context,adapter)",
             "ReconcileGdiSourcePlacementAfterReset(source)",
             "HasLiveGdiPresentIdentity(source,transaction->Context,adapter)",
@@ -3753,14 +3776,14 @@ def check_wddm_present_contract() -> None:
         "CancelRecognizedPagingTransaction(pagingPrivate,adapter);",
         "privateData->Kind==VioGpuWddmDmaKindPresent",
         "state==VioGpuWddmPresentBuilt||state==VioGpuWddmPresentPatched",
-        "transaction->PrivateDataSize==privateBufferSize-privateStart",
+        "transaction->PrivateDataSize==privateEnd-privateStart",
         "dmaBuffer==NULL?ValidatePresentSubmitDmaRange(transaction,dmaBufferSize,dmaStart,dmaEnd):"
         "ValidatePresentDmaSubmissionRange(transaction,dmaBuffer,dmaBufferSize,dmaStart,dmaEnd)",
         "RetirePresentTransaction(transaction,state,VioGpuWddmPresentCancelled);",
         "privateData->Kind==VioGpuWddmDmaKindRender",
         "dmaBuffer==NULL?ValidateRenderSubmitDmaRange(submission,dmaBufferSize,dmaStart,dmaEnd):"
         "ValidateRenderDmaSubmissionRange(submission,dmaBuffer,dmaBufferSize,dmaStart,dmaEnd)",
-        "submission->DmaPrivateDataSize==privateBufferSize-privateStart",
+        "submission->DmaPrivateDataSize==privateEnd-privateStart",
         "QuarantineSubmission(submission,state,TRUE);",
     ):
         if fragment not in retire_owner:
@@ -3924,12 +3947,12 @@ def check_wddm_present_contract() -> None:
             fail(f"Render Submit DMA range validation must not require a missing CPU base: {fragment}")
     for fragment in (
         "privateData->Kind==VioGpuWddmDmaKindRender",
-        "submission->DmaPrivateDataSize==cancelCommand->DmaBufferPrivateDataSize-privateStart",
+        "submission->DmaPrivateDataSize==privateLength",
         "ValidateRenderDmaSubmissionRange(submission,",
         "state==VioGpuWddmSubmissionPrepared||state==VioGpuWddmSubmissionPatched",
         "QuarantineSubmission(submission,state,TRUE)",
         "privateData->Kind==VioGpuWddmDmaKindPresent",
-        "privateStart==0&&privateEnd==cancelCommand->DmaBufferPrivateDataSize",
+        "transaction->PrivateDataSize==privateLength",
         "ValidatePresentDmaSubmissionRange(transaction,",
         "state==VioGpuWddmPresentBuilt||state==VioGpuWddmPresentPatched",
         "state==VioGpuWddmPresentQueued||state==VioGpuWddmPresentExecuting",
@@ -5924,16 +5947,26 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     if not (0 <= capacity and 0 <= publication < private_publication < cursor_publication < private_cursor):
         fail("BuildPagingBuffer must publish metadata only after operation success and in cursor order")
 
-    render = canonical_code(function_body("VioGpuWddmRender", WDDM_DDI_CODE))
+    render_body = function_body("VioGpuWddmRender", WDDM_DDI_CODE)
+    render = canonical_code(render_body)
     for fragment in (
         "privateData->Version=VioGpuWddmDmaPrivateVersion;",
         "privateData->Kind=VioGpuWddmDmaKindRender;",
         "privateData->Packet=dmaBuffer;",
         "privateData->PacketLength=render->CommandLength;",
         "privateData->Reserved=0;",
+        "privateData,sizeof(*privateData),render->CommandLength",
+        "render->pDmaBufferPrivateData=static_cast<BYTE*>(render->pDmaBufferPrivateData)+sizeof(*privateData);",
+        "render->DmaBufferPrivateDataSize-=sizeof(*privateData);",
     ):
         if render.count(fragment) != 1:
             fail(f"Render private data must identify its exact DMA kind and payload: {fragment}")
+    render_private_pointer_writes = variable_write_offsets(render_body, "render->pDmaBufferPrivateData")
+    render_private_size_writes = variable_write_offsets(render_body, "render->DmaBufferPrivateDataSize")
+    render_publication = render_body.find("submissionPublished = TRUE;")
+    if len(render_private_pointer_writes) != 1 or len(render_private_size_writes) != 1 or render_publication < 0 or \
+       render_private_pointer_writes[0] < render_publication or render_private_size_writes[0] < render_publication:
+        fail("Render must consume exactly one private-data record only after publishing its submission")
 
 
 def check_wddm_context_lifetime() -> None:
@@ -6865,7 +6898,9 @@ def check_wddm_submission_lifetime() -> None:
         "patchArguments->PatchLocationListSubmissionLength==0",
         "ResolvePagingBatch(",
         "VioGpuWddmPagingTransactionBuilt",
-        "returnexact?STATUS_SUCCESS:STATUS_INVALID_PARAMETER;",
+        "if(!exact)",
+        "NotifyPatchSubmissionFault(adapter,patchArguments,STATUS_INVALID_PARAMETER);",
+        "returnSTATUS_SUCCESS;",
     ):
         if fragment not in paging_patch:
             fail(f"paging Patch must validate one exact no-op submission range: {fragment}")
@@ -6894,7 +6929,8 @@ def check_wddm_submission_lifetime() -> None:
         fail("Patch failure must quarantine the prepared submission")
     if not patch.endswith(
         "DereferenceRenderSubmission(submission);}delete[]patchedIovas;delete[]patchedResourceIds;"
-        "adapter->ReleaseNativeSubmissionOperation();returnstatus;"
+        "if(!NT_SUCCESS(status)){NotifyPatchSubmissionFault(adapter,patchArguments,status);}"
+        "adapter->ReleaseNativeSubmissionOperation();returnSTATUS_SUCCESS;"
     ):
         fail("Patch must release its resolver reference after success or quarantine failure")
 
