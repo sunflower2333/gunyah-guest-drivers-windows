@@ -785,7 +785,7 @@ def check_arm64_workflow_contract() -> None:
     }
     sources: dict[str, str] = {}
     required_toolchain_fragments = (
-        "runs-on: windows-2025-vs2026",
+        "runs-on: windows-2022",
         "Locate preinstalled Windows SDK and WDK",
         "Get-ChildItem (Join-Path $kitRoot 'Include') -Directory",
         "[version]$include.Name",
