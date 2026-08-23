@@ -5864,17 +5864,10 @@ _Use_decl_annotations_ VOID NativePagingBatchWorker(PVOID callbackContext)
 
     if (adapter != NULL)
     {
-        if (NT_SUCCESS(status))
+        BOOLEAN completed = adapter->CompleteNativeSystemSubmission(fenceId, nodeOrdinal, engineOrdinal);
+        if (!NT_SUCCESS(status) || !completed)
         {
-            adapter->NotifyNativeSoftwareCompletion(fenceId, nodeOrdinal, engineOrdinal);
-        }
-        else
-        {
-            adapter->NotifyNativeSubmissionFault(fenceId,
-                                                 STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE,
-                                                 nodeOrdinal,
-                                                 engineOrdinal,
-                                                 TRUE);
+            adapter->RequestHardwareResetAtAnyIrql();
         }
         adapter->CompleteNativePassiveWork(&first->Work);
         if (operationAcquired)
@@ -7150,6 +7143,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                                                  CONST DXGKARG_SUBMITCOMMAND *submitCommand)
 {
     VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    BOOLEAN pagingSubmission = submitCommand != NULL && submitCommand->Flags.Paging != 0;
     BOOLEAN ownerRangeValid = submitCommand != NULL && submitCommand->pDmaBufferPrivateData != NULL &&
                               submitCommand->DmaBufferSubmissionStartOffset <= submitCommand->DmaBufferSubmissionEndOffset &&
                               submitCommand->DmaBufferSubmissionEndOffset <= submitCommand->DmaBufferSize &&
@@ -7168,21 +7162,18 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
         {
             RetireUnsubmittedDmaOwner(adapter, submitCommand);
         }
+        if (adapter != NULL && submitCommand != NULL && KeGetCurrentIrql() == DISPATCH_LEVEL && pagingSubmission)
+        {
+            adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,
+                                                      submitCommand->NodeOrdinal,
+                                                      submitCommand->EngineOrdinal);
+            adapter->RequestHardwareResetAtAnyIrql();
+            return STATUS_SUCCESS;
+        }
         return STATUS_INVALID_PARAMETER;
     }
 
-    if (!adapter->AcquireNativeSubmissionOperation())
-    {
-        RetireUnsubmittedDmaOwner(adapter, submitCommand);
-        adapter->NotifyNativeSubmissionFault(submitCommand->SubmissionFenceId,
-                                             STATUS_DEVICE_NOT_READY,
-                                             submitCommand->NodeOrdinal,
-                                             submitCommand->EngineOrdinal,
-                                             TRUE);
-        return STATUS_SUCCESS;
-    }
-
-    BOOLEAN emptyPagingSubmission = submitCommand->Flags.Value == 1 && submitCommand->hContext == NULL &&
+    BOOLEAN emptyPagingSubmission = submitCommand->Flags.Value == 1 &&
                                     submitCommand->DmaBufferSubmissionStartOffset == submitCommand->DmaBufferSubmissionEndOffset &&
                                     submitCommand->DmaBufferPrivateDataSubmissionStartOffset == submitCommand->DmaBufferPrivateDataSubmissionEndOffset;
     if (emptyPagingSubmission)
@@ -7191,13 +7182,29 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                                        submitCommand->NodeOrdinal,
                                                        submitCommand->EngineOrdinal))
         {
+            adapter->RequestHardwareResetAtAnyIrql();
+        }
+        return STATUS_SUCCESS;
+    }
+
+    if (!adapter->AcquireNativeSubmissionOperation())
+    {
+        RetireUnsubmittedDmaOwner(adapter, submitCommand);
+        if (pagingSubmission)
+        {
+            adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,
+                                                      submitCommand->NodeOrdinal,
+                                                      submitCommand->EngineOrdinal);
+            adapter->RequestHardwareResetAtAnyIrql();
+        }
+        else
+        {
             adapter->NotifyNativeSubmissionFault(submitCommand->SubmissionFenceId,
                                                  STATUS_DEVICE_NOT_READY,
                                                  submitCommand->NodeOrdinal,
                                                  submitCommand->EngineOrdinal,
                                                  TRUE);
         }
-        adapter->ReleaseNativeSubmissionOperation();
         return STATUS_SUCCESS;
     }
 
@@ -7217,25 +7224,28 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
         status = STATUS_INVALID_PARAMETER;
     }
 
-    if (NT_SUCCESS(status) && privateData->Kind == VioGpuWddmDmaKindPaging)
+    if (pagingSubmission)
     {
+        VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(submitCommand->hDevice);
+        BOOLEAN deviceReferenced = ReferenceDevice(device);
+        BOOLEAN valid = NT_SUCCESS(status) && privateData->Kind == VioGpuWddmDmaKindPaging &&
+                        submitCommand->Flags.Value == 1 && deviceReferenced && device->Adapter == adapter;
         VIOGPU_WDDM_PAGING_PRIVATE *firstPrivate = NULL;
         UINT recordCount = 0;
         UINT recordLimit = privateEnd >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE) ? privateEnd - sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
                                                                             : 0;
-        BOOLEAN resolved = ResolvePagingBatch(NULL,
-                                              submitCommand->DmaBufferSize,
-                                              submitCommand->DmaBufferSubmissionStartOffset,
-                                              submitCommand->DmaBufferSubmissionEndOffset,
-                                              submitCommand->pDmaBufferPrivateData,
-                                              submitCommand->DmaBufferPrivateDataSize,
-                                              privateStart,
-                                              privateEnd,
-                                              adapter,
-                                              VioGpuWddmPagingTransactionBuilt,
-                                              &firstPrivate,
-                                              &recordCount);
-        BOOLEAN valid = submitCommand->hContext == NULL && submitCommand->Flags.Value == 1 && resolved;
+        valid = valid && ResolvePagingBatch(NULL,
+                                            submitCommand->DmaBufferSize,
+                                            submitCommand->DmaBufferSubmissionStartOffset,
+                                            submitCommand->DmaBufferSubmissionEndOffset,
+                                            submitCommand->pDmaBufferPrivateData,
+                                            submitCommand->DmaBufferPrivateDataSize,
+                                            privateStart,
+                                            privateEnd,
+                                            adapter,
+                                            VioGpuWddmPagingTransactionBuilt,
+                                            &firstPrivate,
+                                            &recordCount);
         if (valid)
         {
             for (UINT index = 0; index < recordCount; ++index)
@@ -7328,6 +7338,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
         }
         if (queued)
         {
+            DereferenceDevice(device);
             adapter->ReleaseNativeSubmissionOperation();
             return STATUS_SUCCESS;
         }
@@ -7348,11 +7359,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
             CancelRecognizedPagingTransaction(pagingPrivate, adapter);
             ReleasePagingTransactionReference(&pagingPrivate->Transaction);
         }
-        adapter->NotifyNativeSubmissionFault(submitCommand->SubmissionFenceId,
-                                             STATUS_DEVICE_NOT_READY,
-                                             submitCommand->NodeOrdinal,
-                                             submitCommand->EngineOrdinal,
-                                             TRUE);
+        if (deviceReferenced)
+        {
+            DereferenceDevice(device);
+        }
+        adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,
+                                                  submitCommand->NodeOrdinal,
+                                                  submitCommand->EngineOrdinal);
+        adapter->RequestHardwareResetAtAnyIrql();
         adapter->ReleaseNativeSubmissionOperation();
         return STATUS_SUCCESS;
     }
@@ -7639,11 +7653,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
                 }
                 if (ownership == VioGpuNativePassiveWorkRemoved)
                 {
-                    adapter->NotifyNativeSubmissionFault(firstPrivate->BatchFenceId,
-                                                         STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE,
-                                                         firstPrivate->BatchNodeOrdinal,
-                                                         firstPrivate->BatchEngineOrdinal,
-                                                         TRUE);
+                    adapter->CompleteNativeSystemSubmission(firstPrivate->BatchFenceId,
+                                                            firstPrivate->BatchNodeOrdinal,
+                                                            firstPrivate->BatchEngineOrdinal);
+                    adapter->RequestHardwareResetAtAnyIrql();
                 }
             }
             else if ((privateLength % sizeof(VIOGPU_WDDM_PAGING_PRIVATE)) == 0)
@@ -7675,11 +7688,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
                 }
                 if (ownership == VioGpuNativePassiveWorkRemoved)
                 {
-                    adapter->NotifyNativeSubmissionFault(fallbackFirstPrivate->BatchFenceId,
-                                                         STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE,
-                                                         fallbackFirstPrivate->BatchNodeOrdinal,
-                                                         fallbackFirstPrivate->BatchEngineOrdinal,
-                                                         TRUE);
+                    adapter->CompleteNativeSystemSubmission(fallbackFirstPrivate->BatchFenceId,
+                                                            fallbackFirstPrivate->BatchNodeOrdinal,
+                                                            fallbackFirstPrivate->BatchEngineOrdinal);
+                    adapter->RequestHardwareResetAtAnyIrql();
                 }
             }
         }

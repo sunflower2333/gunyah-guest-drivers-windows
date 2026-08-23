@@ -314,8 +314,18 @@ allocation references if a later record is stale or malformed.
 `DXGKARG_SUBMITCOMMAND` does not expose a CPU DMA-buffer base. Render and
 Present Submit therefore validate submission offsets and sizes against the
 KMD-private owner's retained DMA pointer; paging resolves its retained packet
-pointer directly. Patch and Cancel still use their supplied CPU DMA base for an
-exact pointer-plus-offset identity check.
+pointer directly. Paging Submit interprets the first union member as `hDevice`,
+including zero-length system packets issued while a device is being destroyed.
+Patch and Cancel still use their supplied CPU DMA base for an exact
+pointer-plus-offset identity check.
+
+Paging packets are scheduler system commands and are never reported through
+`DXGK_INTERRUPT_DMA_FAULTED`. An empty paging packet is recorded and retired
+under one fence-tracker lock before the hardware-operation gate. A queued
+paging failure retires the already recorded system fence and requests an
+adapter reset; validation, operation-gate, queue, and cancellation failures use
+the same complete-then-reset policy. Render and Present retain the ordinary
+client-submission fault path.
 
 Submission-fault recovery no longer trusts the callback identity as a
 prerequisite for reset. A zero fence or nonzero node/engine identity first

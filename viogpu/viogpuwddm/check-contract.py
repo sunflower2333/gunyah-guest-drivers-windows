@@ -5290,6 +5290,14 @@ def check_wddm_paging_transaction_gate() -> None:
     ):
         if fragment not in cancel:
             fail(f"CancelCommand must retain safe cleanup and success semantics: {fragment}")
+    paging_cancel_end = cancel.find("elseif(cancelCommand->hContext!=NULL")
+    if paging_cancel_end < 0:
+        fail("CancelCommand must separate paging cleanup from client-context cleanup")
+    paging_cancel = cancel[:paging_cancel_end]
+    if paging_cancel.count("adapter->CompleteNativeSystemSubmission(") != 2 or \
+       paging_cancel.count("adapter->RequestHardwareResetAtAnyIrql();") != 2 or \
+       "NotifyNativeSubmissionFault(" in paging_cancel:
+        fail("removed paging work must retire its system fence and request reset without DMA_FAULTED")
     submit = canonical_code(function_body("VioGpuWddmSubmitCommand", WDDM_DDI_CODE))
     for fragment in (
         "ResolvePagingBatch(",
@@ -5300,6 +5308,10 @@ def check_wddm_paging_transaction_gate() -> None:
     ):
         if fragment not in submit:
             fail(f"SubmitCommand must transfer paging ownership to a passive worker: {fragment}")
+    paging_submit_start = submit.find("if(pagingSubmission)", submit.find("VIOGPU_WDDM_KMD_DMA_PRIVATE*privateData="))
+    paging_submit_end = submit.find("elseif(NT_SUCCESS(status)&&privateData->Kind==VioGpuWddmDmaKindPresent)", paging_submit_start)
+    if min(paging_submit_start, paging_submit_end) < 0 or "NotifyNativeSubmissionFault(" in submit[paging_submit_start:paging_submit_end]:
+        fail("nonempty paging SubmitCommand must never fault a scheduler system command")
     require_order(
         submit,
         (
@@ -5491,6 +5503,8 @@ def check_wddm_paging_transaction_gate() -> None:
             fail(f"passive work ownership ABI must expose {fragment}")
     passive_queue = canonical_code(function_body("QueueNativePassiveWork", VIOGPU_CODE))
     software_submission = canonical_code(function_body("CompleteNativeSoftwareSubmission", VIOGPU_CODE))
+    system_submission = canonical_code(function_body("CompleteNativeSystemSubmission", VIOGPU_CODE))
+    completed_fence = canonical_code(function_body("NotifyNativeCompletedFence", VIOGPU_CODE))
     passive_cancel = canonical_code(function_body("CancelNativePassiveWork", VIOGPU_CODE))
     passive_worker = canonical_code(function_body("RunNativePassiveWorker", VIOGPU_CODE))
     for fragment in (
@@ -5523,18 +5537,44 @@ def check_wddm_paging_transaction_gate() -> None:
         "passive FIFO publication must atomically reserve rundown and fence ownership before linking work",
     )
     if passive_queue.count("RecordNativeSubmissionFence(fenceId)") != 1 or \
-       software_submission.count("RecordNativeSubmissionFence(fenceId)") != 1 or \
+       "RecordNativeSubmissionFence(" in software_submission or \
        "RecordNativeSubmissionFence(" in WDDM_DDI_CODE:
-        fail("passive work and immediate software completion must each record the fence through the bounded tracker")
+        fail("passive work must reserve a pending fence while immediate completion updates the tracker atomically")
     require_order(
         software_submission,
         (
-            "nodeOrdinal!=0||engineOrdinal!=0||!RecordNativeSubmissionFence(fenceId)",
-            "NotifyNativeSoftwareCompletion(fenceId,nodeOrdinal,engineOrdinal);",
-            "returnTRUE;",
+            "KeAcquireSpinLock(&m_NativeFenceLock,&oldIrql);",
+            "m_NativeFenceCount<VioGpuNativeFenceTrackerCapacity",
+            "static_cast<LONG>(fenceId-submitted)>0",
+            "m_NativeFences[tail].State=VioGpuNativeFenceRetired;",
+            "InterlockedExchange(&m_NativeSubmittedFence,static_cast<LONG>(fenceId));",
+            "m_NativeFences[m_NativeFenceHead].State==VioGpuNativeFenceRetired",
+            "InterlockedExchange(&m_NativeCompletedFence,static_cast<LONG>(completedFence));",
+            "KeReleaseSpinLock(&m_NativeFenceLock,oldIrql);",
+            "NotifyNativeCompletedFence(completedFence,nodeOrdinal,engineOrdinal,TRUE)",
         ),
-        "immediate software completion must record its scheduler fence before retiring it",
+        "immediate software completion must record and retire its scheduler fence under one tracker lock",
     )
+    if "NotifyNativeSubmissionFault(" in software_submission or "NotifyNativeSoftwareCompletion(" in software_submission:
+        fail("immediate system completion must never translate a tracker race into DMA_FAULTED")
+    require_order(
+        system_submission,
+        (
+            "RetireNativeSubmissionFence(fenceId,&completedFence)",
+            "NotifyNativeCompletedFence(completedFence,nodeOrdinal,engineOrdinal,TRUE)",
+        ),
+        "queued system completion must retire its pre-recorded fence without using the generic fault path",
+    )
+    if "NotifyNativeSubmissionFault(" in system_submission or "NotifyNativeSubmissionFault(" in completed_fence:
+        fail("system-command fence retirement and completion publication must never emit DMA_FAULTED")
+    for fragment in (
+        "notify.InterruptType=DXGK_INTERRUPT_DMA_COMPLETED;",
+        "notify.DmaCompleted.SubmissionFenceId=completedFence;",
+        "NotifyNativeSchedulerInterrupt(&notify,queueDpc)",
+        "RequestHardwareResetAtAnyIrql();",
+    ):
+        if fragment not in completed_fence:
+            fail(f"system-safe completion publication must retain: {fragment}")
     for fragment in (
         "InterlockedExchange(&work->Retired,1);",
         "RemoveEntryList(&work->Link);",
@@ -6982,21 +7022,58 @@ def check_wddm_submission_lifetime() -> None:
         fail("SubmitCommand must expose one empty paging completion path")
     empty_paging = empty_paging_blocks[0]
     for fragment in (
+        "pagingSubmission=submitCommand!=NULL&&submitCommand->Flags.Paging!=0",
         "submitCommand->Flags.Value==1",
-        "submitCommand->hContext==NULL",
         "submitCommand->DmaBufferSubmissionStartOffset==submitCommand->DmaBufferSubmissionEndOffset",
         "submitCommand->DmaBufferPrivateDataSubmissionStartOffset==submitCommand->DmaBufferPrivateDataSubmissionEndOffset",
         "adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,submitCommand->NodeOrdinal,submitCommand->EngineOrdinal)",
-        "adapter->NotifyNativeSubmissionFault(",
-        "adapter->ReleaseNativeSubmissionOperation();",
+        "adapter->RequestHardwareResetAtAnyIrql();",
         "returnSTATUS_SUCCESS;",
     ):
         if fragment not in submit and fragment not in empty_paging:
-            fail(f"empty paging SubmitCommand must publish a tracked completion or accepted-fence fault: {fragment}")
+            fail(f"empty paging SubmitCommand must publish a system-safe tracked completion: {fragment}")
+    validation_failure_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(submit_body)
+        if "adapter == NULL || submitCommand == NULL" in condition
+    ]
+    if len(validation_failure_blocks) != 1:
+        fail("SubmitCommand must expose one top-level argument validation block")
+    validation_failure = validation_failure_blocks[0]
+    for fragment in (
+        "if(adapter!=NULL&&submitCommand!=NULL&&KeGetCurrentIrql()==DISPATCH_LEVEL&&pagingSubmission)",
+        "adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,submitCommand->NodeOrdinal,submitCommand->EngineOrdinal);",
+        "adapter->RequestHardwareResetAtAnyIrql();",
+        "returnSTATUS_SUCCESS;",
+        "returnSTATUS_INVALID_PARAMETER;",
+    ):
+        if fragment not in validation_failure:
+            fail(f"malformed paging validation must fail closed without failing a system command: {fragment}")
+    if "NotifyNativeSubmissionFault(" in empty_paging or "ReleaseNativeSubmissionOperation" in empty_paging:
+        fail("empty paging completion must run before the hardware operation gate and never fault the system command")
     empty_branch = submit.find("if(emptyPagingSubmission)")
+    operation_gate = submit.find("if(!adapter->AcquireNativeSubmissionOperation())")
     private_dereference = submit.find("VIOGPU_WDDM_KMD_DMA_PRIVATE*privateData=")
-    if min(empty_branch, private_dereference) < 0 or empty_branch >= private_dereference:
-        fail("empty paging SubmitCommand must complete before dereferencing an empty private-data range")
+    if min(empty_branch, operation_gate, private_dereference) < 0 or not empty_branch < operation_gate < private_dereference:
+        fail("empty paging SubmitCommand must complete before both the hardware gate and private-data dereference")
+    operation_gate_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(submit_body)
+        if canonical_code(condition) == "!adapter->AcquireNativeSubmissionOperation()"
+    ]
+    if len(operation_gate_blocks) != 1:
+        fail("SubmitCommand must expose one hardware operation gate")
+    operation_failure = operation_gate_blocks[0]
+    for fragment in (
+        "RetireUnsubmittedDmaOwner(adapter,submitCommand);",
+        "if(pagingSubmission)",
+        "adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,submitCommand->NodeOrdinal,submitCommand->EngineOrdinal)",
+        "adapter->RequestHardwareResetAtAnyIrql();",
+        "else{adapter->NotifyNativeSubmissionFault(",
+        "returnSTATUS_SUCCESS;",
+    ):
+        if fragment not in operation_failure:
+            fail(f"operation-gate failure must separate system and client command recovery: {fragment}")
     require_order(
         submit,
         (
@@ -7017,14 +7094,20 @@ def check_wddm_submission_lifetime() -> None:
     paging_worker = canonical_code(function_body("NativePagingBatchWorker", WDDM_DDI_CODE))
     for fragment in (
         "privateData->Kind==VioGpuWddmDmaKindPaging",
+        "reinterpret_cast<VIOGPU_WDDM_DEVICE*>(submitCommand->hDevice)",
+        "deviceReferenced=ReferenceDevice(device)",
+        "deviceReferenced&&device->Adapter==adapter",
         "ResolvePagingBatch(",
         "packet->ContextId!=0&&!adapter->IsNativeContextGenerationCurrent(packet->ContextGeneration,packet->ResetGeneration)",
         "adapter->QueueNativePassiveWork(&firstPrivate->Work,submitCommand->SubmissionFenceId)",
-        "adapter->NotifyNativeSoftwareCompletion(",
-        "adapter->NotifyNativeSubmissionFault(",
+        "adapter->CompleteNativeSoftwareSubmission(",
+        "adapter->CompleteNativeSystemSubmission(",
+        "adapter->RequestHardwareResetAtAnyIrql();",
     ):
         if fragment not in submit and fragment not in paging_worker:
-            fail(f"SubmitCommand must retain paging/render completion and fault semantics: {fragment}")
+            fail(f"SubmitCommand must retain paging completion and reset semantics: {fragment}")
+    if "NotifyNativeSubmissionFault(" in paging_worker:
+        fail("paging worker must complete the system fence and request reset without emitting DMA_FAULTED")
     if not submit.endswith("returnSTATUS_SUCCESS;") or "returnSTATUS_NOT_SUPPORTED;" in submit:
         fail("SubmitCommand must convert post-validation scheduler failures into fault notification plus success")
     submit_queue = submit.find("adapter->QueueNativePassiveWork(&submission->Work,submitCommand->SubmissionFenceId)")

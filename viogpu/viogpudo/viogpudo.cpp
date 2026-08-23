@@ -829,25 +829,18 @@ BOOLEAN VioGpuDod::NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_IN
     return TRUE;
 }
 
-void VioGpuDod::NotifyNativeSubmissionCompletion(_In_ UINT fenceId,
-                                                 _In_ UINT nodeOrdinal,
-                                                 _In_ UINT engineOrdinal,
-                                                 _In_ BOOLEAN queueDpc)
+BOOLEAN VioGpuDod::NotifyNativeCompletedFence(_In_ UINT completedFence,
+                                              _In_ UINT nodeOrdinal,
+                                              _In_ UINT engineOrdinal,
+                                              _In_ BOOLEAN queueDpc)
 {
-    UINT completedFence = 0;
-    if (fenceId == 0 || nodeOrdinal != 0 || engineOrdinal != 0 ||
-        !RetireNativeSubmissionFence(fenceId, &completedFence))
+    if (nodeOrdinal != 0 || engineOrdinal != 0)
     {
-        NotifyNativeSubmissionFault(fenceId,
-                                    STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE,
-                                    nodeOrdinal,
-                                    engineOrdinal,
-                                    queueDpc);
-        return;
+        return FALSE;
     }
     if (completedFence == 0)
     {
-        return;
+        return TRUE;
     }
 
     DXGKARGCB_NOTIFY_INTERRUPT_DATA notify = {};
@@ -867,7 +860,28 @@ void VioGpuDod::NotifyNativeSubmissionCompletion(_In_ UINT fenceId,
             }
             ExReleaseRundownProtection(&m_HardwareOperations);
         }
+        return FALSE;
     }
+    return TRUE;
+}
+
+void VioGpuDod::NotifyNativeSubmissionCompletion(_In_ UINT fenceId,
+                                                 _In_ UINT nodeOrdinal,
+                                                 _In_ UINT engineOrdinal,
+                                                 _In_ BOOLEAN queueDpc)
+{
+    UINT completedFence = 0;
+    if (fenceId == 0 || nodeOrdinal != 0 || engineOrdinal != 0 ||
+        !RetireNativeSubmissionFence(fenceId, &completedFence))
+    {
+        NotifyNativeSubmissionFault(fenceId,
+                                    STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE,
+                                    nodeOrdinal,
+                                    engineOrdinal,
+                                    queueDpc);
+        return;
+    }
+    NotifyNativeCompletedFence(completedFence, nodeOrdinal, engineOrdinal, queueDpc);
 }
 
 void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fenceId,
@@ -915,13 +929,61 @@ void VioGpuDod::NotifyNativeSoftwareCompletion(_In_ UINT fenceId, _In_ UINT node
 
 BOOLEAN VioGpuDod::CompleteNativeSoftwareSubmission(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal)
 {
-    if (nodeOrdinal != 0 || engineOrdinal != 0 || !RecordNativeSubmissionFence(fenceId))
+    if (fenceId == 0 || nodeOrdinal != 0 || engineOrdinal != 0)
     {
         return FALSE;
     }
 
-    NotifyNativeSoftwareCompletion(fenceId, nodeOrdinal, engineOrdinal);
-    return TRUE;
+    UINT completedFence = 0;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
+    UINT submitted = static_cast<UINT>(m_NativeSubmittedFence);
+    BOOLEAN valid = m_NativeFenceCount < VioGpuNativeFenceTrackerCapacity &&
+                    (submitted == 0 || static_cast<LONG>(fenceId - submitted) > 0);
+    for (UINT offset = 0; valid && offset < m_NativeFenceCount; ++offset)
+    {
+        UINT index = (m_NativeFenceHead + offset) % VioGpuNativeFenceTrackerCapacity;
+        if (m_NativeFences[index].State != VioGpuNativeFenceFree && m_NativeFences[index].FenceId == fenceId)
+        {
+            valid = FALSE;
+        }
+    }
+    if (valid)
+    {
+        UINT tail = (m_NativeFenceHead + m_NativeFenceCount) % VioGpuNativeFenceTrackerCapacity;
+        NT_ASSERT(m_NativeFences[tail].State == VioGpuNativeFenceFree);
+        m_NativeFences[tail].FenceId = fenceId;
+        m_NativeFences[tail].State = VioGpuNativeFenceRetired;
+        ++m_NativeFenceCount;
+        InterlockedExchange(&m_NativeSubmittedFence, static_cast<LONG>(fenceId));
+        while (m_NativeFenceCount != 0 && m_NativeFences[m_NativeFenceHead].State == VioGpuNativeFenceRetired)
+        {
+            VIOGPU_NATIVE_FENCE_ENTRY *head = &m_NativeFences[m_NativeFenceHead];
+            completedFence = head->FenceId;
+            head->FenceId = 0;
+            head->State = VioGpuNativeFenceFree;
+            m_NativeFenceHead = (m_NativeFenceHead + 1) % VioGpuNativeFenceTrackerCapacity;
+            --m_NativeFenceCount;
+        }
+        if (completedFence != 0)
+        {
+            InterlockedExchange(&m_NativeCompletedFence, static_cast<LONG>(completedFence));
+        }
+    }
+    KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
+
+    return valid && NotifyNativeCompletedFence(completedFence, nodeOrdinal, engineOrdinal, TRUE);
+}
+
+BOOLEAN VioGpuDod::CompleteNativeSystemSubmission(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal)
+{
+    UINT completedFence = 0;
+    if (fenceId == 0 || nodeOrdinal != 0 || engineOrdinal != 0 ||
+        !RetireNativeSubmissionFence(fenceId, &completedFence))
+    {
+        return FALSE;
+    }
+    return NotifyNativeCompletedFence(completedFence, nodeOrdinal, engineOrdinal, TRUE);
 }
 
 BOOLEAN VioGpuDod::QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work, _In_ UINT fenceId)
