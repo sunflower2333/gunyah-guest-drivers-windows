@@ -43,6 +43,9 @@ static UINT g_InstanceId = 0;
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
+
+static const ULONG VIOGPU_WIN7_DRIVERCAPS_SIZE = FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps);
+static_assert(VIOGPU_WIN7_DRIVERCAPS_SIZE == 528, "unexpected Win7 DXGK_DRIVERCAPS prefix size");
 #endif
 
 #define VIOGPU_MAX_CAPSETS               64U
@@ -2001,6 +2004,42 @@ NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVI
     return STATUS_MONITOR_NO_MORE_DESCRIPTOR_DATA;
 }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+static NTSTATUS VioGpuQueryWin7DriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO *queryAdapterInfo,
+                                          _In_ BOOLEAN pointerEnabled)
+{
+    if (queryAdapterInfo->OutputDataSize < VIOGPU_WIN7_DRIVERCAPS_SIZE)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR,
+                 ("QueryAdapterInfo output size (0x%u) is smaller than the Win7 DXGK_DRIVERCAPS prefix (0x%u)\n",
+                  queryAdapterInfo->OutputDataSize,
+                  VIOGPU_WIN7_DRIVERCAPS_SIZE));
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    DXGK_DRIVERCAPS *driverCaps = static_cast<DXGK_DRIVERCAPS *>(queryAdapterInfo->pOutputData);
+    RtlZeroMemory(driverCaps, VIOGPU_WIN7_DRIVERCAPS_SIZE);
+    driverCaps->WDDMVersion = DXGKDDI_WDDMv1;
+    driverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
+
+    if (pointerEnabled)
+    {
+        driverCaps->MaxPointerWidth = POINTER_SIZE;
+        driverCaps->MaxPointerHeight = POINTER_SIZE;
+        driverCaps->PointerCaps.Color = 1;
+        driverCaps->PointerCaps.MaskedColor = 1;
+    }
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu Win7 DriverCaps: size=%u wddm=0x%04X pointerCaps=0x%08X\n",
+               VIOGPU_WIN7_DRIVERCAPS_SIZE,
+               driverCaps->WDDMVersion,
+               driverCaps->PointerCaps.Value);
+    return STATUS_SUCCESS;
+}
+#endif
+
 NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQueryAdapterInfo)
 {
     PAGED_CODE();
@@ -2073,6 +2112,9 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
         case DXGKQAITYPE_DRIVERCAPS:
             {
+#if defined(VIOGPU_NATIVE_CONTEXT)
+                status = VioGpuQueryWin7DriverCaps(pQueryAdapterInfo, IsPointerEnabled());
+#else
                 if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_DRIVERCAPS))
                 {
                     status = STATUS_BUFFER_TOO_SMALL;
@@ -2086,11 +2128,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
                 DXGK_DRIVERCAPS *pDriverCaps = (DXGK_DRIVERCAPS *)pQueryAdapterInfo->pOutputData;
                 RtlZeroMemory(pDriverCaps, pQueryAdapterInfo->OutputDataSize);
-#if defined(VIOGPU_NATIVE_CONTEXT)
-                pDriverCaps->WDDMVersion = DXGKDDI_WDDMv1;
-#else
                 pDriverCaps->WDDMVersion = DXGKDDI_WDDMv1_2;
-#endif
                 pDriverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
 
                 if (IsPointerEnabled())
@@ -2101,11 +2139,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                     pDriverCaps->PointerCaps.MaskedColor = 1;
                 }
                 pDriverCaps->SupportNonVGA = TRUE;
-#if defined(VIOGPU_NATIVE_CONTEXT)
-                pDriverCaps->SupportSmoothRotation = FALSE;
-#else
                 pDriverCaps->SupportSmoothRotation = TRUE;
-#endif
                 DbgPrintEx(DPFLTR_DEFAULT_ID,
                            DPFLTR_INFO_LEVEL,
                            "viogpu DriverCaps: wddm=0x%04X vga=%u nonVga=%u smoothRotation=%u pointerCaps=0x%08X\n",
@@ -2116,6 +2150,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                            pDriverCaps->PointerCaps.Value);
                 DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s 1\n", __FUNCTION__));
                 status = STATUS_SUCCESS;
+#endif
                 break;
             }
 
@@ -2132,7 +2167,11 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                "viogpu QueryAdapterInfo: type=%u output=%u driverCaps=%u status=0x%08X\n",
                pQueryAdapterInfo->Type,
                pQueryAdapterInfo->OutputDataSize,
+#if defined(VIOGPU_NATIVE_CONTEXT)
+               VIOGPU_WIN7_DRIVERCAPS_SIZE,
+#else
                (ULONG)sizeof(DXGK_DRIVERCAPS),
+#endif
                status);
     return status;
 }

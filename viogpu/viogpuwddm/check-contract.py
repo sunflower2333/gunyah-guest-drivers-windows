@@ -1213,6 +1213,81 @@ def check_native_query_adapter_info_diagnostics() -> None:
             fail(f"native diagnostic reader must optionally report {value_name}")
 
 
+def check_native_win7_driver_caps_contract() -> None:
+    viogpu = canonical_code(VIOGPU_CODE)
+    for fragment in (
+        "staticconstULONGVIOGPU_WIN7_DRIVERCAPS_SIZE=FIELD_OFFSET(DXGK_DRIVERCAPS,PreemptionCaps);",
+        "static_assert(VIOGPU_WIN7_DRIVERCAPS_SIZE==528,",
+    ):
+        if viogpu.count(fragment) != 1:
+            fail(f"Native Context must pin the 528-byte Win7 DXGK_DRIVERCAPS prefix: {fragment}")
+
+    helper = canonical_code(function_body("VioGpuQueryWin7DriverCaps", VIOGPU_CODE))
+    for fragment in (
+        "queryAdapterInfo->OutputDataSize<VIOGPU_WIN7_DRIVERCAPS_SIZE",
+        "returnSTATUS_BUFFER_TOO_SMALL;",
+        "RtlZeroMemory(driverCaps,VIOGPU_WIN7_DRIVERCAPS_SIZE);",
+        "driverCaps->WDDMVersion=DXGKDDI_WDDMv1;",
+        "driverCaps->HighestAcceptableAddress.QuadPart=(ULONG64)-1;",
+        "driverCaps->MaxPointerWidth=POINTER_SIZE;",
+        "driverCaps->MaxPointerHeight=POINTER_SIZE;",
+        "driverCaps->PointerCaps.Color=1;",
+        "driverCaps->PointerCaps.MaskedColor=1;",
+    ):
+        if helper.count(fragment) != 1:
+            fail(f"Native Context Win7 DriverCaps output must retain its bounded legacy field contract: {fragment}")
+    if helper.count("RtlZeroMemory(") != 1 or "sizeof(DXGK_DRIVERCAPS)" in helper:
+        fail("Native Context must zero exactly the Win7 DriverCaps prefix, never the modern WDK structure")
+
+    helper_fields = set(re.findall(r"\bdriverCaps->([A-Za-z_][A-Za-z0-9_]*)", helper))
+    expected_helper_fields = {
+        "WDDMVersion",
+        "HighestAcceptableAddress",
+        "MaxPointerWidth",
+        "MaxPointerHeight",
+        "PointerCaps",
+    }
+    if helper_fields != expected_helper_fields:
+        fail(f"Native Context Win7 DriverCaps helper writes or reads fields outside its legacy prefix: {helper_fields}")
+
+    query_body = function_body("VioGpuDod::QueryAdapterInfo", VIOGPU_CODE)
+    driver_caps_case = re.search(
+        r"case\s+DXGKQAITYPE_DRIVERCAPS\s*:\s*\{\s*"
+        r"#if\s+defined\(VIOGPU_NATIVE_CONTEXT\)\s*"
+        r"status\s*=\s*VioGpuQueryWin7DriverCaps\(pQueryAdapterInfo,\s*IsPointerEnabled\(\)\);\s*"
+        r"#else(?P<display>.*?)#endif\s*break\s*;\s*\}",
+        query_body,
+        re.DOTALL,
+    )
+    if driver_caps_case is None:
+        fail("DriverCaps dispatch must isolate the Win7 Native Context output from the display-only structure")
+    display_caps = canonical_code(driver_caps_case.group("display"))
+    for fragment in (
+        "pQueryAdapterInfo->OutputDataSize<sizeof(DXGK_DRIVERCAPS)",
+        "RtlZeroMemory(pDriverCaps,pQueryAdapterInfo->OutputDataSize);",
+        "pDriverCaps->WDDMVersion=DXGKDDI_WDDMv1_2;",
+        "pDriverCaps->SupportNonVGA=TRUE;",
+        "pDriverCaps->SupportSmoothRotation=TRUE;",
+    ):
+        if display_caps.count(fragment) != 1:
+            fail(f"display-only DriverCaps behavior must remain unchanged: {fragment}")
+
+    wddm_query = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
+    for fragment in (
+        "driverCaps->WDDMVersion=DXGKDDI_WDDMv1;",
+        "driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes=1;",
+        "driverCaps->SchedulingCaps.MultiEngineAware=1;",
+        "driverCaps->SchedulingCaps.PreemptionAware=0;",
+        "driverCaps->SchedulingCaps.CancelCommandAware=0;",
+    ):
+        if wddm_query.count(fragment) != 1:
+            fail(f"Native Context DriverCaps must retain its Win7 scheduler and topology output: {fragment}")
+    wrapper_fields = set(re.findall(r"\bdriverCaps->([A-Za-z_][A-Za-z0-9_]*)", wddm_query))
+    expected_wrapper_fields = {"WDDMVersion", "GpuEngineTopology", "SchedulingCaps"}
+    if wrapper_fields != expected_wrapper_fields:
+        fail(f"Native Context DriverCaps wrapper accesses a Win8-only field: {wrapper_fields}")
+
+
 def check_registration_helper(sources: dict[Path, str]) -> None:
     helper_definitions = list(
         re.finditer(
@@ -6644,8 +6719,8 @@ def check_wddm_submission_lifetime() -> None:
         fail("the Native Context target must report the legacy WDDM profile until WDDM 1.2 caps exist")
     if driver_caps.count("driverCaps->SchedulingCaps.PreemptionAware=0;") != 1:
         fail("the legacy Native Context profile must not advertise Windows 8 hardware preemption")
-    if driver_caps.count("driverCaps->SupportPerEngineTDR=0;") != 1:
-        fail("the legacy Native Context profile must not advertise per-engine TDR without a Host engine reset primitive")
+    if "driverCaps->SupportPerEngineTDR" in driver_caps or "driverCaps->SupportSmoothRotation" in driver_caps:
+        fail("the Win7 DriverCaps response must not access fields beyond the legacy prefix")
 
     reset_timeout = canonical_code(function_body("VioGpuDod::ResetFromTimeout", VIOGPU_CODE))
     require_order(
@@ -8022,6 +8097,7 @@ def main() -> None:
     check_retired_pool_absence()
     check_native_start_diagnostics()
     check_native_query_adapter_info_diagnostics()
+    check_native_win7_driver_caps_contract()
     check_registration_helper(sources)
     check_callback_table()
     check_legacy_runtime_callback_contract()

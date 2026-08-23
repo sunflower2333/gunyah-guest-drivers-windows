@@ -9,10 +9,12 @@ mandatory WDDM 1.2 preemption, per-engine reset/TDR, direct-flip, and related
 contracts remain disabled. The source contains the registration entry point, a
 dedicated display-class INX, and an ARM64-only fail-closed D3D UMD shim.
 The last committed activation batch passed the ARM64 compile, link, MAP, INF,
-signing, and package gates in the dedicated and product workflows. The current
-unprotected-VM VidMm backing rewrite has local source-contract evidence only and
-still requires a new ARM64 run. Windows/KMT, Host/GPU runtime, device execution,
-and uninstall rollback remain unverified:
+signing, and package gates in the dedicated and product workflows. Signed
+package `100.6.101.58004` was installed in the unprotected Windows VM and
+reached `StartDevice` success, but the adapter remains Code 43. The current
+Win7 DriverCaps prefix correction has local source-contract evidence only and
+still requires a new ARM64 run. KMT/Host/GPU execution, Present, TDR, and
+uninstall rollback remain unverified:
 
 - `DriverEntry` calls the single `DxgkInitialize` registration helper.
 - `viogpuwddm.inx` binds ARM64 Windows 11 guests to
@@ -30,16 +32,17 @@ and uninstall rollback remain unverified:
   color conversion are explicitly not advertised.
 
 The current Windows runtime evidence is narrower than those source contracts.
-`StartDevice` reached the persistent `0x0FFF/STATUS_SUCCESS` marker, but the
-adapter remains Code 43. Registering one or four `kernel32.dll` names as
-`UserModeDriverName` changed the AddAdapter status from
-`STATUS_OBJECT_NAME_NOT_FOUND` to `STATUS_REVISION_MISMATCH`; it did not
-activate the adapter. DxgKrnl ETW then recorded one unsupported
-`QueryAdapterInfo` result, an invalid NTSTATUS report, and "Miniport did not
-provide required DDIs" before `ADAPTER_RENDER` creation failed. The current
-source therefore records the failed query type/status/sizes, registers the
-matching legacy callback table, and installs a real-shaped D3D shim instead of
-using a system DLL. None of this batch has been compiled or runtime-validated.
+Signed package `100.6.101.58004` has three valid DriverStore
+`UserModeDriverName` paths and reaches the persistent
+`0x0FFF/STATUS_SUCCESS` marker, but the adapter remains Code 43. Its first
+persisted failure is `DXGKQAITYPE_DRIVERCAPS`: the Win7 runtime supplies a
+528-byte output while the shared DOD implementation required the modern WDK
+`sizeof(DXGK_DRIVERCAPS)` and returned `STATUS_BUFFER_TOO_SMALL`. The current
+source defines the Win7 prefix as
+`FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps)`, asserts that it is 528 bytes,
+and zeroes and fills only that prefix for Native Context. The display-only
+target retains its existing full-structure behavior. This correction has not
+yet been compiled or runtime-validated.
 
 Do not install an artifact produced from the activation work until guarded VM
 validation has passed. The current CI artifacts prove source/build/package
@@ -210,9 +213,9 @@ are not exposed through the Win7 registration table. The KMDOD-only
 
 `DxgkDdiCollectDbgInfo` remains registered in the legacy table and emits one
 bounded 32-byte snapshot using atomic reset and fence queries. Adapter-wide
-timeout recovery remains available. `SupportPerEngineTDR` and
-`CancelCommandAware` are both zero because Native Context has neither a Host
-engine-reset primitive nor a registered legacy cancellation callback.
+timeout recovery remains available. `CancelCommandAware` is zero because the
+legacy table has no cancellation callback. `SupportPerEngineTDR` is beyond the
+Win7 DriverCaps prefix and is not accessed or advertised.
 
 Standard paging now covers primary, GDI shadow, and staging allocations. It
 uses context-zero paging records, copies or fills the VidMm-backed aperture

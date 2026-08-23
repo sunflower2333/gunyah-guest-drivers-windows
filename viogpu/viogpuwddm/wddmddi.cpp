@@ -3265,8 +3265,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
             driverCaps->SchedulingCaps.MultiEngineAware = 1;
             driverCaps->SchedulingCaps.PreemptionAware = 0;
             driverCaps->SchedulingCaps.CancelCommandAware = 0;
-            driverCaps->SupportPerEngineTDR = 0;
-            driverCaps->SupportSmoothRotation = FALSE;
         }
     }
 
