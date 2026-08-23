@@ -44,7 +44,7 @@
 static UINT g_InstanceId = 0;
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
-extern "C" IMAGE_DOS_HEADER __ImageBase;
+extern "C" UCHAR __ImageBase;
 
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 
