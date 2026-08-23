@@ -913,6 +913,17 @@ void VioGpuDod::NotifyNativeSoftwareCompletion(_In_ UINT fenceId, _In_ UINT node
     NotifyNativeSubmissionCompletion(fenceId, nodeOrdinal, engineOrdinal, TRUE);
 }
 
+BOOLEAN VioGpuDod::CompleteNativeSoftwareSubmission(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal)
+{
+    if (nodeOrdinal != 0 || engineOrdinal != 0 || !RecordNativeSubmissionFence(fenceId))
+    {
+        return FALSE;
+    }
+
+    NotifyNativeSoftwareCompletion(fenceId, nodeOrdinal, engineOrdinal);
+    return TRUE;
+}
+
 BOOLEAN VioGpuDod::QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work, _In_ UINT fenceId)
 {
     if (work == NULL || fenceId == 0 || work->Routine == NULL || work->CancelRoutine == NULL || work->Context == NULL ||

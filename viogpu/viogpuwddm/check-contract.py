@@ -3731,13 +3731,9 @@ def check_wddm_present_contract() -> None:
 
     patch_body = function_body("VioGpuWddmPatch", WDDM_DDI_CODE)
     patch = canonical_code(patch_body)
-    notify_patch_fault = canonical_code(function_body("NotifyPatchSubmissionFault", WDDM_DDI_CODE))
-    for fragment in (
-        "patchArguments->SubmissionFenceId<=MAXUINT",
-        "adapter->NotifyNativeSubmissionFault(fenceId,status,0,engineOrdinal,TRUE);",
-    ):
-        if fragment not in notify_patch_fault:
-            fail(f"Patch failure conversion must reset and fault the scheduler: {fragment}")
+    if "NotifyPatchSubmissionFault" in WDDM_DDI_CODE or "NotifyNativeSubmission" in patch or \
+       "NotifyNativeSoftwareCompletion" in patch or "NotifyNativeSchedulerInterrupt" in patch:
+        fail("Patch must not notify the scheduler before SubmitCommand accepts the submission fence")
     non_success_patch_returns = [
         match.group(0)
         for match in re.finditer(r"return\s+[^;]+;", patch_body)
@@ -3745,8 +3741,6 @@ def check_wddm_present_contract() -> None:
     ]
     if non_success_patch_returns:
         fail("Patch must never return an error because Dxgkrnl converts every Patch failure into bugcheck 0x119/3")
-    if patch.count("NotifyPatchSubmissionFault(adapter,patchArguments,") != 6:
-        fail("Patch must convert every validation, operation, Present, Render, and paging failure into a scheduler fault")
     require_order(
         patch,
         (
@@ -3769,6 +3763,9 @@ def check_wddm_present_contract() -> None:
     )
     if patch.count("RetirePatchDmaOwner(adapter,patchArguments);") != 4:
         fail("Patch must retire every recoverable Built DMA owner on validation or operation-acquisition failure")
+    retire_patch_owner = canonical_code(function_body("RetirePatchDmaOwner", WDDM_DDI_CODE))
+    if "HANDLEruntimeContext=patchArguments->Flags.Paging?NULL:patchArguments->hContext;" not in retire_patch_owner:
+        fail("Patch retirement must not reinterpret a paging hDevice as a render context")
 
     retire_owner = canonical_code(function_body("RetireDmaOwner", WDDM_DDI_CODE))
     for fragment in (
@@ -5493,6 +5490,7 @@ def check_wddm_paging_transaction_gate() -> None:
         if fragment not in passive_header:
             fail(f"passive work ownership ABI must expose {fragment}")
     passive_queue = canonical_code(function_body("QueueNativePassiveWork", VIOGPU_CODE))
+    software_submission = canonical_code(function_body("CompleteNativeSoftwareSubmission", VIOGPU_CODE))
     passive_cancel = canonical_code(function_body("CancelNativePassiveWork", VIOGPU_CODE))
     passive_worker = canonical_code(function_body("RunNativePassiveWorker", VIOGPU_CODE))
     for fragment in (
@@ -5525,8 +5523,18 @@ def check_wddm_paging_transaction_gate() -> None:
         "passive FIFO publication must atomically reserve rundown and fence ownership before linking work",
     )
     if passive_queue.count("RecordNativeSubmissionFence(fenceId)") != 1 or \
+       software_submission.count("RecordNativeSubmissionFence(fenceId)") != 1 or \
        "RecordNativeSubmissionFence(" in WDDM_DDI_CODE:
-        fail("node fences must be recorded exactly once by the common passive FIFO publication point")
+        fail("passive work and immediate software completion must each record the fence through the bounded tracker")
+    require_order(
+        software_submission,
+        (
+            "nodeOrdinal!=0||engineOrdinal!=0||!RecordNativeSubmissionFence(fenceId)",
+            "NotifyNativeSoftwareCompletion(fenceId,nodeOrdinal,engineOrdinal);",
+            "returnTRUE;",
+        ),
+        "immediate software completion must record its scheduler fence before retiring it",
+    )
     for fragment in (
         "InterlockedExchange(&work->Retired,1);",
         "RemoveEntryList(&work->Link);",
@@ -6889,23 +6897,46 @@ def check_wddm_submission_lifetime() -> None:
         fail("Patch must expose one exact paging no-op branch")
     paging_patch = paging_patch_blocks[0]
     for fragment in (
-        "patchArguments->hContext==NULL",
+        "reinterpret_cast<VIOGPU_WDDM_DEVICE*>(patchArguments->hDevice)",
+        "ReferenceDevice(device)",
+        "deviceReferenced&&device->Adapter==adapter",
+        "patchArguments->DmaBufferSubmissionStartOffset==patchArguments->DmaBufferSubmissionEndOffset",
+        "patchArguments->DmaBufferPrivateDataSubmissionStartOffset==patchArguments->DmaBufferPrivateDataSubmissionEndOffset",
+        "emptySubmission=emptyDmaRange&&emptyPrivateRange",
         "patchArguments->pAllocationList==NULL",
         "patchArguments->AllocationListSize==0",
         "patchArguments->pPatchLocationList==NULL",
         "patchArguments->PatchLocationListSize==0",
         "patchArguments->PatchLocationListSubmissionStart==0",
         "patchArguments->PatchLocationListSubmissionLength==0",
+        "emptySubmission||ResolvePagingBatch(",
         "ResolvePagingBatch(",
         "VioGpuWddmPagingTransactionBuilt",
+        "if(deviceReferenced)",
+        "DereferenceDevice(device);",
         "if(!exact)",
-        "NotifyPatchSubmissionFault(adapter,patchArguments,STATUS_INVALID_PARAMETER);",
+        "RetirePatchDmaOwner(adapter,patchArguments);",
         "returnSTATUS_SUCCESS;",
     ):
         if fragment not in paging_patch:
             fail(f"paging Patch must validate one exact no-op submission range: {fragment}")
-    if "AcquireNativeSubmissionOperation" in paging_patch or "RecordNativeSubmissionFence" in paging_patch:
-        fail("paging Patch must remain a validation-only no-op")
+    if "AcquireNativeSubmissionOperation" in paging_patch or "RecordNativeSubmissionFence" in paging_patch or \
+       "NotifyNativeSubmission" in paging_patch:
+        fail("paging Patch must remain a validation-and-retirement-only no-op")
+    require_order(
+        paging_patch,
+        (
+            "deviceReferenced=ReferenceDevice(device);",
+            "deviceValid=deviceReferenced&&device->Adapter==adapter;",
+            "BOOLEANexact=deviceValid",
+            "emptySubmission||ResolvePagingBatch(",
+            "if(deviceReferenced)",
+            "DereferenceDevice(device);",
+            "if(!exact)",
+            "RetirePatchDmaOwner(adapter,patchArguments);",
+        ),
+        "paging Patch must hold the device reference through batch validation and retire invalid KMD ownership afterward",
+    )
     require_order(
         patch,
         (
@@ -6929,7 +6960,6 @@ def check_wddm_submission_lifetime() -> None:
         fail("Patch failure must quarantine the prepared submission")
     if not patch.endswith(
         "DereferenceRenderSubmission(submission);}delete[]patchedIovas;delete[]patchedResourceIds;"
-        "if(!NT_SUCCESS(status)){NotifyPatchSubmissionFault(adapter,patchArguments,status);}"
         "adapter->ReleaseNativeSubmissionOperation();returnSTATUS_SUCCESS;"
     ):
         fail("Patch must release its resolver reference after success or quarantine failure")
@@ -6943,6 +6973,30 @@ def check_wddm_submission_lifetime() -> None:
     for forbidden in ("KeWaitForSingleObject", "PAGED_CODE", "new(", "ExAllocatePool"):
         if forbidden in submit_body:
             fail(f"SubmitCommand must not wait or allocate pageable state at DISPATCH_LEVEL: {forbidden}")
+    empty_paging_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(submit_body)
+        if canonical_code(condition) == "emptyPagingSubmission"
+    ]
+    if len(empty_paging_blocks) != 1:
+        fail("SubmitCommand must expose one empty paging completion path")
+    empty_paging = empty_paging_blocks[0]
+    for fragment in (
+        "submitCommand->Flags.Value==1",
+        "submitCommand->hContext==NULL",
+        "submitCommand->DmaBufferSubmissionStartOffset==submitCommand->DmaBufferSubmissionEndOffset",
+        "submitCommand->DmaBufferPrivateDataSubmissionStartOffset==submitCommand->DmaBufferPrivateDataSubmissionEndOffset",
+        "adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,submitCommand->NodeOrdinal,submitCommand->EngineOrdinal)",
+        "adapter->NotifyNativeSubmissionFault(",
+        "adapter->ReleaseNativeSubmissionOperation();",
+        "returnSTATUS_SUCCESS;",
+    ):
+        if fragment not in submit and fragment not in empty_paging:
+            fail(f"empty paging SubmitCommand must publish a tracked completion or accepted-fence fault: {fragment}")
+    empty_branch = submit.find("if(emptyPagingSubmission)")
+    private_dereference = submit.find("VIOGPU_WDDM_KMD_DMA_PRIVATE*privateData=")
+    if min(empty_branch, private_dereference) < 0 or empty_branch >= private_dereference:
+        fail("empty paging SubmitCommand must complete before dereferencing an empty private-data range")
     require_order(
         submit,
         (

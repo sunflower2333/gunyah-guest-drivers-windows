@@ -6279,6 +6279,7 @@ VOID RetireDmaOwner(_In_ VioGpuDod *adapter,
 
 VOID RetirePatchDmaOwner(_In_ VioGpuDod *adapter, _In_ const DXGKARG_PATCH *patchArguments)
 {
+    HANDLE runtimeContext = patchArguments->Flags.Paging ? NULL : patchArguments->hContext;
     RetireDmaOwner(adapter,
                    patchArguments->pDmaBuffer,
                    patchArguments->DmaBufferSize,
@@ -6288,23 +6289,8 @@ VOID RetirePatchDmaOwner(_In_ VioGpuDod *adapter, _In_ const DXGKARG_PATCH *patc
                    patchArguments->DmaBufferPrivateDataSize,
                    patchArguments->DmaBufferPrivateDataSubmissionStartOffset,
                    patchArguments->DmaBufferPrivateDataSubmissionEndOffset,
-                   patchArguments->hContext,
+                   runtimeContext,
                    VioGpuWddmPresentBuilt);
-}
-
-VOID NotifyPatchSubmissionFault(_In_opt_ VioGpuDod *adapter,
-                                _In_opt_ const DXGKARG_PATCH *patchArguments,
-                                _In_ NTSTATUS status)
-{
-    if (adapter == NULL)
-    {
-        return;
-    }
-
-    UINT fenceId = patchArguments != NULL && patchArguments->SubmissionFenceId <= MAXUINT ? static_cast<UINT>(patchArguments->SubmissionFenceId)
-                                                                                          : 0;
-    UINT engineOrdinal = patchArguments == NULL ? 0 : patchArguments->EngineOrdinal;
-    adapter->NotifyNativeSubmissionFault(fenceId, status, 0, engineOrdinal, TRUE);
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, CONST DXGKARG_PATCH *patchArguments)
@@ -6330,37 +6316,48 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         {
             RetirePatchDmaOwner(adapter, patchArguments);
         }
-        NotifyPatchSubmissionFault(adapter, patchArguments, STATUS_INVALID_PARAMETER);
         return STATUS_SUCCESS;
     }
 
     if (patchArguments->Flags.Value == 1)
     {
+        VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(patchArguments->hDevice);
+        BOOLEAN deviceReferenced = ReferenceDevice(device);
+        BOOLEAN deviceValid = deviceReferenced && device->Adapter == adapter;
+        BOOLEAN emptyDmaRange = patchArguments->DmaBufferSubmissionStartOffset ==
+                                patchArguments->DmaBufferSubmissionEndOffset;
+        BOOLEAN emptyPrivateRange = patchArguments->DmaBufferPrivateDataSubmissionStartOffset ==
+                                    patchArguments->DmaBufferPrivateDataSubmissionEndOffset;
+        BOOLEAN emptySubmission = emptyDmaRange && emptyPrivateRange;
         VIOGPU_WDDM_PAGING_PRIVATE *firstPrivate = NULL;
         UINT recordCount = 0;
-        BOOLEAN exact = patchArguments->hContext == NULL && patchArguments->pAllocationList == NULL &&
+        BOOLEAN exact = deviceValid && patchArguments->pAllocationList == NULL &&
                         patchArguments->AllocationListSize == 0 && patchArguments->pPatchLocationList == NULL &&
                         patchArguments->PatchLocationListSize == 0 &&
                         patchArguments->PatchLocationListSubmissionStart == 0 &&
                         patchArguments->PatchLocationListSubmissionLength == 0 &&
-                        ResolvePagingBatch(patchArguments->pDmaBuffer,
-                                           patchArguments->DmaBufferSize,
-                                           patchArguments->DmaBufferSubmissionStartOffset,
-                                           patchArguments->DmaBufferSubmissionEndOffset,
-                                           patchArguments->pDmaBufferPrivateData,
-                                           patchArguments->DmaBufferPrivateDataSize,
-                                           patchArguments->DmaBufferPrivateDataSubmissionStartOffset,
-                                           patchArguments->DmaBufferPrivateDataSubmissionEndOffset,
-                                           adapter,
-                                           VioGpuWddmPagingTransactionBuilt,
-                                           &firstPrivate,
-                                           &recordCount);
+                        (emptySubmission ||
+                         ResolvePagingBatch(patchArguments->pDmaBuffer,
+                                            patchArguments->DmaBufferSize,
+                                            patchArguments->DmaBufferSubmissionStartOffset,
+                                            patchArguments->DmaBufferSubmissionEndOffset,
+                                            patchArguments->pDmaBufferPrivateData,
+                                            patchArguments->DmaBufferPrivateDataSize,
+                                            patchArguments->DmaBufferPrivateDataSubmissionStartOffset,
+                                            patchArguments->DmaBufferPrivateDataSubmissionEndOffset,
+                                            adapter,
+                                            VioGpuWddmPagingTransactionBuilt,
+                                            &firstPrivate,
+                                            &recordCount));
+        if (deviceReferenced)
+        {
+            DereferenceDevice(device);
+        }
         UNREFERENCED_PARAMETER(firstPrivate);
         UNREFERENCED_PARAMETER(recordCount);
         if (!exact)
         {
             RetirePatchDmaOwner(adapter, patchArguments);
-            NotifyPatchSubmissionFault(adapter, patchArguments, STATUS_INVALID_PARAMETER);
         }
         return STATUS_SUCCESS;
     }
@@ -6369,14 +6366,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         patchArguments->pPatchLocationList == NULL || patchArguments->Flags.Value != 0)
     {
         RetirePatchDmaOwner(adapter, patchArguments);
-        NotifyPatchSubmissionFault(adapter, patchArguments, STATUS_INVALID_PARAMETER);
         return STATUS_SUCCESS;
     }
 
     if (!adapter->AcquireNativeSubmissionOperation())
     {
         RetirePatchDmaOwner(adapter, patchArguments);
-        NotifyPatchSubmissionFault(adapter, patchArguments, STATUS_DEVICE_NOT_READY);
         return STATUS_SUCCESS;
     }
 
@@ -6524,10 +6519,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         if (transaction != NULL)
         {
             DereferencePresentTransaction(transaction);
-        }
-        if (!NT_SUCCESS(status))
-        {
-            NotifyPatchSubmissionFault(adapter, patchArguments, status);
         }
         adapter->ReleaseNativeSubmissionOperation();
         return STATUS_SUCCESS;
@@ -6722,10 +6713,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
     }
     delete[] patchedIovas;
     delete[] patchedResourceIds;
-    if (!NT_SUCCESS(status))
-    {
-        NotifyPatchSubmissionFault(adapter, patchArguments, status);
-    }
     adapter->ReleaseNativeSubmissionOperation();
     return STATUS_SUCCESS;
 }
@@ -7192,6 +7179,25 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                              submitCommand->NodeOrdinal,
                                              submitCommand->EngineOrdinal,
                                              TRUE);
+        return STATUS_SUCCESS;
+    }
+
+    BOOLEAN emptyPagingSubmission = submitCommand->Flags.Value == 1 && submitCommand->hContext == NULL &&
+                                    submitCommand->DmaBufferSubmissionStartOffset == submitCommand->DmaBufferSubmissionEndOffset &&
+                                    submitCommand->DmaBufferPrivateDataSubmissionStartOffset == submitCommand->DmaBufferPrivateDataSubmissionEndOffset;
+    if (emptyPagingSubmission)
+    {
+        if (!adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,
+                                                       submitCommand->NodeOrdinal,
+                                                       submitCommand->EngineOrdinal))
+        {
+            adapter->NotifyNativeSubmissionFault(submitCommand->SubmissionFenceId,
+                                                 STATUS_DEVICE_NOT_READY,
+                                                 submitCommand->NodeOrdinal,
+                                                 submitCommand->EngineOrdinal,
+                                                 TRUE);
+        }
+        adapter->ReleaseNativeSubmissionOperation();
         return STATUS_SUCCESS;
     }
 

@@ -892,6 +892,7 @@ class VioGpuDod
                                      _In_ UINT engineOrdinal,
                                      _In_ BOOLEAN queueDpc);
     void NotifyNativeSoftwareCompletion(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal);
+    BOOLEAN CompleteNativeSoftwareSubmission(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal);
     BOOLEAN NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
                                            _In_ BOOLEAN queueDpc);
     BOOLEAN RecordNativeSubmissionFence(_In_ UINT fenceId);
