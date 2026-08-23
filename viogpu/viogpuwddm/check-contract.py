@@ -1489,6 +1489,49 @@ def check_callback_table() -> None:
             fail(f"legacy Win7 runtime registration must not expose Win8-only callback {forbidden}")
 
 
+def check_vidpn_mode_contract() -> None:
+    signal_info = canonical_code(function_body("BuildVideoSignalInfo", VIOGPU_CODE))
+    require_order(
+        signal_info,
+        (
+            "pVideoSignalInfo->TotalSize.cx=pModeInfo->VisScreenWidth;",
+            "pVideoSignalInfo->TotalSize.cy=pModeInfo->VisScreenHeight;",
+            "pVideoSignalInfo->ActiveSize=pVideoSignalInfo->TotalSize;",
+        ),
+        "video signal active size must be derived after constructing the total size",
+    )
+    if signal_info.count("pVideoSignalInfo->ActiveSize=pVideoSignalInfo->TotalSize;") != 1:
+        fail("video signal construction must assign its active size exactly once")
+
+    target_modes = canonical_code(function_body("AddSingleTargetMode", VIOGPU_CODE))
+    if target_modes.count("m_pHWDevice->GetModeInfo(ModeIndex)") != 1:
+        fail("target mode enumeration must fetch each mode by ModeIndex exactly once")
+    if "m_pHWDevice->GetModeInfo(SourceId)" in target_modes:
+        fail("target mode enumeration must not use the source id as a mode index")
+    if "VideoSignalInfo.ActiveSize=" in target_modes:
+        fail("target mode enumeration must leave complete signal construction to BuildVideoSignalInfo")
+
+    is_supported = function_body("VioGpuDodIsSupportedVidPn", DOD_DRIVER_CODE)
+    inactive_blocks = [
+        body
+        for condition, body, _, _ in if_blocks(is_supported)
+        if canonical_code(condition) == "!pVioGpuDod->IsDriverActive()"
+    ]
+    if len(inactive_blocks) != 1:
+        fail("IsSupportedVidPn must contain exactly one inactive-adapter branch")
+    inactive = canonical_code(inactive_blocks[0])
+    require_order(
+        inactive,
+        (
+            "pIsSupportedVidPn->IsVidPnSupported=FALSE;",
+            "returnSTATUS_SUCCESS;",
+        ),
+        "inactive IsSupportedVidPn must report unsupported without failing the DDI",
+    )
+    if "returnSTATUS_UNSUCCESSFUL;" in inactive:
+        fail("inactive IsSupportedVidPn must not return generic failure")
+
+
 def check_legacy_runtime_callback_contract() -> None:
     header = canonical_code(WDDM_DDI_HEADER_CODE)
     for declaration in (
@@ -8158,6 +8201,7 @@ def main() -> None:
     check_native_win7_driver_caps_contract()
     check_registration_helper(sources)
     check_callback_table()
+    check_vidpn_mode_contract()
     check_legacy_runtime_callback_contract()
     check_virtio_reset_contract()
     check_virtio_queue_allocation_cleanup()

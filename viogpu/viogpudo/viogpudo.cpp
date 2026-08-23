@@ -2590,6 +2590,7 @@ VOID VioGpuDod::BuildVideoSignalInfo(D3DKMDT_VIDEO_SIGNAL_INFO *pVideoSignalInfo
     pVideoSignalInfo->VideoStandard = D3DKMDT_VSS_OTHER;
     pVideoSignalInfo->TotalSize.cx = pModeInfo->VisScreenWidth;
     pVideoSignalInfo->TotalSize.cy = pModeInfo->VisScreenHeight;
+    pVideoSignalInfo->ActiveSize = pVideoSignalInfo->TotalSize;
 
     pVideoSignalInfo->VSyncFreq.Numerator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
     pVideoSignalInfo->VSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
@@ -2608,13 +2609,14 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     UNREFERENCED_PARAMETER(pVidPnPinnedSourceModeInfo);
+    UNREFERENCED_PARAMETER(SourceId);
 
     D3DKMDT_VIDPN_TARGET_MODE *pVidPnTargetModeInfo = NULL;
     NTSTATUS Status = STATUS_SUCCESS;
 
     for (UINT ModeIndex = 0; ModeIndex < m_pHWDevice->GetModeCount(); ++ModeIndex)
     {
-        PVIDEO_MODE_INFORMATION pModeInfo = m_pHWDevice->GetModeInfo(SourceId);
+        PVIDEO_MODE_INFORMATION pModeInfo = m_pHWDevice->GetModeInfo(ModeIndex);
         pVidPnTargetModeInfo = NULL;
         Status = pVidPnTargetModeSetInterface->pfnCreateNewModeInfo(hVidPnTargetModeSet, &pVidPnTargetModeInfo);
         if (!NT_SUCCESS(Status))
@@ -2625,7 +2627,6 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
                       LONG_PTR(hVidPnTargetModeSet)));
             return Status;
         }
-        pVidPnTargetModeInfo->VideoSignalInfo.ActiveSize = pVidPnTargetModeInfo->VideoSignalInfo.TotalSize;
         BuildVideoSignalInfo(&pVidPnTargetModeInfo->VideoSignalInfo, pModeInfo);
 
         if (pModeInfo->VisScreenWidth == NOM_WIDTH_SIZE && pModeInfo->VisScreenHeight == NOM_HEIGHT_SIZE)

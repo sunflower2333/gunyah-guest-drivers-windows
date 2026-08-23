@@ -456,7 +456,8 @@ VioGpuDodIsSupportedVidPn(_In_ CONST HANDLE hAdapter, _Inout_ DXGKARG_ISSUPPORTE
     if (!pVioGpuDod->IsDriverActive())
     {
         DbgPrint(TRACE_LEVEL_WARNING, ("VIOGPU (%p) is being called when not active!", pVioGpuDod));
-        return STATUS_UNSUCCESSFUL;
+        pIsSupportedVidPn->IsVidPnSupported = FALSE;
+        return STATUS_SUCCESS;
     }
     return pVioGpuDod->IsSupportedVidPn(pIsSupportedVidPn);
 }
