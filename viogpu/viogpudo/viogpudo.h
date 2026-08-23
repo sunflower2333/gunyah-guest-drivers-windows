@@ -387,10 +387,10 @@ class VioGpuAdapter : IVioGpuPCI
                                                             _In_ UINT resourceId,
                                                             _Out_ BOOLEAN *released);
 #endif
-    BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
-                                        _Out_opt_ UINT *capsetVersion,
-                                        _Out_opt_ UINT *capsetSize,
-                                        _Out_opt_ ULONGLONG *resetGeneration);
+    _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
+                                                                            _Out_opt_ UINT *capsetVersion,
+                                                                            _Out_opt_ UINT *capsetSize,
+                                                                            _Out_opt_ ULONGLONG *resetGeneration);
     NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
                                  _In_ ULONGLONG expectedResetGeneration);
     NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released);
@@ -810,10 +810,10 @@ class VioGpuDod
                                                       _In_ UINT expectedContextId,
                                                       _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot) const;
 #endif
-    BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
-                                        _Out_opt_ UINT *capsetVersion,
-                                        _Out_opt_ UINT *capsetSize,
-                                        _Out_opt_ ULONGLONG *resetGeneration);
+    _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
+                                                                            _Out_opt_ UINT *capsetVersion,
+                                                                            _Out_opt_ UINT *capsetSize,
+                                                                            _Out_opt_ ULONGLONG *resetGeneration);
     NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
                                  _In_ ULONGLONG expectedResetGeneration);
     NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released);

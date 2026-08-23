@@ -1583,10 +1583,12 @@ BOOLEAN VioGpuDod::AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requ
 }
 #endif
 
-BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
-                                               _Out_opt_ UINT *capsetVersion,
-                                               _Out_opt_ UINT *capsetSize,
-                                               _Out_opt_ ULONGLONG *resetGeneration)
+#pragma code_seg(push)
+#pragma code_seg()
+_IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
+                                                                                   _Out_opt_ UINT *capsetVersion,
+                                                                                   _Out_opt_ UINT *capsetSize,
+                                                                                   _Out_opt_ ULONGLONG *resetGeneration)
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))
     {
@@ -1599,6 +1601,7 @@ BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
     ExReleaseRundownProtection(&m_HardwareOperations);
     return ready;
 }
+#pragma code_seg(pop)
 
 NTSTATUS VioGpuDod::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
                                         _In_ ULONGLONG expectedResetGeneration)
@@ -4917,10 +4920,12 @@ NTSTATUS VioGpuAdapter::FailNativeContextInitialization(NTSTATUS status)
     return NT_SUCCESS(closeStatus) ? status : closeStatus;
 }
 
-BOOLEAN VioGpuAdapter::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
-                                                   _Out_opt_ UINT *capsetVersion,
-                                                   _Out_opt_ UINT *capsetSize,
-                                                   _Out_opt_ ULONGLONG *resetGeneration)
+#pragma code_seg(push)
+#pragma code_seg()
+_IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN VioGpuAdapter::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
+                                                                                       _Out_opt_ UINT *capsetVersion,
+                                                                                       _Out_opt_ UINT *capsetSize,
+                                                                                       _Out_opt_ ULONGLONG *resetGeneration)
 {
     if (capset == NULL)
     {
@@ -4995,6 +5000,7 @@ BOOLEAN VioGpuAdapter::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
     KeReleaseSpinLock(&m_NativeContextReadinessLock, oldIrql);
     return ready;
 }
+#pragma code_seg(pop)
 
 UINT VioGpuAdapter::AllocateNativeContextIdLocked(void)
 {

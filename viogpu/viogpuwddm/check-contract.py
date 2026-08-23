@@ -710,7 +710,8 @@ def check_driver_entry_gate() -> None:
 def check_viogpudo_code_segment_contract() -> None:
     # MSVC treats code_seg() with no argument as a switch back to the default
     # .text section.  code_seg(push) alone only saves the surrounding PAGE
-    # section, so both directives are required for these DISPATCH/DPC paths.
+    # section, so both directives are required for these DISPATCH/DPC paths
+    # and for readiness code that executes while holding a spin lock.
     push_default_pattern = re.compile(
         r"(?m)^[ \t]*#pragma[ \t]+code_seg[ \t]*\([ \t]*push[ \t]*\)[ \t]*$\r?\n"
         r"[ \t]*#pragma[ \t]+code_seg[ \t]*\([ \t]*\)[ \t]*$"
@@ -722,13 +723,29 @@ def check_viogpudo_code_segment_contract() -> None:
         r"(?m)^[ \t]*#pragma[ \t]+code_seg[ \t]*\([ \t]*pop[ \t]*\)[^\r\n]*$"
     )
     ranges = list(push_default_pattern.finditer(VIOGPU_SOURCE))
-    if len(ranges) != 2 or len(list(empty_default_pattern.finditer(VIOGPU_SOURCE))) != 2:
-        fail("viogpudo must declare exactly two explicit default-.text nonpaged code ranges")
+    if len(ranges) != 4 or len(list(empty_default_pattern.finditer(VIOGPU_SOURCE))) != 4:
+        fail("viogpudo must declare exactly four explicit default-.text nonpaged code ranges")
 
-    first_open, dpc_open = ranges
+    first_open, dod_readiness_open, dpc_open, adapter_readiness_open = ranges
     first_close = pop_pattern.search(VIOGPU_SOURCE, first_open.end())
+    dod_readiness_close = pop_pattern.search(VIOGPU_SOURCE, dod_readiness_open.end())
     dpc_close = pop_pattern.search(VIOGPU_SOURCE, dpc_open.end())
-    if first_close is None or dpc_close is None or first_close.start() >= dpc_open.start():
+    adapter_readiness_close = pop_pattern.search(VIOGPU_SOURCE, adapter_readiness_open.end())
+    if (
+        first_close is None
+        or dod_readiness_close is None
+        or dpc_close is None
+        or adapter_readiness_close is None
+        or not (
+            first_close.start()
+            < dod_readiness_open.start()
+            < dod_readiness_close.start()
+            < dpc_open.start()
+            < dpc_close.start()
+            < adapter_readiness_open.start()
+            < adapter_readiness_close.start()
+        )
+    ):
         fail("viogpudo default-.text ranges must each close with the next code_seg(pop)")
 
     first_declaration = VIOGPU_CODE.find("PGPU_VBUFFER VioGpuDod::PrepareNativeSubmit", first_open.end())
@@ -754,6 +771,24 @@ def check_viogpudo_code_segment_contract() -> None:
         _, function_start, function_end = function_body_span(function_name, VIOGPU_CODE)
         if not first_open.end() < function_start < function_end < first_close.start():
             fail(f"WDDM Native Context bridge routine must remain in default .text: {function_name}")
+
+    readiness_annotation = "_IRQL_requires_max_(DISPATCH_LEVEL)"
+    annotated_declaration = readiness_annotation + "BOOLEANQueryNativeContextReadiness("
+    if canonical_code(VIOGPU_HEADER_CODE).count(annotated_declaration) != 2:
+        fail("both Native Context readiness declarations must permit at most DISPATCH_LEVEL")
+    for function_name, range_open, range_close in (
+        ("VioGpuDod::QueryNativeContextReadiness", dod_readiness_open, dod_readiness_close),
+        ("VioGpuAdapter::QueryNativeContextReadiness", adapter_readiness_open, adapter_readiness_close),
+    ):
+        _, function_start, function_end = function_body_span(function_name, VIOGPU_CODE)
+        declaration_start = VIOGPU_CODE.find(f"BOOLEAN {function_name}", range_open.end(), function_start)
+        if (
+            declaration_start < 0
+            or not range_open.end() < declaration_start < function_start < function_end < range_close.start()
+            or canonical_code(VIOGPU_CODE[range_open.end() : declaration_start]) != readiness_annotation
+            or VIOGPU_CODE[function_end + 1 : range_close.start()].strip()
+        ):
+            fail(f"{function_name} must exclusively occupy an annotated default-.text range")
 
     dpc_declaration = VIOGPU_CODE.find("static ULONG VioGpuReadSharedU32", dpc_open.end())
     _, _, dpc_last_end = function_body_span("VioGpuDod::SystemDisplayWrite", VIOGPU_CODE)
@@ -843,6 +878,17 @@ def check_arm64_workflow_contract() -> None:
             fail(f"{label} workflow must reject a D3D12 export from the legacy UMD shim")
         if source.count("Assert-Arm64Pe $driver") != 1 or source.count("Assert-Arm64Pe $umd") != 1:
             fail(f"{label} workflow must apply the AA64 gate to the SYS and D3D UMD DLL")
+        for fragment in (
+            "$sectionRows = @(",
+            "$_.Name.StartsWith('.text', [System.StringComparison]::Ordinal)",
+            "$requiredTextSymbols = @(",
+            "'?QueryNativeContextReadiness@VioGpuDod@@'",
+            "'?QueryNativeContextReadiness@VioGpuAdapter@@'",
+            "$textSectionIds -notcontains $sectionId",
+            "$tokens[-1] -notlike '*viogpudo.obj'",
+        ):
+            if source.count(fragment) != 1:
+                fail(f"{label} workflow must prove readiness routines are linked into default .text: {fragment}")
     if sources["Native Context full-miniport"].count("viogpu/viogpud3d/viogpud3d.vcxproj") != 1:
         fail("the full WDDM contract workflow must build the ARM64 D3D UMD shim exactly once")
     if sources["product drivers"].count("viogpu/viogpud3d/viogpud3d.vcxproj") != 1:

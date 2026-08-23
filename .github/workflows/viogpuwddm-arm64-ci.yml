@@ -206,6 +206,46 @@ jobs:
             exit 1
           }
 
+          $sectionRows = @(
+            foreach ($line in $mapLines) {
+              if ($line -match '^\s*(?<Section>[0-9A-Fa-f]{4}):[0-9A-Fa-f]{8}\s+[0-9A-Fa-f]+H\s+(?<Name>\S+)\s+CODE\s*$') {
+                [pscustomobject]@{
+                  Section = $Matches.Section.ToUpperInvariant()
+                  Name = $Matches.Name
+                }
+              }
+            }
+          )
+          $textSectionIds = @(
+            $sectionRows |
+              Where-Object { $_.Name.StartsWith('.text', [System.StringComparison]::Ordinal) } |
+              Select-Object -ExpandProperty Section -Unique
+          )
+          if ($textSectionIds.Count -eq 0) {
+            throw 'linker map contains no default .text CODE section'
+          }
+
+          $requiredTextSymbols = @(
+            @{ Name = 'VioGpuDod::QueryNativeContextReadiness'; Pattern = '?QueryNativeContextReadiness@VioGpuDod@@' },
+            @{ Name = 'VioGpuAdapter::QueryNativeContextReadiness'; Pattern = '?QueryNativeContextReadiness@VioGpuAdapter@@' }
+          )
+          foreach ($symbol in $requiredTextSymbols) {
+            $symbolLines = @($mapLines | Where-Object { $_.Contains($symbol.Pattern) })
+            if ($symbolLines.Count -ne 1) {
+              $mapLines | Where-Object { $_ -match 'QueryNativeContextReadiness' } | ForEach-Object { Write-Host "MAP candidate: $_" }
+              throw "linker map must contain exactly one $($symbol.Name) symbol"
+            }
+            $tokens = @($symbolLines[0] -split '\s+' | Where-Object { $_ })
+            if ($tokens.Count -lt 2 -or $tokens[0] -notmatch '^(?<Section>[0-9A-Fa-f]{4}):') {
+              throw "cannot parse linker-map section for $($symbol.Name): $($symbolLines[0])"
+            }
+            $sectionId = $Matches.Section.ToUpperInvariant()
+            if ($textSectionIds -notcontains $sectionId -or $tokens[-1] -notlike '*viogpudo.obj') {
+              throw "$($symbol.Name) must resolve from viogpudo.obj into default .text, got: $($symbolLines[0])"
+            }
+            Write-Host "nonpaged readiness: $($symbolLines[0])"
+          }
+
           $initializeLines
           $helperLines
 
