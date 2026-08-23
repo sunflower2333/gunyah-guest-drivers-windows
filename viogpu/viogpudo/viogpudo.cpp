@@ -494,6 +494,18 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                                    VioGpuNativeStartDetailNone);
         return UnwindFailedStart(STATUS_DEVICE_NOT_READY);
     }
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (!OpenNativePassiveQueue() || !OpenWddmPresentTransactions())
+    {
+        RequestWddmSubmissionDrainAtAnyIrql();
+        WaitForWddmSubmissionDrain();
+        VIOGPU_RECORD_NATIVE_START(this,
+                                   VioGpuNativeStartFinalState,
+                                   STATUS_DEVICE_NOT_READY,
+                                   VioGpuNativeStartDetailNone);
+        return UnwindFailedStart(STATUS_DEVICE_NOT_READY);
+    }
+#endif
     m_Flags.DriverStarted = TRUE;
     VIOGPU_RECORD_NATIVE_START(this, VioGpuNativeStartComplete, STATUS_SUCCESS, VioGpuNativeStartDetailNone);
     DbgPrintEx(DPFLTR_DEFAULT_ID,

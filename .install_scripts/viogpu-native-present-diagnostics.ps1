@@ -129,6 +129,14 @@ $reasonNames = @{
     9 = 'Geometry'
     10 = 'SourcePrepatch'
     11 = 'DestinationPrepatch'
+    12 = 'ContextReference'
+    13 = 'SourceReference'
+    14 = 'DestinationReference'
+    15 = 'SourceLifecycle'
+    16 = 'DestinationLifecycle'
+    17 = 'TransactionReference'
+    18 = 'TransactionRegistration'
+    19 = 'ContextPublication'
 }
 
 [uint64]$reason = ConvertTo-DwordValue $diagnostic.NativePresentReason

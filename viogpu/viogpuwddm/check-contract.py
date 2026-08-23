@@ -1274,6 +1274,14 @@ def check_native_present_diagnostics() -> None:
         "VioGpuWddmPresentDiagnosticGeometry": 9,
         "VioGpuWddmPresentDiagnosticSourcePrepatch": 10,
         "VioGpuWddmPresentDiagnosticDestinationPrepatch": 11,
+        "VioGpuWddmPresentDiagnosticContextReference": 12,
+        "VioGpuWddmPresentDiagnosticSourceReference": 13,
+        "VioGpuWddmPresentDiagnosticDestinationReference": 14,
+        "VioGpuWddmPresentDiagnosticSourceLifecycle": 15,
+        "VioGpuWddmPresentDiagnosticDestinationLifecycle": 16,
+        "VioGpuWddmPresentDiagnosticTransactionReference": 17,
+        "VioGpuWddmPresentDiagnosticTransactionRegistration": 18,
+        "VioGpuWddmPresentDiagnosticContextPublication": 19,
     }
     observed_reasons = {
         name: int(value)
@@ -1397,7 +1405,8 @@ def check_native_present_diagnostics() -> None:
     for reason_name in tuple(expected_reasons)[1:]:
         if present.count(reason_name) != 1:
             fail(f"Present must map one rejection path to {reason_name}")
-    if present.count("RecordPresentDiagnostic(context,present,source,destination,reason,status);") != 1:
+    if present.count("RecordPresentDiagnostic(context,present,source,destination,reason,status);") != 1 or \
+       present.count("RecordPresentDiagnostic(context,present,source,destination,lateReason,status);") != 1:
         fail("Present must persist the first classified rejection before returning it")
 
     if not PRESENT_DIAGNOSTIC_SCRIPT_PATH.is_file():
@@ -7920,10 +7929,30 @@ def check_adapter_lifecycle() -> None:
         r"(?:Status|STATUS_UNSUCCESSFUL|STATUS_DEVICE_NOT_READY)\s*\)\s*;",
         start,
     )
-    if len(failed_start_cleanup) != 4 or start_compact.count("UnwindFailedStart(") != 4:
+    if len(failed_start_cleanup) != 5 or start_compact.count("UnwindFailedStart(") != 5:
         fail("every post-allocation StartDevice failure must use the shared ownership-safe unwind")
-    if "OpenNativePassiveQueue()" in start_compact or "OpenWddmPresentTransactions()" in start_compact:
-        fail("StartDevice must leave submission closed until D0 establishes the Native Context transport")
+    require_order(
+        start_compact,
+        (
+            final_publish,
+            "OpenNativePassiveQueue()",
+            "OpenWddmPresentTransactions()",
+            "m_Flags.DriverStarted=TRUE;",
+        ),
+        "StartDevice must publish Active before opening initial submission and reporting the adapter started",
+    )
+    initial_open_failure_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(start)
+        if canonical_code(condition) == "!OpenNativePassiveQueue()||!OpenWddmPresentTransactions()"
+    ]
+    if initial_open_failure_blocks != [
+        "RequestWddmSubmissionDrainAtAnyIrql();"
+        "WaitForWddmSubmissionDrain();"
+        "VIOGPU_RECORD_NATIVE_START(this,VioGpuNativeStartFinalState,STATUS_DEVICE_NOT_READY,"
+        "VioGpuNativeStartDetailNone);returnUnwindFailedStart(STATUS_DEVICE_NOT_READY);"
+    ]:
+        fail("StartDevice must close and unwind when initial submission publication cannot open")
     if len(variable_write_offsets(start, "m_pHWDevice")) != 1 or re.search(r"\bdelete\s+m_pHWDevice\s*;", start):
         fail("StartDevice must only allocate its adapter and delegate every deletion to the checked unwind")
 

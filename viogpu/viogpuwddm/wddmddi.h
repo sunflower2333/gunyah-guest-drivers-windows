@@ -323,6 +323,14 @@ enum VIOGPU_WDDM_PRESENT_DIAGNOSTIC_REASON : DWORD
     VioGpuWddmPresentDiagnosticGeometry = 9,
     VioGpuWddmPresentDiagnosticSourcePrepatch = 10,
     VioGpuWddmPresentDiagnosticDestinationPrepatch = 11,
+    VioGpuWddmPresentDiagnosticContextReference = 12,
+    VioGpuWddmPresentDiagnosticSourceReference = 13,
+    VioGpuWddmPresentDiagnosticDestinationReference = 14,
+    VioGpuWddmPresentDiagnosticSourceLifecycle = 15,
+    VioGpuWddmPresentDiagnosticDestinationLifecycle = 16,
+    VioGpuWddmPresentDiagnosticTransactionReference = 17,
+    VioGpuWddmPresentDiagnosticTransactionRegistration = 18,
+    VioGpuWddmPresentDiagnosticContextPublication = 19,
 };
 
 struct VIOGPU_WDDM_PRESENT_TRANSACTION

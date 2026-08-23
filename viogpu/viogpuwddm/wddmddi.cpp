@@ -6736,6 +6736,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     BOOLEAN buildReference = FALSE;
     BOOLEAN sourcePrepatched = FALSE;
     BOOLEAN destinationPrepatched = FALSE;
+    VIOGPU_WDDM_PRESENT_DIAGNOSTIC_REASON lateReason = VioGpuWddmPresentDiagnosticNone;
     VIOGPU_WDDM_ALLOCATION *source = NULL;
     VIOGPU_WDDM_ALLOCATION *destination = NULL;
     UINT rectOffset = present->SubRectCnt == 0 ? 0U : present->MultipassOffset;
@@ -6804,16 +6805,28 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     {
         status = AcquireContextSubmissionReference(context);
         contextReference = NT_SUCCESS(status);
+        if (!contextReference)
+        {
+            lateReason = VioGpuWddmPresentDiagnosticContextReference;
+        }
     }
     if (NT_SUCCESS(status))
     {
         status = AcquireAllocationSubmissionReference(source, context->Device->Adapter);
         sourceReference = NT_SUCCESS(status);
+        if (!sourceReference)
+        {
+            lateReason = VioGpuWddmPresentDiagnosticSourceReference;
+        }
     }
     if (NT_SUCCESS(status))
     {
         status = AcquireAllocationSubmissionReference(destination, context->Device->Adapter);
         destinationReference = NT_SUCCESS(status);
+        if (!destinationReference)
+        {
+            lateReason = VioGpuWddmPresentDiagnosticDestinationReference;
+        }
     }
 
     BOOLEAN sourceLocked = FALSE;
@@ -6822,11 +6835,19 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     {
         status = AcquireAllocationLifecycle(source);
         sourceLocked = NT_SUCCESS(status);
+        if (!sourceLocked)
+        {
+            lateReason = VioGpuWddmPresentDiagnosticSourceLifecycle;
+        }
     }
     if (NT_SUCCESS(status))
     {
         status = AcquireAllocationLifecycle(destination);
         destinationLocked = NT_SUCCESS(status);
+        if (!destinationLocked)
+        {
+            lateReason = VioGpuWddmPresentDiagnosticDestinationLifecycle;
+        }
     }
     if (NT_SUCCESS(status))
     {
@@ -7005,6 +7026,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
 
         buildReference = ReferencePresentTransaction(transaction);
         BOOLEAN registered = buildReference && RegisterPresentTransaction(transaction);
+        if (!buildReference)
+        {
+            lateReason = VioGpuWddmPresentDiagnosticTransactionReference;
+        }
+        else if (!registered)
+        {
+            lateReason = VioGpuWddmPresentDiagnosticTransactionRegistration;
+        }
         BOOLEAN valid = FALSE;
         if (registered)
         {
@@ -7025,7 +7054,16 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
         if (!valid)
         {
             status = STATUS_DEVICE_NOT_READY;
+            if (registered)
+            {
+                lateReason = VioGpuWddmPresentDiagnosticContextPublication;
+            }
         }
+    }
+
+    if (lateReason != VioGpuWddmPresentDiagnosticNone)
+    {
+        RecordPresentDiagnostic(context, present, source, destination, lateReason, status);
     }
 
     if (destinationLocked)
