@@ -2608,53 +2608,82 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
     PAGED_CODE();
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
-    UNREFERENCED_PARAMETER(pVidPnPinnedSourceModeInfo);
     UNREFERENCED_PARAMETER(SourceId);
 
-    D3DKMDT_VIDPN_TARGET_MODE *pVidPnTargetModeInfo = NULL;
-    NTSTATUS Status = STATUS_SUCCESS;
-
-    for (UINT ModeIndex = 0; ModeIndex < m_pHWDevice->GetModeCount(); ++ModeIndex)
+    if (pVidPnPinnedSourceModeInfo != NULL && pVidPnPinnedSourceModeInfo->Type != D3DKMDT_RMT_GRAPHICS)
     {
-        PVIDEO_MODE_INFORMATION pModeInfo = m_pHWDevice->GetModeInfo(ModeIndex);
-        pVidPnTargetModeInfo = NULL;
-        Status = pVidPnTargetModeSetInterface->pfnCreateNewModeInfo(hVidPnTargetModeSet, &pVidPnTargetModeInfo);
-        if (!NT_SUCCESS(Status))
-        {
-            DbgPrint(TRACE_LEVEL_ERROR,
-                     ("pfnCreateNewModeInfo failed with Status = 0x%X, hVidPnTargetModeSet = %llu",
-                      Status,
-                      LONG_PTR(hVidPnTargetModeSet)));
-            return Status;
-        }
-        BuildVideoSignalInfo(&pVidPnTargetModeInfo->VideoSignalInfo, pModeInfo);
+        return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+    }
 
-        if (pModeInfo->VisScreenWidth == NOM_WIDTH_SIZE && pModeInfo->VisScreenHeight == NOM_HEIGHT_SIZE)
+    PVIDEO_MODE_INFORMATION pModeInfo = NULL;
+    if (pVidPnPinnedSourceModeInfo != NULL)
+    {
+        for (UINT ModeIndex = 0; ModeIndex < m_pHWDevice->GetModeCount(); ++ModeIndex)
         {
-            pVidPnTargetModeInfo->Preference = D3DKMDT_MP_PREFERRED;
-        }
-        else
-        {
-            pVidPnTargetModeInfo->Preference = D3DKMDT_MP_NOTPREFERRED;
-        }
-
-        Status = pVidPnTargetModeSetInterface->pfnAddMode(hVidPnTargetModeSet, pVidPnTargetModeInfo);
-        if (!NT_SUCCESS(Status))
-        {
-            if (Status != STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET)
+            PVIDEO_MODE_INFORMATION candidate = m_pHWDevice->GetModeInfo(ModeIndex);
+            if (candidate->VisScreenWidth == pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cx &&
+                candidate->VisScreenHeight == pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cy)
             {
-                DbgPrint(TRACE_LEVEL_ERROR,
-                         ("pfnAddMode failed with Status = 0x%X, hVidPnTargetModeSet = 0x%llu, pVidPnTargetModeInfo = "
-                          "%p\n",
-                          Status,
-                          LONG_PTR(hVidPnTargetModeSet),
-                          pVidPnTargetModeInfo));
+                pModeInfo = candidate;
+                break;
             }
-
-            Status = pVidPnTargetModeSetInterface->pfnReleaseModeInfo(hVidPnTargetModeSet, pVidPnTargetModeInfo);
-            NT_ASSERT(NT_SUCCESS(Status));
+        }
+        if (pModeInfo == NULL)
+        {
+            return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
         }
     }
+    else
+    {
+        for (UINT ModeIndex = 0; ModeIndex < m_pHWDevice->GetModeCount(); ++ModeIndex)
+        {
+            PVIDEO_MODE_INFORMATION candidate = m_pHWDevice->GetModeInfo(ModeIndex);
+            if (candidate->VisScreenWidth == m_CurrentMode.DispInfo.Width &&
+                candidate->VisScreenHeight == m_CurrentMode.DispInfo.Height)
+            {
+                pModeInfo = candidate;
+                break;
+            }
+        }
+        if (pModeInfo == NULL)
+        {
+            pModeInfo = m_pHWDevice->GetModeInfo(m_pHWDevice->GetCurrentModeIndex());
+        }
+    }
+
+    D3DKMDT_VIDPN_TARGET_MODE *pVidPnTargetModeInfo = NULL;
+    NTSTATUS Status = pVidPnTargetModeSetInterface->pfnCreateNewModeInfo(hVidPnTargetModeSet, &pVidPnTargetModeInfo);
+    if (!NT_SUCCESS(Status))
+    {
+        DbgPrint(TRACE_LEVEL_ERROR,
+                 ("pfnCreateNewModeInfo failed with Status = 0x%X, hVidPnTargetModeSet = %llu",
+                  Status,
+                  LONG_PTR(hVidPnTargetModeSet)));
+        return Status;
+    }
+
+    BuildVideoSignalInfo(&pVidPnTargetModeInfo->VideoSignalInfo, pModeInfo);
+    pVidPnTargetModeInfo->Preference = D3DKMDT_MP_PREFERRED;
+
+    Status = pVidPnTargetModeSetInterface->pfnAddMode(hVidPnTargetModeSet, pVidPnTargetModeInfo);
+    if (!NT_SUCCESS(Status))
+    {
+        NTSTATUS AddStatus = Status;
+        if (AddStatus != STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET)
+        {
+            DbgPrint(TRACE_LEVEL_ERROR,
+                     ("pfnAddMode failed with Status = 0x%X, hVidPnTargetModeSet = 0x%llu, "
+                      "pVidPnTargetModeInfo = %p\n",
+                      AddStatus,
+                      LONG_PTR(hVidPnTargetModeSet),
+                      pVidPnTargetModeInfo));
+        }
+
+        Status = pVidPnTargetModeSetInterface->pfnReleaseModeInfo(hVidPnTargetModeSet, pVidPnTargetModeInfo);
+        NT_ASSERT(NT_SUCCESS(Status));
+        return AddStatus == STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET ? STATUS_SUCCESS : AddStatus;
+    }
+
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return STATUS_SUCCESS;
 }

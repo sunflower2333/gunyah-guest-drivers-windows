@@ -1504,12 +1504,34 @@ def check_vidpn_mode_contract() -> None:
         fail("video signal construction must assign its active size exactly once")
 
     target_modes = canonical_code(function_body("AddSingleTargetMode", VIOGPU_CODE))
-    if target_modes.count("m_pHWDevice->GetModeInfo(ModeIndex)") != 1:
-        fail("target mode enumeration must fetch each mode by ModeIndex exactly once")
+    if target_modes.count("m_pHWDevice->GetModeInfo(ModeIndex)") != 2:
+        fail("target mode selection must search once for a pinned source and once for the current scanout")
+    if target_modes.count("m_pHWDevice->GetModeInfo(m_pHWDevice->GetCurrentModeIndex())") != 1:
+        fail("target mode selection must have one bounded current-mode fallback")
     if "m_pHWDevice->GetModeInfo(SourceId)" in target_modes:
-        fail("target mode enumeration must not use the source id as a mode index")
+        fail("target mode selection must not use the source id as a mode index")
     if "VideoSignalInfo.ActiveSize=" in target_modes:
-        fail("target mode enumeration must leave complete signal construction to BuildVideoSignalInfo")
+        fail("target mode construction must leave complete signal construction to BuildVideoSignalInfo")
+    if target_modes.count("pVidPnTargetModeSetInterface->pfnCreateNewModeInfo(") != 1:
+        fail("the cofunctional target set must create exactly one target mode")
+    if target_modes.count("pVidPnTargetModeSetInterface->pfnAddMode(") != 1:
+        fail("the cofunctional target set must add exactly one target mode")
+    if target_modes.count("pVidPnTargetModeInfo->Preference=D3DKMDT_MP_PREFERRED;") != 1:
+        fail("the single target mode must be preferred")
+    if "D3DKMDT_MP_NOTPREFERRED" in target_modes:
+        fail("the single target mode must not be marked non-preferred")
+    for required in (
+        "pVidPnPinnedSourceModeInfo->Type!=D3DKMDT_RMT_GRAPHICS",
+        "candidate->VisScreenWidth==pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cx",
+        "candidate->VisScreenHeight==pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cy",
+        "candidate->VisScreenWidth==m_CurrentMode.DispInfo.Width",
+        "candidate->VisScreenHeight==m_CurrentMode.DispInfo.Height",
+        "returnAddStatus==STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET?STATUS_SUCCESS:AddStatus;",
+    ):
+        if target_modes.count(required) != 1:
+            fail(f"target mode selection is missing its exact cofunctional contract: {required}")
+    if target_modes.count("returnSTATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;") != 2:
+        fail("target mode selection must reject non-graphics and unmatched pinned source modes")
 
     is_supported = function_body("VioGpuDodIsSupportedVidPn", DOD_DRIVER_CODE)
     inactive_blocks = [
