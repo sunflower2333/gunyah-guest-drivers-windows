@@ -2626,10 +2626,9 @@ NTSTATUS QuerySegment(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryA
         descriptor->Size = VIOGPU_WDDM_APERTURE_SIZE;
         descriptor->CommitLimit = VIOGPU_WDDM_APERTURE_SIZE;
         /* VidMm supplies ordinary guest RAM pages through MapApertureSegment.
-         * No CPU-linear physical aperture exists after the protected-VM pools
-         * are removed. Lockable non-primary allocations use their permanent
-         * system-memory backing store instead. */
-        descriptor->Flags.CpuVisible = FALSE;
+         * The mapped pages are CPU accessible and cache coherent, which is
+         * required for the shared primary's supported write segment. */
+        descriptor->Flags.CpuVisible = TRUE;
         descriptor->Flags.Aperture = TRUE;
         descriptor->Flags.CacheCoherent = TRUE;
     }

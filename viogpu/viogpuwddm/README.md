@@ -221,6 +221,9 @@ Standard paging now covers primary, GDI shadow, and staging allocations. It
 uses context-zero paging records, copies or fills the VidMm-backed aperture
 mapping, keeps each allocation's low-range local resource ID stable, and
 recreates primary 2D Host backing after a confirmed reset epoch.
+The aperture is reported CPU-visible and cache-coherent because shared
+primaries can only advertise writable segments with those properties; its
+backing remains ordinary guest RAM supplied through `MapApertureSegment`.
 `DxgkDdiSetVidPnSourceAddress` validates and selects only a resident standard
 primary with current 2D backing.
 

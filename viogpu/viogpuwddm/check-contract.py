@@ -2687,12 +2687,12 @@ def check_wddm_standard_paging() -> None:
         "descriptor->CpuTranslatedAddress.QuadPart=0;",
         "descriptor->Size=VIOGPU_WDDM_APERTURE_SIZE;",
         "descriptor->CommitLimit=VIOGPU_WDDM_APERTURE_SIZE;",
-        "descriptor->Flags.CpuVisible=FALSE;",
+        "descriptor->Flags.CpuVisible=TRUE;",
         "descriptor->Flags.Aperture=TRUE;",
         "descriptor->Flags.CacheCoherent=TRUE;",
     ):
         if query_segment.count(fragment) != 1:
-            fail(f"VidMm must see one non-CPU-linear cache-coherent aperture: {fragment}")
+            fail(f"VidMm must see one CPU-visible cache-coherent aperture: {fragment}")
 
     placement = canonical_code(
         function_body_with_parameters(
