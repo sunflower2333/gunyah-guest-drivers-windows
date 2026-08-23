@@ -18,6 +18,10 @@ and uninstall rollback remain unverified:
   the stable display-only fallback. Both the focused and signed-product ARM64
   workflows run `InfVerif /w /v`; the focused workflow also verifies the SYS
   PE machine as `AA64` before publishing it.
+- The INX removes a stale `RequireRestrictedDma` device setting left by older
+  protected-VM packages. Merely omitting the setting does not delete it during
+  an upgrade; the current unprotected path must not let dxgkrnl retain that
+  retired adapter contract.
 - Native ring-1 fence retirement and reset-generation/TDR source contracts are
   wired. Hardware preemption, per-engine reset, smooth rotation, and driver
   color conversion are explicitly not advertised.

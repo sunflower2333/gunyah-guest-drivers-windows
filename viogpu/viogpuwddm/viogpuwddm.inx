@@ -30,6 +30,7 @@ viogpuwddm.sys = 1,,
 FeatureScore = F8
 CopyFiles = VioGpuWddm_CopyFiles
 AddReg = VioGpuWddm_DeviceSettings
+DelReg = VioGpuWddm_RetiredDeviceSettings
 
 [VioGpuWddm_CopyFiles]
 viogpuwddm.sys,,,2
@@ -59,6 +60,9 @@ HKR,,HWCursor,%REG_DWORD%,0
 HKR,,FlexResolution,%REG_DWORD%,1
 HKR,,UsePhysicalMemory,%REG_DWORD%,0
 HKR,,UsePresentProgress,%REG_DWORD%,0
+
+[VioGpuWddm_RetiredDeviceSettings]
+HKR,,RequireRestrictedDma
 
 [VioGpuWddm_Msix]
 HKR,"Interrupt Management",,0x00000010

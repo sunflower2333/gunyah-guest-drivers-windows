@@ -7722,6 +7722,8 @@ def check_installation_contract() -> None:
         "%DroidVM%=VioGpuWddm,NT$ARCH$",
         "%VioGpuWddm.DeviceDesc%=VioGpuWddm_Install,PCI\\VEN_1AF4&DEV_1050",
         "FeatureScore=F8",
+        "DelReg=VioGpuWddm_RetiredDeviceSettings",
+        "[VioGpuWddm_RetiredDeviceSettings]HKR,,RequireRestrictedDma",
         "AddService=VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog",
         "ServiceBinary=%INX_PLATFORM_DRIVERS_DIR%\\viogpuwddm.sys",
         "MSISupported,%REG_DWORD%,1",
@@ -7734,6 +7736,8 @@ def check_installation_contract() -> None:
         fail("full-miniport INX must leave TargetOSVersion decoration to InfArch")
     if re.search(r"(?i)nt(?:amd64|x86)|viogpudo\.sys|include\s*=\s*msdv\.inf", source):
         fail("full-miniport INX must remain ARM64-tokenized and independent of the display-only package")
+    if re.search(r"(?i)HKR\s*,\s*,\s*RequireRestrictedDma\s*,", source):
+        fail("full-miniport INX must delete, never configure, the retired restricted-DMA value")
 
 
 def main() -> None:
