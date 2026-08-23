@@ -2587,16 +2587,19 @@ VOID VioGpuDod::BuildVideoSignalInfo(D3DKMDT_VIDEO_SIGNAL_INFO *pVideoSignalInfo
 {
     PAGED_CODE();
 
+    static const UINT VIOGPU_DEFAULT_REFRESH_HZ = 60U;
+
     pVideoSignalInfo->VideoStandard = D3DKMDT_VSS_OTHER;
     pVideoSignalInfo->TotalSize.cx = pModeInfo->VisScreenWidth;
     pVideoSignalInfo->TotalSize.cy = pModeInfo->VisScreenHeight;
     pVideoSignalInfo->ActiveSize = pVideoSignalInfo->TotalSize;
 
-    pVideoSignalInfo->VSyncFreq.Numerator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
-    pVideoSignalInfo->VSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
-    pVideoSignalInfo->HSyncFreq.Numerator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
-    pVideoSignalInfo->HSyncFreq.Denominator = D3DKMDT_FREQUENCY_NOTSPECIFIED;
-    pVideoSignalInfo->PixelRate = D3DKMDT_FREQUENCY_NOTSPECIFIED;
+    pVideoSignalInfo->VSyncFreq.Numerator = VIOGPU_DEFAULT_REFRESH_HZ;
+    pVideoSignalInfo->VSyncFreq.Denominator = 1U;
+    pVideoSignalInfo->HSyncFreq.Numerator = pModeInfo->VisScreenHeight * VIOGPU_DEFAULT_REFRESH_HZ;
+    pVideoSignalInfo->HSyncFreq.Denominator = 1U;
+    pVideoSignalInfo->PixelRate = static_cast<UINT64>(pModeInfo->VisScreenWidth) * pModeInfo->VisScreenHeight *
+                                  VIOGPU_DEFAULT_REFRESH_HZ;
     pVideoSignalInfo->ScanLineOrdering = D3DDDI_VSSLO_PROGRESSIVE;
 }
 

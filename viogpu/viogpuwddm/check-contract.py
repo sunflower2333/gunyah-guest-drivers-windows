@@ -1502,6 +1502,21 @@ def check_vidpn_mode_contract() -> None:
     )
     if signal_info.count("pVideoSignalInfo->ActiveSize=pVideoSignalInfo->TotalSize;") != 1:
         fail("video signal construction must assign its active size exactly once")
+    require_order(
+        signal_info,
+        (
+            "pVideoSignalInfo->VSyncFreq.Numerator=VIOGPU_DEFAULT_REFRESH_HZ;",
+            "pVideoSignalInfo->VSyncFreq.Denominator=1;",
+            "pVideoSignalInfo->HSyncFreq.Numerator=pModeInfo->VisScreenHeight*VIOGPU_DEFAULT_REFRESH_HZ;",
+            "pVideoSignalInfo->HSyncFreq.Denominator=1;",
+            "pVideoSignalInfo->PixelRate=static_cast<UINT64>(pModeInfo->VisScreenWidth)*pModeInfo->VisScreenHeight*VIOGPU_DEFAULT_REFRESH_HZ;",
+        ),
+        "target timing frequencies must form one exact progressive 60 Hz signal",
+    )
+    if signal_info.count("staticconstUINTVIOGPU_DEFAULT_REFRESH_HZ=60;") != 1:
+        fail("video signal construction must define its 60 Hz timing basis exactly once")
+    if "D3DKMDT_FREQUENCY_NOTSPECIFIED" in signal_info:
+        fail("full-WDDM target and monitor modes must not publish unspecified timing frequencies")
 
     target_modes = canonical_code(function_body("AddSingleTargetMode", VIOGPU_CODE))
     if target_modes.count("m_pHWDevice->GetModeInfo(ModeIndex)") != 2:
