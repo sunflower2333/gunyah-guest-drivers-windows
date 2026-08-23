@@ -10,12 +10,13 @@ contracts remain disabled. The source contains the registration entry point, a
 dedicated display-class INX, and an ARM64-only fail-closed D3D UMD shim.
 The last committed activation batch passed the ARM64 compile, link, MAP, INF,
 signing, and package gates in the dedicated and product workflows. Signed
-package `100.6.101.58014` was installed in the unprotected Windows VM, starts
+package `100.6.101.58015` was installed in the unprotected Windows VM, starts
 the adapter, and reaches the CDD `DxgkDdiPresent` path. The display remains
-black because every observed Present is rejected before Patch or Submit. The
-current GDI-source identity correction has local source-contract evidence only
-and still requires a new ARM64 run and guarded device test. Successful 2D
-display, KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
+black because the observed Present is rejected before Patch or Submit. The
+current pageable-GDI correction passes the focused local contract, ABI,
+formatting, and syntax gates but has not passed a new ARM64 run or guarded
+device test. Successful 2D display, KMT/Host/GPU execution, TDR, and uninstall
+rollback remain unverified:
 
 - `DriverEntry` calls the single `DxgkInitialize` registration helper.
 - `viogpuwddm.inx` binds ARM64 Windows 11 guests to
@@ -33,24 +34,29 @@ display, KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
   color conversion are explicitly not advertised.
 
 The current Windows runtime evidence is narrower than those source contracts.
-A unique ETL capture from package `100.6.101.58014` contains eight
-`DdiPresent` calls, four paging calls, and no `DdiRender`, `DdiPatch`, or
-`DdiSubmitCommand` call. All eight Present calls return
-`STATUS_NOT_SUPPORTED`; dxgkrnl reports both `Driver failed Present` and
-`PresentFromCdd ... failed`. `MapApertureAllocation` creates and attaches a 2D
-Host resource for every successfully paged-in standard allocation, including a
-CDD GDI shadow or staging source. The previous Present identity simultaneously
-required that same source to have `Resource2DState == None` and reset generation
-zero, so a legal paged-in GDI source could never pass Build.
+A unique ETL capture from package `100.6.101.58015` contains two `DdiPresent`
+calls, four paging calls, and no `DdiRender`, `DdiPatch`, or
+`DdiSubmitCommand` call. Both Present calls return `STATUS_NOT_SUPPORTED`;
+dxgkrnl reports both `Driver failed Present` and `PresentFromCdd ... failed`.
+The first-failure breadcrumb classifies the rejection as
+`GdiSourcePlacement`: the source allocation is a valid context-zero,
+CPU-visible GDI allocation with the same 1280x1024 format and pitch as the
+primary, but its allocation-list entry has `SegmentId=0`. It consequently has
+no aperture MDL/address or 2D Host backing. The package's
+`PermanentSysMem` flag prevents VidMm from paging that source into the aperture,
+while Present Build incorrectly requires residency before it has returned the
+patch records that let VidSch make the source resident.
 
-The current source instead requires the GDI source's exact standard-allocation,
-context-zero, placement, CPU mapping, low resource-ID, and attached 2D backing
-identity. Reset reconciliation recreates that backing from the current VidMm
-PFNs before accepting the source. Native allocation context, generation,
-residency, blob, and Host ownership checks are unchanged. The first classified
-Present rejection is persisted as a reason/status plus allocation, placement,
-format, rectangle, and allocation-list snapshot; `NativePresentReason` is the
-commit marker. The read-only decoder is
+The current source leaves CPU-visible allocations pageable, separates static
+GDI allocation identity from live aperture/Host identity, and defers placement
+and backing validation for a `SegmentId=0` allocation until Patch. A nonzero
+prepatched source is still required to have a complete current mapping and 2D
+backing; Patch and Execute retain those checks unconditionally. Reset
+reconciliation recreates backing from the current VidMm PFNs. Native allocation
+context, generation, residency, blob, and Host ownership checks are unchanged.
+The first classified Present rejection is persisted as a reason/status plus
+allocation, placement, format, rectangle, and allocation-list snapshot;
+`NativePresentReason` is the commit marker. The read-only decoder is
 `.install_scripts/viogpu-native-present-diagnostics.ps1`. None of this is device
 success evidence until a newly built package reaches Patch, Submit, a completed
 scheduler fence, Host transfer/flush, and visible pixel change.
@@ -232,6 +238,8 @@ Standard paging now covers primary, GDI shadow, and staging allocations. It
 uses context-zero paging records, copies or fills the VidMm-backed aperture
 mapping, keeps each allocation's low-range local resource ID stable, and
 recreates primary 2D Host backing after a confirmed reset epoch.
+CPU-visible sources remain cached but are not marked `PermanentSysMem`, so
+VidSch can page them into that aperture before Patch.
 The aperture is reported CPU-visible and cache-coherent because shared
 primaries can only advertise writable segments with those properties; its
 backing remains ordinary guest RAM supplied through `MapApertureSegment`.
@@ -247,14 +255,15 @@ allocation-busy status.
 
 The source also implements a synchronous CPU-copy `DxgkDdiPresent` path. A
 Native context may present only an exact live native allocation identity; a GDI
-context may present only a resident CPU-visible non-primary standard allocation
-whose context and reset identity fields are zero and whose current 2D resource
-backing is attached to the same VidMm PFNs. The destination must be a resident
-standard primary with current 2D backing, opened writable. Build and
-Patch validate bounded rectangles, allocation opens, current placements, Host
-resource state, and patch records. Build uses each nonzero allocation-list
-`SegmentId` to prepatch its placement while still returning both patch records;
-Submit may skip Patch only when both source and destination were prepatched.
+context may identify only a CPU-visible non-primary standard allocation whose
+context and reset identity fields are zero. Build validates bounded rectangles,
+allocation opens, and patch records. It validates current placement and Host
+backing immediately only for an allocation whose input list has a nonzero
+`SegmentId`; `SegmentId=0` explicitly defers those checks to Patch. Patch and
+Execute require the GDI source and standard primary to be fully resident with
+current backing attached to the same VidMm PFNs. Build always returns both patch
+records, and Submit may skip Patch only when both source and destination were
+prepatched.
 When Patch is required, Render and Present accept either a submission-relative
 `PatchOffset` or the same offset adjusted by dxgkrnl to the full DMA buffer,
 with checked addition against the submission start.
@@ -278,11 +287,11 @@ epoch, while a failed closed-to-open transition restores the outer reset gate.
 If an ordinary D1/D2/D3 hardware transition fails after the registry drain, the
 registry remains closed and the outer reset gate is requested; only a later D0
 recovery may publish a coherent Active epoch again.
-The GDI-source correction passes the local contract, native-context wire ABI,
-WDDM private ABI, formatting, Python compilation, and diff gates. It has not yet
-passed the ARM64 compile/link/package workflow or device runtime. Earlier ARM64
-results and package `100.6.101.58014` predate this correction and are not
-evidence that 2D Present now works.
+The pageable-GDI correction passes the local contract, native-context wire ABI,
+WDDM private ABI, Python compilation, clang-format, and diff gates. It has not
+yet passed the ARM64 compile/link/package workflow or device runtime. Package
+`100.6.101.58015` predates this correction and proves that the earlier
+live-identity change alone did not make 2D Present work.
 
 The preemption callback validates the single node/engine contract, reports
 `DXGK_INTERRUPT_DMA_PREEMPTED` only when the native fence queue is already

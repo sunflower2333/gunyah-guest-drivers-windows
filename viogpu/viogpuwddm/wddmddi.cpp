@@ -415,10 +415,8 @@ VOID InitializeAllocationInfo(DXGK_ALLOCATIONINFO *allocationInfo,
     allocationInfo->MaximumRenamingListLength = 0;
     allocationInfo->Flags.Value = 0;
     BOOLEAN cpuVisible = (allocation->Flags & VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE) != 0;
-    BOOLEAN primary = (allocation->Flags & VIOGPU_WDDM_ALLOCATION_PRIMARY) != 0;
     allocationInfo->Flags.CpuVisible = cpuVisible;
-    allocationInfo->Flags.PermanentSysMem = cpuVisible && !primary;
-    allocationInfo->Flags.Cached = cpuVisible && !primary;
+    allocationInfo->Flags.Cached = cpuVisible;
     allocationInfo->Flags.SynchronousPaging = TRUE;
     allocationInfo->pAllocationUsageHint = NULL;
     allocationInfo->AllocationPriority = D3DDDI_ALLOCATIONPRIORITY_NORMAL;
@@ -2045,17 +2043,24 @@ BOOLEAN ReconcileGdiSourcePlacementAfterReset(VIOGPU_WDDM_ALLOCATION *allocation
            allocation->Resource2DState == VioGpu2DResourceBackingAttached && allocation->Resource2DResetGeneration != 0;
 }
 
-BOOLEAN HasLiveGdiPresentIdentity(_In_ const VIOGPU_WDDM_ALLOCATION *allocation,
-                                  _In_ const VIOGPU_WDDM_CONTEXT *context,
-                                  _In_ const VioGpuDod *adapter)
+BOOLEAN HasGdiPresentIdentity(_In_ const VIOGPU_WDDM_ALLOCATION *allocation,
+                              _In_ const VIOGPU_WDDM_CONTEXT *context,
+                              _In_ const VioGpuDod *adapter)
 {
     return allocation != NULL && context != NULL && adapter != NULL &&
            allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE && allocation->Adapter == adapter &&
            context->Type == VioGpuWddmContextGdi && IsGdiSourceAllocation(allocation) &&
            allocation->HostState == VioGpuWddmAllocationHostNone && allocation->BlobId == 0 &&
            allocation->ResourceId != 0 && allocation->ResourceId < VIOGPU_NATIVE_RESOURCE_ID_START &&
-           allocation->ContextId == 0 && allocation->ContextGeneration == 0 &&
-           allocation->ContextResetGeneration == 0 && allocation->Resource2DState == VioGpu2DResourceBackingAttached &&
+           allocation->ContextId == 0 && allocation->ContextGeneration == 0 && allocation->ContextResetGeneration == 0;
+}
+
+BOOLEAN HasLiveGdiPresentIdentity(_In_ const VIOGPU_WDDM_ALLOCATION *allocation,
+                                  _In_ const VIOGPU_WDDM_CONTEXT *context,
+                                  _In_ const VioGpuDod *adapter)
+{
+    return HasGdiPresentIdentity(allocation, context, adapter) &&
+           allocation->Resource2DState == VioGpu2DResourceBackingAttached &&
            allocation->Resource2DResetGeneration != 0 && allocation->PlacementValid &&
            allocation->ApertureMdl != NULL && allocation->ApertureAddress != NULL &&
            allocation->ApertureMappedPageCount == allocation->AperturePageCount;
@@ -2429,10 +2434,9 @@ NTSTATUS ResolvePresentTransaction(PVOID privateDataBase,
                              transaction->Source->ContextId == privateData->ContextId &&
                              transaction->Source->ContextGeneration == privateData->Generation &&
                              transaction->Source->ContextResetGeneration == privateData->ResetGeneration;
-    BOOLEAN gdiIdentity = HasLiveGdiPresentIdentity(transaction->Source, context, adapter) &&
-                          privateData->ContextId == 0 && privateData->Generation == 0 &&
-                          privateData->ResetGeneration == 0 && transaction->Source->ContextId == 0 &&
-                          transaction->Source->ContextGeneration == 0 &&
+    BOOLEAN gdiIdentity = HasGdiPresentIdentity(transaction->Source, context, adapter) && privateData->ContextId == 0 &&
+                          privateData->Generation == 0 && privateData->ResetGeneration == 0 &&
+                          transaction->Source->ContextId == 0 && transaction->Source->ContextGeneration == 0 &&
                           transaction->Source->ContextResetGeneration == 0;
     if (!ValidatePresentDmaPacket(privateData, packet, transaction) ||
         transaction->PrivateDataSize < sizeof(*privateData) || (!nativeIdentity && !gdiIdentity))
@@ -6828,11 +6832,24 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     {
         BOOLEAN nativeSource = HasLiveNativePresentIdentity(source, context, context->Device->Adapter);
         BOOLEAN gdiCandidate = context->Type == VioGpuWddmContextGdi && IsGdiSourceAllocation(source);
-        BOOLEAN gdiPlacement = gdiCandidate && ReconcileGdiSourcePlacementAfterReset(source);
-        BOOLEAN gdiSource = gdiPlacement && HasLiveGdiPresentIdentity(source, context, context->Device->Adapter);
+        BOOLEAN gdiSource = gdiCandidate && HasGdiPresentIdentity(source, context, context->Device->Adapter);
         BOOLEAN nativeSourceCurrent = nativeSource &&
                                       context->Device->Adapter->IsNativeContextGenerationCurrent(source->ContextGeneration,
                                                                                                  source->ContextResetGeneration);
+        BOOLEAN sourcePrepatchValid = ValidatePresentPrepatchEntry(&present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX],
+                                                                   source,
+                                                                   FALSE,
+                                                                   &sourcePrepatched);
+        BOOLEAN destinationPrepatchValid = ValidatePresentPrepatchEntry(&present->pAllocationList[DXGK_PRESENT_DESTINATION_INDEX],
+                                                                        destination,
+                                                                        TRUE,
+                                                                        &destinationPrepatched);
+        BOOLEAN gdiSourcePrepatchLive = TRUE;
+        if (sourcePrepatchValid && sourcePrepatched && gdiSource)
+        {
+            gdiSourcePrepatchLive = ReconcileGdiSourcePlacementAfterReset(source) &&
+                                    HasLiveGdiPresentIdentity(source, context, context->Device->Adapter);
+        }
         VIOGPU_WDDM_PRESENT_DIAGNOSTIC_REASON reason = VioGpuWddmPresentDiagnosticNone;
 
         if (!nativeSourceCurrent && !gdiSource)
@@ -6840,10 +6857,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
             if (context->Type == VioGpuWddmContextNative)
             {
                 reason = VioGpuWddmPresentDiagnosticNativeSourceIdentity;
-            }
-            else if (gdiCandidate && !gdiPlacement)
-            {
-                reason = VioGpuWddmPresentDiagnosticGdiSourcePlacement;
             }
             else
             {
@@ -6859,23 +6872,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
         {
             reason = VioGpuWddmPresentDiagnosticDestinationObject;
         }
-        else if (!source->PlacementValid || source->ApertureMdl == NULL || source->ApertureAddress == NULL ||
-                 source->ApertureMappedPageCount != source->AperturePageCount)
-        {
-            reason = VioGpuWddmPresentDiagnosticSourcePlacement;
-        }
-        else if (!destination->PlacementValid || destination->ApertureMdl == NULL ||
-                 destination->ApertureAddress == NULL ||
-                 destination->ApertureMappedPageCount != destination->AperturePageCount)
-        {
-            reason = VioGpuWddmPresentDiagnosticDestinationPlacement;
-        }
-        else if (!EnsureStandard2DAllocationBacking(destination) ||
-                 destination->Resource2DState != VioGpu2DResourceBackingAttached ||
-                 destination->Resource2DResetGeneration == 0)
-        {
-            reason = VioGpuWddmPresentDiagnosticDestinationBacking;
-        }
         else if (!ValidatePresentGeometry(source,
                                           destination,
                                           &present->SrcRect,
@@ -6885,19 +6881,35 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
         {
             reason = VioGpuWddmPresentDiagnosticGeometry;
         }
-        else if (!ValidatePresentPrepatchEntry(&present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX],
-                                               source,
-                                               FALSE,
-                                               &sourcePrepatched))
+        else if (!sourcePrepatchValid)
         {
             reason = VioGpuWddmPresentDiagnosticSourcePrepatch;
         }
-        else if (!ValidatePresentPrepatchEntry(&present->pAllocationList[DXGK_PRESENT_DESTINATION_INDEX],
-                                               destination,
-                                               TRUE,
-                                               &destinationPrepatched))
+        else if (!destinationPrepatchValid)
         {
             reason = VioGpuWddmPresentDiagnosticDestinationPrepatch;
+        }
+        else if (sourcePrepatched && gdiSource && !gdiSourcePrepatchLive)
+        {
+            reason = VioGpuWddmPresentDiagnosticGdiSourcePlacement;
+        }
+        else if (sourcePrepatched &&
+                 (!source->PlacementValid || source->ApertureMdl == NULL || source->ApertureAddress == NULL ||
+                  source->ApertureMappedPageCount != source->AperturePageCount))
+        {
+            reason = VioGpuWddmPresentDiagnosticSourcePlacement;
+        }
+        else if (destinationPrepatched && (!destination->PlacementValid || destination->ApertureMdl == NULL ||
+                                           destination->ApertureAddress == NULL ||
+                                           destination->ApertureMappedPageCount != destination->AperturePageCount))
+        {
+            reason = VioGpuWddmPresentDiagnosticDestinationPlacement;
+        }
+        else if (destinationPrepatched && (!EnsureStandard2DAllocationBacking(destination) ||
+                                           destination->Resource2DState != VioGpu2DResourceBackingAttached ||
+                                           destination->Resource2DResetGeneration == 0))
+        {
+            reason = VioGpuWddmPresentDiagnosticDestinationBacking;
         }
 
         if (reason != VioGpuWddmPresentDiagnosticNone)

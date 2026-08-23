@@ -2847,14 +2847,14 @@ def check_wddm_standard_paging() -> None:
     allocation_info = canonical_code(function_body("InitializeAllocationInfo", WDDM_DDI_CODE))
     for fragment in (
         "BOOLEANcpuVisible=(allocation->Flags&VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE)!=0;",
-        "BOOLEANprimary=(allocation->Flags&VIOGPU_WDDM_ALLOCATION_PRIMARY)!=0;",
         "allocationInfo->Flags.CpuVisible=cpuVisible;",
-        "allocationInfo->Flags.PermanentSysMem=cpuVisible&&!primary;",
-        "allocationInfo->Flags.Cached=cpuVisible&&!primary;",
+        "allocationInfo->Flags.Cached=cpuVisible;",
         "allocationInfo->Flags.SynchronousPaging=TRUE;",
     ):
         if allocation_info.count(fragment) != 1:
             fail(f"ordinary VidMm allocation backing must retain its exact visibility contract: {fragment}")
+    if "PermanentSysMem" in allocation_info:
+        fail("CPU-visible Present sources must remain pageable into the aperture segment")
 
     query_segment = canonical_code(function_body("QuerySegment", WDDM_DDI_CODE))
     for fragment in (
@@ -3321,7 +3321,7 @@ def check_wddm_present_contract() -> None:
     ):
         if native_identity.count(fragment) != 1:
             fail(f"Native Present source must retain its exact live identity: {fragment}")
-    gdi_identity = canonical_code(function_body("HasLiveGdiPresentIdentity", WDDM_DDI_CODE))
+    gdi_identity = canonical_code(function_body("HasGdiPresentIdentity", WDDM_DDI_CODE))
     for fragment in (
         "context->Type==VioGpuWddmContextGdi",
         "IsGdiSourceAllocation(allocation)",
@@ -3332,6 +3332,12 @@ def check_wddm_present_contract() -> None:
         "allocation->ContextId==0",
         "allocation->ContextGeneration==0",
         "allocation->ContextResetGeneration==0",
+    ):
+        if gdi_identity.count(fragment) != 1:
+            fail(f"GDI Present source must retain its exact allocation identity: {fragment}")
+    live_gdi_identity = canonical_code(function_body("HasLiveGdiPresentIdentity", WDDM_DDI_CODE))
+    for fragment in (
+        "HasGdiPresentIdentity(allocation,context,adapter)",
         "allocation->Resource2DState==VioGpu2DResourceBackingAttached",
         "allocation->Resource2DResetGeneration!=0",
         "allocation->PlacementValid",
@@ -3339,13 +3345,13 @@ def check_wddm_present_contract() -> None:
         "allocation->ApertureAddress!=NULL",
         "allocation->ApertureMappedPageCount==allocation->AperturePageCount",
     ):
-        if gdi_identity.count(fragment) != 1:
+        if live_gdi_identity.count(fragment) != 1:
             fail(f"GDI Present source must retain its exact live standard-2D identity: {fragment}")
     for retired_fragment in (
         "allocation->Resource2DState==VioGpu2DResourceNone",
         "allocation->Resource2DResetGeneration==0",
     ):
-        if retired_fragment in gdi_identity:
+        if retired_fragment in live_gdi_identity:
             fail(f"paged-in GDI Present source must not require retired 2D identity: {retired_fragment}")
 
     allocation_parameter = "VIOGPU_WDDM_ALLOCATION *allocation"
@@ -3452,7 +3458,7 @@ def check_wddm_present_contract() -> None:
         "entry->Owner==privateData->Submission",
         "ReferencePresentTransaction(candidate)",
         "HasLiveNativePresentIdentity(transaction->Source,context,adapter)",
-        "HasLiveGdiPresentIdentity(transaction->Source,context,adapter)",
+        "HasGdiPresentIdentity(transaction->Source,context,adapter)",
         "privateData->ContextId==0&&privateData->Generation==0&&privateData->ResetGeneration==0",
         "transaction->Source->ContextId==0",
         "transaction->Source->ContextGeneration==0",
@@ -3657,14 +3663,22 @@ def check_wddm_present_contract() -> None:
         "AcquireAllocationSubmissionReference(source,context->Device->Adapter)",
         "AcquireAllocationSubmissionReference(destination,context->Device->Adapter)",
         "HasLiveNativePresentIdentity(source,context,context->Device->Adapter)",
-        "gdiCandidate&&ReconcileGdiSourcePlacementAfterReset(source)",
-        "gdiPlacement&&HasLiveGdiPresentIdentity(source,context,context->Device->Adapter)",
+        "gdiCandidate&&HasGdiPresentIdentity(source,context,context->Device->Adapter)",
         "IsStandardPrimaryAllocation(destination)",
         "EnsureStandard2DAllocationBacking(destination)",
         "ValidatePresentGeometry(source,destination,",
         "destinationOpen->ReadOnly",
         "ValidatePresentPrepatchEntry(&present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX],source,FALSE,&sourcePrepatched)",
         "ValidatePresentPrepatchEntry(&present->pAllocationList[DXGK_PRESENT_DESTINATION_INDEX],destination,TRUE,&destinationPrepatched)",
+        "BOOLEANsourcePrepatchValid=ValidatePresentPrepatchEntry(",
+        "BOOLEANdestinationPrepatchValid=ValidatePresentPrepatchEntry(",
+        "sourcePrepatchValid&&sourcePrepatched&&gdiSource",
+        "gdiSourcePrepatchLive=ReconcileGdiSourcePlacementAfterReset(source)&&"
+        "HasLiveGdiPresentIdentity(source,context,context->Device->Adapter);",
+        "sourcePrepatched&&gdiSource&&!gdiSourcePrepatchLive",
+        "sourcePrepatched&&(!source->PlacementValid",
+        "destinationPrepatched&&(!destination->PlacementValid",
+        "destinationPrepatched&&(!EnsureStandard2DAllocationBacking(destination)",
         "transaction->State=VioGpuWddmPresentBuilt;",
         "transaction->FullyPrepatched=sourcePrepatched&&destinationPrepatched;",
         "packet->SourcePlacementOffset=transaction->SourcePlacementOffset;",
@@ -3683,6 +3697,17 @@ def check_wddm_present_contract() -> None:
     ):
         if fragment not in present:
             fail(f"Present build must retain its exact Native/GDI and ownership contract: {fragment}")
+    require_order(
+        present,
+        (
+            "BOOLEANsourcePrepatchValid=ValidatePresentPrepatchEntry(",
+            "BOOLEANdestinationPrepatchValid=ValidatePresentPrepatchEntry(",
+            "gdiSourcePrepatchLive=ReconcileGdiSourcePlacementAfterReset(source)&&"
+            "HasLiveGdiPresentIdentity(source,context,context->Device->Adapter);",
+            "destinationPrepatched&&(!EnsureStandard2DAllocationBacking(destination)",
+        ),
+        "Present build must defer SegmentId-zero residency and Host-backing checks to Patch",
+    )
     private_zero = present.find("RtlZeroMemory(privateData,sizeof(*privateData));")
     if private_zero < 0 or "privateData->Submission" in present[:private_zero]:
         fail("Present must treat KMD private data as an uninitialized output until its success publication")
