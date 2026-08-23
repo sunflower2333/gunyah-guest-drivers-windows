@@ -3794,17 +3794,19 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
                         }
                         else if (IsStandardAllocation(allocation) && allocation->ResourceId != 0)
                         {
-                            BOOLEAN active = FALSE;
                             if (!ReconcileStandard2DAllocationAfterReset(allocation))
                             {
                                 status = STATUS_DEVICE_NOT_READY;
                             }
-                            else if (IsStandardPrimaryAllocation(allocation) &&
-                                     (!adapter->Query2DScanoutResource(allocation->ResourceId, &active) || active))
+                            else if (IsStandardPrimaryAllocation(allocation))
                             {
-                                status = STATUS_GRAPHICS_ALLOCATION_BUSY;
+                                BOOLEAN detached = FALSE;
+                                VIOGPU_HOST_CONTEXT_RESULT result = adapter->Detach2DScanoutResource(allocation->ResourceId,
+                                                                                                     &detached);
+                                status = result == VioGpuHostContextConfirmed && detached ? STATUS_SUCCESS
+                                                                                          : STATUS_DEVICE_NOT_READY;
                             }
-                            else
+                            if (status == STATUS_SUCCESS)
                             {
                                 BOOLEAN released = FALSE;
                                 VIOGPU_HOST_CONTEXT_RESULT result = adapter->Destroy2DResource(allocation->ResourceId,
@@ -5049,33 +5051,47 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
         status = STATUS_INVALID_DEVICE_STATE;
     }
 
-    BOOLEAN released = NT_SUCCESS(status);
-    if (NT_SUCCESS(status) && nativeAllocation && allocation->HostState != VioGpuWddmAllocationHostNone)
+    BOOLEAN released = FALSE;
+    if (NT_SUCCESS(status) && nativeAllocation)
     {
-        VIOGPU_HOST_CONTEXT_RESULT result = snapshot.Adapter->DestroyNativeGuestAllocation(&snapshot,
-                                                                                           allocation->ResourceId,
-                                                                                           &released);
-        status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
-        if (released)
+        if (allocation->HostState == VioGpuWddmAllocationHostNone)
         {
-            ClearAllocationHostBinding(allocation);
-        }
-    }
-    else if (NT_SUCCESS(status) && !nativeAllocation && allocation->Resource2DState != VioGpu2DResourceNone)
-    {
-        BOOLEAN active = FALSE;
-        if (IsStandardPrimaryAllocation(allocation) &&
-            (!adapter->Query2DScanoutResource(allocation->ResourceId, &active) || active))
-        {
-            status = STATUS_GRAPHICS_ALLOCATION_BUSY;
+            released = TRUE;
         }
         else
         {
-            VIOGPU_HOST_CONTEXT_RESULT result = adapter->Destroy2DResource(allocation->ResourceId,
-                                                                           &allocation->Resource2DState,
-                                                                           &allocation->Resource2DResetGeneration,
-                                                                           &released);
+            VIOGPU_HOST_CONTEXT_RESULT result = snapshot.Adapter->DestroyNativeGuestAllocation(&snapshot,
+                                                                                               allocation->ResourceId,
+                                                                                               &released);
             status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+            if (released)
+            {
+                ClearAllocationHostBinding(allocation);
+            }
+        }
+    }
+    else if (NT_SUCCESS(status) && !nativeAllocation)
+    {
+        if (allocation->Resource2DState == VioGpu2DResourceNone)
+        {
+            released = TRUE;
+        }
+        else
+        {
+            if (IsStandardPrimaryAllocation(allocation))
+            {
+                BOOLEAN detached = FALSE;
+                VIOGPU_HOST_CONTEXT_RESULT result = adapter->Detach2DScanoutResource(allocation->ResourceId, &detached);
+                status = result == VioGpuHostContextConfirmed && detached ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+            }
+            if (NT_SUCCESS(status))
+            {
+                VIOGPU_HOST_CONTEXT_RESULT result = adapter->Destroy2DResource(allocation->ResourceId,
+                                                                               &allocation->Resource2DState,
+                                                                               &allocation->Resource2DResetGeneration,
+                                                                               &released);
+                status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+            }
         }
     }
 
@@ -5276,13 +5292,20 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
         if (allocation == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
             allocation->Adapter != adapter || pagingBuffer->UnmapApertureSegment.SegmentId != VIOGPU_WDDM_SEGMENT_ID)
         {
-            return STATUS_GRAPHICS_ALLOCATION_BUSY;
+            adapter->RequestHardwareResetAtAnyIrql();
+            return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;
         }
-        return UnmapApertureAllocation(adapter,
-                                       allocation,
-                                       pagingBuffer->UnmapApertureSegment.OffsetInPages,
-                                       pagingBuffer->UnmapApertureSegment.NumberOfPages,
-                                       pagingBuffer->UnmapApertureSegment.DummyPage);
+        NTSTATUS status = UnmapApertureAllocation(adapter,
+                                                  allocation,
+                                                  pagingBuffer->UnmapApertureSegment.OffsetInPages,
+                                                  pagingBuffer->UnmapApertureSegment.NumberOfPages,
+                                                  pagingBuffer->UnmapApertureSegment.DummyPage);
+        if (!NT_SUCCESS(status))
+        {
+            adapter->RequestHardwareResetAtAnyIrql();
+            return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;
+        }
+        return STATUS_SUCCESS;
     }
 
     if (pagingBuffer->pDmaBuffer == NULL || pagingBuffer->pDmaBufferPrivateData == NULL ||

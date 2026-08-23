@@ -2727,14 +2727,21 @@ def check_wddm_standard_paging() -> None:
         "pagingBuffer->MapApertureSegment.pMdl",
         "pagingBuffer->MapApertureSegment.MdlOffset",
         "pagingBuffer->Operation==DXGK_OPERATION_UNMAP_APERTURE_SEGMENT",
-        "UnmapApertureAllocation(adapter,allocation,",
+        "NTSTATUSstatus=UnmapApertureAllocation(adapter,allocation,",
         "pagingBuffer->UnmapApertureSegment.DummyPage",
+        "adapter->RequestHardwareResetAtAnyIrql();",
+        "returnSTATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;",
         "(pagingBuffer->Transfer.Flags.Value&~0x1C)!=0",
         "(pagingBuffer->DiscardContent.Flags.Value&~1)!=0",
         "returnBuildSoftwarePagingTransaction(adapter,",
     ):
         if fragment not in build:
             fail(f"aperture paging must use VidMm MDLs and the shared software transaction path: {fragment}")
+    unmap_dispatch_start = build.find("if(pagingBuffer->Operation==DXGK_OPERATION_UNMAP_APERTURE_SEGMENT)")
+    unmap_dispatch_end = build.find("if(pagingBuffer->pDmaBuffer==NULL", unmap_dispatch_start)
+    if min(unmap_dispatch_start, unmap_dispatch_end) < 0 or \
+       "STATUS_GRAPHICS_ALLOCATION_BUSY" in build[unmap_dispatch_start:unmap_dispatch_end]:
+        fail("UNMAP_APERTURE must return only success or a retryable paging-buffer status")
 
     map_allocation = canonical_code(function_body("MapApertureAllocation", WDDM_DDI_CODE))
     for fragment in (
@@ -2815,7 +2822,11 @@ def check_wddm_standard_paging() -> None:
         "numberOfPages>(VIOGPU_WDDM_APERTURE_SIZE>>PAGE_SHIFT)-offsetInPages",
         "snapshot.Adapter->DestroyNativeGuestAllocation(",
         "adapter->Destroy2DResource(",
+        "adapter->Detach2DScanoutResource(allocation->ResourceId,&detached)",
         "nativeAllocation&&allocation->HostState!=VioGpuWddmAllocationHostNone&&!snapshotAcquired",
+        "BOOLEANreleased=FALSE;",
+        "if(allocation->HostState==VioGpuWddmAllocationHostNone){released=TRUE;}",
+        "if(allocation->Resource2DState==VioGpu2DResourceNone){released=TRUE;}",
         "ReleaseApertureCpuMapping(allocation);",
         "static_cast<ULONGLONG>(dummyPage.QuadPart)>>PAGE_SHIFT",
         "allocation->ApertureMappedPages[allocationPageIndex]=VioGpuWddmAperturePageDummy;",
@@ -2834,6 +2845,8 @@ def check_wddm_standard_paging() -> None:
     replace_pfn = unmap_allocation.find("allocation->AperturePfns[allocationPageIndex]=dummyPfn;", release_mapping)
     if min(host_release, release_mapping, replace_pfn) < 0 or not host_release < release_mapping < replace_pfn:
         fail("aperture unmap must retire host ownership before changing retained PFNs")
+    if "BOOLEANreleased=NT_SUCCESS(status);" in unmap_allocation:
+        fail("aperture unmap must not publish DummyPage state after a failed Host retirement")
 
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
     destroy_host = destroy_allocation.find(
@@ -2932,6 +2945,47 @@ def check_wddm_standard_primary_scanout() -> None:
     if "m_2DScanoutResourceId=resourceId;" in set_host.split("if(result==VioGpuHostContextConfirmed)", 1)[0]:
         fail("2D scanout ownership must not publish before Host confirmation")
 
+    detach_host = canonical_code(function_body("VioGpuAdapter::Detach2DScanoutResource", VIOGPU_CODE))
+    for fragment in (
+        "KeWaitForSingleObject(&m_2DScanoutMutex,Executive,KernelMode,FALSE,&timeout)",
+        "Reconcile2DScanoutAfterResetLocked();",
+        "if(m_2DScanoutResourceId!=resourceId)",
+        "m_CtrlQueue.SetScanoutSynchronous(0,0,0,0,0,0)",
+        "if(result==VioGpuHostContextConfirmed)",
+        "m_2DScanoutResourceId=0;",
+        "m_2DScanoutResetGeneration=0;",
+        "*detached=TRUE;",
+        "elseif(result==VioGpuHostContextUnknown)",
+        "m_2DScanoutUnknown=TRUE;",
+        "FailNativeContextAtAnyIrql();",
+        "KeReleaseMutex(&m_2DScanoutMutex,FALSE);",
+    ):
+        if fragment not in detach_host:
+            fail(f"primary retirement must atomically detach only its own scanout: {fragment}")
+    detach_decision = detach_host.find("if(m_2DScanoutResourceId!=resourceId)")
+    detach_command = detach_host.find("m_CtrlQueue.SetScanoutSynchronous(0,0,0,0,0,0)")
+    if min(detach_decision, detach_command) < 0 or detach_decision > detach_command:
+        fail("primary retirement must identify the current owner before disabling the scanout")
+
+    detach_dod = canonical_code(function_body("VioGpuDod::Detach2DScanoutResource", VIOGPU_CODE))
+    for fragment in (
+        "*detached=FALSE;",
+        "AcquireNativeSubmissionOperation()",
+        "adapter->Detach2DScanoutResource(resourceId,detached)",
+        "ReleaseNativeSubmissionOperation();",
+    ):
+        if fragment not in detach_dod:
+            fail(f"primary detach must retain the outer transport rundown: {fragment}")
+
+    visibility = canonical_code(function_body("VioGpuDod::SetVidPnSourceVisibility", VIOGPU_CODE))
+    visibility_gate = visibility.find("if(!IsHardwareResetRequested())")
+    visibility_disable = visibility.find("Set2DScanout(0,0,0,0,&previousResourceId)")
+    visibility_publish = visibility.find("m_CurrentMode.Flags.SourceNotVisible=!(pSetVidPnSourceVisibility->Visible);")
+    if min(visibility_gate, visibility_disable, visibility_publish) < 0 or \
+       not visibility_gate < visibility_disable < visibility_publish or \
+       "if(result!=VioGpuHostContextConfirmed){returnSTATUS_DEVICE_NOT_READY;}" not in visibility:
+        fail("an active invisible VidPN source must confirm scanout disable before publishing hidden state")
+
     query_host = canonical_code(function_body("VioGpuAdapter::Query2DScanoutResource", VIOGPU_CODE))
     for fragment in (
         "Reconcile2DScanoutAfterResetLocked();",
@@ -2964,10 +3018,13 @@ def check_wddm_standard_primary_scanout() -> None:
 
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
     unmap_allocation = canonical_code(function_body("UnmapApertureAllocation", WDDM_DDI_CODE))
-    if destroy_allocation.count("Query2DScanoutResource(allocation->ResourceId,&active)") != 1:
-        fail("DestroyAllocation must not unref a scanout-owned primary")
-    if unmap_allocation.count("Query2DScanoutResource(allocation->ResourceId,&active)") != 1:
-        fail("standard primary aperture unmap must reject scanout-owned backing")
+    if destroy_allocation.count("Detach2DScanoutResource(allocation->ResourceId,&detached)") != 1:
+        fail("DestroyAllocation must detach its exact scanout before unref")
+    if unmap_allocation.count("Detach2DScanoutResource(allocation->ResourceId,&detached)") != 1:
+        fail("standard primary aperture unmap must detach its exact scanout before unref")
+    if "Query2DScanoutResource(allocation->ResourceId" in destroy_allocation or \
+       "Query2DScanoutResource(allocation->ResourceId" in unmap_allocation:
+        fail("primary retirement must not use a racy query-then-disable scanout sequence")
 
     query_caps = canonical_code(function_body("VioGpuDod::QueryAdapterInfo", VIOGPU_CODE))
     wddm_query_caps = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))

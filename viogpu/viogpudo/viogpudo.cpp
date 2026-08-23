@@ -1527,6 +1527,25 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
     return result;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached)
+{
+    if (detached == NULL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    *detached = FALSE;
+    if (!AcquireNativeSubmissionOperation())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    VIOGPU_HOST_CONTEXT_RESULT result = adapter != NULL ? adapter->Detach2DScanoutResource(resourceId, detached)
+                                                        : VioGpuHostContextNotSubmitted;
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
 BOOLEAN VioGpuDod::Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active)
 {
     if (active == NULL)
@@ -3259,6 +3278,17 @@ NTSTATUS VioGpuDod::SetVidPnSourceVisibility(_In_ CONST DXGKARG_SETVIDPNSOURCEVI
     }
     else
     {
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        if (!IsHardwareResetRequested())
+        {
+            UINT previousResourceId = 0;
+            VIOGPU_HOST_CONTEXT_RESULT result = Set2DScanout(0, 0, 0, 0, &previousResourceId);
+            if (result != VioGpuHostContextConfirmed)
+            {
+                return STATUS_DEVICE_NOT_READY;
+            }
+        }
+#endif
         m_pHWDevice->BlackOutScreen(&m_CurrentMode);
     }
 
@@ -5109,6 +5139,62 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
     {
         m_2DScanoutResourceId = resourceId;
         m_2DScanoutResetGeneration = resourceId == 0 ? 0 : operationGeneration;
+    }
+    else if (result == VioGpuHostContextUnknown)
+    {
+        m_2DScanoutUnknown = TRUE;
+        m_2DScanoutResetGeneration = operationGeneration;
+        FailNativeContextAtAnyIrql();
+    }
+    KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached)
+{
+    if (detached == NULL || resourceId == 0 || resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    *detached = FALSE;
+
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&m_2DScanoutMutex, Executive, KernelMode, FALSE, &timeout);
+    if (status != STATUS_SUCCESS)
+    {
+        FailNativeContextAtAnyIrql();
+        return VioGpuHostContextUnknown;
+    }
+    Reconcile2DScanoutAfterResetLocked();
+    if (m_2DScanoutUnknown)
+    {
+        KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+        return VioGpuHostContextUnknown;
+    }
+    if (m_2DScanoutResourceId != resourceId)
+    {
+        *detached = TRUE;
+        KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+        return VioGpuHostContextConfirmed;
+    }
+
+    ULONGLONG operationGeneration = static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration,
+                                                                                        0,
+                                                                                        0));
+    if (operationGeneration == 0)
+    {
+        KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(0, 0, 0, 0, 0, 0);
+    if (result == VioGpuHostContextConfirmed)
+    {
+        m_2DScanoutResourceId = 0;
+        m_2DScanoutResetGeneration = 0;
+        *detached = TRUE;
     }
     else if (result == VioGpuHostContextUnknown)
     {

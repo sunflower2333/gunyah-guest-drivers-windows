@@ -226,6 +226,13 @@ primaries can only advertise writable segments with those properties; its
 backing remains ordinary guest RAM supplied through `MapApertureSegment`.
 `DxgkDdiSetVidPnSourceAddress` validates and selects only a resident standard
 primary with current 2D backing.
+When a VidPN source becomes invisible, the driver confirms an all-zero
+`SET_SCANOUT` before publishing the hidden state. Aperture unmap and allocation
+destroy use a mutex-serialized detach-if-current operation, so retirement of an
+old primary cannot disable a newer scanout. Host ownership is unreferenced only
+after that detach is confirmed, and a failed unmap keeps the original PFNs and
+requests reset while returning a paging retry status instead of an UNMAP-invalid
+allocation-busy status.
 
 The source also implements a synchronous CPU-copy `DxgkDdiPresent` path. A
 Native context may present only an exact live native allocation identity; a GDI
@@ -321,9 +328,9 @@ The focused safety contract for the current slice passes locally:
 python viogpu/viogpuwddm/check-contract.py
 ```
 
-The ARM64 workflows use `windows-2025-vs2026`, conditionally install the pinned
-Windows SDK/WDK 28000 packages with the runner's `winget`, verify the required
-ARM64 kit files, and emit ARM64 driver targets only. Their x64 tools are
+The ARM64 workflows use `windows-2022`, locate and verify a complete preinstalled
+Windows SDK/WDK with the required ARM64 kit files, and emit ARM64 driver targets
+only. Their x64 tools are
 runner-side cross-build and ABI-fixture tools, not product targets. The mutation
 suite is intentionally not wired into ordinary or manual CI; do not run it until
 the implementation phase is complete and a major contract-boundary validation
