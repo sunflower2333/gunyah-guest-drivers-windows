@@ -172,6 +172,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     InitializeListHead(&m_WddmPresentTransactions);
     m_WddmPresentClosing = TRUE;
     m_NativePresentDiagnosticRecorded = 0;
+    m_NativePresentExecutionDiagnosticRecorded = 0;
 #endif
     m_PersistentDispMode0Width = 0;
     m_PersistentDispMode0Height = 0;
@@ -4171,6 +4172,12 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
 {
     PAGED_CODE();
 
+    if (stage == VioGpuNativeStartEntered)
+    {
+        InterlockedExchange(&m_NativePresentDiagnosticRecorded, 2);
+        InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 2);
+    }
+
     HANDLE deviceKey = NULL;
     NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
     if (!NT_SUCCESS(openStatus))
@@ -4184,11 +4191,21 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
     }
 
     NTSTATUS presentReasonWrite = STATUS_SUCCESS;
+    NTSTATUS presentExecuteStageWrite = STATUS_SUCCESS;
     if (stage == VioGpuNativeStartEntered)
     {
         DWORD presentReason = 0;
-        InterlockedExchange(&m_NativePresentDiagnosticRecorded, 0);
+        DWORD presentExecuteStage = 0;
         presentReasonWrite = WriteRegistryDWORD(deviceKey, L"NativePresentReason", &presentReason);
+        presentExecuteStageWrite = WriteRegistryDWORD(deviceKey, L"NativePresentExecuteStage", &presentExecuteStage);
+        if (NT_SUCCESS(presentReasonWrite))
+        {
+            InterlockedExchange(&m_NativePresentDiagnosticRecorded, 0);
+        }
+        if (NT_SUCCESS(presentExecuteStageWrite))
+        {
+            InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 0);
+        }
     }
 
     DWORD statusValue = static_cast<DWORD>(status);
@@ -4199,16 +4216,17 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
     NTSTATUS stageWrite = WriteRegistryDWORD(deviceKey, L"NativeStartStage", &stageValue);
     ZwClose(deviceKey);
 
-    if (!NT_SUCCESS(presentReasonWrite) || !NT_SUCCESS(statusWrite) || !NT_SUCCESS(detailWrite) ||
-        !NT_SUCCESS(stageWrite))
+    if (!NT_SUCCESS(presentReasonWrite) || !NT_SUCCESS(presentExecuteStageWrite) || !NT_SUCCESS(statusWrite) ||
+        !NT_SUCCESS(detailWrite) || !NT_SUCCESS(stageWrite))
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
                    "viogpu native start diagnostic: write failed, stage=0x%04X status=0x%08X "
-                   "writes=%08X/%08X/%08X/%08X\n",
+                   "writes=%08X/%08X/%08X/%08X/%08X\n",
                    stageValue,
                    statusValue,
                    presentReasonWrite,
+                   presentExecuteStageWrite,
                    statusWrite,
                    detailWrite,
                    stageWrite);
@@ -4284,7 +4302,7 @@ VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,
     NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
     if (!NT_SUCCESS(openStatus))
     {
-        InterlockedExchange(&m_NativePresentDiagnosticRecorded, 0);
+        InterlockedExchange(&m_NativePresentDiagnosticRecorded, 2);
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
                    "viogpu Present diagnostic: registry open failed, reason=%u status=0x%08X open=0x%08X\n",
@@ -4342,8 +4360,10 @@ VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,
     };
     // clang-format on
 
-    NTSTATUS writeStatus = STATUS_SUCCESS;
-    for (UINT index = 0; index < ARRAYSIZE(values); ++index)
+    DWORD emptyReason = 0;
+    NTSTATUS invalidateStatus = WriteRegistryDWORD(deviceKey, L"NativePresentReason", &emptyReason);
+    NTSTATUS writeStatus = invalidateStatus;
+    for (UINT index = 0; NT_SUCCESS(writeStatus) && index < ARRAYSIZE(values); ++index)
     {
         DWORD value = values[index].Value;
         NTSTATUS currentStatus = WriteRegistryDWORD(deviceKey, values[index].Name, &value);
@@ -4360,12 +4380,13 @@ VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,
 
     if (!NT_SUCCESS(writeStatus) || !NT_SUCCESS(reasonWrite))
     {
-        InterlockedExchange(&m_NativePresentDiagnosticRecorded, 0);
+        InterlockedExchange(&m_NativePresentDiagnosticRecorded, 2);
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
-                   "viogpu Present diagnostic: write failed, reason=%u status=0x%08X writes=%08X/%08X\n",
+                   "viogpu Present diagnostic: write failed, reason=%u status=0x%08X writes=%08X/%08X/%08X\n",
                    reason,
                    statusValue,
+                   invalidateStatus,
                    writeStatus,
                    reasonWrite);
         return;
@@ -4379,6 +4400,121 @@ VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,
                statusValue,
                diagnostic->ContextType,
                diagnostic->PresentFlags);
+}
+
+BOOLEAN VioGpuDod::ClaimNativePresentExecutionDiagnostic(void)
+{
+    PAGED_CODE();
+
+    return InterlockedCompareExchange(&m_NativePresentExecutionDiagnosticRecorded, 1, 0) == 0;
+}
+
+VOID VioGpuDod::RecordNativePresentExecutionDiagnostic(_In_ const VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC *diagnostic)
+{
+    PAGED_CODE();
+
+    if (diagnostic == NULL || diagnostic->Stage == 0 || diagnostic->Stage == 0x0FFF ||
+        InterlockedCompareExchange(&m_NativePresentExecutionDiagnosticRecorded, 1, 1) != 1)
+    {
+        return;
+    }
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 2);
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu Present execution diagnostic: registry open failed, stage=%u status=0x%08X open=0x%08X\n",
+                   diagnostic->Stage,
+                   diagnostic->Status,
+                   openStatus);
+        return;
+    }
+
+    struct DIAGNOSTIC_VALUE
+    {
+        PCWSTR Name;
+        DWORD Value;
+    };
+    DWORD hardwareResetState = static_cast<DWORD>(QueryHardwareResetState());
+    DWORD hardwareResetCallerRva = static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetCallerRva, 0, 0));
+    // clang-format off
+    const DIAGNOSTIC_VALUE values[] = {
+        {L"NativePresentExecuteStatus", diagnostic->Status},
+        {L"NativePresentExecuteDetail", diagnostic->Detail},
+        {L"NativePresentExecuteHardwareResetState", hardwareResetState},
+        {L"NativePresentExecuteHardwareResetCallerRva", hardwareResetCallerRva},
+        {L"NativePresentExecuteFenceId", diagnostic->FenceId},
+        {L"NativePresentExecuteTransactionState", diagnostic->TransactionState},
+        {L"NativePresentExecuteContextType", diagnostic->ContextType},
+        {L"NativePresentExecuteSourceResourceId", diagnostic->SourceResourceId},
+        {L"NativePresentExecuteDestinationResourceId", diagnostic->DestinationResourceId},
+        {L"NativePresentExecuteSourcePlacementState", diagnostic->SourcePlacementState},
+        {L"NativePresentExecuteDestinationPlacementState", diagnostic->DestinationPlacementState},
+        {L"NativePresentExecuteSourceResource2DState", diagnostic->SourceResource2DState},
+        {L"NativePresentExecuteDestinationResource2DState", diagnostic->DestinationResource2DState},
+        {L"NativePresentExecuteSourcePlacementOffsetLow", diagnostic->SourcePlacementOffsetLow},
+        {L"NativePresentExecuteSourcePlacementOffsetHigh", diagnostic->SourcePlacementOffsetHigh},
+        {L"NativePresentExecuteDestinationPlacementOffsetLow", diagnostic->DestinationPlacementOffsetLow},
+        {L"NativePresentExecuteDestinationPlacementOffsetHigh", diagnostic->DestinationPlacementOffsetHigh},
+        {L"NativePresentExecuteTransactionSourcePlacementOffsetLow", diagnostic->TransactionSourcePlacementOffsetLow},
+        {L"NativePresentExecuteTransactionSourcePlacementOffsetHigh", diagnostic->TransactionSourcePlacementOffsetHigh},
+        {L"NativePresentExecuteTransactionDestinationPlacementOffsetLow", diagnostic->TransactionDestinationPlacementOffsetLow},
+        {L"NativePresentExecuteTransactionDestinationPlacementOffsetHigh", diagnostic->TransactionDestinationPlacementOffsetHigh},
+        {L"NativePresentExecuteSourceResetGenerationLow", diagnostic->SourceResetGenerationLow},
+        {L"NativePresentExecuteSourceResetGenerationHigh", diagnostic->SourceResetGenerationHigh},
+        {L"NativePresentExecuteDestinationResetGenerationLow", diagnostic->DestinationResetGenerationLow},
+        {L"NativePresentExecuteDestinationResetGenerationHigh", diagnostic->DestinationResetGenerationHigh},
+        {L"NativePresentExecuteTransactionDestinationResetGenerationLow", diagnostic->TransactionDestinationResetGenerationLow},
+        {L"NativePresentExecuteTransactionDestinationResetGenerationHigh", diagnostic->TransactionDestinationResetGenerationHigh},
+    };
+    // clang-format on
+
+    DWORD emptyStage = 0;
+    NTSTATUS invalidateStatus = WriteRegistryDWORD(deviceKey, L"NativePresentExecuteStage", &emptyStage);
+    NTSTATUS writeStatus = invalidateStatus;
+    for (UINT index = 0; NT_SUCCESS(writeStatus) && index < ARRAYSIZE(values); ++index)
+    {
+        DWORD value = values[index].Value;
+        NTSTATUS currentStatus = WriteRegistryDWORD(deviceKey, values[index].Name, &value);
+        if (!NT_SUCCESS(currentStatus) && NT_SUCCESS(writeStatus))
+        {
+            writeStatus = currentStatus;
+        }
+    }
+
+    DWORD stageValue = diagnostic->Stage;
+    NTSTATUS stageWrite = NT_SUCCESS(writeStatus) ? WriteRegistryDWORD(deviceKey,
+                                                                       L"NativePresentExecuteStage",
+                                                                       &stageValue)
+                                                  : writeStatus;
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(writeStatus) || !NT_SUCCESS(stageWrite))
+    {
+        InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 2);
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu Present execution diagnostic: write failed, stage=%u status=0x%08X "
+                   "writes=%08X/%08X/%08X\n",
+                   diagnostic->Stage,
+                   diagnostic->Status,
+                   invalidateStatus,
+                   writeStatus,
+                   stageWrite);
+        return;
+    }
+
+    InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 2);
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu Present execution diagnostic: stage=%u status=0x%08X detail=0x%08X fence=%u\n",
+               diagnostic->Stage,
+               diagnostic->Status,
+               diagnostic->Detail,
+               diagnostic->FenceId);
 }
 #endif
 

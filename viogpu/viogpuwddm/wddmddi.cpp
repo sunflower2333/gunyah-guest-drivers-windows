@@ -2083,6 +2083,75 @@ DWORD BuildPresentPlacementDiagnosticState(_In_opt_ const VIOGPU_WDDM_ALLOCATION
     return state;
 }
 
+DWORD PresentDiagnosticLowPart(_In_ ULONGLONG value)
+{
+    return static_cast<DWORD>(value & MAXULONG);
+}
+
+DWORD PresentDiagnosticHighPart(_In_ ULONGLONG value)
+{
+    return static_cast<DWORD>(value >> 32);
+}
+
+VOID InitializePresentExecutionDiagnostic(_In_opt_ const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
+                                          _In_ VIOGPU_WDDM_PRESENT_EXECUTION_STAGE stage,
+                                          _In_ NTSTATUS status,
+                                          _In_ DWORD detail,
+                                          _Out_ VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC *diagnostic)
+{
+    RtlZeroMemory(diagnostic, sizeof(*diagnostic));
+    diagnostic->Stage = static_cast<DWORD>(stage);
+    diagnostic->Status = static_cast<DWORD>(status);
+    diagnostic->Detail = detail;
+    if (transaction == NULL)
+    {
+        return;
+    }
+
+    diagnostic->FenceId = transaction->FenceId;
+    diagnostic->TransactionState = static_cast<DWORD>(InterlockedCompareExchange(const_cast<volatile LONG *>(&transaction->State),
+                                                                                 0,
+                                                                                 0));
+    diagnostic->ContextType = transaction->Context == NULL ? 0 : static_cast<DWORD>(transaction->Context->Type);
+}
+
+VOID BuildPresentExecutionDiagnostic(_In_ const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
+                                     _In_ VIOGPU_WDDM_PRESENT_EXECUTION_STAGE stage,
+                                     _In_ NTSTATUS status,
+                                     _In_ DWORD detail,
+                                     _Out_ VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC *diagnostic)
+{
+    InitializePresentExecutionDiagnostic(transaction, stage, status, detail, diagnostic);
+    const VIOGPU_WDDM_ALLOCATION *source = transaction->Source;
+    const VIOGPU_WDDM_ALLOCATION *destination = transaction->Destination;
+    diagnostic->SourceResourceId = source == NULL ? 0 : source->ResourceId;
+    diagnostic->DestinationResourceId = destination == NULL ? 0 : destination->ResourceId;
+    diagnostic->SourcePlacementState = BuildPresentPlacementDiagnosticState(source);
+    diagnostic->DestinationPlacementState = BuildPresentPlacementDiagnosticState(destination);
+    diagnostic->SourceResource2DState = source == NULL ? 0 : static_cast<DWORD>(source->Resource2DState);
+    diagnostic->DestinationResource2DState = destination == NULL ? 0 : static_cast<DWORD>(destination->Resource2DState);
+
+    ULONGLONG sourcePlacementOffset = source == NULL ? 0 : source->PlacementOffset;
+    ULONGLONG destinationPlacementOffset = destination == NULL ? 0 : destination->PlacementOffset;
+    diagnostic->SourcePlacementOffsetLow = PresentDiagnosticLowPart(sourcePlacementOffset);
+    diagnostic->SourcePlacementOffsetHigh = PresentDiagnosticHighPart(sourcePlacementOffset);
+    diagnostic->DestinationPlacementOffsetLow = PresentDiagnosticLowPart(destinationPlacementOffset);
+    diagnostic->DestinationPlacementOffsetHigh = PresentDiagnosticHighPart(destinationPlacementOffset);
+    diagnostic->TransactionSourcePlacementOffsetLow = PresentDiagnosticLowPart(transaction->SourcePlacementOffset);
+    diagnostic->TransactionSourcePlacementOffsetHigh = PresentDiagnosticHighPart(transaction->SourcePlacementOffset);
+    diagnostic->TransactionDestinationPlacementOffsetLow = PresentDiagnosticLowPart(transaction->DestinationPlacementOffset);
+    diagnostic->TransactionDestinationPlacementOffsetHigh = PresentDiagnosticHighPart(transaction->DestinationPlacementOffset);
+
+    ULONGLONG sourceResetGeneration = source == NULL ? 0 : source->Resource2DResetGeneration;
+    ULONGLONG destinationResetGeneration = destination == NULL ? 0 : destination->Resource2DResetGeneration;
+    diagnostic->SourceResetGenerationLow = PresentDiagnosticLowPart(sourceResetGeneration);
+    diagnostic->SourceResetGenerationHigh = PresentDiagnosticHighPart(sourceResetGeneration);
+    diagnostic->DestinationResetGenerationLow = PresentDiagnosticLowPart(destinationResetGeneration);
+    diagnostic->DestinationResetGenerationHigh = PresentDiagnosticHighPart(destinationResetGeneration);
+    diagnostic->TransactionDestinationResetGenerationLow = PresentDiagnosticLowPart(transaction->DestinationResetGeneration);
+    diagnostic->TransactionDestinationResetGenerationHigh = PresentDiagnosticHighPart(transaction->DestinationResetGeneration);
+}
+
 DWORD BuildPresentAllocationListDiagnosticValue(_In_ const DXGK_ALLOCATIONLIST *entry)
 {
     if (entry == NULL)
@@ -2490,13 +2559,32 @@ BOOLEAN RetirePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     return TRUE;
 }
 
-NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
+NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
+                                   VIOGPU_WDDM_PRESENT_EXECUTION_STAGE *failureStage,
+                                   DWORD *failureDetail,
+                                   VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC *executionDiagnostic)
 {
+    if (failureStage == NULL || failureDetail == NULL || executionDiagnostic == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *failureStage = VioGpuWddmPresentExecuteInvalidTransaction;
+    *failureDetail = 0;
+    InitializePresentExecutionDiagnostic(NULL, *failureStage, STATUS_CANCELLED, *failureDetail, executionDiagnostic);
     if (transaction == NULL || transaction->Signature != VIOGPU_WDDM_PRESENT_TRANSACTION_SIGNATURE ||
         transaction->Context == NULL || transaction->Adapter == NULL || transaction->Source == NULL ||
-        transaction->Destination == NULL || transaction->RectCount == 0 || transaction->DestinationSubRects == NULL ||
-        InterlockedCompareExchange(&transaction->CancelRequested, 0, 0) != 0)
+        transaction->Destination == NULL || transaction->RectCount == 0 || transaction->DestinationSubRects == NULL)
     {
+        return STATUS_CANCELLED;
+    }
+    if (InterlockedCompareExchange(&transaction->CancelRequested, 0, 0) != 0)
+    {
+        *failureStage = VioGpuWddmPresentExecuteCancelled;
+        InitializePresentExecutionDiagnostic(transaction,
+                                             *failureStage,
+                                             STATUS_CANCELLED,
+                                             *failureDetail,
+                                             executionDiagnostic);
         return STATUS_CANCELLED;
     }
 
@@ -2505,6 +2593,8 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
     NTSTATUS status = AcquireAllocationLifecycle(source);
     if (!NT_SUCCESS(status))
     {
+        *failureStage = VioGpuWddmPresentExecuteSourceLifecycle;
+        InitializePresentExecutionDiagnostic(transaction, *failureStage, status, *failureDetail, executionDiagnostic);
         return status;
     }
     BOOLEAN destinationLocked = FALSE;
@@ -2512,6 +2602,10 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
     if (NT_SUCCESS(status))
     {
         destinationLocked = TRUE;
+    }
+    else
+    {
+        *failureStage = VioGpuWddmPresentExecuteDestinationLifecycle;
     }
 
     VIOGPU_NATIVE_CONTEXT_SNAPSHOT sourceSnapshot = {};
@@ -2526,6 +2620,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
             if (!ReconcileGdiSourcePlacementAfterReset(source))
             {
                 status = STATUS_DEVICE_NOT_READY;
+                *failureStage = VioGpuWddmPresentExecuteGdiSourceReconcile;
             }
             else
             {
@@ -2537,23 +2632,74 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
                                sourceSnapshot.Generation == source->ContextGeneration &&
                                sourceSnapshot.ResetGeneration == source->ContextResetGeneration) ||
                               gdiSource;
-        if (!NT_SUCCESS(status) || !sourceValid || source->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
-            destination->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE || source->Adapter != transaction->Adapter ||
-            destination->Adapter != transaction->Adapter || source == destination ||
-            !IsStandardPrimaryAllocation(destination) || !source->PlacementValid || source->ApertureAddress == NULL ||
-            !EnsureStandard2DAllocationBacking(destination) ||
-            destination->Resource2DState != VioGpu2DResourceBackingAttached || !destination->PlacementValid ||
-            !ValidatePresentGeometry(source,
-                                     destination,
-                                     &transaction->SourceRect,
-                                     &transaction->DestinationRect,
-                                     transaction->DestinationSubRects,
-                                     transaction->RectCount) ||
-            source->PlacementOffset != transaction->SourcePlacementOffset ||
-            destination->PlacementOffset != transaction->DestinationPlacementOffset ||
-            destination->Resource2DResetGeneration != transaction->DestinationResetGeneration)
+        if (NT_SUCCESS(status) && !sourceValid)
         {
             status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteSourceIdentity;
+        }
+        else if (NT_SUCCESS(status) &&
+                 (source->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE || source->Adapter != transaction->Adapter))
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteSourceObject;
+        }
+        else if (NT_SUCCESS(status) && (destination->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
+                                        destination->Adapter != transaction->Adapter))
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteDestinationObject;
+        }
+        else if (NT_SUCCESS(status) && source == destination)
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteAliasedAllocations;
+        }
+        else if (NT_SUCCESS(status) && !IsStandardPrimaryAllocation(destination))
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteDestinationPrimary;
+        }
+        else if (NT_SUCCESS(status) && (!source->PlacementValid || source->ApertureAddress == NULL))
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteSourcePlacement;
+        }
+        else if (NT_SUCCESS(status) && (!EnsureStandard2DAllocationBacking(destination) ||
+                                        destination->Resource2DState != VioGpu2DResourceBackingAttached))
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteDestinationBacking;
+        }
+        else if (NT_SUCCESS(status) && !destination->PlacementValid)
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteDestinationPlacement;
+        }
+        else if (NT_SUCCESS(status) && !ValidatePresentGeometry(source,
+                                                                destination,
+                                                                &transaction->SourceRect,
+                                                                &transaction->DestinationRect,
+                                                                transaction->DestinationSubRects,
+                                                                transaction->RectCount))
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteGeometry;
+        }
+        else if (NT_SUCCESS(status) && source->PlacementOffset != transaction->SourcePlacementOffset)
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteSourcePlacementOffset;
+        }
+        else if (NT_SUCCESS(status) && destination->PlacementOffset != transaction->DestinationPlacementOffset)
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteDestinationPlacementOffset;
+        }
+        else if (NT_SUCCESS(status) &&
+                 destination->Resource2DResetGeneration != transaction->DestinationResetGeneration)
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteDestinationResetGeneration;
         }
     }
 
@@ -2562,6 +2708,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
         if (source->ApertureAddress == NULL || destination->ApertureAddress == NULL)
         {
             status = STATUS_DEVICE_NOT_READY;
+            *failureStage = VioGpuWddmPresentExecuteCopyAddress;
         }
         if (NT_SUCCESS(status))
         {
@@ -2592,6 +2739,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
     if (NT_SUCCESS(status) && InterlockedCompareExchange(&transaction->CancelRequested, 0, 0) != 0)
     {
         status = STATUS_CANCELLED;
+        *failureStage = VioGpuWddmPresentExecuteCancelled;
     }
     for (UINT index = 0; NT_SUCCESS(status) && index < transaction->RectCount; ++index)
     {
@@ -2612,12 +2760,27 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
             InterlockedCompareExchange(&transaction->CancelRequested, 0, 0) != 0)
         {
             status = result == VioGpuHostContextConfirmed ? STATUS_CANCELLED : STATUS_DEVICE_NOT_READY;
+            *failureStage = result == VioGpuHostContextConfirmed ? VioGpuWddmPresentExecuteCancelled
+                                                                 : VioGpuWddmPresentExecuteHostPresent;
+            *failureDetail = static_cast<DWORD>(result);
         }
     }
 
     if (sourceSnapshotAcquired)
     {
         VioGpuAdapter::ReleaseNativeContextSnapshot(&sourceSnapshot);
+    }
+    if (NT_SUCCESS(status))
+    {
+        *failureStage = VioGpuWddmPresentExecuteComplete;
+    }
+    if (destinationLocked)
+    {
+        BuildPresentExecutionDiagnostic(transaction, *failureStage, status, *failureDetail, executionDiagnostic);
+    }
+    else
+    {
+        InitializePresentExecutionDiagnostic(transaction, *failureStage, status, *failureDetail, executionDiagnostic);
     }
     if (destinationLocked)
     {
@@ -2662,12 +2825,34 @@ _Use_decl_annotations_ VOID NativePresentWorker(PVOID callbackContext)
     UINT nodeOrdinal = transaction->Context->NodeOrdinal;
     UINT engineOrdinal = 0;
     BOOLEAN operationAcquired = adapter->AcquireNativeSubmissionOperation();
-    NTSTATUS status = operationAcquired ? ExecutePresentTransaction(transaction) : STATUS_DEVICE_NOT_READY;
+    VIOGPU_WDDM_PRESENT_EXECUTION_STAGE failureStage = VioGpuWddmPresentExecuteSubmissionOperation;
+    DWORD failureDetail = 0;
+    VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC executionDiagnostic = {};
+    NTSTATUS status = STATUS_DEVICE_NOT_READY;
+    if (operationAcquired)
+    {
+        status = ExecutePresentTransaction(transaction, &failureStage, &failureDetail, &executionDiagnostic);
+    }
+    else
+    {
+        InitializePresentExecutionDiagnostic(transaction, failureStage, status, failureDetail, &executionDiagnostic);
+    }
     VIOGPU_WDDM_PRESENT_STATE finalState = NT_SUCCESS(status) ? VioGpuWddmPresentFinished : VioGpuWddmPresentCancelled;
     BOOLEAN retired = RetirePresentTransaction(transaction, VioGpuWddmPresentExecuting, finalState);
     if (!retired)
     {
+        executionDiagnostic.Stage = VioGpuWddmPresentExecuteTransactionRetire;
+        executionDiagnostic.Status = STATUS_DEVICE_NOT_READY;
+        executionDiagnostic.Detail = static_cast<DWORD>(finalState);
+        executionDiagnostic.TransactionState = static_cast<DWORD>(InterlockedCompareExchange(&transaction->State,
+                                                                                             0,
+                                                                                             0));
+        BOOLEAN diagnosticClaimed = adapter->ClaimNativePresentExecutionDiagnostic();
         adapter->RequestHardwareResetAtAnyIrql();
+        if (diagnosticClaimed)
+        {
+            adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);
+        }
     }
     else if (NT_SUCCESS(status))
     {
@@ -2675,11 +2860,16 @@ _Use_decl_annotations_ VOID NativePresentWorker(PVOID callbackContext)
     }
     else
     {
+        BOOLEAN diagnosticClaimed = adapter->ClaimNativePresentExecutionDiagnostic();
         adapter->NotifyNativeSubmissionFault(fenceId,
                                              STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE,
                                              nodeOrdinal,
                                              engineOrdinal,
                                              TRUE);
+        if (diagnosticClaimed)
+        {
+            adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);
+        }
     }
     adapter->CompleteNativePassiveWork(&transaction->Work);
     if (operationAcquired)

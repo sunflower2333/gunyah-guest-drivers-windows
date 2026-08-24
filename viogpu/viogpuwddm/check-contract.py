@@ -50,6 +50,9 @@ START_DIAGNOSTIC_SCRIPT_PATH = (
 PRESENT_DIAGNOSTIC_SCRIPT_PATH = (
     PROJECT_DIR.parent.parent / ".install_scripts" / "viogpu-native-present-diagnostics.ps1"
 ).resolve()
+PRESENT_DIAGNOSTIC_TEST_PATH = (
+    PROJECT_DIR.parent.parent / ".install_scripts" / "test-viogpu-native-present-diagnostics.ps1"
+).resolve()
 
 
 def strip_cpp_comments_and_literals(source: str) -> str:
@@ -823,7 +826,7 @@ def check_arm64_workflow_contract() -> None:
     }
     sources: dict[str, str] = {}
     required_toolchain_fragments = (
-        "runs-on: windows-2022",
+        "runs-on: windows-2025-vs2026",
         "Locate preinstalled Windows SDK and WDK",
         "Get-ChildItem (Join-Path $kitRoot 'Include') -Directory",
         "[version]$include.Name",
@@ -870,6 +873,7 @@ def check_arm64_workflow_contract() -> None:
             fail(f"{label} workflow must verify both Native Context PEs as ARM64")
         if source.count("$expectedExports = @('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')") != 1:
             fail(f"{label} workflow must verify the exact legacy D3D UMD exports")
+
         for fragment in (
             "$exportNames = @(",
             "Compare-Object -ReferenceObject $expectedExports -DifferenceObject $exportNames",
@@ -892,6 +896,12 @@ def check_arm64_workflow_contract() -> None:
         ):
             if source.count(fragment) != 1:
                 fail(f"{label} workflow must prove readiness routines are linked into default .text: {fragment}")
+    if not PRESENT_DIAGNOSTIC_TEST_PATH.is_file():
+        fail("Native Present diagnostic decoder fixture is missing")
+    if sources["Native Context full-miniport"].count(
+        ".install_scripts/test-viogpu-native-present-diagnostics.ps1"
+    ) != 1:
+        fail("full-miniport workflow must execute the Native Present diagnostic decoder fixture")
     if sources["Native Context full-miniport"].count("viogpu/viogpud3d/viogpud3d.vcxproj") != 1:
         fail("the full WDDM contract workflow must build the ARM64 D3D UMD shim exactly once")
     if sources["product drivers"].count("viogpu/viogpud3d/viogpud3d.vcxproj") != 1:
@@ -1356,12 +1366,16 @@ def check_native_present_diagnostics() -> None:
         start_recorder,
         (
             "stage==VioGpuNativeStartEntered",
-            "InterlockedExchange(&m_NativePresentDiagnosticRecorded,0);",
+            "InterlockedExchange(&m_NativePresentDiagnosticRecorded,2);",
+            "InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded,2);",
             'WriteRegistryDWORD(deviceKey,L"NativePresentReason",&presentReason)',
+            'WriteRegistryDWORD(deviceKey,L"NativePresentExecuteStage",&presentExecuteStage)',
+            "InterlockedExchange(&m_NativePresentDiagnosticRecorded,0);",
+            "InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded,0);",
             'WriteRegistryDWORD(deviceKey,L"NativeStartStatus",&statusValue)',
             'WriteRegistryDWORD(deviceKey,L"NativeStartStage",&stageValue)',
         ),
-        "StartDevice entry must invalidate stale Present diagnostics before publishing its stage",
+        "StartDevice entry must disable diagnostics until both stale markers have been invalidated",
     )
 
     recorder_body = function_body("VioGpuDod::RecordNativePresentDiagnostic", VIOGPU_SOURCE)
@@ -1369,15 +1383,16 @@ def check_native_present_diagnostics() -> None:
     for fragment in (
         "InterlockedCompareExchange(&m_NativePresentDiagnosticRecorded,1,0)!=0",
         "IoOpenDeviceRegistryKey(m_pPhysicalDevice,PLUGPLAY_REGKEY_DRIVER,KEY_SET_VALUE,&deviceKey)",
-        "for(UINTindex=0;index<ARRAYSIZE(values);++index)",
+        'WriteRegistryDWORD(deviceKey,L"NativePresentReason",&emptyReason)',
+        "for(UINTindex=0;NT_SUCCESS(writeStatus)&&index<ARRAYSIZE(values);++index)",
         "WriteRegistryDWORD(deviceKey,values[index].Name,&value)",
         "NTSTATUSreasonWrite=NT_SUCCESS(writeStatus)?WriteRegistryDWORD(deviceKey,",
-        "InterlockedExchange(&m_NativePresentDiagnosticRecorded,2);",
     ):
         if recorder.count(fragment) != 1:
             fail(f"Present diagnostics must retain one first-failure registry transaction: {fragment}")
-    if recorder.count("InterlockedExchange(&m_NativePresentDiagnosticRecorded,0);") != 2:
-        fail("Present diagnostics must release their claim after either registry failure path")
+    if recorder.count("InterlockedExchange(&m_NativePresentDiagnosticRecorded,2);") != 3 or \
+       "InterlockedExchange(&m_NativePresentDiagnosticRecorded,0);" in recorder:
+        fail("Present diagnostics must permanently consume the first-failure claim even when persistence fails")
     if recorder_body.count("ZwClose(deviceKey)") != 1:
         fail("Present diagnostics must close exactly one device registry handle")
     if not re.search(r"\bVOID\s+VioGpuDod::RecordNativePresentDiagnostic\s*\(", VIOGPU_SOURCE):
@@ -1407,12 +1422,111 @@ def check_native_present_diagnostics() -> None:
     require_order(
         recorder,
         (
-            "for(UINTindex=0;index<ARRAYSIZE(values);++index)",
+            'WriteRegistryDWORD(deviceKey,L"NativePresentReason",&emptyReason)',
+            "for(UINTindex=0;NT_SUCCESS(writeStatus)&&index<ARRAYSIZE(values);++index)",
             reason_write,
             "ZwClose(deviceKey);",
-            "InterlockedExchange(&m_NativePresentDiagnosticRecorded,2);",
         ),
         "Present diagnostics must publish all values before their reason commit marker",
+    )
+
+    execution_fields = [
+        "Stage",
+        "Status",
+        "Detail",
+        "FenceId",
+        "TransactionState",
+        "ContextType",
+        "SourceResourceId",
+        "DestinationResourceId",
+        "SourcePlacementState",
+        "DestinationPlacementState",
+        "SourceResource2DState",
+        "DestinationResource2DState",
+        "SourcePlacementOffsetLow",
+        "SourcePlacementOffsetHigh",
+        "DestinationPlacementOffsetLow",
+        "DestinationPlacementOffsetHigh",
+        "TransactionSourcePlacementOffsetLow",
+        "TransactionSourcePlacementOffsetHigh",
+        "TransactionDestinationPlacementOffsetLow",
+        "TransactionDestinationPlacementOffsetHigh",
+        "SourceResetGenerationLow",
+        "SourceResetGenerationHigh",
+        "DestinationResetGenerationLow",
+        "DestinationResetGenerationHigh",
+        "TransactionDestinationResetGenerationLow",
+        "TransactionDestinationResetGenerationHigh",
+    ]
+    execution_matches = re.findall(
+        r"\bstruct\s+VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC\s*\{(?P<body>.*?)\}\s*;",
+        VIOGPU_HEADER_SOURCE,
+        re.DOTALL,
+    )
+    if len(execution_matches) != 1:
+        fail("adapter must expose exactly one persistent Present execution diagnostic record")
+    observed_execution_fields = re.findall(r"\bDWORD\s+([A-Za-z0-9_]+)\s*;", execution_matches[0])
+    if observed_execution_fields != execution_fields:
+        fail(f"Present execution diagnostic record ABI drifted: {observed_execution_fields}")
+
+    execution_declaration = (
+        "VOIDRecordNativePresentExecutionDiagnostic("
+        "_In_constVIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC*diagnostic);"
+    )
+    if adapter_header.count("BOOLEANClaimNativePresentExecutionDiagnostic(void);") != 1 or \
+       adapter_header.count(execution_declaration) != 1 or \
+       adapter_header.count("volatileLONGm_NativePresentExecutionDiagnosticRecorded;") != 1:
+        fail("adapter must retain one first-failure Present execution diagnostic claim and recorder")
+    if constructor.count("m_NativePresentExecutionDiagnosticRecorded=0;") != 1:
+        fail("adapter construction must reset the Present execution diagnostic claim")
+    execution_claim = canonical_code(
+        function_body("VioGpuDod::ClaimNativePresentExecutionDiagnostic", VIOGPU_SOURCE)
+    )
+    if execution_claim.count(
+        "returnInterlockedCompareExchange(&m_NativePresentExecutionDiagnosticRecorded,1,0)==0;"
+    ) != 1:
+        fail("Present execution diagnostics must claim the first failure before requesting reset")
+
+    execution_recorder_body = function_body("VioGpuDod::RecordNativePresentExecutionDiagnostic", VIOGPU_SOURCE)
+    execution_recorder = canonical_code(execution_recorder_body)
+    for fragment in (
+        "InterlockedCompareExchange(&m_NativePresentExecutionDiagnosticRecorded,1,1)!=1",
+        "IoOpenDeviceRegistryKey(m_pPhysicalDevice,PLUGPLAY_REGKEY_DRIVER,KEY_SET_VALUE,&deviceKey)",
+        'WriteRegistryDWORD(deviceKey,L"NativePresentExecuteStage",&emptyStage)',
+        "for(UINTindex=0;NT_SUCCESS(writeStatus)&&index<ARRAYSIZE(values);++index)",
+        "WriteRegistryDWORD(deviceKey,values[index].Name,&value)",
+    ):
+        if execution_recorder.count(fragment) != 1:
+            fail(f"Present execution diagnostics must retain one first-failure registry transaction: {fragment}")
+    if execution_recorder.count("InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded,2);") != 3 or \
+       "InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded,0);" in execution_recorder:
+        fail("Present execution diagnostics must permanently consume the first-failure claim after persistence failure")
+    if execution_recorder_body.count("ZwClose(deviceKey)") != 1:
+        fail("Present execution diagnostics must close exactly one device registry handle")
+    for reset_value in (
+        "NativePresentExecuteHardwareResetState",
+        "NativePresentExecuteHardwareResetCallerRva",
+    ):
+        if execution_recorder_body.count(f'L"{reset_value}"') != 1:
+            fail(f"Present execution diagnostics must snapshot {reset_value}")
+    execution_value_names = [f"NativePresentExecute{field}" for field in execution_fields]
+    for value_name in execution_value_names[1:]:
+        if execution_recorder_body.count(f'L"{value_name}"') != 1:
+            fail(f"Present execution diagnostic recorder must write exactly one {value_name} value")
+    execution_stage_write = compact_code(
+        'WriteRegistryDWORD(deviceKey, L"NativePresentExecuteStage", &stageValue)'
+    )
+    if execution_recorder.count(execution_stage_write) != 1:
+        fail("Present execution stage must be the single commit marker")
+    require_order(
+        execution_recorder,
+        (
+            'WriteRegistryDWORD(deviceKey,L"NativePresentExecuteStage",&emptyStage)',
+            "for(UINTindex=0;NT_SUCCESS(writeStatus)&&index<ARRAYSIZE(values);++index)",
+            execution_stage_write,
+            "ZwClose(deviceKey);",
+        ),
+        "Present execution diagnostics must publish all values before their stage commit marker",
     )
 
     present = canonical_code(function_body("VioGpuWddmPresent", WDDM_DDI_CODE))
@@ -1426,7 +1540,7 @@ def check_native_present_diagnostics() -> None:
     if not PRESENT_DIAGNOSTIC_SCRIPT_PATH.is_file():
         fail("native Present diagnostic reader is missing")
     reader = PRESENT_DIAGNOSTIC_SCRIPT_PATH.read_text(encoding="utf-8")
-    for value_name in ["NativePresentReason"] + value_names:
+    for value_name in ["NativePresentReason"] + value_names + execution_value_names:
         if reader.count(value_name) < 2:
             fail(f"native Present diagnostic reader must require and report {value_name}")
     reader_reason_block = re.search(
@@ -1449,8 +1563,22 @@ def check_native_present_diagnostics() -> None:
     }
     if reader_reasons != expected_reader_reasons:
         fail(f"native Present diagnostic reader reason map drifted: {reader_reasons}")
-    if not re.search(r"\$reason\s+-eq\s+0", reader, re.IGNORECASE):
-        fail("native Present diagnostic reader must reject the no-failure marker")
+    for fragment in (
+        "if ($reason -eq 0 -and $executeStage -eq 0)",
+        "if ($reason -ne 0)",
+        "if ($executeStage -ne 0)",
+    ):
+        if reader.count(fragment) < 1:
+            fail(f"native Present diagnostic reader must honor independent commit markers: {fragment}")
+    fixture = PRESENT_DIAGNOSTIC_TEST_PATH.read_text(encoding="utf-8")
+    for fragment in (
+        "$presentOnlyValues['NativePresentExecuteStage'] = 0",
+        "$executionOnlyValues = [ordered]@{ NativePresentReason = 0 }",
+        "$null -ne $presentOnly.PSObject.Properties['ExecuteStage']",
+        "$null -ne $executionOnly.PSObject.Properties['Reason']",
+    ):
+        if fixture.count(fragment) != 1:
+            fail(f"Native Present decoder fixture must cover independent marker generations: {fragment}")
     if re.search(r"\b(?:Set-ItemProperty|New-ItemProperty|Remove-ItemProperty|pnputil|devcon)\b", reader, re.IGNORECASE):
         fail("native Present diagnostic reader must remain read-only")
 
@@ -3858,7 +3986,7 @@ def check_wddm_present_contract() -> None:
         worker_main,
         (
             "operationAcquired=adapter->AcquireNativeSubmissionOperation();",
-            "ExecutePresentTransaction(transaction)",
+            "ExecutePresentTransaction(transaction,&failureStage,&failureDetail,&executionDiagnostic)",
             "RetirePresentTransaction(transaction,VioGpuWddmPresentExecuting,finalState);",
             "adapter->NotifyNativeSoftwareCompletion(",
             "adapter->CompleteNativePassiveWork(&transaction->Work);",
@@ -3867,7 +3995,76 @@ def check_wddm_present_contract() -> None:
         ),
         "Present worker must own Executing through terminal retirement and scheduler notification",
     )
-    execute = canonical_code(function_body("ExecutePresentTransaction", WDDM_DDI_CODE))
+    for fragment in (
+        "VIOGPU_WDDM_PRESENT_EXECUTION_STAGEfailureStage=VioGpuWddmPresentExecuteSubmissionOperation;",
+        "InitializePresentExecutionDiagnostic(transaction,failureStage,status,failureDetail,&executionDiagnostic);",
+        "executionDiagnostic.Stage=VioGpuWddmPresentExecuteTransactionRetire;",
+        "executionDiagnostic.TransactionState="
+        "static_cast<DWORD>(InterlockedCompareExchange(&transaction->State,0,0));",
+        "adapter->RequestHardwareResetAtAnyIrql();",
+        "adapter->NotifyNativeSubmissionFault(",
+        "adapter->ClaimNativePresentExecutionDiagnostic();",
+        "adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);",
+    ):
+        if fragment not in worker_main:
+            fail(f"Present worker must persist its first execution failure after reset provenance: {fragment}")
+    if worker_main.count("adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);") != 2:
+        fail("Present worker must record exactly the retire and execution-fault failure paths")
+    if worker_main.count("adapter->ClaimNativePresentExecutionDiagnostic();") != 2:
+        fail("Present worker must claim exactly the retire and execution-fault diagnostic paths")
+    retire_stage = worker_main.find("executionDiagnostic.Stage=VioGpuWddmPresentExecuteTransactionRetire;")
+    retire_claim = worker_main.find("adapter->ClaimNativePresentExecutionDiagnostic();", retire_stage)
+    retire_reset = worker_main.find("adapter->RequestHardwareResetAtAnyIrql();", retire_claim)
+    retire_record = worker_main.find(
+        "adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);",
+        retire_reset,
+    )
+    fault_claim = worker_main.find("adapter->ClaimNativePresentExecutionDiagnostic();", retire_claim + 1)
+    fault_notify = worker_main.find("adapter->NotifyNativeSubmissionFault(")
+    fault_record = worker_main.find("adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);", retire_record + 1)
+    if min(retire_stage, retire_claim, retire_reset, retire_record, fault_claim, fault_notify, fault_record) < 0 or \
+       not retire_stage < retire_claim < retire_reset < retire_record < fault_claim < fault_notify < fault_record:
+        fail("Present execution diagnostics must claim before reset and persist caller provenance after reset")
+
+    expected_execution_stages = {
+        "VioGpuWddmPresentExecuteNone": "0",
+        "VioGpuWddmPresentExecuteInvalidTransaction": "1",
+        "VioGpuWddmPresentExecuteSourceLifecycle": "2",
+        "VioGpuWddmPresentExecuteDestinationLifecycle": "3",
+        "VioGpuWddmPresentExecuteGdiSourceReconcile": "4",
+        "VioGpuWddmPresentExecuteSourceIdentity": "5",
+        "VioGpuWddmPresentExecuteSourceObject": "6",
+        "VioGpuWddmPresentExecuteDestinationObject": "7",
+        "VioGpuWddmPresentExecuteAliasedAllocations": "8",
+        "VioGpuWddmPresentExecuteDestinationPrimary": "9",
+        "VioGpuWddmPresentExecuteSourcePlacement": "10",
+        "VioGpuWddmPresentExecuteDestinationBacking": "11",
+        "VioGpuWddmPresentExecuteDestinationPlacement": "12",
+        "VioGpuWddmPresentExecuteGeometry": "13",
+        "VioGpuWddmPresentExecuteSourcePlacementOffset": "14",
+        "VioGpuWddmPresentExecuteDestinationPlacementOffset": "15",
+        "VioGpuWddmPresentExecuteDestinationResetGeneration": "16",
+        "VioGpuWddmPresentExecuteCopyAddress": "17",
+        "VioGpuWddmPresentExecuteCancelled": "18",
+        "VioGpuWddmPresentExecuteHostPresent": "19",
+        "VioGpuWddmPresentExecuteSubmissionOperation": "20",
+        "VioGpuWddmPresentExecuteTransactionRetire": "21",
+        "VioGpuWddmPresentExecuteComplete": "0x0FFF",
+    }
+    execution_stage_match = re.search(
+        r"\benum\s+VIOGPU_WDDM_PRESENT_EXECUTION_STAGE\s*:\s*DWORD\s*\{(?P<body>.*?)\}\s*;",
+        WDDM_DDI_HEADER_SOURCE,
+        re.DOTALL,
+    )
+    if execution_stage_match is None:
+        fail("Present execution stage ABI is missing")
+    execution_stage_body = canonical_code(execution_stage_match.group("body"))
+    for stage_name, stage_value in expected_execution_stages.items():
+        if execution_stage_body.count(f"{stage_name}={stage_value}") != 1:
+            fail(f"Present execution stage ABI drifted at {stage_name}")
+
+    execute_body = function_body("ExecutePresentTransaction", WDDM_DDI_CODE)
+    execute = canonical_code(execute_body)
     for fragment in (
         "AcquireAllocationLifecycle(source)",
         "AcquireAllocationLifecycle(destination)",
@@ -3878,17 +4075,28 @@ def check_wddm_present_contract() -> None:
         "transaction->Adapter->Present2DResource(",
         "result!=VioGpuHostContextConfirmed",
         "InterlockedCompareExchange(&transaction->CancelRequested,0,0)!=0",
+        "BuildPresentExecutionDiagnostic(transaction,*failureStage,status,*failureDetail,executionDiagnostic);",
     ):
         if fragment not in execute:
             fail(f"Present execution must keep the copy and Host flush in one validated ownership epoch: {fragment}")
+    for stage_name in tuple(expected_execution_stages)[1:]:
+        expected_count = 3 if stage_name == "VioGpuWddmPresentExecuteCancelled" else 1
+        observed_count = len(re.findall(rf"\b{re.escape(stage_name)}\b", execute_body))
+        if observed_count != expected_count and stage_name not in (
+            "VioGpuWddmPresentExecuteSubmissionOperation",
+            "VioGpuWddmPresentExecuteTransactionRetire",
+        ):
+            fail(f"Present execution must classify its first failure at {stage_name}")
     require_order(
         execute,
         (
             "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
             "KeMemoryBarrier();",
             "transaction->Adapter->Present2DResource(",
+            "BuildPresentExecutionDiagnostic(transaction,*failureStage,status,*failureDetail,executionDiagnostic);",
+            "KeReleaseMutex(&destination->LifecycleMutex,FALSE);",
         ),
-        "Present must publish CPU row writes before notifying Host",
+        "Present must publish CPU row writes, notify Host, and snapshot execution while allocation state remains locked",
     )
     if execute.count("KeMemoryBarrier();") != 1:
         fail("Present must retain exactly one CPU-to-Host ordering barrier after its row-copy batch")

@@ -175,6 +175,36 @@ struct VIOGPU_NATIVE_PRESENT_DIAGNOSTIC
     DWORD DestinationRectBottom;
 };
 
+struct VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC
+{
+    DWORD Stage;
+    DWORD Status;
+    DWORD Detail;
+    DWORD FenceId;
+    DWORD TransactionState;
+    DWORD ContextType;
+    DWORD SourceResourceId;
+    DWORD DestinationResourceId;
+    DWORD SourcePlacementState;
+    DWORD DestinationPlacementState;
+    DWORD SourceResource2DState;
+    DWORD DestinationResource2DState;
+    DWORD SourcePlacementOffsetLow;
+    DWORD SourcePlacementOffsetHigh;
+    DWORD DestinationPlacementOffsetLow;
+    DWORD DestinationPlacementOffsetHigh;
+    DWORD TransactionSourcePlacementOffsetLow;
+    DWORD TransactionSourcePlacementOffsetHigh;
+    DWORD TransactionDestinationPlacementOffsetLow;
+    DWORD TransactionDestinationPlacementOffsetHigh;
+    DWORD SourceResetGenerationLow;
+    DWORD SourceResetGenerationHigh;
+    DWORD DestinationResetGenerationLow;
+    DWORD DestinationResetGenerationHigh;
+    DWORD TransactionDestinationResetGenerationLow;
+    DWORD TransactionDestinationResetGenerationHigh;
+};
+
 enum VIOGPU_NATIVE_FENCE_STATE : LONG
 {
     VioGpuNativeFenceFree = 0,
@@ -667,6 +697,7 @@ class VioGpuDod
     LIST_ENTRY m_WddmPresentTransactions;
     volatile LONG m_WddmPresentClosing;
     volatile LONG m_NativePresentDiagnosticRecorded;
+    volatile LONG m_NativePresentExecutionDiagnosticRecorded;
 #endif
 
     USHORT m_PersistentDispMode0Width;
@@ -934,6 +965,8 @@ class VioGpuDod
     VOID RecordNativePresentDiagnostic(_In_ DWORD reason,
                                        _In_ NTSTATUS status,
                                        _In_ const VIOGPU_NATIVE_PRESENT_DIAGNOSTIC *diagnostic);
+    BOOLEAN ClaimNativePresentExecutionDiagnostic(void);
+    VOID RecordNativePresentExecutionDiagnostic(_In_ const VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC *diagnostic);
 #endif
 
   private:

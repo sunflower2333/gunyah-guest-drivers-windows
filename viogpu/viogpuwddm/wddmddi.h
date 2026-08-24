@@ -333,6 +333,33 @@ enum VIOGPU_WDDM_PRESENT_DIAGNOSTIC_REASON : DWORD
     VioGpuWddmPresentDiagnosticContextPublication = 19,
 };
 
+enum VIOGPU_WDDM_PRESENT_EXECUTION_STAGE : DWORD
+{
+    VioGpuWddmPresentExecuteNone = 0,
+    VioGpuWddmPresentExecuteInvalidTransaction = 1,
+    VioGpuWddmPresentExecuteSourceLifecycle = 2,
+    VioGpuWddmPresentExecuteDestinationLifecycle = 3,
+    VioGpuWddmPresentExecuteGdiSourceReconcile = 4,
+    VioGpuWddmPresentExecuteSourceIdentity = 5,
+    VioGpuWddmPresentExecuteSourceObject = 6,
+    VioGpuWddmPresentExecuteDestinationObject = 7,
+    VioGpuWddmPresentExecuteAliasedAllocations = 8,
+    VioGpuWddmPresentExecuteDestinationPrimary = 9,
+    VioGpuWddmPresentExecuteSourcePlacement = 10,
+    VioGpuWddmPresentExecuteDestinationBacking = 11,
+    VioGpuWddmPresentExecuteDestinationPlacement = 12,
+    VioGpuWddmPresentExecuteGeometry = 13,
+    VioGpuWddmPresentExecuteSourcePlacementOffset = 14,
+    VioGpuWddmPresentExecuteDestinationPlacementOffset = 15,
+    VioGpuWddmPresentExecuteDestinationResetGeneration = 16,
+    VioGpuWddmPresentExecuteCopyAddress = 17,
+    VioGpuWddmPresentExecuteCancelled = 18,
+    VioGpuWddmPresentExecuteHostPresent = 19,
+    VioGpuWddmPresentExecuteSubmissionOperation = 20,
+    VioGpuWddmPresentExecuteTransactionRetire = 21,
+    VioGpuWddmPresentExecuteComplete = 0x0FFF,
+};
+
 struct VIOGPU_WDDM_PRESENT_TRANSACTION
 {
     ULONG Signature;

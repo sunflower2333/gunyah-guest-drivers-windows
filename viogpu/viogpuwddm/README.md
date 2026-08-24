@@ -10,15 +10,17 @@ contracts remain disabled. The source contains the registration entry point, a
 dedicated display-class INX, and an ARM64-only fail-closed D3D UMD shim.
 The last committed activation batch passed the ARM64 compile, link, MAP, INF,
 signing, and package gates in the dedicated and product workflows. Signed
-package `100.6.101.58020` is installed in the unprotected Windows VM, starts
+package `100.6.101.58022` is installed in the unprotected Windows VM, starts
 the adapter, and completes the paging system commands that faulted package
-`58019` with bug check `0x119/5`. The display remains black because the first
-observed CDD Present is rejected before Patch or Submit. Its persistent
-diagnostic reports `TransactionRegistration` with both source and destination
-resident and backed. The current source adds a module-relative first-reset
-caller diagnostic for that gate, but it has not passed a new ARM64 run or
-guarded device test. Successful 2D display, KMT/Host/GPU execution, TDR, and
-uninstall rollback remain unverified:
+`58019` with bug check `0x119/5`. The display remains black. Its first-reset
+caller RVA is `0x7880`; the exact package MAP/PDB resolves that return address
+to the `RequestHardwareResetAtAnyIrql()` call in
+`VioGpuDod::NotifyNativeSubmissionFault`. The subsequent
+`TransactionRegistration` rejection occurs after reset has closed the
+publication gate and is not the original failure. The current source adds an
+independent, allocation-lock-consistent execution-stage diagnostic, but it has
+not passed a new ARM64 run or guarded device test. Successful 2D display,
+KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
 
 - `DriverEntry` calls the single `DxgkInitialize` registration helper.
 - `viogpuwddm.inx` binds ARM64 Windows 11 guests to
@@ -36,16 +38,23 @@ uninstall rollback remain unverified:
   color conversion are explicitly not advertised.
 
 The current Windows runtime evidence is narrower than those source contracts.
-Package `58020` reports the first Present rejection as
+Package `58022` reports the first classified Present rejection as
 `TransactionRegistration` (`STATUS_DEVICE_NOT_READY`). The source and primary
 both have `SegmentId=1`, complete aperture placement, and current 2D Host
 backing, so the earlier pageable-GDI placement problem has been passed. The
-transaction registry now rejects because either its closing flag or the
-adapter reset state is set before the first Present can publish. The new
-diagnostic snapshots both the hardware reset state and the first caller return
-RVA from the current active epoch. The RVA is relative to `viogpuwddm.sys`,
-contains no kernel absolute address, and must be resolved against the exact
-package PDB/MAP.
+same record reports an already-requested reset and caller RVA `0x7880`; exact
+symbols prove that a prior Present worker failure called
+`NotifyNativeSubmissionFault`, after which registration is expected to reject.
+The current execution diagnostic classifies that earlier failure and snapshots
+its fence, resources, placement offsets, and reset generations while allocation
+lifecycle locks remain held. The failing worker claims the first-failure slot
+before requesting reset, then records reset state and caller provenance after
+that request. StartDevice disables both Present diagnostic slots until their
+registry markers are cleared. Each writer invalidates its marker again before
+publishing payload, commits `NativePresentReason` or
+`NativePresentExecuteStage` last, and never lets a later failure replace the
+first claim after a persistence error. The reader treats the rejection and
+execution markers as independent transactions.
 
 The current source leaves CPU-visible allocations pageable, separates static
 GDI allocation identity from live aperture/Host identity, and defers placement
@@ -359,9 +368,9 @@ The focused safety contract for the current slice passes locally:
 python viogpu/viogpuwddm/check-contract.py
 ```
 
-The ARM64 workflows use `windows-2022`, locate and verify a complete preinstalled
-Windows SDK/WDK with the required ARM64 kit files, and emit ARM64 driver targets
-only. Their x64 tools are
+The ARM64 workflows use `windows-2025-vs2026`, locate and verify a complete
+preinstalled Windows SDK/WDK with the required ARM64 kit files, and emit ARM64
+driver targets only. Their x64 tools are
 runner-side cross-build and ABI-fixture tools, not product targets. The mutation
 suite is intentionally not wired into ordinary or manual CI; do not run it until
 the implementation phase is complete and a major contract-boundary validation

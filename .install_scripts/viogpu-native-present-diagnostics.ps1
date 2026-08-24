@@ -1,28 +1,36 @@
 [CmdletBinding()]
 param(
-    [string]$DevicePattern = 'PCI\VEN_1AF4&DEV_1050*'
+    [string]$DevicePattern = 'PCI\VEN_1AF4&DEV_1050*',
+    [object]$DiagnosticData
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$devices = @(
-    Get-PnpDevice -PresentOnly |
-        Where-Object { $_.InstanceId -like $DevicePattern }
-)
-if ($devices.Count -ne 1) {
-    throw "Expected one present virtio-gpu device matching '$DevicePattern', found $($devices.Count)."
-}
+if ($null -eq $DiagnosticData) {
+    $devices = @(
+        Get-PnpDevice -PresentOnly |
+            Where-Object { $_.InstanceId -like $DevicePattern }
+    )
+    if ($devices.Count -ne 1) {
+        throw "Expected one present virtio-gpu device matching '$DevicePattern', found $($devices.Count)."
+    }
 
-$device = $devices[0]
-$driverProperty = Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName 'DEVPKEY_Device_Driver'
-if ([string]::IsNullOrWhiteSpace([string]$driverProperty.Data)) {
-    throw "Device '$($device.InstanceId)' has no DEVPKEY_Device_Driver value."
-}
+    $device = $devices[0]
+    $driverProperty = Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName 'DEVPKEY_Device_Driver'
+    if ([string]::IsNullOrWhiteSpace([string]$driverProperty.Data)) {
+        throw "Device '$($device.InstanceId)' has no DEVPKEY_Device_Driver value."
+    }
 
-$driverKey = [string]$driverProperty.Data
-$registryPath = "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\$driverKey"
-$diagnostic = Get-ItemProperty -LiteralPath $registryPath
+    $driverKey = [string]$driverProperty.Data
+    $registryPath = "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\$driverKey"
+    $diagnostic = Get-ItemProperty -LiteralPath $registryPath
+}
+else {
+    $device = [pscustomobject]@{ InstanceId = 'DiagnosticFixture' }
+    $driverKey = 'DiagnosticFixture'
+    $diagnostic = $DiagnosticData
+}
 $valueNames = @(
     'NativePresentReason',
     'NativePresentStatus',
@@ -61,12 +69,36 @@ $valueNames = @(
     'NativePresentDestinationRectRight',
     'NativePresentDestinationRectBottom'
 )
-foreach ($name in $valueNames) {
-    if ($null -eq $diagnostic.PSObject.Properties[$name]) {
-        throw "Driver key '$driverKey' does not contain a complete Present diagnostic; missing '$name'."
-    }
-}
-
+$executionValueNames = @(
+    'NativePresentExecuteStage',
+    'NativePresentExecuteStatus',
+    'NativePresentExecuteDetail',
+    'NativePresentExecuteHardwareResetState',
+    'NativePresentExecuteHardwareResetCallerRva',
+    'NativePresentExecuteFenceId',
+    'NativePresentExecuteTransactionState',
+    'NativePresentExecuteContextType',
+    'NativePresentExecuteSourceResourceId',
+    'NativePresentExecuteDestinationResourceId',
+    'NativePresentExecuteSourcePlacementState',
+    'NativePresentExecuteDestinationPlacementState',
+    'NativePresentExecuteSourceResource2DState',
+    'NativePresentExecuteDestinationResource2DState',
+    'NativePresentExecuteSourcePlacementOffsetLow',
+    'NativePresentExecuteSourcePlacementOffsetHigh',
+    'NativePresentExecuteDestinationPlacementOffsetLow',
+    'NativePresentExecuteDestinationPlacementOffsetHigh',
+    'NativePresentExecuteTransactionSourcePlacementOffsetLow',
+    'NativePresentExecuteTransactionSourcePlacementOffsetHigh',
+    'NativePresentExecuteTransactionDestinationPlacementOffsetLow',
+    'NativePresentExecuteTransactionDestinationPlacementOffsetHigh',
+    'NativePresentExecuteSourceResetGenerationLow',
+    'NativePresentExecuteSourceResetGenerationHigh',
+    'NativePresentExecuteDestinationResetGenerationLow',
+    'NativePresentExecuteDestinationResetGenerationHigh',
+    'NativePresentExecuteTransactionDestinationResetGenerationLow',
+    'NativePresentExecuteTransactionDestinationResetGenerationHigh'
+)
 function ConvertTo-DwordValue {
     param([object]$Value)
 
@@ -91,6 +123,17 @@ function Format-Dword {
     param([object]$Value)
 
     return '0x{0:X8}' -f (ConvertTo-DwordValue $Value)
+}
+
+function Format-QwordParts {
+    param(
+        [object]$Low,
+        [object]$High
+    )
+
+    [uint64]$lowValue = ConvertTo-DwordValue $Low
+    [uint64]$highValue = ConvertTo-DwordValue $High
+    return '0x{0:X16}' -f (($highValue -shl 32) -bor $lowValue)
 }
 
 function Decode-HardwareResetState {
@@ -118,6 +161,39 @@ function Decode-PlacementState {
     if (($state -band 0x10) -ne 0) { $names += 'Destroying' }
     if (($state -band 0x20) -ne 0) { $names += 'SignatureValid' }
     return $names -join ','
+}
+
+function Decode-PresentExecutionStage {
+    param([object]$Value)
+
+    [uint64]$stage = ConvertTo-DwordValue $Value
+    $name = switch ($stage) {
+        0 { 'None' }
+        1 { 'InvalidTransaction' }
+        2 { 'SourceLifecycle' }
+        3 { 'DestinationLifecycle' }
+        4 { 'GdiSourceReconcile' }
+        5 { 'SourceIdentity' }
+        6 { 'SourceObject' }
+        7 { 'DestinationObject' }
+        8 { 'AliasedAllocations' }
+        9 { 'DestinationPrimary' }
+        10 { 'SourcePlacement' }
+        11 { 'DestinationBacking' }
+        12 { 'DestinationPlacement' }
+        13 { 'Geometry' }
+        14 { 'SourcePlacementOffset' }
+        15 { 'DestinationPlacementOffset' }
+        16 { 'DestinationResetGeneration' }
+        17 { 'CopyAddress' }
+        18 { 'Cancelled' }
+        19 { 'HostPresent' }
+        20 { 'SubmissionOperation' }
+        21 { 'TransactionRetire' }
+        0x0FFF { 'Complete' }
+        default { 'Unknown' }
+    }
+    return '{0} ({1})' -f $name, $stage
 }
 
 function Decode-AllocationListValue {
@@ -154,18 +230,42 @@ $reasonNames = @{
     19 = 'ContextPublication'
 }
 
+foreach ($marker in @('NativePresentReason', 'NativePresentExecuteStage')) {
+    if ($null -eq $diagnostic.PSObject.Properties[$marker]) {
+        throw "Driver key '$driverKey' does not contain the Present diagnostic marker '$marker'."
+    }
+}
+
 [uint64]$reason = ConvertTo-DwordValue $diagnostic.NativePresentReason
-if ($reason -eq 0) {
-    throw "The driver has not recorded a Present rejection since its current StartDevice entry."
+[uint64]$executeStage = ConvertTo-DwordValue $diagnostic.NativePresentExecuteStage
+if ($reason -eq 0 -and $executeStage -eq 0) {
+    throw "The driver has not committed a Present diagnostic since its current StartDevice entry."
+}
+if ($reason -ne 0) {
+    foreach ($name in $valueNames) {
+        if ($null -eq $diagnostic.PSObject.Properties[$name]) {
+            throw "Driver key '$driverKey' contains an incomplete Present rejection; missing '$name'."
+        }
+    }
+}
+if ($executeStage -ne 0) {
+    foreach ($name in $executionValueNames) {
+        if ($null -eq $diagnostic.PSObject.Properties[$name]) {
+            throw "Driver key '$driverKey' contains an incomplete Present execution diagnostic; missing '$name'."
+        }
+    }
 }
 $reasonName = $reasonNames[[int]$reason]
 if ([string]::IsNullOrWhiteSpace($reasonName)) {
     $reasonName = 'Unknown'
 }
 
-[pscustomobject]@{
+$result = [ordered]@{
     InstanceId = $device.InstanceId
     DriverKey = $driverKey
+}
+if ($reason -ne 0) {
+    $presentResult = [ordered]@{
     Reason = $reason
     ReasonName = $reasonName
     Status = Format-Dword $diagnostic.NativePresentStatus
@@ -201,4 +301,51 @@ if ([string]::IsNullOrWhiteSpace($reasonName)) {
         (ConvertTo-SignedDwordValue $diagnostic.NativePresentDestinationRectTop),
         (ConvertTo-SignedDwordValue $diagnostic.NativePresentDestinationRectRight),
         (ConvertTo-SignedDwordValue $diagnostic.NativePresentDestinationRectBottom)
+    }
+    foreach ($entry in $presentResult.GetEnumerator()) {
+        $result[$entry.Key] = $entry.Value
+    }
 }
+if ($executeStage -ne 0) {
+    $executionResult = [ordered]@{
+    ExecuteStage = Decode-PresentExecutionStage $diagnostic.NativePresentExecuteStage
+    ExecuteStatus = Format-Dword $diagnostic.NativePresentExecuteStatus
+    ExecuteDetail = Format-Dword $diagnostic.NativePresentExecuteDetail
+    ExecuteHardwareResetState = Decode-HardwareResetState $diagnostic.NativePresentExecuteHardwareResetState
+    ExecuteHardwareResetCallerRva = Format-Dword $diagnostic.NativePresentExecuteHardwareResetCallerRva
+    ExecuteFenceId = ConvertTo-DwordValue $diagnostic.NativePresentExecuteFenceId
+    ExecuteTransactionState = ConvertTo-DwordValue $diagnostic.NativePresentExecuteTransactionState
+    ExecuteContextType = ConvertTo-DwordValue $diagnostic.NativePresentExecuteContextType
+    ExecuteSourceResourceId = ConvertTo-DwordValue $diagnostic.NativePresentExecuteSourceResourceId
+    ExecuteDestinationResourceId = ConvertTo-DwordValue $diagnostic.NativePresentExecuteDestinationResourceId
+    ExecuteSourcePlacementState = Decode-PlacementState $diagnostic.NativePresentExecuteSourcePlacementState
+    ExecuteDestinationPlacementState = Decode-PlacementState $diagnostic.NativePresentExecuteDestinationPlacementState
+    ExecuteSourceResource2DState = ConvertTo-DwordValue $diagnostic.NativePresentExecuteSourceResource2DState
+    ExecuteDestinationResource2DState = ConvertTo-DwordValue $diagnostic.NativePresentExecuteDestinationResource2DState
+    ExecuteSourcePlacementOffset = Format-QwordParts `
+        $diagnostic.NativePresentExecuteSourcePlacementOffsetLow `
+        $diagnostic.NativePresentExecuteSourcePlacementOffsetHigh
+    ExecuteDestinationPlacementOffset = Format-QwordParts `
+        $diagnostic.NativePresentExecuteDestinationPlacementOffsetLow `
+        $diagnostic.NativePresentExecuteDestinationPlacementOffsetHigh
+    ExecuteTransactionSourcePlacementOffset = Format-QwordParts `
+        $diagnostic.NativePresentExecuteTransactionSourcePlacementOffsetLow `
+        $diagnostic.NativePresentExecuteTransactionSourcePlacementOffsetHigh
+    ExecuteTransactionDestinationPlacementOffset = Format-QwordParts `
+        $diagnostic.NativePresentExecuteTransactionDestinationPlacementOffsetLow `
+        $diagnostic.NativePresentExecuteTransactionDestinationPlacementOffsetHigh
+    ExecuteSourceResetGeneration = Format-QwordParts `
+        $diagnostic.NativePresentExecuteSourceResetGenerationLow `
+        $diagnostic.NativePresentExecuteSourceResetGenerationHigh
+    ExecuteDestinationResetGeneration = Format-QwordParts `
+        $diagnostic.NativePresentExecuteDestinationResetGenerationLow `
+        $diagnostic.NativePresentExecuteDestinationResetGenerationHigh
+    ExecuteTransactionDestinationResetGeneration = Format-QwordParts `
+        $diagnostic.NativePresentExecuteTransactionDestinationResetGenerationLow `
+        $diagnostic.NativePresentExecuteTransactionDestinationResetGenerationHigh
+    }
+    foreach ($entry in $executionResult.GetEnumerator()) {
+        $result[$entry.Key] = $entry.Value
+    }
+}
+[pscustomobject]$result

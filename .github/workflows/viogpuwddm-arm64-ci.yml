@@ -41,7 +41,7 @@ on:
 
 jobs:
   contract-check:
-    runs-on: windows-2022
+    runs-on: windows-2025-vs2026
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -148,6 +148,10 @@ jobs:
               throw "PowerShell parse failure in '$script': $($errors | Out-String)"
             }
           }
+
+      - name: Exercise Native Present diagnostic decoder
+        shell: pwsh
+        run: .install_scripts/test-viogpu-native-present-diagnostics.ps1
 
       - name: Build shared dependencies and guest drivers
         shell: pwsh
