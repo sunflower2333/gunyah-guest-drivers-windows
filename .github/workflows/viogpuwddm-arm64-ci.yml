@@ -48,45 +48,7 @@ jobs:
 
       - name: Locate preinstalled Windows SDK and WDK
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
-          $candidates = foreach ($include in Get-ChildItem (Join-Path $kitRoot 'Include') -Directory) {
-            try { $version = [version]$include.Name } catch { continue }
-            $requiredFiles = @(
-              (Join-Path $include.FullName 'km\ntddk.h'),
-              (Join-Path $kitRoot "bin\$($include.Name)\x86\tracewpp.exe"),
-              (Join-Path $kitRoot "lib\$($include.Name)\km\arm64\ntoskrnl.lib")
-            )
-            if (($requiredFiles | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }).Count -eq 0) {
-              [pscustomobject]@{ Version = $version; Name = $include.Name }
-            }
-          }
-          $kit = $candidates | Sort-Object Version -Descending | Select-Object -First 1
-          if (-not $kit) { throw 'The runner has no complete preinstalled ARM64 Windows SDK/WDK' }
-          $kitVersion = $kit.Name
-          "DROIDVM_KIT_VERSION=$kitVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Using preinstalled Windows SDK/WDK $kitVersion"
-
-          $toolRoots = @(
-            (Join-Path $kitRoot 'Tools'),
-            (Join-Path $kitRoot "bin\$kitVersion")
-          ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
-          $infverifCandidates = foreach ($root in $toolRoots) {
-            Get-ChildItem -LiteralPath $root -Recurse -Filter 'InfVerif.exe' -File -ErrorAction SilentlyContinue
-          }
-          $infverif = $infverifCandidates |
-            Sort-Object @{ Expression = {
-              if ($_.FullName -match '\\x64\\') { 0 }
-              elseif ($_.FullName -match '\\arm64\\') { 1 }
-              else { 2 }
-            } }, FullName |
-            Select-Object -First 1
-          if (-not $infverif) {
-            throw "Preinstalled Windows Kit $kitVersion has no discoverable InfVerif.exe"
-          }
-          "INFVERIF_PATH=$($infverif.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "InfVerif: $($infverif.FullName)"
+        run: ./.github/scripts/locate-windows-kit.ps1
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3

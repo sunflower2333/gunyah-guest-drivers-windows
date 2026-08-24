@@ -45,6 +45,7 @@ NAMESPACE = {"msbuild": "http://schemas.microsoft.com/developer/msbuild/2003"}
 REGISTRATION_HELPER = "VioGpuWddmInitializeMiniport"
 WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "viogpuwddm-arm64-ci.yml").resolve()
 PRODUCT_WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "build-arm64-drivers.yml").resolve()
+WINDOWS_KIT_SCRIPT_PATH = (PROJECT_DIR.parent.parent / ".github" / "scripts" / "locate-windows-kit.ps1").resolve()
 START_DIAGNOSTIC_SCRIPT_PATH = (
     PROJECT_DIR.parent.parent / ".install_scripts" / "viogpu-native-start-diagnostics.ps1"
 ).resolve()
@@ -826,19 +827,13 @@ def check_arm64_workflow_contract() -> None:
         "product drivers": PRODUCT_WORKFLOW_PATH,
     }
     sources: dict[str, str] = {}
+    if not WINDOWS_KIT_SCRIPT_PATH.is_file():
+        fail(f"missing shared Windows SDK/WDK locator: {WINDOWS_KIT_SCRIPT_PATH}")
+    kit_script = WINDOWS_KIT_SCRIPT_PATH.read_text(encoding="utf-8")
     required_toolchain_fragments = (
         "runs-on: windows-2025-vs2026",
         "Locate preinstalled Windows SDK and WDK",
-        "Get-ChildItem (Join-Path $kitRoot 'Include') -Directory",
-        "[version]$include.Name",
-        r"bin\$($include.Name)\x86\tracewpp.exe",
-        r"lib\$($include.Name)\km\arm64\ntoskrnl.lib",
-        "Sort-Object Version -Descending",
-        "DROIDVM_KIT_VERSION=$kitVersion",
-        "$toolRoots = @(",
-        "Get-ChildItem -LiteralPath $root -Recurse -Filter 'InfVerif.exe'",
-        "INFVERIF_PATH=",
-        "$env:INFVERIF_PATH",
+        ".github/scripts/locate-windows-kit.ps1",
     )
     for label, path in workflows.items():
         if not path.is_file():
@@ -860,6 +855,31 @@ def check_arm64_workflow_contract() -> None:
 
         if source.count("& $infverif /w /v") != 1:
             fail(f"{label} workflow must run InfVerif /w /v exactly once on the Native Context INF")
+
+    required_locator_fragments = (
+        "Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\\10'",
+        "Join-Path ${env:ProgramFiles} 'Windows Kits\\10'",
+        "$env:KitsRoot10",
+        "Get-ChildItem -LiteralPath $includeRoot -Directory",
+        "[version]$include.Name",
+        "'km\\ntddk.h'",
+        "'ntoskrnl.lib'",
+        r"'\\km\\arm64\\'",
+        "Sort-Object Version -Descending",
+        "DROIDVM_KIT_VERSION",
+        "INFVERIF_PATH",
+    )
+    for fragment in required_locator_fragments:
+        if kit_script.count(fragment) != 1:
+            fail(f"shared Windows SDK/WDK locator must contain exactly one {fragment!r}")
+    if kit_script.count("'tracewpp.exe'") != 1:
+        fail("shared Windows SDK/WDK locator must probe tracewpp in the selected version root")
+    if kit_script.count("'InfVerif.exe'") != 2:
+        fail("shared Windows SDK/WDK locator must probe InfVerif in both versioned and Tools roots")
+    if "winget install" in kit_script.lower() or "Invoke-WebRequest" in kit_script:
+        fail("shared Windows SDK/WDK locator must not install or download a kit")
+    if kit_script.count("RequirePackagingTools") != 4:
+        fail("shared Windows SDK/WDK locator must expose one packaging-tools switch")
 
     contract_platforms = re.findall(r"\bPlatform\s*=\s*'([^']+)'", sources["Native Context full-miniport"])
     product_platforms = re.findall(r"\bplat\s*=\s*'([^']+)'", sources["product drivers"])
