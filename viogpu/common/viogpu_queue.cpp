@@ -1410,11 +1410,16 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeGuestBlob(UINT context_id,
     return result;
 }
 
-VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULONGLONG offset)
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, _Out_ PULONGLONG pool_offset)
 {
     PAGED_CODE();
 
-    if (resource_id == 0 || (offset & (PAGE_SIZE - 1)) != 0 || !BeginSynchronousRequest())
+    if (pool_offset == NULL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    *pool_offset = 0;
+    if (resource_id == 0 || !BeginSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -1441,7 +1446,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULO
     RtlZeroMemory(command, sizeof(*command));
     command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB;
     command->resource_id = resource_id;
-    command->offset = offset;
+    command->offset = 0;
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
@@ -1453,8 +1458,10 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULO
     }
     else if (completed && vbuf->response_size == sizeof(GPU_RESP_MAP_INFO) &&
              IsPlainControlResponse(&response->hdr, VIRTIO_GPU_RESP_OK_MAP_INFO) &&
-             response->map_info == VIRTIO_GPU_MAP_CACHE_CACHED && response->padding == 0)
+             response->map_info == (VIRTIO_GPU_MAP_CACHE_CACHED | VIRTIO_GPU_MAP_INFO_POOL) &&
+             response->pool_offset != 0 && (response->pool_offset & (PAGE_SIZE - 1)) == 0)
     {
+        *pool_offset = response->pool_offset;
         result = VioGpuHostContextConfirmed;
     }
     else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) && IsPlainControlErrorResponse(&response->hdr))

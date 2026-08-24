@@ -6509,58 +6509,42 @@ VioGpuAdapter::DestroyNativeContextHostObjectsLocked(_Inout_ VIOGPU_NATIVE_CONTE
     return VioGpuHostContextConfirmed;
 }
 
-BOOLEAN VioGpuAdapter::AllocateNativeControlSlotLocked(_Out_ PULONGLONG offset, _Out_ PVOID *address)
+BOOLEAN VioGpuAdapter::MapNativeControlSlotLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ ULONGLONG offset)
 {
     PAGED_CODE();
 
-    if (offset == NULL || address == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    if (owner == NULL || offset == 0 || (offset & (PAGE_SIZE - 1)) != 0 || !owner->ControlMapped ||
+        owner->ControlBarOffset != offset || owner->ControlAddress != NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         return FALSE;
     }
-    *offset = 0;
-    *address = NULL;
 
     UINT bar = 0;
     ULONGLONG regionOffset = 0;
     ULONGLONG regionSize = 0;
-    if (!m_PciResources.QueryHostVisibleRegion(&bar, &regionOffset, &regionSize) ||
-        regionSize < VIOGPU_NATIVE_CONTROL_BLOB_SIZE)
+    if (!m_PciResources.QueryHostVisibleRegion(&bar, &regionOffset, &regionSize) || offset > regionSize ||
+        VIOGPU_NATIVE_CONTROL_BLOB_SIZE > regionSize - offset)
     {
         return FALSE;
     }
 
-    ULONGLONG slotCount = regionSize / VIOGPU_NATIVE_CONTROL_BLOB_SIZE;
-    for (ULONGLONG slot = 0; slot < slotCount; ++slot)
+    for (PLIST_ENTRY link = m_NativeContextRegistry.Flink; link != &m_NativeContextRegistry; link = link->Flink)
     {
-        ULONGLONG candidate = slot * VIOGPU_NATIVE_CONTROL_BLOB_SIZE;
-        BOOLEAN inUse = FALSE;
-        for (PLIST_ENTRY link = m_NativeContextRegistry.Flink; link != &m_NativeContextRegistry; link = link->Flink)
-        {
-            VIOGPU_NATIVE_CONTEXT_OWNER *owner = CONTAINING_RECORD(link, VIOGPU_NATIVE_CONTEXT_OWNER, AdapterLink);
-            if (owner->ControlAddress != NULL && owner->ControlBarOffset == candidate)
-            {
-                inUse = TRUE;
-                break;
-            }
-        }
-        if (inUse)
-        {
-            continue;
-        }
-
-        PVOID slotAddress = NULL;
-        NTSTATUS status = m_PciResources.MapHostVisibleAddress(candidate,
-                                                               VIOGPU_NATIVE_CONTROL_BLOB_SIZE,
-                                                               &slotAddress);
-        if (!NT_SUCCESS(status) || slotAddress == NULL)
+        VIOGPU_NATIVE_CONTEXT_OWNER *other = CONTAINING_RECORD(link, VIOGPU_NATIVE_CONTEXT_OWNER, AdapterLink);
+        if (other != owner && other->ControlBarOffset == offset)
         {
             return FALSE;
         }
-        *offset = candidate;
-        *address = slotAddress;
-        return TRUE;
     }
-    return FALSE;
+
+    PVOID slotAddress = NULL;
+    NTSTATUS status = m_PciResources.MapHostVisibleAddress(offset, VIOGPU_NATIVE_CONTROL_BLOB_SIZE, &slotAddress);
+    if (!NT_SUCCESS(status) || slotAddress == NULL)
+    {
+        return FALSE;
+    }
+    owner->ControlAddress = slotAddress;
+    return TRUE;
 }
 #endif
 
@@ -6668,19 +6652,14 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     if (stageResult == VioGpuHostContextConfirmed)
     {
         ULONGLONG controlOffset = 0;
-        PVOID controlAddress = NULL;
-        if (!AllocateNativeControlSlotLocked(&controlOffset, &controlAddress))
+        stageResult = m_CtrlQueue.MapNativeControlBlob(resourceId, &controlOffset);
+        if (stageResult == VioGpuHostContextConfirmed)
         {
-            stageResult = VioGpuHostContextNotSubmitted;
-        }
-        else
-        {
+            owner->ControlMapped = TRUE;
             owner->ControlBarOffset = controlOffset;
-            owner->ControlAddress = controlAddress;
-            stageResult = m_CtrlQueue.MapNativeControlBlob(resourceId, controlOffset);
-            if (stageResult == VioGpuHostContextConfirmed)
+            if (!MapNativeControlSlotLocked(owner, controlOffset))
             {
-                owner->ControlMapped = TRUE;
+                stageResult = VioGpuHostContextNotSubmitted;
             }
         }
     }

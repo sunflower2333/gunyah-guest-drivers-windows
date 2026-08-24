@@ -582,7 +582,7 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS NegotiateNativeContextFeatures(void);
     NTSTATUS ProbeNativeContextReadiness(void);
 #if defined(VIOGPU_NATIVE_CONTEXT)
-    BOOLEAN AllocateNativeControlSlotLocked(_Out_ PULONGLONG offset, _Out_ PVOID *address);
+    BOOLEAN MapNativeControlSlotLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ ULONGLONG offset);
 #endif
     NTSTATUS StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pDispInfo);
     NTSTATUS FailNativeContextInitialization(NTSTATUS status);
