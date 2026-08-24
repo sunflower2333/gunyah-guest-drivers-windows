@@ -127,6 +127,24 @@ $kits = foreach ($root in $roots) {
 
 $kit = @($kits | Sort-Object Version -Descending | Select-Object -First 1)
 if ($kit.Count -eq 0) {
+    Write-Host 'No complete Kit candidate. Candidate roots and per-version probes:'
+    foreach ($root in $roots) {
+        $includeRoot = Join-Path $root 'Include'
+        $libRoot = Join-Path $root 'lib'
+        $binRoot = Join-Path $root 'bin'
+        Write-Host "  root=$root include=$([bool](Test-Path -LiteralPath $includeRoot -PathType Container))"
+        foreach ($include in @(Get-ChildItem -LiteralPath $includeRoot -Directory -ErrorAction SilentlyContinue)) {
+            try { $version = [version]$include.Name } catch { continue }
+            $header = Join-Path $include.FullName 'km\ntddk.h'
+            $versionLibRoot = Join-Path $libRoot $include.Name
+            $versionBinRoot = Join-Path $binRoot $include.Name
+            $kernel = @(Get-ChildItem -LiteralPath $versionLibRoot -Recurse -Filter 'ntoskrnl.lib' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '\\km\\arm64\\' })
+            $trace = @(Get-ChildItem -LiteralPath $versionBinRoot -Recurse -Filter 'tracewpp.exe' -File -ErrorAction SilentlyContinue)
+            $inf = @(Get-ChildItem -LiteralPath $versionBinRoot -Recurse -Filter 'InfVerif.exe' -File -ErrorAction SilentlyContinue)
+            Write-Host "    version=$($include.Name) header=$([bool](Test-Path -LiteralPath $header -PathType Leaf)) kernel=$($kernel.Count) trace=$($trace.Count) infverif=$($inf.Count)"
+        }
+    }
     $mode = if ($RequirePackagingTools) { ' and packaging tools' } else { '' }
     throw "No complete preinstalled ARM64 Windows SDK/WDK$mode was found"
 }

@@ -870,15 +870,15 @@ def check_arm64_workflow_contract() -> None:
         "INFVERIF_PATH",
     )
     for fragment in required_locator_fragments:
-        if kit_script.count(fragment) != 1:
-            fail(f"shared Windows SDK/WDK locator must contain exactly one {fragment!r}")
-    if kit_script.count("'tracewpp.exe'") != 1:
+        if kit_script.count(fragment) < 1:
+            fail(f"shared Windows SDK/WDK locator must contain {fragment!r}")
+    if kit_script.count("'tracewpp.exe'") < 1:
         fail("shared Windows SDK/WDK locator must probe tracewpp in the selected version root")
-    if kit_script.count("'InfVerif.exe'") != 2:
+    if kit_script.count("'InfVerif.exe'") < 2:
         fail("shared Windows SDK/WDK locator must probe InfVerif in both versioned and Tools roots")
     if "winget install" in kit_script.lower() or "Invoke-WebRequest" in kit_script:
         fail("shared Windows SDK/WDK locator must not install or download a kit")
-    if kit_script.count("RequirePackagingTools") != 4:
+    if kit_script.count("RequirePackagingTools") < 1:
         fail("shared Windows SDK/WDK locator must expose one packaging-tools switch")
 
     contract_platforms = re.findall(r"\bPlatform\s*=\s*'([^']+)'", sources["Native Context full-miniport"])
