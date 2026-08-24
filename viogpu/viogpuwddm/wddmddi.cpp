@@ -7640,7 +7640,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                                                   submitCommand->DmaBufferSubmissionStartOffset,
                                                                   submitCommand->DmaBufferSubmissionEndOffset);
             submitFailureDetail = submitCommand->hContext == NULL ? 1U << 0 : 0;
-            submitFailureDetail |= submitCommand->Flags.Value != 0 ? 1U << 1 : 0;
+            submitFailureDetail |= submitCommand->Flags.Present == 0 || submitCommand->Flags.Value != 2U ? 1U << 1 : 0;
             submitFailureDetail |= privateLength != sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) ? 1U << 2 : 0;
             submitFailureDetail |= dmaLength != sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) ? 1U << 3 : 0;
             submitFailureDetail |= !dmaRangeValid ? 1U << 4 : 0;

@@ -4163,6 +4163,8 @@ def check_wddm_present_contract() -> None:
     for bit in range(12):
         if len(re.findall(rf"1<<{bit}(?![0-9])", present_submit)) != 1:
             fail(f"Present Submit contract failure mask must retain bit {bit}")
+    if "submitCommand->Flags.Present==0||submitCommand->Flags.Value!=2" not in present_submit:
+        fail("Present Submit must accept exactly the runtime Present flag and reject every unrelated submit flag")
 
     worker = canonical_code(function_body("NativePresentWorker", WDDM_DDI_CODE))
     executing_claim = worker.find(
