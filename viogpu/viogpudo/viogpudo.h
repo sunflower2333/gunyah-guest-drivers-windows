@@ -436,10 +436,10 @@ class VioGpuAdapter : IVioGpuPCI
     /* Independent from the outer device rundown: D-state transitions keep
      * m_HardwareOperations open, but must still quiesce every WDDM native
      * submitter before the transport resets/deletes its virtqueues. */
-    BOOLEAN AcquireNativeSubmitOperation(void) const;
+    __declspec(code_seg(".text")) BOOLEAN AcquireNativeSubmitOperation(void) const;
     void ReleaseNativeSubmitOperation(void) const;
-    void CompleteNativeSubmitRundown(void);
-    BOOLEAN ReinitializeNativeSubmitRundown(void);
+    __declspec(code_seg(".text")) void CompleteNativeSubmitRundown(void);
+    __declspec(code_seg(".text")) BOOLEAN ReinitializeNativeSubmitRundown(void);
     UINT Allocate2DResourceId(void);
     BOOLEAN Release2DResourceId(_In_ UINT resourceId);
     VIOGPU_HOST_CONTEXT_RESULT Create2DResourceBacking(_In_ UINT resourceId,
@@ -493,16 +493,17 @@ class VioGpuAdapter : IVioGpuPCI
                                                                             _Out_opt_ UINT *capsetVersion,
                                                                             _Out_opt_ UINT *capsetSize,
                                                                             _Out_opt_ ULONGLONG *resetGeneration);
-    NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
-                                 _In_ ULONGLONG expectedResetGeneration);
-    NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released);
-    static BOOLEAN AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
-                                                _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
-    BOOLEAN AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requestedIova,
-                                                      _In_ SIZE_T backingSize,
-                                                      _In_ ULONGLONG expectedResetGeneration,
-                                                      _In_ UINT expectedContextId,
-                                                      _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
+    __declspec(code_seg(".text")) NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                                               _In_ ULONGLONG expectedResetGeneration);
+    __declspec(code_seg(".text")) NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                                                _Out_ BOOLEAN *released);
+    __declspec(code_seg(".text")) static BOOLEAN AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                                                              _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
+    __declspec(code_seg(".text")) BOOLEAN AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requestedIova,
+                                                                                    _In_ SIZE_T backingSize,
+                                                                                    _In_ ULONGLONG expectedResetGeneration,
+                                                                                    _In_ UINT expectedContextId,
+                                                                                    _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
     static BOOLEAN ReferenceNativeContextAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
                                                     _Out_ VIOGPU_NATIVE_CONTEXT_REGISTRATION **registration);
     static BOOLEAN DereferenceNativeContextAllocation(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
@@ -579,7 +580,7 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS StopNativeContextTransport(void);
     NTSTATUS StopNativeContextTransportLocked(void);
     NTSTATUS SynchronizeInterruptMessages(void);
-    void InvalidateNativeContextRegistrationsLocked(void);
+    __declspec(code_seg(".text")) void InvalidateNativeContextRegistrationsLocked(void);
     NTSTATUS RetireAllNativeContextOwnersLocked(void);
     void RetireNativeContextOwnerLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner);
     void Publish2DResetRetirementLocked(void);
@@ -596,9 +597,9 @@ class VioGpuAdapter : IVioGpuPCI
     VIOGPU_HOST_CONTEXT_RESULT DestroyNativeContextHostObjectsLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner);
 #endif
     BOOLEAN BeginNativeContextInitialization(void);
-    BOOLEAN CompleteNativeContextInitialization(void);
+    __declspec(code_seg(".text")) BOOLEAN CompleteNativeContextInitialization(void);
     NTSTATUS NegotiateNativeContextFeatures(void);
-    NTSTATUS ProbeNativeContextReadiness(void);
+    __declspec(code_seg(".text")) NTSTATUS ProbeNativeContextReadiness(void);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     BOOLEAN AllocateNativeControlSlotLocked(_Out_ PULONGLONG offset, _Out_ PVOID *address);
 #endif
