@@ -156,9 +156,10 @@ Render ranges are bounded by the logical UMD-declared allocation size, not
 page-aligned VidMm backing padding. Open/close and destroy also reject
 unsupported flags, resource-private data, and duplicate handle arrays before
 releasing objects. `CreateContext` accepts only the single-engine affinity mask
-`1`. A Native context uses flags zero plus the exact current private-data and
-nonzero reset-generation token. Exact System and GDI context flags are also
-accepted without private data; they do not create a Host Native Context. Native
+`1`. A Native context uses no System/GDI class flags (the supported
+`VirtualAddressing` bit may be set by dxgkrnl) plus the exact current private-data
+and nonzero reset-generation token. Exact System and GDI context class flags are
+also accepted without private data; they do not create a Host Native Context. Native
 `Render` bounds command input to 64 KiB, copies command and patch inputs to
 nonpaged snapshots, validates their shared allocation identity, rejects writes
 through read-only opens and overlapping 8-byte patch slots, rechecks the reset

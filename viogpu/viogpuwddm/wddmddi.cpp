@@ -4531,16 +4531,21 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
         return STATUS_INVALID_PARAMETER;
     }
 
+    /* VirtualAddressing is orthogonal to the three context classes.  Dxgkrnl
+     * sets it for a Native Context when the adapter advertises GPU VA, so the
+     * class check must ignore that one supported bit while still rejecting all
+     * unknown/reserved flags. */
+    const ULONG contextClassFlags = createContext->Flags.Value & ~4U;
     VIOGPU_WDDM_CONTEXT_TYPE contextType = VioGpuWddmContextNative;
-    if (createContext->Flags.Value == 0)
+    if (!createContext->Flags.SystemContext && !createContext->Flags.GdiContext && contextClassFlags == 0)
     {
         contextType = VioGpuWddmContextNative;
     }
-    else if (createContext->Flags.SystemContext && createContext->Flags.Value == 1U)
+    else if (createContext->Flags.SystemContext && !createContext->Flags.GdiContext && contextClassFlags == 1U)
     {
         contextType = VioGpuWddmContextSystem;
     }
-    else if (createContext->Flags.GdiContext && createContext->Flags.Value == 2U)
+    else if (createContext->Flags.GdiContext && !createContext->Flags.SystemContext && contextClassFlags == 2U)
     {
         contextType = VioGpuWddmContextGdi;
     }
