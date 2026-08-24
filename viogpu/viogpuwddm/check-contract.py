@@ -4005,6 +4005,7 @@ def check_wddm_present_contract() -> None:
         "VIOGPU_WDDM_PRESENT_EXECUTION_STAGEfailureStage=VioGpuWddmPresentExecuteSubmissionOperation;",
         "InitializePresentExecutionDiagnostic(transaction,failureStage,status,failureDetail,&executionDiagnostic);",
         "executionDiagnostic.Stage=VioGpuWddmPresentExecuteTransactionRetire;",
+        "executionDiagnostic.Status=static_cast<DWORD>(STATUS_DEVICE_NOT_READY);",
         "executionDiagnostic.TransactionState="
         "static_cast<DWORD>(InterlockedCompareExchange(&transaction->State,0,0));",
         "adapter->RequestHardwareResetAtAnyIrql();",

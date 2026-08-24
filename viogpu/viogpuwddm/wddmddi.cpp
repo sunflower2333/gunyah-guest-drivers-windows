@@ -2842,7 +2842,7 @@ _Use_decl_annotations_ VOID NativePresentWorker(PVOID callbackContext)
     if (!retired)
     {
         executionDiagnostic.Stage = VioGpuWddmPresentExecuteTransactionRetire;
-        executionDiagnostic.Status = STATUS_DEVICE_NOT_READY;
+        executionDiagnostic.Status = static_cast<DWORD>(STATUS_DEVICE_NOT_READY);
         executionDiagnostic.Detail = static_cast<DWORD>(finalState);
         executionDiagnostic.TransactionState = static_cast<DWORD>(InterlockedCompareExchange(&transaction->State,
                                                                                              0,
