@@ -33,7 +33,7 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win11 Release|ARM64'">
-    <TargetName>viogpudo</TargetName>
+    <TargetName>viogpuwddm</TargetName>
     <OutDir>objfre_win11_arm64\arm64\</OutDir>
     <IntDir>objfre_win11_arm64\arm64\</IntDir>
     <InfArch>$(TargetArch).10.0...22621</InfArch>
@@ -85,7 +85,7 @@
     <None Include="wpp-non-owner.tpl" />
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="viogpudo.inx" />
+    <Inf Include="viogpuwddm.inx" />
   </ItemGroup>
   <ItemGroup>
     <FilesToPackage Include="$(TargetPath)" />

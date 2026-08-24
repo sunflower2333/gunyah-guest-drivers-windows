@@ -1,5 +1,5 @@
 ;
-; viogpudo.inf - DroidVM VirtIO GPU Native Context miniport
+; viogpuwddm.inf - DroidVM VirtIO GPU Native Context miniport
 ;
 
 [Version]
@@ -8,7 +8,7 @@ Class = Display
 ClassGuid = {4d36e968-e325-11ce-bfc1-08002be10318}
 Provider = %DroidVM%
 DriverVer = 08/22/2026, 0.1.0.0
-CatalogFile = viogpudo.cat
+CatalogFile = viogpuwddm.cat
 PnpLockdown = 1
 
 [DestinationDirs]
@@ -18,7 +18,7 @@ DefaultDestDir = INX_PLATFORM_DRIVERS_DIR
 1 = %DiskName%,,,""
 
 [SourceDisksFiles]
-viogpudo.sys = 1,,
+viogpuwddm.sys = 1,,
 viogpud3d.dll = 1,,
 
 [Manufacturer]
@@ -34,11 +34,11 @@ AddReg = VioGpuWddm_DeviceSettings
 DelReg = VioGpuWddm_RetiredDeviceSettings
 
 [VioGpuWddm_CopyFiles]
-viogpudo.sys,,,2
+viogpuwddm.sys,,,2
 viogpud3d.dll,,,2
 
 [VioGpuWddm_Install.NT.Services]
-AddService = VioGpuDod,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog
+AddService = VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog
 
 [VioGpuWddm_Install.NT.HW]
 AddReg = VioGpuWddm_Msix
@@ -48,7 +48,7 @@ DisplayName = %VioGpuWddm.ServiceDesc%
 ServiceType = %SERVICE_KERNEL_DRIVER%
 StartType = %SERVICE_DEMAND_START%
 ErrorControl = %SERVICE_ERROR_NORMAL%
-ServiceBinary = %INX_PLATFORM_DRIVERS_DIR%\viogpudo.sys
+ServiceBinary = %INX_PLATFORM_DRIVERS_DIR%\viogpuwddm.sys
 
 [VioGpuWddm_EventLog]
 AddReg = VioGpuWddm_EventLog.AddReg

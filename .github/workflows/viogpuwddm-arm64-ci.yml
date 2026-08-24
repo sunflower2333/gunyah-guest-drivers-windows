@@ -196,8 +196,8 @@ jobs:
       - name: Check registered full-miniport linkage
         shell: pwsh
         run: |
-          $map = "viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpudo.map"
-          $driver = "viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpudo.sys"
+          $map = "viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.map"
+          $driver = "viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.sys"
 
           foreach ($path in @($map, $driver)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -279,8 +279,8 @@ jobs:
           $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
           $infverif = $env:INFVERIF_PATH
           $root = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'
-          $inf = Join-Path $root 'viogpudo.inf'
-          $driver = Join-Path $root 'viogpudo.sys'
+          $inf = Join-Path $root 'viogpuwddm.inf'
+          $driver = Join-Path $root 'viogpuwddm.sys'
           $umd = Join-Path $root 'viogpud3d.dll'
           foreach ($path in @($infverif, $inf, $driver, $umd)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -331,12 +331,12 @@ jobs:
       - name: Upload unsigned full-miniport artifact
         uses: actions/upload-artifact@v4
         with:
-          name: viogpu-arm64-unsigned
+          name: viogpuwddm-arm64-unsigned
           path: |
-            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpudo.sys
-            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpudo.pdb
-            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpudo.map
-            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpudo.inf
+            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.sys
+            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.pdb
+            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.map
+            viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpuwddm.inf
             viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.dll
             viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.pdb
             viogpu/viogpuwddm/README.md
