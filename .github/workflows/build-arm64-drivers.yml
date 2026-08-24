@@ -352,6 +352,8 @@ jobs:
             @{ n='viogpuwddm'; root='viogpu/viogpuwddm'; bins=@('viogpuwddm.sys','viogpud3d.dll'); inf='viogpuwddm.inf' },
             @{ n='pvmpower';  root='pvmpower';  bins=@('pvmpower.sys'); inf='pvmpower.inf' }
           )
+          $nativeDebugRoot = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'
+          $nativeDebugFiles = @('viogpuwddm.pdb', 'viogpuwddm.map', 'viogpud3d.pdb')
           # 在 root 下找最佳檔案：優先路徑含 ARM64、最新修改
           function Pick($root,$file) {
             Get-ChildItem $root -Recurse -Filter $file -File -EA SilentlyContinue |
@@ -436,6 +438,16 @@ jobs:
             foreach ($cat in $catFiles) {
               & $signtool sign /fd SHA256 /f $pfx /p "$pfxPw" $cat.FullName
               if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($cat.FullName)" }
+            }
+            if ($d.n -eq 'viogpuwddm') {
+              foreach ($debugFile in $nativeDebugFiles) {
+                $debugSource = Join-Path $nativeDebugRoot $debugFile
+                if (-not (Test-Path -LiteralPath $debugSource -PathType Leaf) -or
+                    (Get-Item -LiteralPath $debugSource).Length -eq 0) {
+                  throw "Native Context product debug file is missing or empty: $debugSource"
+                }
+                Copy-Item -LiteralPath $debugSource -Destination $dest -Force
+              }
             }
             $has = (Get-ChildItem "$dest" | ForEach-Object Name) -join ' '
             Write-Host "packed $($d.n): $has"

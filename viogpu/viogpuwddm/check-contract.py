@@ -914,6 +914,16 @@ def check_arm64_workflow_contract() -> None:
     )
     if sources["product drivers"].count(product_package) != 1:
         fail("the signed ARM64 product workflow must stage one SYS/D3D-UMD/INF package")
+    product_debug_fragments = (
+        "$nativeDebugRoot = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'",
+        "$nativeDebugFiles = @('viogpuwddm.pdb', 'viogpuwddm.map', 'viogpud3d.pdb')",
+        "$debugSource = Join-Path $nativeDebugRoot $debugFile",
+        'throw "Native Context product debug file is missing or empty: $debugSource"',
+        "Copy-Item -LiteralPath $debugSource -Destination $dest -Force",
+    )
+    for fragment in product_debug_fragments:
+        if sources["product drivers"].count(fragment) != 1:
+            fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
         "$epoch = 'cd6097248fe17b459b8587021799bd071f0f029f'",
         'git rev-list --count "$epoch..HEAD"',

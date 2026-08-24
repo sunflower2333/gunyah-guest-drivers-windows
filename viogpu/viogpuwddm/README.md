@@ -371,7 +371,10 @@ python viogpu/viogpuwddm/check-contract.py
 The ARM64 workflows use `windows-2022`, locate and verify a complete
 preinstalled Windows SDK/WDK with the required ARM64 kit files, and emit ARM64
 driver targets only. Their x64 tools are
-runner-side cross-build and ABI-fixture tools, not product targets. The mutation
+runner-side cross-build and ABI-fixture tools, not product targets. The signed
+product bundle retains the exact same-build KMD/UMD PDB files and KMD linker map
+used to produce its versioned binaries so runtime RVAs can be resolved without
+substituting symbols from the unsigned contract build. The mutation
 suite is intentionally not wired into ordinary or manual CI; do not run it until
 the implementation phase is complete and a major contract-boundary validation
 is explicitly requested.
