@@ -4434,9 +4434,8 @@ def check_wddm_present_contract() -> None:
         "source->ApertureAddress==NULL||destination->ApertureAddress==NULL",
         "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
         "ProbePresentCopy(transaction,&copyProbe);",
-        "ULONGLONGtransferOffset=static_cast<ULONGLONG>(rect->top)*destination->Pitch+"
-        "static_cast<ULONGLONG>(rect->left)*4;",
-        "transaction->Adapter->Present2DResource(destination->ResourceId,transferOffset,",
+        "transaction->Adapter->Present2DResource(destination->ResourceId,0,destination->Width,"
+        "destination->Height,0,0,",
         "result!=VioGpuHostContextConfirmed",
         "InterlockedCompareExchange(&transaction->CancelRequested,0,0)!=0",
         "BuildPresentExecutionDiagnostic(transaction,*failureStage,status,*failureDetail,executionDiagnostic);",
@@ -4470,6 +4469,8 @@ def check_wddm_present_contract() -> None:
         fail("Present must retain exactly one CPU-to-Host ordering barrier after its row-copy batch")
     if execute.count("KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);") != 1:
         fail("Present must flush the CPU-written primary backing before Host transfer")
+    if "transferOffset" in execute_body or execute.count("Present2DResource(") != 1:
+        fail("Present must publish exactly one full-primary transfer for classic virglrenderer")
 
     probe_copy = canonical_code(function_body("ProbePresentCopy", WDDM_DDI_CODE))
     for fragment in (
