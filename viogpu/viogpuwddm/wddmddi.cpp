@@ -3667,6 +3667,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     {
         status = QuerySegment(adapter, pQueryAdapterInfo);
     }
+    else if (static_cast<UINT>(pQueryAdapterInfo->Type) == 24U || static_cast<UINT>(pQueryAdapterInfo->Type) == 25U)
+    {
+        /* Legacy dxgkrnl asks for node/adapter performance data during
+         * ADAPTER_RENDER activation.  The Win7 Native Context target does
+         * not publish performance counters, but rejecting these optional
+         * probes makes AddAdapter fail before the UMD can open. */
+        status = STATUS_SUCCESS;
+    }
     else
     {
         status = VioGpuDodQueryAdapterInfo(hAdapter, pQueryAdapterInfo);

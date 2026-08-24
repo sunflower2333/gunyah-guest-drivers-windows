@@ -1303,6 +1303,8 @@ def check_native_query_adapter_info_diagnostics() -> None:
         "NTSTATUSstatus=STATUS_NOT_SUPPORTED;",
         "status=QueryUmdPrivateInfo(adapter,pQueryAdapterInfo);",
         "status=QuerySegment(adapter,pQueryAdapterInfo);",
+        "static_cast<UINT>(pQueryAdapterInfo->Type)==24||static_cast<UINT>(pQueryAdapterInfo->Type)==25",
+        "status=STATUS_SUCCESS;",
         "status=VioGpuDodQueryAdapterInfo(hAdapter,pQueryAdapterInfo);",
         "if(!NT_SUCCESS(status)){adapter->RecordNativeQueryAdapterInfoDiagnostic("
         "pQueryAdapterInfo->Type,status,pQueryAdapterInfo->InputDataSize,"
