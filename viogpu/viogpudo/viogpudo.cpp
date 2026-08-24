@@ -2332,7 +2332,7 @@ NTSTATUS VioGpuDod::SetPointerPosition(_In_ CONST DXGKARG_SETPOINTERPOSITION *pS
     {
         return m_pHWDevice->SetPointerPosition(pSetPointerPosition, &m_CurrentMode);
     }
-    return STATUS_NOT_IMPLEMENTED;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS VioGpuDod::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape)
@@ -2353,7 +2353,7 @@ NTSTATUS VioGpuDod::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
     {
         return m_pHWDevice->SetPointerShape(pSetPointerShape, &m_CurrentMode);
     }
-    return STATUS_NOT_IMPLEMENTED;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS VioGpuDod::Escape(_In_ CONST DXGKARG_ESCAPE *pEscape)
@@ -3400,18 +3400,9 @@ NTSTATUS VioGpuDod::SetVidPnSourceVisibility(_In_ CONST DXGKARG_SETVIDPNSOURCEVI
     }
     else
     {
-#if defined(VIOGPU_NATIVE_CONTEXT)
-        if (!IsHardwareResetRequested())
-        {
-            UINT previousResourceId = 0;
-            VIOGPU_HOST_CONTEXT_RESULT result = Set2DScanout(0, 0, 0, 0, &previousResourceId);
-            if (result != VioGpuHostContextConfirmed)
-            {
-                return STATUS_DEVICE_NOT_READY;
-            }
-        }
-#endif
+#if !defined(VIOGPU_NATIVE_CONTEXT)
         m_pHWDevice->BlackOutScreen(&m_CurrentMode);
+#endif
     }
 
     m_CurrentMode.Flags.SourceNotVisible = !(pSetVidPnSourceVisibility->Visible);

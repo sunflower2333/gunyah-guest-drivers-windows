@@ -348,9 +348,8 @@ VioGpuDodSetPointerPosition(_In_ CONST HANDLE hAdapter, _In_ CONST DXGKARG_SETPO
     VioGpuDod *pVioGpuDod = reinterpret_cast<VioGpuDod *>(hAdapter);
     if (!pVioGpuDod->IsDriverActive())
     {
-        DbgPrint(TRACE_LEVEL_ERROR, ("VioGpu (%p) is being called when not active!", pVioGpuDod));
-        VioGpuDbgBreak();
-        return STATUS_UNSUCCESSFUL;
+        DbgPrint(TRACE_LEVEL_WARNING, ("VioGpu (%p) is being called when not active!", pVioGpuDod));
+        return STATUS_SUCCESS;
     }
     return pVioGpuDod->SetPointerPosition(pSetPointerPosition);
 }
@@ -366,9 +365,9 @@ VioGpuDodSetPointerShape(_In_ CONST HANDLE hAdapter, _In_ CONST DXGKARG_SETPOINT
     VioGpuDod *pVioGpuDod = reinterpret_cast<VioGpuDod *>(hAdapter);
     if (!pVioGpuDod->IsDriverActive())
     {
-        DbgPrint(TRACE_LEVEL_ERROR,
+        DbgPrint(TRACE_LEVEL_WARNING,
                  ("<---> %s VioGpu (%p) is being called when not active!\n", __FUNCTION__, pVioGpuDod));
-        return STATUS_UNSUCCESSFUL;
+        return STATUS_SUCCESS;
     }
     return pVioGpuDod->SetPointerShape(pSetPointerShape);
 }
@@ -528,8 +527,8 @@ VioGpuDodEnumVidPnCofuncModality(_In_ CONST HANDLE hAdapter,
     VioGpuDod *pVioGpuDod = reinterpret_cast<VioGpuDod *>(hAdapter);
     if (!pVioGpuDod->IsDriverActive())
     {
-        VIOGPU_LOG_ASSERTION1("VIOGPU (%p) is being called when not active!", pVioGpuDod);
-        return STATUS_UNSUCCESSFUL;
+        DbgPrint(TRACE_LEVEL_WARNING, ("VIOGPU (%p) is being called when not active!", pVioGpuDod));
+        return STATUS_SUCCESS;
     }
     return pVioGpuDod->EnumVidPnCofuncModality(pEnumCofuncModality);
 }

@@ -2062,6 +2062,28 @@ def check_vidpn_mode_contract() -> None:
     if "returnSTATUS_UNSUCCESSFUL;" in inactive:
         fail("inactive IsSupportedVidPn must not return generic failure")
 
+    for ddi_name in (
+        "VioGpuDodSetPointerPosition",
+        "VioGpuDodSetPointerShape",
+        "VioGpuDodEnumVidPnCofuncModality",
+    ):
+        ddi = function_body(ddi_name, DOD_DRIVER_CODE)
+        inactive_blocks = [
+            body
+            for condition, body, _, _ in if_blocks(ddi)
+            if canonical_code(condition) == "!pVioGpuDod->IsDriverActive()"
+        ]
+        if len(inactive_blocks) != 1:
+            fail(f"{ddi_name} must contain exactly one inactive-adapter branch")
+        inactive = canonical_code(inactive_blocks[0])
+        if "returnSTATUS_SUCCESS;" not in inactive or "returnSTATUS_UNSUCCESSFUL;" in inactive:
+            fail(f"{ddi_name} must drop transient inactive-adapter work without failing the DDI")
+
+    for method_name in ("VioGpuDod::SetPointerPosition", "VioGpuDod::SetPointerShape"):
+        pointer = canonical_code(function_body(method_name, VIOGPU_CODE))
+        if "returnSTATUS_NOT_IMPLEMENTED;" in pointer or not pointer.endswith("returnSTATUS_SUCCESS;"):
+            fail(f"{method_name} must accept updates when hardware pointer support is not advertised")
+
 
 def check_legacy_runtime_callback_contract() -> None:
     header = canonical_code(WDDM_DDI_HEADER_CODE)
@@ -3472,13 +3494,11 @@ def check_wddm_standard_primary_scanout() -> None:
             fail(f"primary detach must retain the outer transport rundown: {fragment}")
 
     visibility = canonical_code(function_body("VioGpuDod::SetVidPnSourceVisibility", VIOGPU_CODE))
-    visibility_gate = visibility.find("if(!IsHardwareResetRequested())")
-    visibility_disable = visibility.find("Set2DScanout(0,0,0,0,&previousResourceId)")
     visibility_publish = visibility.find("m_CurrentMode.Flags.SourceNotVisible=!(pSetVidPnSourceVisibility->Visible);")
-    if min(visibility_gate, visibility_disable, visibility_publish) < 0 or \
-       not visibility_gate < visibility_disable < visibility_publish or \
-       "if(result!=VioGpuHostContextConfirmed){returnSTATUS_DEVICE_NOT_READY;}" not in visibility:
-        fail("an active invisible VidPN source must confirm scanout disable before publishing hidden state")
+    if visibility_publish < 0 or "#if!defined(VIOGPU_NATIVE_CONTEXT)" not in visibility:
+        fail("Native Context visibility changes must preserve the programmed primary scanout")
+    if "Set2DScanout(" in visibility or "Detach2DScanoutResource(" in visibility:
+        fail("visibility changes must not retire the primary scanout programmed by SetVidPnSourceAddress")
 
     query_host = canonical_code(function_body("VioGpuAdapter::Query2DScanoutResource", VIOGPU_CODE))
     for fragment in (
