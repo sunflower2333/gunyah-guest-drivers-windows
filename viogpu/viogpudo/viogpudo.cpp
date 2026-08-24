@@ -4236,11 +4236,13 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
                                                           L"NativePresentExecuteStage",
                                                           &presentExecuteStage);
         }
-        presentEpochCommitWrite = NT_SUCCESS(presentExecuteStageWrite)
-                                      ? WriteRegistryDWORD(deviceKey,
-                                                           L"NativePresentCopyProbeSequence",
-                                                           &presentCopyProbeSequence)
-                                      : presentExecuteStageWrite;
+        presentEpochCommitWrite = presentExecuteStageWrite;
+        if (NT_SUCCESS(presentExecuteStageWrite))
+        {
+            presentEpochCommitWrite = WriteRegistryDWORD(deviceKey,
+                                                         L"NativePresentCopyProbeSequence",
+                                                         &presentCopyProbeSequence);
+        }
         if (NT_SUCCESS(presentEpochCommitWrite))
         {
             presentEpochCommitWrite = WriteRegistryDWORD(deviceKey,
@@ -4664,9 +4666,8 @@ VOID VioGpuDod::RecordNativePresentCopyProbe(_In_ const VIOGPU_NATIVE_PRESENT_CO
 
     LONG desiredState = probe->SourceRgbNonzero == 0 ? 1 : 2;
     LONG previousState = InterlockedCompareExchange(&m_NativePresentCopyProbeState, desiredState, 0);
-    if (previousState != 0 &&
-        !(desiredState == 2 && previousState == 1 &&
-          InterlockedCompareExchange(&m_NativePresentCopyProbeState, desiredState, 1) == 1))
+    if (previousState != 0 && !(desiredState == 2 && previousState == 1 &&
+                                InterlockedCompareExchange(&m_NativePresentCopyProbeState, desiredState, 1) == 1))
     {
         return;
     }
