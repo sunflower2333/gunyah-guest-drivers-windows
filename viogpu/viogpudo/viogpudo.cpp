@@ -4198,12 +4198,9 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
         DWORD presentExecuteStage = 0;
         presentReasonWrite = WriteRegistryDWORD(deviceKey, L"NativePresentReason", &presentReason);
         presentExecuteStageWrite = WriteRegistryDWORD(deviceKey, L"NativePresentExecuteStage", &presentExecuteStage);
-        if (NT_SUCCESS(presentReasonWrite))
+        if (NT_SUCCESS(presentReasonWrite) && NT_SUCCESS(presentExecuteStageWrite))
         {
             InterlockedExchange(&m_NativePresentDiagnosticRecorded, 0);
-        }
-        if (NT_SUCCESS(presentExecuteStageWrite))
-        {
             InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 0);
         }
     }

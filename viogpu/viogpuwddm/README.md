@@ -49,9 +49,9 @@ The current execution diagnostic classifies that earlier failure and snapshots
 its fence, resources, placement offsets, and reset generations while allocation
 lifecycle locks remain held. The failing worker claims the first-failure slot
 before requesting reset, then records reset state and caller provenance after
-that request. StartDevice disables both Present diagnostic slots until their
-registry markers are cleared. Each writer invalidates its marker again before
-publishing payload, commits `NativePresentReason` or
+that request. StartDevice disables both Present diagnostic slots until both
+registry markers are cleared successfully. Each writer invalidates its marker
+again before publishing payload, commits `NativePresentReason` or
 `NativePresentExecuteStage` last, and never lets a later failure replace the
 first claim after a persistence error. The reader treats the rejection and
 execution markers as independent transactions.

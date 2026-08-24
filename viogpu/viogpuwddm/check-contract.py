@@ -1377,6 +1377,12 @@ def check_native_present_diagnostics() -> None:
         ),
         "StartDevice entry must disable diagnostics until both stale markers have been invalidated",
     )
+    if start_recorder.count(
+        "if(NT_SUCCESS(presentReasonWrite)&&NT_SUCCESS(presentExecuteStageWrite))"
+        "{InterlockedExchange(&m_NativePresentDiagnosticRecorded,0);"
+        "InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded,0);}"
+    ) != 1:
+        fail("StartDevice must enable both Present diagnostic slots only after both markers are invalidated")
 
     recorder_body = function_body("VioGpuDod::RecordNativePresentDiagnostic", VIOGPU_SOURCE)
     recorder = canonical_code(recorder_body)
