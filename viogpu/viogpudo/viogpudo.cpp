@@ -4435,14 +4435,11 @@ VOID VioGpuDod::RecordNativePresentExecutionDiagnostic(_In_ const VIOGPU_NATIVE_
         PCWSTR Name;
         DWORD Value;
     };
-    DWORD hardwareResetState = static_cast<DWORD>(QueryHardwareResetState());
-    DWORD hardwareResetCallerRva = static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetCallerRva, 0, 0));
     // clang-format off
     const DIAGNOSTIC_VALUE values[] = {
         {L"NativePresentExecuteStatus", diagnostic->Status},
         {L"NativePresentExecuteDetail", diagnostic->Detail},
-        {L"NativePresentExecuteHardwareResetState", hardwareResetState},
-        {L"NativePresentExecuteHardwareResetCallerRva", hardwareResetCallerRva},
+        {L"NativePresentExecuteResetProvenanceValid", 0},
         {L"NativePresentExecuteFenceId", diagnostic->FenceId},
         {L"NativePresentExecuteTransactionState", diagnostic->TransactionState},
         {L"NativePresentExecuteContextType", diagnostic->ContextType},
@@ -4512,6 +4509,60 @@ VOID VioGpuDod::RecordNativePresentExecutionDiagnostic(_In_ const VIOGPU_NATIVE_
                diagnostic->Status,
                diagnostic->Detail,
                diagnostic->FenceId);
+}
+
+VOID VioGpuDod::RecordNativePresentExecutionResetProvenance(void)
+{
+    PAGED_CODE();
+
+    if (InterlockedCompareExchange(&m_NativePresentExecutionDiagnosticRecorded, 2, 2) != 2)
+    {
+        return;
+    }
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu Present execution reset provenance: registry open failed, status=0x%08X\n",
+                   openStatus);
+        return;
+    }
+
+    DWORD unavailable = 0;
+    DWORD hardwareResetState = static_cast<DWORD>(QueryHardwareResetState());
+    DWORD hardwareResetCallerRva = static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetCallerRva, 0, 0));
+    DWORD available = 1;
+    NTSTATUS invalidateStatus = WriteRegistryDWORD(deviceKey,
+                                                   L"NativePresentExecuteResetProvenanceValid",
+                                                   &unavailable);
+    NTSTATUS stateWrite = NT_SUCCESS(invalidateStatus) ? WriteRegistryDWORD(deviceKey,
+                                                                            L"NativePresentExecuteHardwareResetState",
+                                                                            &hardwareResetState)
+                                                       : invalidateStatus;
+    NTSTATUS callerWrite = NT_SUCCESS(stateWrite) ? WriteRegistryDWORD(deviceKey,
+                                                                       L"NativePresentExecuteHardwareResetCallerRva",
+                                                                       &hardwareResetCallerRva)
+                                                  : stateWrite;
+    NTSTATUS commitWrite = NT_SUCCESS(callerWrite) ? WriteRegistryDWORD(deviceKey,
+                                                                        L"NativePresentExecuteResetProvenanceValid",
+                                                                        &available)
+                                                   : callerWrite;
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(invalidateStatus) || !NT_SUCCESS(stateWrite) || !NT_SUCCESS(callerWrite) ||
+        !NT_SUCCESS(commitWrite))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu Present execution reset provenance: write failed, writes=%08X/%08X/%08X/%08X\n",
+                   invalidateStatus,
+                   stateWrite,
+                   callerWrite,
+                   commitWrite);
+    }
 }
 #endif
 

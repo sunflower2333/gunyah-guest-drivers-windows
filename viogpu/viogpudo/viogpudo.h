@@ -967,6 +967,7 @@ class VioGpuDod
                                        _In_ const VIOGPU_NATIVE_PRESENT_DIAGNOSTIC *diagnostic);
     BOOLEAN ClaimNativePresentExecutionDiagnostic(void);
     VOID RecordNativePresentExecutionDiagnostic(_In_ const VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC *diagnostic);
+    VOID RecordNativePresentExecutionResetProvenance(void);
 #endif
 
   private:

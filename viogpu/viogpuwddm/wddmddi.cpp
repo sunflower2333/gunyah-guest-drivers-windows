@@ -2799,7 +2799,32 @@ _Use_decl_annotations_ VOID NativePresentWorker(PVOID callbackContext)
     {
         if (transaction != NULL && transaction->Adapter != NULL)
         {
-            transaction->Adapter->RequestHardwareResetAtAnyIrql();
+            if (transaction->Signature == VIOGPU_WDDM_PRESENT_TRANSACTION_SIGNATURE)
+            {
+                VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC executionDiagnostic = {};
+                DWORD detail = transaction->Context == NULL ? 1U << 0 : 0;
+                detail |= transaction->FenceId == 0 ? 1U << 1 : 0;
+                detail |= InterlockedCompareExchange(&transaction->WorkReferenceHeld, 0, 0) == 1 ? 0 : 1U << 2;
+                InitializePresentExecutionDiagnostic(transaction,
+                                                     VioGpuWddmPresentExecuteInvalidTransaction,
+                                                     STATUS_INVALID_PARAMETER,
+                                                     detail,
+                                                     &executionDiagnostic);
+                BOOLEAN diagnosticClaimed = transaction->Adapter->ClaimNativePresentExecutionDiagnostic();
+                if (diagnosticClaimed)
+                {
+                    transaction->Adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);
+                }
+                transaction->Adapter->RequestHardwareResetAtAnyIrql();
+                if (diagnosticClaimed)
+                {
+                    transaction->Adapter->RecordNativePresentExecutionResetProvenance();
+                }
+            }
+            else
+            {
+                transaction->Adapter->RequestHardwareResetAtAnyIrql();
+            }
             transaction->Adapter->CompleteNativePassiveWork(&transaction->Work);
             ReleasePresentWorkReference(transaction);
         }
@@ -2811,11 +2836,26 @@ _Use_decl_annotations_ VOID NativePresentWorker(PVOID callbackContext)
         VioGpuWddmPresentQueued)
     {
         LONG state = InterlockedCompareExchange(&transaction->State, 0, 0);
+        VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC executionDiagnostic = {};
+        InitializePresentExecutionDiagnostic(transaction,
+                                             VioGpuWddmPresentExecuteStateTransition,
+                                             STATUS_DEVICE_NOT_READY,
+                                             static_cast<DWORD>(state),
+                                             &executionDiagnostic);
+        BOOLEAN diagnosticClaimed = adapter->ClaimNativePresentExecutionDiagnostic();
+        if (diagnosticClaimed)
+        {
+            adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);
+        }
         if (state >= VioGpuWddmPresentBuilt && state <= VioGpuWddmPresentExecuting)
         {
             RetirePresentTransaction(transaction, state, VioGpuWddmPresentCancelled);
         }
         adapter->RequestHardwareResetAtAnyIrql();
+        if (diagnosticClaimed)
+        {
+            adapter->RecordNativePresentExecutionResetProvenance();
+        }
         adapter->CompleteNativePassiveWork(&transaction->Work);
         ReleasePresentWorkReference(transaction);
         return;
@@ -2848,10 +2888,14 @@ _Use_decl_annotations_ VOID NativePresentWorker(PVOID callbackContext)
                                                                                              0,
                                                                                              0));
         BOOLEAN diagnosticClaimed = adapter->ClaimNativePresentExecutionDiagnostic();
-        adapter->RequestHardwareResetAtAnyIrql();
         if (diagnosticClaimed)
         {
             adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);
+        }
+        adapter->RequestHardwareResetAtAnyIrql();
+        if (diagnosticClaimed)
+        {
+            adapter->RecordNativePresentExecutionResetProvenance();
         }
     }
     else if (NT_SUCCESS(status))
@@ -2861,6 +2905,10 @@ _Use_decl_annotations_ VOID NativePresentWorker(PVOID callbackContext)
     else
     {
         BOOLEAN diagnosticClaimed = adapter->ClaimNativePresentExecutionDiagnostic();
+        if (diagnosticClaimed)
+        {
+            adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);
+        }
         adapter->NotifyNativeSubmissionFault(fenceId,
                                              STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE,
                                              nodeOrdinal,
@@ -2868,7 +2916,7 @@ _Use_decl_annotations_ VOID NativePresentWorker(PVOID callbackContext)
                                              TRUE);
         if (diagnosticClaimed)
         {
-            adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);
+            adapter->RecordNativePresentExecutionResetProvenance();
         }
     }
     adapter->CompleteNativePassiveWork(&transaction->Work);

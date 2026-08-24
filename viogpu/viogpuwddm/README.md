@@ -10,7 +10,7 @@ contracts remain disabled. The source contains the registration entry point, a
 dedicated display-class INX, and an ARM64-only fail-closed D3D UMD shim.
 The last committed activation batch passed the ARM64 compile, link, MAP, INF,
 signing, and package gates in the dedicated and product workflows. Signed
-package `100.6.101.58022` is installed in the unprotected Windows VM, starts
+package `100.6.101.58027` is installed in the unprotected Windows VM, starts
 the adapter, and completes the paging system commands that faulted package
 `58019` with bug check `0x119/5`. The display remains black. Its first-reset
 caller RVA is `0x7880`; the exact package MAP/PDB resolves that return address
@@ -18,8 +18,13 @@ to the `RequestHardwareResetAtAnyIrql()` call in
 `VioGpuDod::NotifyNativeSubmissionFault`. The subsequent
 `TransactionRegistration` rejection occurs after reset has closed the
 publication gate and is not the original failure. The current source adds an
-independent, allocation-lock-consistent execution-stage diagnostic, but it has
-not passed a new ARM64 run or guarded device test. Successful 2D display,
+independent, allocation-lock-consistent execution-stage diagnostic. Package
+`58027` left only its zero stage marker and no payload: the worker claimed the
+slot and then entered reset/fault notification before calling the recorder.
+The current source commits the core failure transaction before either reset
+entry point. Reset state/caller provenance is a separate, optional transaction
+published only if that call returns. This correction has not passed a new
+ARM64 run or guarded device test. Successful 2D display,
 KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
 
 - `DriverEntry` calls the single `DxgkInitialize` registration helper.
@@ -38,7 +43,7 @@ KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
   color conversion are explicitly not advertised.
 
 The current Windows runtime evidence is narrower than those source contracts.
-Package `58022` reports the first classified Present rejection as
+Package `58027` reports the first classified Present rejection as
 `TransactionRegistration` (`STATUS_DEVICE_NOT_READY`). The source and primary
 both have `SegmentId=1`, complete aperture placement, and current 2D Host
 backing, so the earlier pageable-GDI placement problem has been passed. The
@@ -47,14 +52,15 @@ symbols prove that a prior Present worker failure called
 `NotifyNativeSubmissionFault`, after which registration is expected to reject.
 The current execution diagnostic classifies that earlier failure and snapshots
 its fence, resources, placement offsets, and reset generations while allocation
-lifecycle locks remain held. The failing worker claims the first-failure slot
-before requesting reset, then records reset state and caller provenance after
-that request. StartDevice disables both Present diagnostic slots until both
+lifecycle locks remain held. The failing worker claims and commits the
+first-failure core record before requesting reset. If that request returns, a
+separate validity marker commits reset state and caller provenance. StartDevice
+disables both Present diagnostic slots until both
 registry markers are cleared successfully. Each writer invalidates its marker
 again before publishing payload, commits `NativePresentReason` or
 `NativePresentExecuteStage` last, and never lets a later failure replace the
 first claim after a persistence error. The reader treats the rejection and
-execution markers as independent transactions.
+execution markers as independent transactions and reset provenance as optional.
 
 The current source leaves CPU-visible allocations pageable, separates static
 GDI allocation identity from live aperture/Host identity, and defers placement

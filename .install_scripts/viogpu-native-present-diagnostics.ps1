@@ -73,8 +73,7 @@ $executionValueNames = @(
     'NativePresentExecuteStage',
     'NativePresentExecuteStatus',
     'NativePresentExecuteDetail',
-    'NativePresentExecuteHardwareResetState',
-    'NativePresentExecuteHardwareResetCallerRva',
+    'NativePresentExecuteResetProvenanceValid',
     'NativePresentExecuteFenceId',
     'NativePresentExecuteTransactionState',
     'NativePresentExecuteContextType',
@@ -98,6 +97,10 @@ $executionValueNames = @(
     'NativePresentExecuteDestinationResetGenerationHigh',
     'NativePresentExecuteTransactionDestinationResetGenerationLow',
     'NativePresentExecuteTransactionDestinationResetGenerationHigh'
+)
+$executionResetProvenanceValueNames = @(
+    'NativePresentExecuteHardwareResetState',
+    'NativePresentExecuteHardwareResetCallerRva'
 )
 function ConvertTo-DwordValue {
     param([object]$Value)
@@ -190,6 +193,7 @@ function Decode-PresentExecutionStage {
         19 { 'HostPresent' }
         20 { 'SubmissionOperation' }
         21 { 'TransactionRetire' }
+        22 { 'StateTransition' }
         0x0FFF { 'Complete' }
         default { 'Unknown' }
     }
@@ -255,6 +259,21 @@ if ($executeStage -ne 0) {
         }
     }
 }
+$resetProvenanceAvailable = $false
+if ($executeStage -ne 0) {
+    [uint64]$resetProvenanceValid = ConvertTo-DwordValue $diagnostic.NativePresentExecuteResetProvenanceValid
+    if ($resetProvenanceValid -gt 1) {
+        throw "Driver key '$driverKey' contains an invalid Present execution reset provenance marker."
+    }
+    $resetProvenanceAvailable = $resetProvenanceValid -eq 1
+    if ($resetProvenanceAvailable) {
+        foreach ($name in $executionResetProvenanceValueNames) {
+            if ($null -eq $diagnostic.PSObject.Properties[$name]) {
+                throw "Driver key '$driverKey' contains incomplete Present execution reset provenance; missing '$name'."
+            }
+        }
+    }
+}
 $reasonName = $reasonNames[[int]$reason]
 if ([string]::IsNullOrWhiteSpace($reasonName)) {
     $reasonName = 'Unknown'
@@ -311,8 +330,7 @@ if ($executeStage -ne 0) {
     ExecuteStage = Decode-PresentExecutionStage $diagnostic.NativePresentExecuteStage
     ExecuteStatus = Format-Dword $diagnostic.NativePresentExecuteStatus
     ExecuteDetail = Format-Dword $diagnostic.NativePresentExecuteDetail
-    ExecuteHardwareResetState = Decode-HardwareResetState $diagnostic.NativePresentExecuteHardwareResetState
-    ExecuteHardwareResetCallerRva = Format-Dword $diagnostic.NativePresentExecuteHardwareResetCallerRva
+    ExecuteResetProvenanceAvailable = $resetProvenanceAvailable
     ExecuteFenceId = ConvertTo-DwordValue $diagnostic.NativePresentExecuteFenceId
     ExecuteTransactionState = ConvertTo-DwordValue $diagnostic.NativePresentExecuteTransactionState
     ExecuteContextType = ConvertTo-DwordValue $diagnostic.NativePresentExecuteContextType
@@ -343,6 +361,12 @@ if ($executeStage -ne 0) {
     ExecuteTransactionDestinationResetGeneration = Format-QwordParts `
         $diagnostic.NativePresentExecuteTransactionDestinationResetGenerationLow `
         $diagnostic.NativePresentExecuteTransactionDestinationResetGenerationHigh
+    }
+    if ($resetProvenanceAvailable) {
+        $executionResult['ExecuteHardwareResetState'] = Decode-HardwareResetState `
+            $diagnostic.NativePresentExecuteHardwareResetState
+        $executionResult['ExecuteHardwareResetCallerRva'] = Format-Dword `
+            $diagnostic.NativePresentExecuteHardwareResetCallerRva
     }
     foreach ($entry in $executionResult.GetEnumerator()) {
         $result[$entry.Key] = $entry.Value

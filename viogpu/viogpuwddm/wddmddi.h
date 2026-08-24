@@ -357,6 +357,7 @@ enum VIOGPU_WDDM_PRESENT_EXECUTION_STAGE : DWORD
     VioGpuWddmPresentExecuteHostPresent = 19,
     VioGpuWddmPresentExecuteSubmissionOperation = 20,
     VioGpuWddmPresentExecuteTransactionRetire = 21,
+    VioGpuWddmPresentExecuteStateTransition = 22,
     VioGpuWddmPresentExecuteComplete = 0x0FFF,
 };
 

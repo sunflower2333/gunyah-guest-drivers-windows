@@ -2,6 +2,7 @@
 
 import os
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -1029,6 +1030,19 @@ def check_d3d_umd_shim_contract() -> None:
 
 def check_retired_pool_absence() -> None:
     repository_root = PROJECT_DIR.parent.parent
+    tracked_result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=repository_root,
+        check=False,
+        capture_output=True,
+    )
+    tracked_paths = None
+    if tracked_result.returncode == 0:
+        tracked_paths = {
+            Path(entry.decode("utf-8")).as_posix()
+            for entry in tracked_result.stdout.split(b"\0")
+            if entry
+        }
     retired_paths = (
         repository_root / "rdmapool",
         repository_root / "droidvmpool",
@@ -1083,8 +1097,11 @@ def check_retired_pool_absence() -> None:
         for path in source_root.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in source_suffixes or path == Path(__file__).resolve():
                 continue
+            relative_path = path.relative_to(repository_root).as_posix()
+            if tracked_paths is not None and relative_path not in tracked_paths:
+                continue
             if retired_token.search(path.read_text(encoding="utf-8", errors="ignore")):
-                references.append(path.relative_to(repository_root).as_posix())
+                references.append(relative_path)
     if references:
         fail(f"production source/build wiring must not reference retired Windows pools: {references}")
 
@@ -1489,8 +1506,10 @@ def check_native_present_diagnostics() -> None:
         "VOIDRecordNativePresentExecutionDiagnostic("
         "_In_constVIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC*diagnostic);"
     )
+    reset_provenance_declaration = "VOIDRecordNativePresentExecutionResetProvenance(void);"
     if adapter_header.count("BOOLEANClaimNativePresentExecutionDiagnostic(void);") != 1 or \
        adapter_header.count(execution_declaration) != 1 or \
+       adapter_header.count(reset_provenance_declaration) != 1 or \
        adapter_header.count("volatileLONGm_NativePresentExecutionDiagnosticRecorded;") != 1:
         fail("adapter must retain one first-failure Present execution diagnostic claim and recorder")
     if constructor.count("m_NativePresentExecutionDiagnosticRecorded=0;") != 1:
@@ -1519,16 +1538,14 @@ def check_native_present_diagnostics() -> None:
         fail("Present execution diagnostics must permanently consume the first-failure claim after persistence failure")
     if execution_recorder_body.count("ZwClose(deviceKey)") != 1:
         fail("Present execution diagnostics must close exactly one device registry handle")
-    for reset_value in (
-        "NativePresentExecuteHardwareResetState",
-        "NativePresentExecuteHardwareResetCallerRva",
-    ):
-        if execution_recorder_body.count(f'L"{reset_value}"') != 1:
-            fail(f"Present execution diagnostics must snapshot {reset_value}")
     execution_value_names = [f"NativePresentExecute{field}" for field in execution_fields]
     for value_name in execution_value_names[1:]:
         if execution_recorder_body.count(f'L"{value_name}"') != 1:
             fail(f"Present execution diagnostic recorder must write exactly one {value_name} value")
+    if execution_recorder_body.count('L"NativePresentExecuteResetProvenanceValid"') != 1 or \
+       "QueryHardwareResetState()" in execution_recorder_body or \
+       "m_HardwareResetCallerRva" in execution_recorder_body:
+        fail("Present execution core transaction must invalidate, but not wait for, reset provenance")
     execution_stage_write = compact_code(
         'WriteRegistryDWORD(deviceKey, L"NativePresentExecuteStage", &stageValue)'
     )
@@ -1545,6 +1562,33 @@ def check_native_present_diagnostics() -> None:
         "Present execution diagnostics must publish all values before their stage commit marker",
     )
 
+    reset_provenance_body = function_body("VioGpuDod::RecordNativePresentExecutionResetProvenance", VIOGPU_SOURCE)
+    reset_provenance = canonical_code(reset_provenance_body)
+    for fragment in (
+        "InterlockedCompareExchange(&m_NativePresentExecutionDiagnosticRecorded,2,2)!=2",
+        "IoOpenDeviceRegistryKey(m_pPhysicalDevice,PLUGPLAY_REGKEY_DRIVER,KEY_SET_VALUE,&deviceKey)",
+        "QueryHardwareResetState()",
+        "InterlockedCompareExchange(&m_HardwareResetCallerRva,0,0)",
+        'WriteRegistryDWORD(deviceKey,L"NativePresentExecuteHardwareResetState",&hardwareResetState)',
+        'WriteRegistryDWORD(deviceKey,L"NativePresentExecuteHardwareResetCallerRva",&hardwareResetCallerRva)',
+    ):
+        if reset_provenance.count(fragment) != 1:
+            fail(f"Present execution reset provenance must retain its optional transaction: {fragment}")
+    if reset_provenance_body.count('L"NativePresentExecuteResetProvenanceValid"') != 2 or \
+       reset_provenance_body.count("ZwClose(deviceKey)") != 1:
+        fail("Present execution reset provenance must have one independent commit marker and one registry handle")
+    require_order(
+        reset_provenance,
+        (
+            'WriteRegistryDWORD(deviceKey,L"NativePresentExecuteResetProvenanceValid",&unavailable)',
+            'WriteRegistryDWORD(deviceKey,L"NativePresentExecuteHardwareResetState",&hardwareResetState)',
+            'WriteRegistryDWORD(deviceKey,L"NativePresentExecuteHardwareResetCallerRva",&hardwareResetCallerRva)',
+            'WriteRegistryDWORD(deviceKey,L"NativePresentExecuteResetProvenanceValid",&available)',
+            "ZwClose(deviceKey);",
+        ),
+        "Present execution reset provenance must publish its payload before its optional commit marker",
+    )
+
     present = canonical_code(function_body("VioGpuWddmPresent", WDDM_DDI_CODE))
     for reason_name in tuple(expected_reasons)[1:]:
         if present.count(reason_name) != 1:
@@ -1556,7 +1600,12 @@ def check_native_present_diagnostics() -> None:
     if not PRESENT_DIAGNOSTIC_SCRIPT_PATH.is_file():
         fail("native Present diagnostic reader is missing")
     reader = PRESENT_DIAGNOSTIC_SCRIPT_PATH.read_text(encoding="utf-8")
-    for value_name in ["NativePresentReason"] + value_names + execution_value_names:
+    reset_provenance_value_names = [
+        "NativePresentExecuteResetProvenanceValid",
+        "NativePresentExecuteHardwareResetState",
+        "NativePresentExecuteHardwareResetCallerRva",
+    ]
+    for value_name in ["NativePresentReason"] + value_names + execution_value_names + reset_provenance_value_names:
         if reader.count(value_name) < 2:
             fail(f"native Present diagnostic reader must require and report {value_name}")
     reader_reason_block = re.search(
@@ -1583,6 +1632,7 @@ def check_native_present_diagnostics() -> None:
         "if ($reason -eq 0 -and $executeStage -eq 0)",
         "if ($reason -ne 0)",
         "if ($executeStage -ne 0)",
+        "if ($resetProvenanceAvailable)",
     ):
         if reader.count(fragment) < 1:
             fail(f"native Present diagnostic reader must honor independent commit markers: {fragment}")
@@ -1592,6 +1642,10 @@ def check_native_present_diagnostics() -> None:
         "$executionOnlyValues = [ordered]@{ NativePresentReason = 0 }",
         "$null -ne $presentOnly.PSObject.Properties['ExecuteStage']",
         "$null -ne $executionOnly.PSObject.Properties['Reason']",
+        "$executionOnly.ExecuteResetProvenanceAvailable",
+        "$null -ne $executionOnly.PSObject.Properties['ExecuteHardwareResetState']",
+        "$stateTransitionValues['NativePresentExecuteStage'] = 22",
+        "$stateTransition.ExecuteStage -ne 'StateTransition (22)'",
     ):
         if fixture.count(fragment) != 1:
             fail(f"Native Present decoder fixture must cover independent marker generations: {fragment}")
@@ -4022,26 +4076,54 @@ def check_wddm_present_contract() -> None:
         "adapter->NotifyNativeSubmissionFault(",
         "adapter->ClaimNativePresentExecutionDiagnostic();",
         "adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);",
+        "adapter->RecordNativePresentExecutionResetProvenance();",
     ):
         if fragment not in worker_main:
-            fail(f"Present worker must persist its first execution failure after reset provenance: {fragment}")
+            fail(f"Present worker must persist its first execution failure before reset notification: {fragment}")
     if worker_main.count("adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);") != 2:
         fail("Present worker must record exactly the retire and execution-fault failure paths")
     if worker_main.count("adapter->ClaimNativePresentExecutionDiagnostic();") != 2:
         fail("Present worker must claim exactly the retire and execution-fault diagnostic paths")
     retire_stage = worker_main.find("executionDiagnostic.Stage=VioGpuWddmPresentExecuteTransactionRetire;")
     retire_claim = worker_main.find("adapter->ClaimNativePresentExecutionDiagnostic();", retire_stage)
-    retire_reset = worker_main.find("adapter->RequestHardwareResetAtAnyIrql();", retire_claim)
     retire_record = worker_main.find(
         "adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);",
-        retire_reset,
+        retire_claim,
     )
+    retire_reset = worker_main.find("adapter->RequestHardwareResetAtAnyIrql();", retire_record)
+    retire_provenance = worker_main.find("adapter->RecordNativePresentExecutionResetProvenance();", retire_reset)
     fault_claim = worker_main.find("adapter->ClaimNativePresentExecutionDiagnostic();", retire_claim + 1)
-    fault_notify = worker_main.find("adapter->NotifyNativeSubmissionFault(")
     fault_record = worker_main.find("adapter->RecordNativePresentExecutionDiagnostic(&executionDiagnostic);", retire_record + 1)
-    if min(retire_stage, retire_claim, retire_reset, retire_record, fault_claim, fault_notify, fault_record) < 0 or \
-       not retire_stage < retire_claim < retire_reset < retire_record < fault_claim < fault_notify < fault_record:
-        fail("Present execution diagnostics must claim before reset and persist caller provenance after reset")
+    fault_notify = worker_main.find("adapter->NotifyNativeSubmissionFault(", fault_record)
+    fault_provenance = worker_main.find("adapter->RecordNativePresentExecutionResetProvenance();", fault_notify)
+    if min(retire_stage,
+           retire_claim,
+           retire_record,
+           retire_reset,
+           retire_provenance,
+           fault_claim,
+           fault_record,
+           fault_notify,
+           fault_provenance) < 0 or \
+       not retire_stage < retire_claim < retire_record < retire_reset < retire_provenance < fault_claim < fault_record < \
+       fault_notify < fault_provenance:
+        fail("Present execution core diagnostics must commit before reset and optional reset provenance after return")
+
+    worker_prefix = worker[:worker_main_start]
+    for fragment in (
+        "VioGpuWddmPresentExecuteInvalidTransaction",
+        "VioGpuWddmPresentExecuteStateTransition",
+        "InitializePresentExecutionDiagnostic(transaction,",
+        "RecordNativePresentExecutionDiagnostic(&executionDiagnostic);",
+        "RequestHardwareResetAtAnyIrql();",
+        "RecordNativePresentExecutionResetProvenance();",
+    ):
+        if fragment not in worker_prefix:
+            fail(f"Present worker early reset paths must retain pre-reset execution evidence: {fragment}")
+    if worker.count("RecordNativePresentExecutionDiagnostic(&executionDiagnostic);") != 4 or \
+       worker.count("ClaimNativePresentExecutionDiagnostic();") != 4 or \
+       worker.count("RecordNativePresentExecutionResetProvenance();") != 4:
+        fail("Present worker must diagnose exactly its two early and two terminal reset paths")
 
     expected_execution_stages = {
         "VioGpuWddmPresentExecuteNone": "0",
@@ -4066,6 +4148,7 @@ def check_wddm_present_contract() -> None:
         "VioGpuWddmPresentExecuteHostPresent": "19",
         "VioGpuWddmPresentExecuteSubmissionOperation": "20",
         "VioGpuWddmPresentExecuteTransactionRetire": "21",
+        "VioGpuWddmPresentExecuteStateTransition": "22",
         "VioGpuWddmPresentExecuteComplete": "0x0FFF",
     }
     execution_stage_match = re.search(
@@ -4102,6 +4185,7 @@ def check_wddm_present_contract() -> None:
         if observed_count != expected_count and stage_name not in (
             "VioGpuWddmPresentExecuteSubmissionOperation",
             "VioGpuWddmPresentExecuteTransactionRetire",
+            "VioGpuWddmPresentExecuteStateTransition",
         ):
             fail(f"Present execution must classify its first failure at {stage_name}")
     require_order(
