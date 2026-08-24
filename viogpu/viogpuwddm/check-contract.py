@@ -5010,13 +5010,8 @@ def check_native_context_ownership() -> None:
             fail(f"native response {owner} must remain non-waiting and nonpageable")
     seed_order = (
         seed.find("RtlZeroMemory(response,responseSize);"),
-        seed.find(
-            "InterlockedExchange(reinterpret_cast<volatileLONG*>(&responseHeader->ret),MAXLONG);"
-        ),
-        seed.find(
-            "InterlockedExchange(reinterpret_cast<volatileLONG*>(&responseHeader->hdr.len),"
-            "static_cast<LONG>(responseSize));"
-        ),
+        seed.find("VioGpuWriteSharedU32(reinterpret_cast<volatileULONG*>(&responseHeader->ret),MAXLONG);"),
+        seed.find("VioGpuWriteSharedU32(reinterpret_cast<volatileULONG*>(&responseHeader->hdr.len),responseSize);"),
     )
     if min(seed_order) < 0 or list(seed_order) != sorted(seed_order):
         fail("native response seed must install an invalid return sentinel before publishing the exact length")
@@ -5043,6 +5038,23 @@ def check_native_context_ownership() -> None:
     ):
         if resolve.count(fragment) != 1:
             fail(f"control responses must stay inside the assigned host-visible BAR slot: {fragment}")
+
+    shared_read = canonical_code(
+        function_body_with_parameters(
+            "VioGpuReadSharedU32", "_In_ const volatile ULONG *value", VIOGPU_CODE
+        )
+    )
+    shared_write = canonical_code(
+        function_body_with_parameters(
+            "VioGpuWriteSharedU32", "_Out_ volatile ULONG *value, _In_ ULONG newValue", VIOGPU_CODE
+        )
+    )
+    if "Interlocked" in shared_read or "Interlocked" in shared_write or "Interlocked" in seed:
+        fail("native control BAR accesses must not issue ARM64 exclusive atomic operations")
+    if shared_read != "ULONGresult=*value;KeMemoryBarrier();returnresult;":
+        fail("native control BAR reads must use one volatile load followed by an ordering barrier")
+    if shared_write != "KeMemoryBarrier();*value=newValue;KeMemoryBarrier();":
+        fail("native control BAR writes must bracket one volatile store with ordering barriers")
 
     query_param = canonical_code(function_body("VioGpuAdapter::QueryNativeContextParameterLocked", VIOGPU_CODE))
     query_sequence = (

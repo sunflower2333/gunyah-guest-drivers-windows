@@ -3781,8 +3781,18 @@ PAGED_CODE_SEG_END
 #if defined(VIOGPU_NATIVE_CONTEXT)
 static ULONG VioGpuReadSharedU32(_In_ const volatile ULONG *value)
 {
-    volatile ULONG *mutableValue = const_cast<volatile ULONG *>(value);
-    return static_cast<ULONG>(InterlockedCompareExchange(reinterpret_cast<volatile LONG *>(mutableValue), 0, 0));
+    // The control blob is reached through a PCI BAR.  ARM64 exclusive atomics are not valid for
+    // every MMIO memory type, so use one volatile access plus an explicit ordering barrier.
+    ULONG result = *value;
+    KeMemoryBarrier();
+    return result;
+}
+
+static VOID VioGpuWriteSharedU32(_Out_ volatile ULONG *value, _In_ ULONG newValue)
+{
+    KeMemoryBarrier();
+    *value = newValue;
+    KeMemoryBarrier();
 }
 
 static BOOLEAN VioGpuResolveNativeControlWindow(_In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner,
@@ -3831,9 +3841,8 @@ static BOOLEAN VioGpuSeedNativeControlResponse(_In_ VioGpuAdapter *adapter,
     {
         RtlZeroMemory(response, responseSize);
         PMSM_CCMD_IOCTL_SIMPLE_RSP responseHeader = reinterpret_cast<PMSM_CCMD_IOCTL_SIMPLE_RSP>(response);
-        InterlockedExchange(reinterpret_cast<volatile LONG *>(&responseHeader->ret), MAXLONG);
-        InterlockedExchange(reinterpret_cast<volatile LONG *>(&responseHeader->hdr.len),
-                            static_cast<LONG>(responseSize));
+        VioGpuWriteSharedU32(reinterpret_cast<volatile ULONG *>(&responseHeader->ret), MAXLONG);
+        VioGpuWriteSharedU32(reinterpret_cast<volatile ULONG *>(&responseHeader->hdr.len), responseSize);
     }
     return valid;
 }
