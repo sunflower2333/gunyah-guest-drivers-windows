@@ -2,9 +2,6 @@
 
 #include "d3dumddi_compat.h"
 
-struct D3DDDIARG_OPENADAPTER;
-struct D3D10DDIARG_OPENADAPTER;
-
 namespace
 {
 
