@@ -159,17 +159,17 @@ VioGpuValidatePlainControlResponse(VIOGPU_WIRE_U32 response_size,
     return VioGpuHostResponseMalformed;
 }
 
-#define MSM_BO_SCANOUT                           0x00000001U
-#define MSM_BO_GPU_READONLY                      0x00000002U
-#define MSM_BO_CACHED_COHERENT                   0x00080000U
-#define MSM_BO_GUEST_ALLOC                       0x80000000U
-#define MSM_PIPE_3D0                             0x10U
-#define MSM_PARAM_VA_START                       0x0eU
-#define MSM_PARAM_VA_SIZE                        0x0fU
-#define DRM_IOCTL_MSM_GET_PARAM                  0xc0186440U
-#define MSM_SUBMITQUEUE_ALLOW_PREEMPT            0x00000001U
-#define DRM_IOCTL_MSM_SUBMITQUEUE_NEW            0xc00c644aU
-#define DRM_IOCTL_MSM_SUBMITQUEUE_CLOSE          0x4004644bU
+#define MSM_BO_SCANOUT                  0x00000001U
+#define MSM_BO_GPU_READONLY             0x00000002U
+#define MSM_BO_CACHED_COHERENT          0x00080000U
+#define MSM_BO_GUEST_ALLOC              0x80000000U
+#define MSM_PIPE_3D0                    0x10U
+#define MSM_PARAM_VA_START              0x0eU
+#define MSM_PARAM_VA_SIZE               0x0fU
+#define DRM_IOCTL_MSM_GET_PARAM         0xc0186440U
+#define MSM_SUBMITQUEUE_ALLOW_PREEMPT   0x00000001U
+#define DRM_IOCTL_MSM_SUBMITQUEUE_NEW   0xc00c644aU
+#define DRM_IOCTL_MSM_SUBMITQUEUE_CLOSE 0x4004644bU
 
 #if defined(_MSC_VER)
 #pragma warning(push)
