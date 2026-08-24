@@ -368,7 +368,7 @@ The focused safety contract for the current slice passes locally:
 python viogpu/viogpuwddm/check-contract.py
 ```
 
-The ARM64 workflows use `windows-2025-vs2026`, locate and verify a complete
+The ARM64 workflows use `windows-2022`, locate and verify a complete
 preinstalled Windows SDK/WDK with the required ARM64 kit files, and emit ARM64
 driver targets only. Their x64 tools are
 runner-side cross-build and ABI-fixture tools, not product targets. The mutation
