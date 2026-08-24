@@ -2744,10 +2744,8 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     for (UINT index = 0; NT_SUCCESS(status) && index < transaction->RectCount; ++index)
     {
         const RECT *rect = &transaction->DestinationSubRects[index];
-        ULONGLONG transferOffset = static_cast<ULONGLONG>(rect->top) * destination->Pitch +
-                                   static_cast<ULONGLONG>(rect->left) * 4;
         VIOGPU_HOST_CONTEXT_RESULT result = transaction->Adapter->Present2DResource(destination->ResourceId,
-                                                                                    transferOffset,
+                                                                                    0,
                                                                                     static_cast<UINT>(rect->right -
                                                                                                       rect->left),
                                                                                     static_cast<UINT>(rect->bottom -

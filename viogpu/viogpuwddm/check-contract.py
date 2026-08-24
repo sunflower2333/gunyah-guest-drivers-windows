@@ -4355,7 +4355,7 @@ def check_wddm_present_contract() -> None:
         "HasLiveGdiPresentIdentity(source,transaction->Context,transaction->Adapter)",
         "source->ApertureAddress==NULL||destination->ApertureAddress==NULL",
         "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
-        "transaction->Adapter->Present2DResource(",
+        "transaction->Adapter->Present2DResource(destination->ResourceId,0,",
         "result!=VioGpuHostContextConfirmed",
         "InterlockedCompareExchange(&transaction->CancelRequested,0,0)!=0",
         "BuildPresentExecutionDiagnostic(transaction,*failureStage,status,*failureDetail,executionDiagnostic);",
@@ -4384,6 +4384,8 @@ def check_wddm_present_contract() -> None:
     )
     if execute.count("KeMemoryBarrier();") != 1:
         fail("Present must retain exactly one CPU-to-Host ordering barrier after its row-copy batch")
+    if "transferOffset" in execute_body:
+        fail("Present must not add dirty-rect coordinates to both TRANSFER_TO_HOST_2D offset and box")
 
     cancel = canonical_code(function_body("VioGpuWddmCancelCommand", WDDM_DDI_CODE))
     dma_range_parameters = (
