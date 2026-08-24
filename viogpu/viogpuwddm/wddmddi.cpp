@@ -2777,12 +2777,11 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                 {
                     diagnosticFillSize = destination->BackingSize;
                 }
-                diagnosticFillSize &= ~(sizeof(ULONG) - 1);
             }
             if (diagnosticFillSize != 0)
             {
                 // Keep untouched pixels visibly nonblack while preserving the real dirty rectangles below.
-                RtlFillMemoryUlong(destinationBase, diagnosticFillSize, 0x00FF00FFU);
+                RtlFillMemory(destinationBase, diagnosticFillSize, 0xFF);
             }
             for (UINT index = 0; index < transaction->RectCount; ++index)
             {
