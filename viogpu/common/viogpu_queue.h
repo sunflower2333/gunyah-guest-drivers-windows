@@ -327,6 +327,7 @@ class CtrlQueue : public VioGpuQueue
         KeInitializeSpinLock(&m_NativeSubmitLock);
         InitializeListHead(&m_NativeSubmitBacklog);
         m_NativeSubmitBacklogPoisoned = 0;
+        RtlZeroMemory(&m_LastNativeContextResponseDiagnostic, sizeof(m_LastNativeContextResponseDiagnostic));
     };
 
     PVOID AllocCmd(PGPU_VBUFFER *buf, int sz);
@@ -349,8 +350,9 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN ResetNativeSubmitBacklog(void);
     BOOLEAN QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info);
     BOOLEAN QueryCapset(UINT capset_id, UINT capset_version, UINT capset_size, PGPU_CAPSET_DRM capset);
-    VIOGPU_HOST_CONTEXT_RESULT CreateNativeContext(UINT context_id,
-                                                   _Out_opt_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic);
+    VIOGPU_HOST_CONTEXT_RESULT
+    CreateNativeContext(UINT context_id, _Out_opt_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic = NULL);
+    void GetLastNativeContextResponseDiagnostic(_Out_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic) const;
     VIOGPU_HOST_CONTEXT_RESULT DestroyNativeContext(UINT context_id);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeControlBlob(UINT context_id, UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeGuestBlob(UINT context_id,
@@ -412,6 +414,7 @@ class CtrlQueue : public VioGpuQueue
     KSPIN_LOCK m_NativeSubmitLock;
     LIST_ENTRY m_NativeSubmitBacklog;
     volatile LONG m_NativeSubmitBacklogPoisoned;
+    VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC m_LastNativeContextResponseDiagnostic;
 };
 
 class CrsrQueue : public VioGpuQueue

@@ -4378,8 +4378,7 @@ VOID VioGpuDod::RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HO
     DWORD fenceHigh = static_cast<DWORD>(diagnostic->FenceId >> 32);
     DWORD contextId = diagnostic->ContextId;
     DWORD ringIndex = diagnostic->RingIndex;
-    DWORD padding = static_cast<DWORD>(diagnostic->Padding[0]) |
-                    (static_cast<DWORD>(diagnostic->Padding[1]) << 8) |
+    DWORD padding = static_cast<DWORD>(diagnostic->Padding[0]) | (static_cast<DWORD>(diagnostic->Padding[1]) << 8) |
                     (static_cast<DWORD>(diagnostic->Padding[2]) << 16);
     DWORD submitted = diagnostic->Submitted ? 1U : 0U;
     DWORD completed = diagnostic->Completed ? 1U : 0U;
@@ -6807,8 +6806,9 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     InterlockedExchange(&context->State, VioGpuNativeContextCreating);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
 
+    VIOGPU_HOST_CONTEXT_RESULT createResult = m_CtrlQueue.CreateNativeContext(contextId);
     VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC hostResponse = {};
-    VIOGPU_HOST_CONTEXT_RESULT createResult = m_CtrlQueue.CreateNativeContext(contextId, &hostResponse);
+    m_CtrlQueue.GetLastNativeContextResponseDiagnostic(&hostResponse);
     if (m_pVioGpuDod != NULL)
     {
         m_pVioGpuDod->RecordNativeContextCreateResponseDiagnostic(&hostResponse);

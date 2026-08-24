@@ -1132,15 +1132,23 @@ BOOLEAN CtrlQueue::QueryCapset(UINT capset_id, UINT capset_version, UINT capset_
     return success;
 }
 
+void CtrlQueue::GetLastNativeContextResponseDiagnostic(_Out_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic) const
+{
+    if (diagnostic != NULL)
+    {
+        RtlCopyMemory(diagnostic, &m_LastNativeContextResponseDiagnostic, sizeof(*diagnostic));
+    }
+}
+
 VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeContext(UINT context_id,
-                                                           _Out_opt_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic)
+                                                          _Out_opt_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic)
 {
     PAGED_CODE();
 
-    if (diagnostic != NULL)
-    {
-        RtlZeroMemory(diagnostic, sizeof(*diagnostic));
-    }
+    VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC captured = {};
+    PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC output = diagnostic != NULL ? diagnostic : &captured;
+    RtlZeroMemory(&m_LastNativeContextResponseDiagnostic, sizeof(m_LastNativeContextResponseDiagnostic));
+    RtlZeroMemory(output, sizeof(*output));
 
     if (context_id == 0)
     {
@@ -1171,21 +1179,19 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeContext(UINT context_id,
     BOOLEAN submitted = FALSE;
     BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
-    if (diagnostic != NULL)
+    output->ResponseSize = vbuf->response_size;
+    output->Submitted = submitted;
+    output->Completed = completed;
+    if (completed && vbuf->response_size >= sizeof(GPU_CTRL_HDR) && response != NULL)
     {
-        diagnostic->ResponseSize = vbuf->response_size;
-        diagnostic->Submitted = submitted;
-        diagnostic->Completed = completed;
-        if (completed && vbuf->response_size >= sizeof(GPU_CTRL_HDR) && response != NULL)
-        {
-            diagnostic->Type = response->type;
-            diagnostic->Flags = response->flags;
-            diagnostic->FenceId = response->fence_id;
-            diagnostic->ContextId = response->ctx_id;
-            diagnostic->RingIndex = response->ring_idx;
-            RtlCopyMemory(diagnostic->Padding, response->padding, sizeof(diagnostic->Padding));
-        }
+        output->Type = response->type;
+        output->Flags = response->flags;
+        output->FenceId = response->fence_id;
+        output->ContextId = response->ctx_id;
+        output->RingIndex = response->ring_idx;
+        RtlCopyMemory(output->Padding, response->padding, sizeof(output->Padding));
     }
+    RtlCopyMemory(&m_LastNativeContextResponseDiagnostic, output, sizeof(m_LastNativeContextResponseDiagnostic));
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
     if (!submitted)
     {
