@@ -4325,20 +4325,54 @@ VOID VioGpuDod::RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_C
     DWORD stageValue = static_cast<DWORD>(stage);
     NTSTATUS statusWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateStatus", &statusValue);
     NTSTATUS detailWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateDetail", &detailValue);
+    /* Keep the first failing transport stage separate from the final Current
+     * commit marker.  The latter is intentionally written during rollback and
+     * otherwise hides whether blob creation, BAR mapping, VA discovery, or
+     * submit-queue setup was the first rejected operation. */
+    NTSTATUS failureWrite = STATUS_SUCCESS;
+    if (stage == VioGpuNativeContextCreateEntered)
+    {
+        DWORD zero = 0;
+        failureWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateFailureStage", &zero);
+        if (NT_SUCCESS(failureWrite))
+        {
+            failureWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateFailureStatus", &zero);
+        }
+        if (NT_SUCCESS(failureWrite))
+        {
+            failureWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateFailureDetail", &zero);
+        }
+    }
+    else if (stage != VioGpuNativeContextCreateCurrent && stage != VioGpuNativeContextCreateComplete &&
+             status != STATUS_SUCCESS && status != STATUS_PENDING)
+    {
+        DWORD failureStageValue = static_cast<DWORD>(stage);
+        DWORD failureStatusValue = static_cast<DWORD>(status);
+        failureWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateFailureStage", &failureStageValue);
+        if (NT_SUCCESS(failureWrite))
+        {
+            failureWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateFailureStatus", &failureStatusValue);
+        }
+        if (NT_SUCCESS(failureWrite))
+        {
+            failureWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateFailureDetail", &detailValue);
+        }
+    }
     /* Stage is the commit marker for the status/detail pair. */
     NTSTATUS stageWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateStage", &stageValue);
     ZwClose(deviceKey);
 
-    if (!NT_SUCCESS(statusWrite) || !NT_SUCCESS(detailWrite) || !NT_SUCCESS(stageWrite))
+    if (!NT_SUCCESS(statusWrite) || !NT_SUCCESS(detailWrite) || !NT_SUCCESS(failureWrite) || !NT_SUCCESS(stageWrite))
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
                    "viogpu native context create diagnostic: write failed, stage=0x%04X "
-                   "status=0x%08X writes=%08X/%08X/%08X\n",
+                   "status=0x%08X writes=%08X/%08X/%08X/%08X\n",
                    stageValue,
                    statusValue,
                    statusWrite,
                    detailWrite,
+                   failureWrite,
                    stageWrite);
         return;
     }
