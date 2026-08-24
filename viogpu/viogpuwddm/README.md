@@ -68,6 +68,10 @@ any change. It otherwise treats the rejection and execution markers as
 independent transactions, reset provenance as optional, and reports the first
 submission-fault caller, claim state, and Submit-stage snapshot when available.
 
+Present Submit accepts both forms emitted by the registered legacy runtime: a
+zero-valued `DXGK_SUBMITCOMMANDFLAGS` and the newer explicit Present-only value
+(`Present=1`, `Value=2`). Any other flag combination remains a contract fault.
+
 The current source leaves CPU-visible allocations pageable, separates static
 GDI allocation identity from live aperture/Host identity, and defers placement
 and backing validation for a `SegmentId=0` allocation until Patch. A nonzero
