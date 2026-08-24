@@ -127,7 +127,10 @@ if ($executionOnly.ExecuteStage -ne 'HostPresent (19)' -or
     throw "Execution-only diagnostic decoder fixture failed: $($executionOnly | Format-List | Out-String)"
 }
 
-$stateTransitionValues = $executionOnlyValues.Clone()
+$stateTransitionValues = [ordered]@{}
+foreach ($entry in $executionOnlyValues.GetEnumerator()) {
+    $stateTransitionValues[$entry.Key] = $entry.Value
+}
 $stateTransitionValues['NativePresentExecuteStage'] = 22
 $stateTransitionValues['NativePresentExecuteDetail'] = 6
 $stateTransition = & "$PSScriptRoot/viogpu-native-present-diagnostics.ps1" `
