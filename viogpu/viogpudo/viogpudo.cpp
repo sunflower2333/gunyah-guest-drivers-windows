@@ -5517,7 +5517,7 @@ NTSTATUS VioGpuAdapter::SetPowerState(DXGK_DEVICE_INFO *pDeviceInfo,
 }
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
-BOOLEAN VioGpuAdapter::AcquireNativeSubmitOperation(void) const
+__declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::AcquireNativeSubmitOperation(void) const
 {
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeSubmitRundownLock, &oldIrql);
@@ -5531,7 +5531,7 @@ void VioGpuAdapter::ReleaseNativeSubmitOperation(void) const
     ExReleaseRundownProtection(&m_NativeSubmitRundown);
 }
 
-void VioGpuAdapter::CompleteNativeSubmitRundown(void)
+__declspec(code_seg(".text")) void VioGpuAdapter::CompleteNativeSubmitRundown(void)
 {
     PAGED_CODE();
 
@@ -5553,7 +5553,7 @@ void VioGpuAdapter::CompleteNativeSubmitRundown(void)
     KeReleaseSpinLock(&m_NativeSubmitRundownLock, oldIrql);
 }
 
-BOOLEAN VioGpuAdapter::ReinitializeNativeSubmitRundown(void)
+__declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::ReinitializeNativeSubmitRundown(void)
 {
     PAGED_CODE();
 
@@ -5636,7 +5636,12 @@ BOOLEAN VioGpuAdapter::BeginNativeContextInitialization(void)
     return TRUE;
 }
 
-BOOLEAN VioGpuAdapter::CompleteNativeContextInitialization(void)
+/*
+ * The readiness spin lock raises IRQL while this function is executing.
+ * Keep the whole routine resident so the instruction immediately after
+ * KeAcquireSpinLock cannot fault while the lock is held.
+ */
+__declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::CompleteNativeContextInitialization(void)
 {
     PAGED_CODE();
 
@@ -6687,8 +6692,8 @@ BOOLEAN VioGpuAdapter::AllocateNativeControlSlotLocked(_Out_ PULONGLONG offset, 
 }
 #endif
 
-NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
-                                            _In_ ULONGLONG expectedResetGeneration)
+__declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                                                          _In_ ULONGLONG expectedResetGeneration)
 {
     PAGED_CODE();
 
@@ -7001,8 +7006,8 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     return STATUS_SUCCESS;
 }
 
-NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
-                                             _Out_ BOOLEAN *released)
+__declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                                                           _Out_ BOOLEAN *released)
 {
     PAGED_CODE();
 
@@ -7124,8 +7129,8 @@ NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIS
     return status;
 }
 
-BOOLEAN VioGpuAdapter::AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
-                                                    _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot)
+__declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
+                                                                                  _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot)
 {
     if (context == NULL || snapshot == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
@@ -7191,11 +7196,11 @@ BOOLEAN VioGpuAdapter::AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEX
     return acquired;
 }
 
-BOOLEAN VioGpuAdapter::AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requestedIova,
-                                                                 _In_ SIZE_T backingSize,
-                                                                 _In_ ULONGLONG expectedResetGeneration,
-                                                                 _In_ UINT expectedContextId,
-                                                                 _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot)
+__declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requestedIova,
+                                                                                               _In_ SIZE_T backingSize,
+                                                                                               _In_ ULONGLONG expectedResetGeneration,
+                                                                                               _In_ UINT expectedContextId,
+                                                                                               _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot)
 {
     PAGED_CODE();
 
@@ -7448,7 +7453,7 @@ BOOLEAN VioGpuAdapter::IsNativeContextGenerationCurrent(_In_ LONG generation, _I
 #pragma code_seg(push)
 #pragma code_seg("PAGE")
 
-void VioGpuAdapter::InvalidateNativeContextRegistrationsLocked(void)
+__declspec(code_seg(".text")) void VioGpuAdapter::InvalidateNativeContextRegistrationsLocked(void)
 {
     PAGED_CODE();
 
@@ -7550,7 +7555,7 @@ void VioGpuAdapter::RetireNativeContextOwnerLocked(_Inout_ VIOGPU_NATIVE_CONTEXT
     delete owner;
 }
 
-NTSTATUS VioGpuAdapter::ProbeNativeContextReadiness(void)
+__declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::ProbeNativeContextReadiness(void)
 {
     PAGED_CODE();
 
