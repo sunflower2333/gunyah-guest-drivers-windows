@@ -2779,20 +2779,7 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
     }
     else
     {
-        for (UINT ModeIndex = 0; ModeIndex < m_pHWDevice->GetModeCount(); ++ModeIndex)
-        {
-            PVIDEO_MODE_INFORMATION candidate = m_pHWDevice->GetModeInfo(ModeIndex);
-            if (candidate->VisScreenWidth == m_CurrentMode.DispInfo.Width &&
-                candidate->VisScreenHeight == m_CurrentMode.DispInfo.Height)
-            {
-                pModeInfo = candidate;
-                break;
-            }
-        }
-        if (pModeInfo == NULL)
-        {
-            pModeInfo = m_pHWDevice->GetModeInfo(m_pHWDevice->GetCurrentModeIndex());
-        }
+        pModeInfo = m_pHWDevice->GetModeInfo(m_pHWDevice->GetCurrentModeIndex());
     }
 
     D3DKMDT_VIDPN_TARGET_MODE *pVidPnTargetModeInfo = NULL;
@@ -2919,7 +2906,7 @@ NTSTATUS VioGpuDod::AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODE
         pMonitorSourceMode->ColorCoeffDynamicRanges.SecondChannel = 8;
         pMonitorSourceMode->ColorCoeffDynamicRanges.ThirdChannel = 8;
         pMonitorSourceMode->ColorCoeffDynamicRanges.FourthChannel = 8;
-        if (pVbeModeInfo->VisScreenWidth == NOM_WIDTH_SIZE && pVbeModeInfo->VisScreenHeight == NOM_HEIGHT_SIZE)
+        if (Idx == m_pHWDevice->GetCurrentModeIndex())
         {
             pMonitorSourceMode->Preference = D3DKMDT_MP_PREFERRED;
         }
@@ -8333,7 +8320,7 @@ NTSTATUS VioGpuAdapter::Escape(_In_ CONST DXGKARG_ESCAPE *pEscape)
                 m_pVioGpuDod->SetPersistentDispMode0Height(pVioGpuEscape->Resolution.YResolution);
                 m_pVioGpuDod->SetRegisterConfigInfo();
                 SetCustomDisplay(pVioGpuEscape->Resolution.XResolution, pVioGpuEscape->Resolution.YResolution);
-                SetCurrentModeIndex(m_CurrentModeIndex);
+                SetCurrentModeIndex(m_CustomModeIndex);
                 break;
             }
         default:
@@ -8361,6 +8348,7 @@ BOOLEAN VioGpuAdapter::GetDisplayInfo(void)
             {
                 DbgPrint(TRACE_LEVEL_INFORMATION, ("---> %s (%dx%d)\n", __FUNCTION__, xres, yres));
                 SetCustomDisplay((USHORT)xres, (USHORT)yres);
+                SetCurrentModeIndex(m_CustomModeIndex);
                 return TRUE;
             }
         }
@@ -8772,7 +8760,7 @@ NTSTATUS VioGpuAdapter::BuildModeList(DXGK_DISPLAY_INFORMATION *pDispInfo)
     if (m_pVioGpuDod->IsPersistentDispMode0Set())
     {
         SetCustomDisplay(m_pVioGpuDod->GetPersistentDispMode0Width(), m_pVioGpuDod->GetPersistentDispMode0Height());
-        SetCurrentModeIndex(m_CurrentModeIndex);
+        SetCurrentModeIndex(m_CustomModeIndex);
     }
 
     for (UINT idx = 0; idx < m_ModeCount; idx++)

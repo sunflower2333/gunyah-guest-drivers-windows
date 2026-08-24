@@ -2013,12 +2013,14 @@ def check_vidpn_mode_contract() -> None:
         fail("full-WDDM target and monitor modes must not publish unspecified timing frequencies")
 
     target_modes = canonical_code(function_body("AddSingleTargetMode", VIOGPU_CODE))
-    if target_modes.count("m_pHWDevice->GetModeInfo(ModeIndex)") != 2:
-        fail("target mode selection must search once for a pinned source and once for the current scanout")
+    if target_modes.count("m_pHWDevice->GetModeInfo(ModeIndex)") != 1:
+        fail("target mode selection must search only for a pinned source")
     if target_modes.count("m_pHWDevice->GetModeInfo(m_pHWDevice->GetCurrentModeIndex())") != 1:
-        fail("target mode selection must have one bounded current-mode fallback")
+        fail("unpinned target mode selection must use the selected current host mode")
     if "m_pHWDevice->GetModeInfo(SourceId)" in target_modes:
         fail("target mode selection must not use the source id as a mode index")
+    if "m_CurrentMode.DispInfo" in target_modes:
+        fail("unpinned target mode selection must not use stale post-display dimensions")
     if "VideoSignalInfo.ActiveSize=" in target_modes:
         fail("target mode construction must leave complete signal construction to BuildVideoSignalInfo")
     if target_modes.count("pVidPnTargetModeSetInterface->pfnCreateNewModeInfo(") != 1:
@@ -2033,14 +2035,45 @@ def check_vidpn_mode_contract() -> None:
         "pVidPnPinnedSourceModeInfo->Type!=D3DKMDT_RMT_GRAPHICS",
         "candidate->VisScreenWidth==pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cx",
         "candidate->VisScreenHeight==pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cy",
-        "candidate->VisScreenWidth==m_CurrentMode.DispInfo.Width",
-        "candidate->VisScreenHeight==m_CurrentMode.DispInfo.Height",
         "returnAddStatus==STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET?STATUS_SUCCESS:AddStatus;",
     ):
         if target_modes.count(required) != 1:
             fail(f"target mode selection is missing its exact cofunctional contract: {required}")
     if target_modes.count("returnSTATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;") != 2:
         fail("target mode selection must reject non-graphics and unmatched pinned source modes")
+
+    monitor_modes = canonical_code(function_body("AddSingleMonitorMode", VIOGPU_CODE))
+    for required in (
+        "pVbeModeInfo=m_pHWDevice->GetModeInfo(m_pHWDevice->GetCurrentModeIndex());",
+        "if(Idx==m_pHWDevice->GetCurrentModeIndex())",
+        "pMonitorSourceMode->Preference=D3DKMDT_MP_PREFERRED;",
+        "pMonitorSourceMode->Preference=D3DKMDT_MP_NOTPREFERRED;",
+    ):
+        if required not in monitor_modes:
+            fail(f"monitor mode selection must prefer the selected current host mode: {required}")
+    if "VisScreenWidth==NOM_WIDTH_SIZE" in monitor_modes or "VisScreenHeight==NOM_HEIGHT_SIZE" in monitor_modes:
+        fail("monitor mode preference must not be hard-coded to the nominal resolution")
+
+    display_info = canonical_code(function_body("VioGpuAdapter::GetDisplayInfo", VIOGPU_CODE))
+    require_order(
+        display_info,
+        (
+            "SetCustomDisplay((USHORT)xres,(USHORT)yres);",
+            "SetCurrentModeIndex(m_CustomModeIndex);",
+            "returnTRUE;",
+        ),
+        "a valid host scanout must become the selected current custom mode",
+    )
+
+    build_modes = canonical_code(function_body("VioGpuAdapter::BuildModeList", VIOGPU_CODE))
+    persistent = "SetCustomDisplay(m_pVioGpuDod->GetPersistentDispMode0Width(),m_pVioGpuDod->GetPersistentDispMode0Height());SetCurrentModeIndex(m_CustomModeIndex);"
+    if build_modes.count(persistent) != 1:
+        fail("a persistent display override must select the custom mode slot")
+
+    escape = canonical_code(function_body("VioGpuAdapter::Escape", VIOGPU_CODE))
+    custom_escape = "SetCustomDisplay(pVioGpuEscape->Resolution.XResolution,pVioGpuEscape->Resolution.YResolution);SetCurrentModeIndex(m_CustomModeIndex);"
+    if escape.count(custom_escape) != 1:
+        fail("a runtime custom display override must select the custom mode slot")
 
     is_supported = function_body("VioGpuDodIsSupportedVidPn", DOD_DRIVER_CODE)
     inactive_blocks = [
