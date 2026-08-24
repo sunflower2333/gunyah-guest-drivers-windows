@@ -54,6 +54,9 @@
     <ClCompile Include="viogpud3d.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="d3dumddi_compat.h" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include="viogpud3d.def" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

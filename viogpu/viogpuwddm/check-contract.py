@@ -41,6 +41,7 @@ UMD_PROJECT_DIR = (PROJECT_DIR.parent / "viogpud3d").resolve()
 UMD_PROJECT = UMD_PROJECT_DIR / "viogpud3d.vcxproj"
 UMD_SOURCE_PATH = UMD_PROJECT_DIR / "viogpud3d.cpp"
 UMD_DEF_PATH = UMD_PROJECT_DIR / "viogpud3d.def"
+UMD_HEADER_PATH = UMD_PROJECT_DIR / "d3dumddi_compat.h"
 NAMESPACE = {"msbuild": "http://schemas.microsoft.com/developer/msbuild/2003"}
 REGISTRATION_HELPER = "VioGpuWddmInitializeMiniport"
 WORKFLOW_PATH = (PROJECT_DIR.parent.parent / ".github" / "workflows" / "viogpuwddm-arm64-ci.yml").resolve()
@@ -966,7 +967,7 @@ def check_arm64_workflow_contract() -> None:
 
 
 def check_d3d_umd_shim_contract() -> None:
-    for path in (UMD_PROJECT, UMD_SOURCE_PATH, UMD_DEF_PATH):
+    for path in (UMD_PROJECT, UMD_SOURCE_PATH, UMD_DEF_PATH, UMD_HEADER_PATH):
         if not path.is_file():
             fail(f"missing ARM64 D3D UMD shim input: {path}")
 
@@ -974,14 +975,13 @@ def check_d3d_umd_shim_contract() -> None:
     code = strip_cpp_comments_and_literals(source)
     if source.count("#include <windows.h>") != 1:
         fail("D3D UMD shim must use the Windows ABI declarations")
-    for declaration in (
-        "struct D3DDDIARG_OPENADAPTER;",
-        "struct D3D10DDIARG_OPENADAPTER;",
-    ):
-        if source.count(declaration) != 1:
-            fail(f"D3D UMD shim must retain its opaque ABI parameter declaration: {declaration}")
-    if re.search(r"#\s*include\s*<d3d(?:10)?umddi\.h>", source):
-        fail("the fail-closed shim must not pull conflicting kernel DDI declarations through D3D UMD headers")
+    header = UMD_HEADER_PATH.read_text(encoding="utf-8")
+    if source.count('#include "d3dumddi_compat.h"') != 1:
+        fail("D3D UMD shim must isolate the user-mode DDI declarations in its compatibility header")
+    if header.count("#include <d3d10umddi.h>") != 1 or header.count("#include <d3d11.h>") != 1:
+        fail("D3D UMD compatibility header must include the Windows D3D10/11 declarations exactly once")
+    if "d3dkmddi.h" in header or "viogpuwddm" in header:
+        fail("D3D UMD compatibility header must not depend on the kernel miniport implementation")
 
     signatures = {
         "OpenAdapter": "D3DDDIARG_OPENADAPTER",
@@ -995,9 +995,30 @@ def check_d3d_umd_shim_contract() -> None:
         )
         if len(re.findall(signature, source)) != 1:
             fail(f"D3D UMD shim must expose one ABI-shaped {function_name} definition")
-        body = canonical_code(function_body(function_name, code))
-        if body != "UNREFERENCED_PARAMETER(openData);returnE_NOTIMPL;":
-            fail(f"diagnostic D3D UMD entry point must fail closed without side effects: {function_name}")
+
+    if canonical_code(function_body("OpenAdapter", code)) != "UNREFERENCED_PARAMETER(openData);returnE_NOTIMPL;":
+        fail("legacy D3D9 OpenAdapter must remain fail closed")
+    if "returnOpenAdapter10Common(openData);" not in canonical_code(function_body("OpenAdapter10", code)):
+        fail("OpenAdapter10 must route through the activation adapter contract")
+    open10_2 = canonical_code(function_body("OpenAdapter10_2", code))
+    for fragment in (
+        "openData->pAdapterFuncs_2",
+        "OpenAdapter10Common(openData)",
+        "functions.pfnGetSupportedVersions=ActivationGetSupportedVersions",
+        "functions.pfnGetCaps=ActivationGetCaps",
+        "returnS_OK",
+    ):
+        if fragment not in open10_2:
+            fail(f"OpenAdapter10_2 must publish the activation adapter table: {fragment}")
+    if "OpenAdapter12" in source:
+        fail("legacy WDDMv1 D3D UMD shim must not imply D3D12 support")
+    if "returnE_NOTIMPL" not in canonical_code(function_body("ActivationCreateDevice", code)):
+        fail("activation-only D3D UMD must keep CreateDevice fail closed")
+    compact_umd = re.sub(r"\s+", "", code)
+    if "HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(ACTIVATION_ADAPTER))" not in compact_umd:
+        fail("activation adapter must use a bounded process-heap owner")
+    if "HeapFree(GetProcessHeap(),0,state)" not in compact_umd:
+        fail("activation adapter must release its owner through CloseAdapter")
     if re.search(r"\bOpenAdapter12\b", source):
         fail("legacy WDDMv1 D3D UMD shim must not imply D3D12 support")
 
@@ -1053,7 +1074,7 @@ def check_d3d_umd_shim_contract() -> None:
         for element in root.findall(".//msbuild:ClCompile[@Include]", NAMESPACE)
     ]
     if compile_inputs != ["viogpud3d.cpp"]:
-        fail(f"D3D UMD project must compile only its fail-closed source: {compile_inputs}")
+        fail(f"D3D UMD project must compile only its activation source: {compile_inputs}")
 
 
 def check_retired_pool_absence() -> None:
