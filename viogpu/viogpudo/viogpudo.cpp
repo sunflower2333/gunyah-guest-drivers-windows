@@ -4300,6 +4300,57 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
                detail);
 }
 
+VOID VioGpuDod::RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_CREATE_STAGE stage,
+                                                    _In_ NTSTATUS status,
+                                                    _In_ DWORD detail)
+{
+    PAGED_CODE();
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context create diagnostic: registry open failed, stage=0x%04X "
+                   "status=0x%08X open=0x%08X\n",
+                   static_cast<DWORD>(stage),
+                   status,
+                   openStatus);
+        return;
+    }
+
+    DWORD statusValue = static_cast<DWORD>(status);
+    DWORD detailValue = detail;
+    DWORD stageValue = static_cast<DWORD>(stage);
+    NTSTATUS statusWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateStatus", &statusValue);
+    NTSTATUS detailWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateDetail", &detailValue);
+    /* Stage is the commit marker for the status/detail pair. */
+    NTSTATUS stageWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateStage", &stageValue);
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(statusWrite) || !NT_SUCCESS(detailWrite) || !NT_SUCCESS(stageWrite))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context create diagnostic: write failed, stage=0x%04X "
+                   "status=0x%08X writes=%08X/%08X/%08X\n",
+                   stageValue,
+                   statusValue,
+                   statusWrite,
+                   detailWrite,
+                   stageWrite);
+        return;
+    }
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu native context create diagnostic: stage=0x%04X status=0x%08X detail=0x%08X\n",
+               stageValue,
+               statusValue,
+               detailValue);
+}
+
 VOID VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                        _In_ NTSTATUS status,
                                                        _In_ UINT inputDataSize,
@@ -6569,6 +6620,11 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
 {
     PAGED_CODE();
 
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateEntered, STATUS_PENDING, 0);
+    }
+
     if (context == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL ||
         InterlockedCompareExchange(&context->State,
                                    VioGpuNativeContextAllocated,
@@ -6577,6 +6633,12 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
         context->VaSize != 0 || context->SubmitQueueId != 0 || context->AllocationReferences != 0 ||
         !IsListEmpty(&context->AllocationRanges))
     {
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreatePreconditions,
+                                                              STATUS_INVALID_PARAMETER,
+                                                              0);
+        }
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -6586,6 +6648,10 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     if (status != STATUS_SUCCESS)
     {
         FailNativeContextAtAnyIrql();
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateMutex, status, 0);
+        }
         return status;
     }
 
@@ -6599,6 +6665,12 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
         resetGeneration != expectedResetGeneration)
     {
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateReadiness,
+                                                              STATUS_DEVICE_NOT_READY,
+                                                              static_cast<DWORD>(expectedResetGeneration));
+        }
         return STATUS_DEVICE_NOT_READY;
     }
 
@@ -6606,6 +6678,10 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     if (contextId == 0)
     {
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateIds, STATUS_NO_MEMORY, 0);
+        }
         return STATUS_NO_MEMORY;
     }
 #if defined(VIOGPU_NATIVE_CONTEXT)
@@ -6613,6 +6689,12 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     if (resourceId == 0)
     {
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateIds,
+                                                              STATUS_NO_MEMORY,
+                                                              contextId);
+        }
         return STATUS_NO_MEMORY;
     }
 #endif
@@ -6621,6 +6703,12 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     if (owner == NULL)
     {
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateOwner,
+                                                              STATUS_NO_MEMORY,
+                                                              contextId);
+        }
         return STATUS_NO_MEMORY;
     }
     RtlZeroMemory(owner, sizeof(*owner));
@@ -6649,6 +6737,13 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     VIOGPU_HOST_CONTEXT_RESULT createResult = m_CtrlQueue.CreateNativeContext(contextId);
     VIOGPU_HOST_CONTEXT_RESULT stageResult = createResult;
     BOOLEAN hostContextCreated = createResult == VioGpuHostContextConfirmed;
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateHostContext,
+                                                          createResult == VioGpuHostContextConfirmed ? STATUS_SUCCESS
+                                                                                                     : STATUS_DEVICE_NOT_READY,
+                                                          static_cast<DWORD>(createResult));
+    }
 #if defined(VIOGPU_NATIVE_CONTEXT)
     ULONGLONG vaStart = 0;
     ULONGLONG vaSize = 0;
@@ -6664,6 +6759,13 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
         {
             owner->ControlResourceId = 0;
         }
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateControlBlob,
+                                                              stageResult == VioGpuHostContextConfirmed ? STATUS_SUCCESS
+                                                                                                        : STATUS_DEVICE_NOT_READY,
+                                                              static_cast<DWORD>(stageResult));
+        }
     }
     if (stageResult == VioGpuHostContextConfirmed)
     {
@@ -6672,6 +6774,12 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
         if (!AllocateNativeControlSlotLocked(&controlOffset, &controlAddress))
         {
             stageResult = VioGpuHostContextNotSubmitted;
+            if (m_pVioGpuDod != NULL)
+            {
+                m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateControlMap,
+                                                                  STATUS_DEVICE_NOT_READY,
+                                                                  static_cast<DWORD>(stageResult));
+            }
         }
         else
         {
@@ -6682,15 +6790,36 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
             {
                 owner->ControlMapped = TRUE;
             }
+            if (m_pVioGpuDod != NULL)
+            {
+                m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateControlMap,
+                                                                  stageResult == VioGpuHostContextConfirmed ? STATUS_SUCCESS
+                                                                                                            : STATUS_DEVICE_NOT_READY,
+                                                                  static_cast<DWORD>(stageResult));
+            }
         }
     }
     if (stageResult == VioGpuHostContextConfirmed)
     {
         stageResult = QueryNativeContextParameterLocked(owner, MSM_PARAM_VA_START, &vaStart);
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateVaStart,
+                                                              stageResult == VioGpuHostContextConfirmed ? STATUS_SUCCESS
+                                                                                                        : STATUS_DEVICE_NOT_READY,
+                                                              static_cast<DWORD>(stageResult));
+        }
     }
     if (stageResult == VioGpuHostContextConfirmed)
     {
         stageResult = QueryNativeContextParameterLocked(owner, MSM_PARAM_VA_SIZE, &vaSize);
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateVaSize,
+                                                              stageResult == VioGpuHostContextConfirmed ? STATUS_SUCCESS
+                                                                                                        : STATUS_DEVICE_NOT_READY,
+                                                              static_cast<DWORD>(stageResult));
+        }
     }
     if (stageResult == VioGpuHostContextConfirmed &&
         (vaStart == 0 || vaSize == 0 || (vaStart & (PAGE_SIZE - 1)) != 0 || (vaSize & (PAGE_SIZE - 1)) != 0 ||
@@ -6702,6 +6831,13 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     if (stageResult == VioGpuHostContextConfirmed)
     {
         stageResult = CreateNativeSubmitQueueLocked(owner, &submitQueueId);
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateSubmitQueue,
+                                                              stageResult == VioGpuHostContextConfirmed ? STATUS_SUCCESS
+                                                                                                        : STATUS_DEVICE_NOT_READY,
+                                                              static_cast<DWORD>(stageResult));
+        }
     }
 #endif
 
@@ -6715,6 +6851,12 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
                                                                    0) == resetGeneration;
     if (!stillCurrent)
     {
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateCurrent,
+                                                              STATUS_DEVICE_NOT_READY,
+                                                              static_cast<DWORD>(stageResult));
+        }
         BOOLEAN generationCurrent = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) == generation &&
                                     (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration,
                                                                             0,
@@ -6774,6 +6916,10 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     InterlockedExchange(&context->State, VioGpuNativeContextLive);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
     KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateComplete, STATUS_SUCCESS, contextId);
+    }
     return STATUS_SUCCESS;
 }
 

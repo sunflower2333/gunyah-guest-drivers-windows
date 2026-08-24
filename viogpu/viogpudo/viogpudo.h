@@ -139,6 +139,24 @@ enum VIOGPU_NATIVE_START_STAGE : DWORD
     VioGpuNativeStartComplete = 0x0FFF,
 };
 
+enum VIOGPU_NATIVE_CONTEXT_CREATE_STAGE : DWORD
+{
+    VioGpuNativeContextCreateEntered = 0x0100,
+    VioGpuNativeContextCreatePreconditions = 0x0110,
+    VioGpuNativeContextCreateMutex = 0x0120,
+    VioGpuNativeContextCreateReadiness = 0x0130,
+    VioGpuNativeContextCreateIds = 0x0140,
+    VioGpuNativeContextCreateOwner = 0x0150,
+    VioGpuNativeContextCreateHostContext = 0x0200,
+    VioGpuNativeContextCreateControlBlob = 0x0210,
+    VioGpuNativeContextCreateControlMap = 0x0220,
+    VioGpuNativeContextCreateVaStart = 0x0230,
+    VioGpuNativeContextCreateVaSize = 0x0240,
+    VioGpuNativeContextCreateSubmitQueue = 0x0250,
+    VioGpuNativeContextCreateCurrent = 0x0300,
+    VioGpuNativeContextCreateComplete = 0x0FFF,
+};
+
 struct VIOGPU_NATIVE_PRESENT_DIAGNOSTIC
 {
     DWORD ContextType;
@@ -986,6 +1004,9 @@ class VioGpuDod
                                                             0));
     }
     VOID RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage, _In_ NTSTATUS status, _In_ DWORD detail);
+    VOID RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_CREATE_STAGE stage,
+                                             _In_ NTSTATUS status,
+                                             _In_ DWORD detail);
     VOID RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                 _In_ NTSTATUS status,
                                                 _In_ UINT inputDataSize,
