@@ -28,6 +28,7 @@ viogpud3d.dll = 1,,
 %VioGpuWddm.DeviceDesc% = VioGpuWddm_Install, PCI\VEN_1AF4&DEV_1050
 
 [VioGpuWddm_Install.NT]
+Include = msdv.inf
 FeatureScore = F8
 CopyFiles = VioGpuWddm_CopyFiles
 AddReg = VioGpuWddm_DeviceSettings

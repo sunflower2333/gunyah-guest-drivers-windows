@@ -9365,6 +9365,7 @@ def check_installation_contract() -> None:
         "viogpud3d.dll=1,,",
         "%DroidVM%=VioGpuWddm,NT$ARCH$",
         "%VioGpuWddm.DeviceDesc%=VioGpuWddm_Install,PCI\\VEN_1AF4&DEV_1050",
+        "Include=msdv.inf",
         "FeatureScore=F8",
         "viogpud3d.dll,,,2",
         "DelReg=VioGpuWddm_RetiredDeviceSettings",
@@ -9383,8 +9384,8 @@ def check_installation_contract() -> None:
             fail(f"full-miniport INX must contain exactly one installation contract fragment: {fragment}")
     if re.search(r"NT\$ARCH\$\.\d+\.\d+\.\.\.\d+", source):
         fail("full-miniport INX must leave TargetOSVersion decoration to InfArch")
-    if re.search(r"(?i)nt(?:amd64|x86)|viogpudo\.sys|include\s*=\s*msdv\.inf", source):
-        fail("full-miniport INX must remain ARM64-tokenized and independent of the display-only package")
+    if re.search(r"(?i)nt(?:amd64|x86)|viogpudo\.sys", source):
+        fail("full-miniport INX must remain ARM64-tokenized and independent of the display-only binary")
     if re.search(r"(?i)HKR\s*,\s*,\s*RequireRestrictedDma\s*,", source):
         fail("full-miniport INX must delete, never configure, the retired restricted-DMA value")
     if re.search(r"(?i)UserModeDriverNameWow|OpenAdapter12", source):
