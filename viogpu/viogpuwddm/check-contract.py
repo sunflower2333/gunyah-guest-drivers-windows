@@ -3064,6 +3064,75 @@ def check_queue_failure_semantics() -> None:
         fail("synchronous submit must publish Submitted only after the descriptor enters the queue")
 
 
+def check_control_queue_dma_and_response_contract() -> None:
+    """Require page-complete SG lists and an exact CTX_CREATE response classifier."""
+    sg_body = canonical_code(function_body("BuildSGElements", QUEUE_CODE))
+    for fragment in (
+        "while(size!=0)",
+        "count>=capacity",
+        "!MmIsAddressValid(current)",
+        "fragmentSize=min(size,static_cast<ULONG>(PAGE_SIZE-BYTE_OFFSET(current)))",
+        "physicalAddress=MmGetPhysicalAddress(current)",
+        "sg[count].length=fragmentSize",
+        "sg[count].physAddr=physicalAddress",
+        "current+=fragmentSize",
+        "size-=fragmentSize",
+    ):
+        if sg_body.count(fragment) != 1:
+            fail(f"control DMA SG builder must contain exactly one page-fragment contract: {fragment}")
+
+    queue = canonical_code(function_body("CtrlQueue::QueueBuffer", QUEUE_CODE))
+    if queue.count("BuildSGElements(") != 3:
+        fail("control queue must fragment command, payload, and response DMA ranges independently")
+    if queue.count("outcnt+=elementCount;sgleft-=elementCount;") != 2:
+        fail("control queue must account for every command and payload output descriptor")
+    if queue.count("incnt+=elementCount;sgleft-=elementCount;") != 1:
+        fail("control queue must account for every response input descriptor")
+    if "if(buf->resp_size){if(sgleft==0)" not in queue:
+        fail("control queue must fail instead of submitting a response-bearing command without an input descriptor")
+
+    cursor = canonical_code(function_body("CrsrQueue::QueueCursor", QUEUE_CODE))
+    if "VirtIOBufferDescriptorsg[2];" not in cursor or cursor.count("BuildSGElements(") != 1:
+        fail("cursor queue must permit both page fragments of its at-most-one-page command")
+    if re.search(r"\bBuildSGElement\s*\(", QUEUE_CODE):
+        fail("no queue may retain the truncating single-fragment DMA helper")
+
+    validator = canonical_code(function_body("VioGpuValidatePlainControlResponse", WIRE_HEADER_CODE))
+    validation_returns = (
+        "returnVioGpuHostResponseNotSubmitted;",
+        "returnVioGpuHostResponseNotCompleted;",
+        "returnVioGpuHostResponseTooShort;",
+        "returnVioGpuHostResponseWrongSize;",
+        "returnVioGpuHostResponseConfirmed;",
+        "returnVioGpuHostResponseRejected;",
+        "returnVioGpuHostResponseMalformed;",
+    )
+    require_order(
+        validator,
+        validation_returns,
+        "CTX_CREATE response validation must distinguish transport, size, success, rejection, and malformed replies",
+    )
+    for fragment in validation_returns:
+        if validator.count(fragment) != 1:
+            fail(f"CTX_CREATE response validator must publish exactly one classification: {fragment}")
+    if validator.count("response_size!=VIRTIO_GPU_CTRL_HDR_WIRE_SIZE") != 1:
+        fail("CTX_CREATE response validator must require the exact 24-byte control response")
+    if validator.count("type>=VIRTIO_GPU_RESP_ERR_UNSPEC") != 1 or validator.count(
+        "type<=VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER"
+    ) != 1:
+        fail("CTX_CREATE response validator must accept only the standard VirtIO-GPU error range as rejection")
+
+    create = canonical_code(function_body("CtrlQueue::CreateNativeContext", QUEUE_CODE))
+    if create.count("VioGpuValidatePlainControlResponse(") != 1:
+        fail("CTX_CREATE must use the focused shared response validator exactly once")
+    if create.count("PoisonSynchronousRequests();") != 1:
+        fail("ambiguous CTX_CREATE completion must poison the synchronous transport generation")
+    if create.count("RtlCopyMemory(&m_LastNativeContextResponseDiagnostic,output,sizeof(m_LastNativeContextResponseDiagnostic));") != 2:
+        fail("CTX_CREATE must publish both pre-submit and final response diagnostics")
+    if VIOGPU_SOURCE.count('L"NativeContextCreateResponseValidation"') != 1:
+        fail("runtime diagnostics must persist exactly one CTX_CREATE response validation category")
+
+
 def check_synchronous_2d_control_transactions() -> None:
     queue_header = canonical_code(QUEUE_HEADER_CODE)
     method_names = (
@@ -4746,28 +4815,39 @@ def check_native_context_ownership() -> None:
 
     create_queue = canonical_code(function_body("CtrlQueue::CreateNativeContext", QUEUE_CODE))
     destroy_queue = canonical_code(function_body("CtrlQueue::DestroyNativeContext", QUEUE_CODE))
-    for owner, body in (("create", create_queue), ("destroy", destroy_queue)):
-        required = (
-            "BOOLEANsubmitted=FALSE;",
-            "SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)",
-            "VIOGPU_HOST_CONTEXT_RESULTresult=VioGpuHostContextUnknown;",
-            "if(!submitted){result=VioGpuHostContextNotSubmitted;}",
-            "result=VioGpuHostContextConfirmed;",
-            "returnresult;",
-        )
-        if any(body.count(fragment) != 1 for fragment in required):
-            fail(f"Host context {owner} must classify NotSubmitted, Confirmed, and Unknown separately")
-        if body.find("VioGpuHostContextUnknown") > body.find("if(!submitted)"):
-            fail(f"Host context {owner} must default to Unknown before interpreting completion")
-        if body.find("if(!submitted)") > body.find("elseif(completed&&vbuf->response_size==sizeof(GPU_CTRL_HDR))"):
-            fail(f"Host context {owner} must classify non-submission before any response")
-
-    create_rejected = (
-        "elseif(IsPlainControlErrorResponse(response))"
-        "{result=VioGpuHostContextRejected;}"
+    create_required = (
+        "BOOLEANsubmitted=FALSE;",
+        "SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)",
+        "VioGpuValidatePlainControlResponse(",
+        "VIOGPU_HOST_CONTEXT_RESULTresult=VioGpuHostContextUnknown;",
+        "if(output->Validation==VioGpuHostResponseNotSubmitted){result=VioGpuHostContextNotSubmitted;}",
+        "elseif(output->Validation==VioGpuHostResponseConfirmed){result=VioGpuHostContextConfirmed;}",
+        "elseif(output->Validation==VioGpuHostResponseRejected){result=VioGpuHostContextRejected;}",
+        "else{PoisonSynchronousRequests();}",
+        "returnresult;",
     )
-    if create_queue.count(create_rejected) != 1:
-        fail("Host create may classify Rejected only from a complete plain VirtIO error response")
+    if any(create_queue.count(fragment) != 1 for fragment in create_required):
+        fail("Host context create must map each focused response classification to one ownership outcome")
+    if create_queue.find("VioGpuHostContextUnknown") > create_queue.find("VioGpuValidatePlainControlResponse("):
+        fail("Host context create must default to Unknown before interpreting focused validation")
+
+    destroy_required = (
+        "BOOLEANsubmitted=FALSE;",
+        "SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)",
+        "VIOGPU_HOST_CONTEXT_RESULTresult=VioGpuHostContextUnknown;",
+        "if(!submitted){result=VioGpuHostContextNotSubmitted;}",
+        "result=VioGpuHostContextConfirmed;",
+        "returnresult;",
+    )
+    if any(destroy_queue.count(fragment) != 1 for fragment in destroy_required):
+        fail("Host context destroy must classify NotSubmitted, Confirmed, and Unknown separately")
+    if destroy_queue.find("VioGpuHostContextUnknown") > destroy_queue.find("if(!submitted)"):
+        fail("Host context destroy must default to Unknown before interpreting completion")
+    if destroy_queue.find("if(!submitted)") > destroy_queue.find(
+        "elseif(completed&&vbuf->response_size==sizeof(GPU_CTRL_HDR))"
+    ):
+        fail("Host context destroy must classify non-submission before any response")
+
     destroy_rejected = (
         "elseif(IsPlainControlErrorResponse(response)&&"
         "response->type==VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID)"
@@ -9439,6 +9519,7 @@ def main() -> None:
     check_native_context_readiness()
     check_no_retired_variant_contract(sources)
     check_queue_failure_semantics()
+    check_control_queue_dma_and_response_contract()
     check_synchronous_2d_control_transactions()
     check_wddm_2d_resource_ownership()
     check_wddm_standard_paging()

@@ -123,6 +123,84 @@ static void Emit(const char *name, unsigned long long value)
     printf("%s=%llu\n", name, value);
 }
 
+#if defined(ABI_ENDPOINT_WINDOWS)
+static enum viogpu_host_context_response_validation ValidateWindowsControlResponse(uint32_t response_size,
+                                                                                   uint8_t submitted,
+                                                                                   uint8_t completed,
+                                                                                   uint32_t type,
+                                                                                   uint32_t flags = 0,
+                                                                                   uint64_t fence_id = 0,
+                                                                                   uint32_t context_id = 0,
+                                                                                   uint8_t ring_index = 0,
+                                                                                   uint8_t padding0 = 0,
+                                                                                   uint8_t padding1 = 0,
+                                                                                   uint8_t padding2 = 0)
+{
+    return VioGpuValidatePlainControlResponse(response_size,
+                                              submitted,
+                                              completed,
+                                              type,
+                                              flags,
+                                              fence_id,
+                                              context_id,
+                                              ring_index,
+                                              padding0,
+                                              padding1,
+                                              padding2,
+                                              VIRTIO_GPU_RESP_OK_NODATA);
+}
+
+static int CheckWindowsControlResponseCase(size_t index,
+                                           enum viogpu_host_context_response_validation expected,
+                                           enum viogpu_host_context_response_validation actual)
+{
+    if (actual != expected)
+    {
+        fprintf(stderr,
+                "control-response case %zu: expected %u, got %u\n",
+                index,
+                (unsigned)expected,
+                (unsigned)actual);
+        return 1;
+    }
+    return 0;
+}
+
+static int CheckWindowsControlResponseValidation()
+{
+    size_t index = 0;
+    int failed = 0;
+    failed |= CheckWindowsControlResponseCase(index++,
+                                              VioGpuHostResponseNotSubmitted,
+                                              ValidateWindowsControlResponse(24, 0, 0, 0));
+    failed |= CheckWindowsControlResponseCase(index++,
+                                              VioGpuHostResponseNotCompleted,
+                                              ValidateWindowsControlResponse(24, 1, 0, 0));
+    failed |= CheckWindowsControlResponseCase(index++,
+                                              VioGpuHostResponseTooShort,
+                                              ValidateWindowsControlResponse(23, 1, 1, 0));
+    failed |= CheckWindowsControlResponseCase(index++,
+                                              VioGpuHostResponseWrongSize,
+                                              ValidateWindowsControlResponse(25, 1, 1, 0));
+    failed |= CheckWindowsControlResponseCase(index++,
+                                              VioGpuHostResponseConfirmed,
+                                              ValidateWindowsControlResponse(24, 1, 1, VIRTIO_GPU_RESP_OK_NODATA));
+    failed |= CheckWindowsControlResponseCase(index++,
+                                              VioGpuHostResponseRejected,
+                                              ValidateWindowsControlResponse(24,
+                                                                             1,
+                                                                             1,
+                                                                             VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID));
+    failed |= CheckWindowsControlResponseCase(index++,
+                                              VioGpuHostResponseMalformed,
+                                              ValidateWindowsControlResponse(24, 1, 1, VIRTIO_GPU_RESP_OK_NODATA, 1));
+    failed |= CheckWindowsControlResponseCase(index++,
+                                              VioGpuHostResponseMalformed,
+                                              ValidateWindowsControlResponse(24, 1, 1, VIRTIO_GPU_CMD_CTX_CREATE));
+    return failed != 0;
+}
+#endif
+
 int main()
 {
 #if defined(_MSC_VER)
@@ -147,5 +225,11 @@ int main()
 #undef ABI_EXPR
 #undef ABI_VALUE
 #undef ABI_STATIC_ASSERT
+#if defined(ABI_ENDPOINT_WINDOWS)
+    if (CheckWindowsControlResponseValidation() != 0)
+    {
+        return 1;
+    }
+#endif
     return 0;
 }

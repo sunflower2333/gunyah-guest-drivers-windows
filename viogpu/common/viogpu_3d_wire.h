@@ -101,6 +101,63 @@ enum virtio_gpu_ctrl_type
 #define VIRTIO_GPU_DRM_CONTEXT_MSM               VIRTGPU_DRM_CONTEXT_MSM
 #define VIRTIO_GPU_DRM_WIRE_FORMAT_VERSION       VIRTGPU_DRM_WIRE_FORMAT_VERSION
 #define VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK   0x00ffU
+#define VIRTIO_GPU_CTRL_HDR_WIRE_SIZE            24U
+
+enum viogpu_host_context_response_validation
+{
+    VioGpuHostResponseUnclassified = 0,
+    VioGpuHostResponseNotSubmitted,
+    VioGpuHostResponseNotCompleted,
+    VioGpuHostResponseTooShort,
+    VioGpuHostResponseWrongSize,
+    VioGpuHostResponseConfirmed,
+    VioGpuHostResponseRejected,
+    VioGpuHostResponseMalformed,
+};
+
+static inline enum viogpu_host_context_response_validation
+VioGpuValidatePlainControlResponse(VIOGPU_WIRE_U32 response_size,
+                                   VIOGPU_WIRE_U8 submitted,
+                                   VIOGPU_WIRE_U8 completed,
+                                   VIOGPU_WIRE_U32 type,
+                                   VIOGPU_WIRE_U32 flags,
+                                   VIOGPU_WIRE_U64 fence_id,
+                                   VIOGPU_WIRE_U32 context_id,
+                                   VIOGPU_WIRE_U8 ring_index,
+                                   VIOGPU_WIRE_U8 padding0,
+                                   VIOGPU_WIRE_U8 padding1,
+                                   VIOGPU_WIRE_U8 padding2,
+                                   VIOGPU_WIRE_U32 expected_type)
+{
+    if (!submitted)
+    {
+        return VioGpuHostResponseNotSubmitted;
+    }
+    if (!completed)
+    {
+        return VioGpuHostResponseNotCompleted;
+    }
+    if (response_size < VIRTIO_GPU_CTRL_HDR_WIRE_SIZE)
+    {
+        return VioGpuHostResponseTooShort;
+    }
+    if (response_size != VIRTIO_GPU_CTRL_HDR_WIRE_SIZE)
+    {
+        return VioGpuHostResponseWrongSize;
+    }
+
+    const VIOGPU_WIRE_U8 plain = flags == 0 && fence_id == 0 && context_id == 0 && ring_index == 0 && padding0 == 0 &&
+                                 padding1 == 0 && padding2 == 0;
+    if (plain && type == expected_type)
+    {
+        return VioGpuHostResponseConfirmed;
+    }
+    if (plain && type >= VIRTIO_GPU_RESP_ERR_UNSPEC && type <= VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER)
+    {
+        return VioGpuHostResponseRejected;
+    }
+    return VioGpuHostResponseMalformed;
+}
 
 #define MSM_BO_SCANOUT                           0x00000001U
 #define MSM_BO_GPU_READONLY                      0x00000002U
@@ -403,6 +460,15 @@ VIOGPU_WIRE_ASSERT_VALUE(VIRTIO_GPU_RESP_OK_CAPSET, 0x1103);
 VIOGPU_WIRE_ASSERT_VALUE(VIRTIO_GPU_RESP_OK_MAP_INFO, 0x1106);
 VIOGPU_WIRE_ASSERT_VALUE(VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID, 0x1204);
 VIOGPU_WIRE_ASSERT_VALUE(VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK, 0xff);
+VIOGPU_WIRE_ASSERT_VALUE(VIRTIO_GPU_CTRL_HDR_WIRE_SIZE, 24);
+VIOGPU_WIRE_ASSERT_VALUE(VioGpuHostResponseUnclassified, 0);
+VIOGPU_WIRE_ASSERT_VALUE(VioGpuHostResponseNotSubmitted, 1);
+VIOGPU_WIRE_ASSERT_VALUE(VioGpuHostResponseNotCompleted, 2);
+VIOGPU_WIRE_ASSERT_VALUE(VioGpuHostResponseTooShort, 3);
+VIOGPU_WIRE_ASSERT_VALUE(VioGpuHostResponseWrongSize, 4);
+VIOGPU_WIRE_ASSERT_VALUE(VioGpuHostResponseConfirmed, 5);
+VIOGPU_WIRE_ASSERT_VALUE(VioGpuHostResponseRejected, 6);
+VIOGPU_WIRE_ASSERT_VALUE(VioGpuHostResponseMalformed, 7);
 VIOGPU_WIRE_ASSERT_VALUE(VIRTGPU_DRM_CAPSET_DRM, 6);
 VIOGPU_WIRE_ASSERT_VALUE(VIRTGPU_DRM_CONTEXT_MSM, 1);
 VIOGPU_WIRE_ASSERT_VALUE(VIRTGPU_DRM_WIRE_FORMAT_VERSION, 2);

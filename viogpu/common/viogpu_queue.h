@@ -137,6 +137,7 @@ typedef struct viogpu_host_context_response_diagnostic
     UCHAR Padding[3];
     BOOLEAN Submitted;
     BOOLEAN Completed;
+    viogpu_host_context_response_validation Validation;
 } VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC, *PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC;
 
 enum VIOGPU_2D_RESOURCE_STATE : LONG

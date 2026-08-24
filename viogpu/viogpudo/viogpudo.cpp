@@ -4416,8 +4416,9 @@ VOID VioGpuDod::RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HO
                     (static_cast<DWORD>(diagnostic->Padding[2]) << 16);
     DWORD submitted = diagnostic->Submitted ? 1U : 0U;
     DWORD completed = diagnostic->Completed ? 1U : 0U;
+    DWORD validation = diagnostic->Validation;
 
-    NTSTATUS writes[10] = {};
+    NTSTATUS writes[11] = {};
     writes[0] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseSize", &responseSize);
     writes[1] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseType", &type);
     writes[2] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseFlags", &flags);
@@ -4428,6 +4429,7 @@ VOID VioGpuDod::RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HO
     writes[7] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponsePadding", &padding);
     writes[8] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseSubmitted", &submitted);
     writes[9] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseCompleted", &completed);
+    writes[10] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseValidation", &validation);
     ZwClose(deviceKey);
 
     for (const NTSTATUS write : writes)
@@ -4445,7 +4447,7 @@ VOID VioGpuDod::RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HO
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,
                "viogpu native context response diagnostic: size=%u type=0x%08X flags=0x%08X "
-               "fence=0x%016llX ctx=%u ring=%u padding=0x%06X submitted=%u completed=%u\n",
+               "fence=0x%016llX ctx=%u ring=%u padding=0x%06X submitted=%u completed=%u validation=%u\n",
                responseSize,
                type,
                flags,
@@ -4454,7 +4456,8 @@ VOID VioGpuDod::RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HO
                ringIndex,
                padding,
                submitted,
-               completed);
+               completed,
+               validation);
 }
 
 VOID VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,

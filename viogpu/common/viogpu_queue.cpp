@@ -124,15 +124,50 @@ BOOLEAN VioGpuWaitForVbufferTerminalCallbacks(_Inout_ PGPU_VBUFFER buffer)
            InterlockedCompareExchange(&buffer->terminal_callback_state, 0, 0) == VioGpuVbufferTerminalCompleted;
 }
 
-static BOOLEAN BuildSGElement(VirtIOBufferDescriptor *sg, PVOID buf, ULONG size)
+/*
+ * VirtIOBufferDescriptor describes one physical page fragment.  VioGpuBuf
+ * allocations are not page aligned, so a command or response can cross a
+ * page boundary even though its total size is small.  Returning only the
+ * first fragment silently truncates the DMA transfer; in particular, a
+ * truncated response is indistinguishable from a completed but malformed
+ * native-context response.  Build all fragments while keeping the caller's
+ * out/in descriptor ordering intact.
+ */
+static UINT BuildSGElements(VirtIOBufferDescriptor *sg, UINT capacity, PVOID buf, ULONG size)
 {
-    if (size != 0 && MmIsAddressValid(buf))
+    if (sg == NULL || capacity == 0 || buf == NULL || size == 0)
     {
-        sg->length = min(size, PAGE_SIZE - BYTE_OFFSET(buf));
-        sg->physAddr = MmGetPhysicalAddress(buf);
-        return sg->physAddr.QuadPart != 0;
+        return 0;
     }
-    return FALSE;
+
+    PUCHAR current = static_cast<PUCHAR>(buf);
+    UINT count = 0;
+    while (size != 0)
+    {
+        if (count >= capacity || !MmIsAddressValid(current))
+        {
+            return 0;
+        }
+
+        ULONG fragmentSize = min(size, static_cast<ULONG>(PAGE_SIZE - BYTE_OFFSET(current)));
+        if (fragmentSize == 0)
+        {
+            return 0;
+        }
+
+        PHYSICAL_ADDRESS physicalAddress = MmGetPhysicalAddress(current);
+        if (physicalAddress.QuadPart == 0)
+        {
+            return 0;
+        }
+
+        sg[count].length = fragmentSize;
+        sg[count].physAddr = physicalAddress;
+        ++count;
+        current += fragmentSize;
+        size -= fragmentSize;
+    }
+    return count;
 }
 
 static void NotifyEventCompleteCB(void *ctx)
@@ -1149,6 +1184,8 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeContext(UINT context_id,
     PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC output = diagnostic != NULL ? diagnostic : &captured;
     RtlZeroMemory(&m_LastNativeContextResponseDiagnostic, sizeof(m_LastNativeContextResponseDiagnostic));
     RtlZeroMemory(output, sizeof(*output));
+    output->Validation = VioGpuHostResponseNotSubmitted;
+    RtlCopyMemory(&m_LastNativeContextResponseDiagnostic, output, sizeof(m_LastNativeContextResponseDiagnostic));
 
     if (context_id == 0)
     {
@@ -1191,23 +1228,36 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeContext(UINT context_id,
         output->RingIndex = response->ring_idx;
         RtlCopyMemory(output->Padding, response->padding, sizeof(output->Padding));
     }
-    RtlCopyMemory(&m_LastNativeContextResponseDiagnostic, output, sizeof(m_LastNativeContextResponseDiagnostic));
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
-    if (!submitted)
+    output->Validation = VioGpuValidatePlainControlResponse(output->ResponseSize,
+                                                            output->Submitted,
+                                                            output->Completed,
+                                                            output->Type,
+                                                            output->Flags,
+                                                            output->FenceId,
+                                                            output->ContextId,
+                                                            output->RingIndex,
+                                                            output->Padding[0],
+                                                            output->Padding[1],
+                                                            output->Padding[2],
+                                                            VIRTIO_GPU_RESP_OK_NODATA);
+    if (output->Validation == VioGpuHostResponseNotSubmitted)
     {
         result = VioGpuHostContextNotSubmitted;
     }
-    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR))
+    else if (output->Validation == VioGpuHostResponseConfirmed)
     {
-        if (IsPlainControlResponse(response, VIRTIO_GPU_RESP_OK_NODATA))
-        {
-            result = VioGpuHostContextConfirmed;
-        }
-        else if (IsPlainControlErrorResponse(response))
-        {
-            result = VioGpuHostContextRejected;
-        }
+        result = VioGpuHostContextConfirmed;
     }
+    else if (output->Validation == VioGpuHostResponseRejected)
+    {
+        result = VioGpuHostContextRejected;
+    }
+    else
+    {
+        PoisonSynchronousRequests();
+    }
+    RtlCopyMemory(&m_LastNativeContextResponseDiagnostic, output, sizeof(m_LastNativeContextResponseDiagnostic));
     if (releaseBuffer)
     {
         ReleaseBuffer(vbuf);
@@ -1978,42 +2028,25 @@ int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
         return VIOGPU_QUEUE_ERROR;
     }
 
-    if (!BuildSGElement(&sg[outcnt + incnt], (PVOID)buf->buf, buf->size))
+    UINT elementCount = BuildSGElements(&sg[outcnt + incnt], sgleft, (PVOID)buf->buf, buf->size);
+    if (elementCount == 0)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid command DMA address %p\n", __FUNCTION__, buf->buf));
         return VIOGPU_QUEUE_ERROR;
     }
-    else
-    {
-        outcnt++;
-        sgleft--;
-    }
+    outcnt += elementCount;
+    sgleft -= elementCount;
 
     if (buf->data_size)
     {
-        ULONG data_size = buf->data_size;
-        PVOID data_buf = (PVOID)buf->data_buf;
-        while (data_size)
+        elementCount = BuildSGElements(&sg[outcnt + incnt], sgleft, (PVOID)buf->data_buf, buf->data_size);
+        if (elementCount == 0)
         {
-            if (BuildSGElement(&sg[outcnt + incnt], data_buf, data_size))
-            {
-                ULONG segmentSize = sg[outcnt + incnt].length;
-                data_buf = (PVOID)((PUCHAR)data_buf + segmentSize);
-                data_size -= segmentSize;
-                outcnt++;
-                sgleft--;
-                if (sgleft == 0)
-                {
-                    DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s no more sgelenamt spots left %d\n", __FUNCTION__, outcnt));
-                    return VIOGPU_QUEUE_ERROR;
-                }
-            }
-            else
-            {
-                DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid data DMA address %p\n", __FUNCTION__, data_buf));
-                return VIOGPU_QUEUE_ERROR;
-            }
+            DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid data DMA address %p\n", __FUNCTION__, buf->data_buf));
+            return VIOGPU_QUEUE_ERROR;
         }
+        outcnt += elementCount;
+        sgleft -= elementCount;
     }
 
     if (buf->resp_size > PAGE_SIZE)
@@ -2022,18 +2055,21 @@ int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
         return VIOGPU_QUEUE_ERROR;
     }
 
-    if (buf->resp_size && (sgleft > 0))
+    if (buf->resp_size)
     {
-        if (!BuildSGElement(&sg[outcnt + incnt], (PVOID)buf->resp_buf, buf->resp_size))
+        if (sgleft == 0)
+        {
+            DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s no descriptor available for response\n", __FUNCTION__));
+            return VIOGPU_QUEUE_ERROR;
+        }
+        elementCount = BuildSGElements(&sg[outcnt + incnt], sgleft, (PVOID)buf->resp_buf, buf->resp_size);
+        if (elementCount == 0)
         {
             DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid response DMA address %p\n", __FUNCTION__, buf->resp_buf));
             return VIOGPU_QUEUE_ERROR;
         }
-        else
-        {
-            incnt++;
-            sgleft--;
-        }
+        incnt += elementCount;
+        sgleft -= elementCount;
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--> %s sgleft %d\n", __FUNCTION__, sgleft));
@@ -2747,16 +2783,12 @@ UINT CrsrQueue::QueueCursor(PGPU_VBUFFER buf)
     UINT res = 0;
     KIRQL SavedIrql;
 
-    VirtIOBufferDescriptor sg[1];
-    int outcnt = 0;
+    VirtIOBufferDescriptor sg[2];
     int ret = 0;
 
     ASSERT(buf->size <= PAGE_SIZE);
-    if (BuildSGElement(&sg[outcnt], (PVOID)buf->buf, buf->size))
-    {
-        outcnt++;
-    }
-    else
+    UINT outcnt = BuildSGElements(sg, static_cast<UINT>(sizeof(sg) / sizeof(sg[0])), (PVOID)buf->buf, buf->size);
+    if (outcnt == 0)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid cursor DMA address %p\n", __FUNCTION__, buf->buf));
         return 0;
