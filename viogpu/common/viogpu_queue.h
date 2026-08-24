@@ -343,7 +343,7 @@ class CtrlQueue : public VioGpuQueue
                                                      UINT blob_flags,
                                                      const GPU_MEM_ENTRY *entries,
                                                      UINT entry_count);
-    VIOGPU_HOST_CONTEXT_RESULT MapNativeControlBlob(UINT resource_id, _Out_ PULONGLONG pool_offset);
+    VIOGPU_HOST_CONTEXT_RESULT MapNativeControlBlob(UINT resource_id, ULONGLONG offset);
     VIOGPU_HOST_CONTEXT_RESULT UnmapNativeControlBlob(UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT UnrefNativeResource(UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT SubmitNativeControl(UINT context_id, const void *command, UINT command_size);

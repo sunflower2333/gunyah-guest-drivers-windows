@@ -24,7 +24,6 @@
 #define ABI_SUBMITQUEUE_NEW_RSP   struct msm_ccmd_ioctl_simple_submitqueue_new_rsp
 #define ABI_SUBMITQUEUE_CLOSE_REQ struct msm_ccmd_ioctl_simple_submitqueue_close_req
 #define ABI_SUBMITQUEUE_CLOSE_RSP struct msm_ccmd_ioctl_simple_submitqueue_close_rsp
-#define ABI_MAP_INFO_POOL         VIRTIO_GPU_MAP_INFO_POOL
 #else
 #include <linux/virtio_gpu.h>
 
@@ -94,17 +93,7 @@ struct abi_msm_ccmd_ioctl_simple_submitqueue_close_rsp
 #define ABI_SUBMITQUEUE_NEW_RSP   struct abi_msm_ccmd_ioctl_simple_submitqueue_new_rsp
 #define ABI_SUBMITQUEUE_CLOSE_REQ struct abi_msm_ccmd_ioctl_simple_submitqueue_close_req
 #define ABI_SUBMITQUEUE_CLOSE_RSP struct abi_msm_ccmd_ioctl_simple_submitqueue_close_rsp
-#define ABI_MAP_INFO_POOL         UINT32_C(0x80000000)
 #endif
-
-#pragma pack(push, 1)
-struct abi_virtio_gpu_resp_map_info
-{
-    uint8_t hdr[24];
-    uint32_t map_info;
-    uint32_t pool_offset;
-};
-#pragma pack(pop)
 
 /*
  * CREATE_GUEST_HANDLE is a DroidVM virtio-gpu extension.  Older Linux UAPI

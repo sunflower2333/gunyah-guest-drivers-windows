@@ -6509,42 +6509,58 @@ VioGpuAdapter::DestroyNativeContextHostObjectsLocked(_Inout_ VIOGPU_NATIVE_CONTE
     return VioGpuHostContextConfirmed;
 }
 
-BOOLEAN VioGpuAdapter::MapNativeControlSlotLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ ULONGLONG offset)
+BOOLEAN VioGpuAdapter::AllocateNativeControlSlotLocked(_Out_ PULONGLONG offset, _Out_ PVOID *address)
 {
     PAGED_CODE();
 
-    if (owner == NULL || offset == 0 || (offset & (PAGE_SIZE - 1)) != 0 || !owner->ControlMapped ||
-        owner->ControlBarOffset != offset || owner->ControlAddress != NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    if (offset == NULL || address == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         return FALSE;
     }
+    *offset = 0;
+    *address = NULL;
 
     UINT bar = 0;
     ULONGLONG regionOffset = 0;
     ULONGLONG regionSize = 0;
-    if (!m_PciResources.QueryHostVisibleRegion(&bar, &regionOffset, &regionSize) || offset > regionSize ||
-        VIOGPU_NATIVE_CONTROL_BLOB_SIZE > regionSize - offset)
+    if (!m_PciResources.QueryHostVisibleRegion(&bar, &regionOffset, &regionSize) ||
+        regionSize < VIOGPU_NATIVE_CONTROL_BLOB_SIZE)
     {
         return FALSE;
     }
 
-    for (PLIST_ENTRY link = m_NativeContextRegistry.Flink; link != &m_NativeContextRegistry; link = link->Flink)
+    ULONGLONG slotCount = regionSize / VIOGPU_NATIVE_CONTROL_BLOB_SIZE;
+    for (ULONGLONG slot = 0; slot < slotCount; ++slot)
     {
-        VIOGPU_NATIVE_CONTEXT_OWNER *other = CONTAINING_RECORD(link, VIOGPU_NATIVE_CONTEXT_OWNER, AdapterLink);
-        if (other != owner && other->ControlBarOffset == offset)
+        ULONGLONG candidate = slot * VIOGPU_NATIVE_CONTROL_BLOB_SIZE;
+        BOOLEAN inUse = FALSE;
+        for (PLIST_ENTRY link = m_NativeContextRegistry.Flink; link != &m_NativeContextRegistry; link = link->Flink)
+        {
+            VIOGPU_NATIVE_CONTEXT_OWNER *owner = CONTAINING_RECORD(link, VIOGPU_NATIVE_CONTEXT_OWNER, AdapterLink);
+            if (owner->ControlAddress != NULL && owner->ControlBarOffset == candidate)
+            {
+                inUse = TRUE;
+                break;
+            }
+        }
+        if (inUse)
+        {
+            continue;
+        }
+
+        PVOID slotAddress = NULL;
+        NTSTATUS status = m_PciResources.MapHostVisibleAddress(candidate,
+                                                               VIOGPU_NATIVE_CONTROL_BLOB_SIZE,
+                                                               &slotAddress);
+        if (!NT_SUCCESS(status) || slotAddress == NULL)
         {
             return FALSE;
         }
+        *offset = candidate;
+        *address = slotAddress;
+        return TRUE;
     }
-
-    PVOID slotAddress = NULL;
-    NTSTATUS status = m_PciResources.MapHostVisibleAddress(offset, VIOGPU_NATIVE_CONTROL_BLOB_SIZE, &slotAddress);
-    if (!NT_SUCCESS(status) || slotAddress == NULL)
-    {
-        return FALSE;
-    }
-    owner->ControlAddress = slotAddress;
-    return TRUE;
+    return FALSE;
 }
 #endif
 
@@ -6652,14 +6668,19 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     if (stageResult == VioGpuHostContextConfirmed)
     {
         ULONGLONG controlOffset = 0;
-        stageResult = m_CtrlQueue.MapNativeControlBlob(resourceId, &controlOffset);
-        if (stageResult == VioGpuHostContextConfirmed)
+        PVOID controlAddress = NULL;
+        if (!AllocateNativeControlSlotLocked(&controlOffset, &controlAddress))
         {
-            owner->ControlMapped = TRUE;
+            stageResult = VioGpuHostContextNotSubmitted;
+        }
+        else
+        {
             owner->ControlBarOffset = controlOffset;
-            if (!MapNativeControlSlotLocked(owner, controlOffset))
+            owner->ControlAddress = controlAddress;
+            stageResult = m_CtrlQueue.MapNativeControlBlob(resourceId, controlOffset);
+            if (stageResult == VioGpuHostContextConfirmed)
             {
-                stageResult = VioGpuHostContextNotSubmitted;
+                owner->ControlMapped = TRUE;
             }
         }
     }

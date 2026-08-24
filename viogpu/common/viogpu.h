@@ -176,7 +176,7 @@ typedef struct virtio_gpu_resp_map_info
 {
     GPU_CTRL_HDR hdr;
     ULONG map_info;
-    ULONG pool_offset;
+    ULONG padding;
 } GPU_RESP_MAP_INFO, *PGPU_RESP_MAP_INFO;
 #pragma pack()
 
@@ -196,7 +196,6 @@ static_assert(sizeof(GPU_CMD_CTX_CREATE) == 96, "virtio-gpu context create wire 
 static_assert(sizeof(GPU_CMD_RESOURCE_CREATE_BLOB) == 56, "virtio-gpu blob create wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_MAP_BLOB) == 40, "virtio-gpu blob map wire size");
 static_assert(sizeof(GPU_RESP_MAP_INFO) == 32, "virtio-gpu blob map response wire size");
-static_assert(offsetof(GPU_RESP_MAP_INFO, pool_offset) == 28, "virtio-gpu blob pool offset wire position");
 static_assert(sizeof(GPU_CMD_RESOURCE_UNMAP_BLOB) == 32, "virtio-gpu blob unmap wire size");
 
 #pragma pack(1)

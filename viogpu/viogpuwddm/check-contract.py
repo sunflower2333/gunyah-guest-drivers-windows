@@ -827,7 +827,7 @@ def check_arm64_workflow_contract() -> None:
     }
     sources: dict[str, str] = {}
     required_toolchain_fragments = (
-        "runs-on: windows-2022",
+        "runs-on: windows-2025-vs2026",
         "Locate preinstalled Windows SDK and WDK",
         "Get-ChildItem (Join-Path $kitRoot 'Include') -Directory",
         "[version]$include.Name",
@@ -4741,8 +4741,6 @@ def check_native_context_ownership() -> None:
         "#defineMSM_SUBMITQUEUE_ALLOW_PREEMPT0x00000001",
         "#defineDRM_IOCTL_MSM_SUBMITQUEUE_NEW0xc00c644aU",
         "#defineDRM_IOCTL_MSM_SUBMITQUEUE_CLOSE0x4004644bU",
-        "#defineVIRTIO_GPU_MAP_INFO_POOL0x80000000U",
-        "VIOGPU_WIRE_ASSERT_VALUE(VIRTIO_GPU_MAP_INFO_POOL,0x80000000ULL);",
         "VIOGPU_WIRE_ASSERT_SIZE(drm_msm_param,24);",
         "VIOGPU_WIRE_ASSERT_SIZE(msm_ccmd_ioctl_simple_get_param_req,44);",
         "VIOGPU_WIRE_ASSERT_SIZE(msm_ccmd_ioctl_simple_get_param_rsp,32);",
@@ -4783,22 +4781,17 @@ def check_native_context_ownership() -> None:
 
     map_blob = canonical_code(function_body("CtrlQueue::MapNativeControlBlob", QUEUE_CODE))
     for fragment in (
-        "command->offset=0;",
-        "response->map_info==(VIRTIO_GPU_MAP_CACHE_CACHED|VIRTIO_GPU_MAP_INFO_POOL)",
-        "response->pool_offset!=0",
-        "(response->pool_offset&(PAGE_SIZE-1))==0",
-        "*pool_offset=response->pool_offset;",
+        "command->offset=offset;",
+        "response->map_info==VIRTIO_GPU_MAP_CACHE_CACHED",
+        "response->padding==0",
     ):
         if map_blob.count(fragment) != 1:
-            fail(f"control blob map must accept only a cached, aligned Host pool assignment: {fragment}")
+            fail(f"control blob map must use the caller-selected cached BAR slot: {fragment}")
 
     resource_header = canonical_code(RESOURCE_HEADER_CODE)
-    for fragment in (
-        "ULONGpool_offset;",
-        "static_assert(offsetof(GPU_RESP_MAP_INFO,pool_offset)==28",
-    ):
+    for fragment in ("ULONGmap_info;ULONGpadding;}GPU_RESP_MAP_INFO",):
         if resource_header.count(fragment) != 1:
-            fail(f"control blob map response must expose the Host pool offset at byte 28: {fragment}")
+            fail(f"control blob map response must retain its reserved response word: {fragment}")
 
     native_header = canonical_code(VIOGPU_HEADER_CODE)
     for field in (
@@ -5050,10 +5043,11 @@ def check_native_context_ownership() -> None:
     creation_sequence = (
         create.find("m_CtrlQueue.CreateNativeContext(contextId)"),
         create.find("m_CtrlQueue.CreateNativeControlBlob(contextId,resourceId)"),
-        create.find("m_CtrlQueue.MapNativeControlBlob(resourceId,&controlOffset)"),
-        create.find("owner->ControlMapped=TRUE;"),
+        create.find("AllocateNativeControlSlotLocked(&controlOffset,&controlAddress)"),
         create.find("owner->ControlBarOffset=controlOffset;"),
-        create.find("MapNativeControlSlotLocked(owner,controlOffset)"),
+        create.find("owner->ControlAddress=controlAddress;"),
+        create.find("m_CtrlQueue.MapNativeControlBlob(resourceId,controlOffset)"),
+        create.find("owner->ControlMapped=TRUE;"),
         create.find("QueryNativeContextParameterLocked(owner,MSM_PARAM_VA_START,&vaStart)"),
         create.find("QueryNativeContextParameterLocked(owner,MSM_PARAM_VA_SIZE,&vaSize)"),
         create.find("CreateNativeSubmitQueueLocked(owner,&submitQueueId)"),
@@ -5065,14 +5059,18 @@ def check_native_context_ownership() -> None:
     if min(creation_sequence) < 0 or list(creation_sequence) != sorted(creation_sequence):
         fail("native create must create/map blob-0, query both VA parameters, then publish the live registration")
 
-    map_slot = canonical_code(function_body("VioGpuAdapter::MapNativeControlSlotLocked", VIOGPU_CODE))
+    map_slot = canonical_code(function_body("VioGpuAdapter::AllocateNativeControlSlotLocked", VIOGPU_CODE))
     for fragment in (
-        "other!=owner&&other->ControlBarOffset==offset",
-        "m_PciResources.MapHostVisibleAddress(offset,VIOGPU_NATIVE_CONTROL_BLOB_SIZE,&slotAddress)",
-        "owner->ControlAddress=slotAddress;",
+        "*offset=0;",
+        "*address=NULL;",
+        "ULONGLONGslotCount=regionSize/VIOGPU_NATIVE_CONTROL_BLOB_SIZE;",
+        "owner->ControlAddress!=NULL&&owner->ControlBarOffset==candidate",
+        "m_PciResources.MapHostVisibleAddress(candidate,VIOGPU_NATIVE_CONTROL_BLOB_SIZE,&slotAddress)",
+        "*offset=candidate;",
+        "*address=slotAddress;",
     ):
         if map_slot.count(fragment) != 1:
-            fail(f"native control BAR mapper must reject duplicate Host offsets and map the assigned slot: {fragment}")
+            fail(f"native control BAR allocator must select one free mapped slot: {fragment}")
     if create.count("owner->Registration=NULL;FailNativeContextAtAnyIrql();") != 1:
         fail("native create must retain every unresolved Host owner until reset")
     va_validation = (
