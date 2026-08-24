@@ -123,6 +123,22 @@ enum VIOGPU_HOST_CONTEXT_RESULT : LONG
     VioGpuHostContextUnknown,
 };
 
+/* Captures the control-queue response before the reusable buffer is released.
+ * This is diagnostic state only; it does not change the native-context wire
+ * contract or the result classification. */
+typedef struct viogpu_host_context_response_diagnostic
+{
+    UINT ResponseSize;
+    UINT Type;
+    UINT Flags;
+    ULONGLONG FenceId;
+    UINT ContextId;
+    UCHAR RingIndex;
+    UCHAR Padding[3];
+    BOOLEAN Submitted;
+    BOOLEAN Completed;
+} VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC, *PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC;
+
 enum VIOGPU_2D_RESOURCE_STATE : LONG
 {
     VioGpu2DResourceNone = 0,
@@ -333,7 +349,8 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN ResetNativeSubmitBacklog(void);
     BOOLEAN QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info);
     BOOLEAN QueryCapset(UINT capset_id, UINT capset_version, UINT capset_size, PGPU_CAPSET_DRM capset);
-    VIOGPU_HOST_CONTEXT_RESULT CreateNativeContext(UINT context_id);
+    VIOGPU_HOST_CONTEXT_RESULT CreateNativeContext(UINT context_id,
+                                                   _Out_opt_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic);
     VIOGPU_HOST_CONTEXT_RESULT DestroyNativeContext(UINT context_id);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeControlBlob(UINT context_id, UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeGuestBlob(UINT context_id,

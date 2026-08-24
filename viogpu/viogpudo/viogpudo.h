@@ -1007,6 +1007,7 @@ class VioGpuDod
     VOID RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_CREATE_STAGE stage,
                                              _In_ NTSTATUS status,
                                              _In_ DWORD detail);
+    VOID RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC *diagnostic);
     VOID RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                 _In_ NTSTATUS status,
                                                 _In_ UINT inputDataSize,

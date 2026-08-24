@@ -4351,6 +4351,79 @@ VOID VioGpuDod::RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_C
                detailValue);
 }
 
+VOID VioGpuDod::RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC *diagnostic)
+{
+    PAGED_CODE();
+
+    if (diagnostic == NULL)
+    {
+        return;
+    }
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context response diagnostic: registry open failed, status=0x%08X\n",
+                   openStatus);
+        return;
+    }
+
+    DWORD responseSize = diagnostic->ResponseSize;
+    DWORD type = diagnostic->Type;
+    DWORD flags = diagnostic->Flags;
+    DWORD fenceLow = static_cast<DWORD>(diagnostic->FenceId & 0xffffffffULL);
+    DWORD fenceHigh = static_cast<DWORD>(diagnostic->FenceId >> 32);
+    DWORD contextId = diagnostic->ContextId;
+    DWORD ringIndex = diagnostic->RingIndex;
+    DWORD padding = static_cast<DWORD>(diagnostic->Padding[0]) |
+                    (static_cast<DWORD>(diagnostic->Padding[1]) << 8) |
+                    (static_cast<DWORD>(diagnostic->Padding[2]) << 16);
+    DWORD submitted = diagnostic->Submitted ? 1U : 0U;
+    DWORD completed = diagnostic->Completed ? 1U : 0U;
+
+    NTSTATUS writes[10] = {};
+    writes[0] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseSize", &responseSize);
+    writes[1] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseType", &type);
+    writes[2] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseFlags", &flags);
+    writes[3] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseFenceLow", &fenceLow);
+    writes[4] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseFenceHigh", &fenceHigh);
+    writes[5] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseContextId", &contextId);
+    writes[6] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseRingIndex", &ringIndex);
+    writes[7] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponsePadding", &padding);
+    writes[8] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseSubmitted", &submitted);
+    writes[9] = WriteRegistryDWORD(deviceKey, L"NativeContextCreateResponseCompleted", &completed);
+    ZwClose(deviceKey);
+
+    for (const NTSTATUS write : writes)
+    {
+        if (!NT_SUCCESS(write))
+        {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu native context response diagnostic: write failed, status=0x%08X\n",
+                       write);
+            return;
+        }
+    }
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu native context response diagnostic: size=%u type=0x%08X flags=0x%08X "
+               "fence=0x%016llX ctx=%u ring=%u padding=0x%06X submitted=%u completed=%u\n",
+               responseSize,
+               type,
+               flags,
+               diagnostic->FenceId,
+               contextId,
+               ringIndex,
+               padding,
+               submitted,
+               completed);
+}
+
 VOID VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                        _In_ NTSTATUS status,
                                                        _In_ UINT inputDataSize,
@@ -6734,7 +6807,12 @@ NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGIST
     InterlockedExchange(&context->State, VioGpuNativeContextCreating);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
 
-    VIOGPU_HOST_CONTEXT_RESULT createResult = m_CtrlQueue.CreateNativeContext(contextId);
+    VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC hostResponse = {};
+    VIOGPU_HOST_CONTEXT_RESULT createResult = m_CtrlQueue.CreateNativeContext(contextId, &hostResponse);
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextCreateResponseDiagnostic(&hostResponse);
+    }
     VIOGPU_HOST_CONTEXT_RESULT stageResult = createResult;
     BOOLEAN hostContextCreated = createResult == VioGpuHostContextConfirmed;
     if (m_pVioGpuDod != NULL)
