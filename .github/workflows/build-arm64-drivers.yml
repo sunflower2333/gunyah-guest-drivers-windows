@@ -171,7 +171,6 @@ jobs:
             @{ p='viogpu/viogpuap/viogpuap.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpusc/viogpusc.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpures/viogpures.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
-            @{ p='viogpu/viogpudo/viogpudo.vcxproj';        c='Win11 Release'; plat='ARM64' },
             @{ p='viogpu/viogpud3d/viogpud3d.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64' },
             @{ p='viostor/viostor.vcxproj';                 c='Win11 Release'; plat='ARM64' },
@@ -200,10 +199,10 @@ jobs:
         shell: pwsh
         run: |
           $root = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'
-          $driver = Join-Path $root 'viogpuwddm.sys'
+          $driver = Join-Path $root 'viogpudo.sys'
           $umd = Join-Path $root 'viogpud3d.dll'
-          $inf = Join-Path $root 'viogpuwddm.inf'
-          $map = Join-Path $root 'viogpuwddm.map'
+          $inf = Join-Path $root 'viogpudo.inf'
+          $map = Join-Path $root 'viogpudo.map'
           foreach ($path in @($driver, $umd, $inf, $map)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "missing Native Context product PE: $path"
@@ -348,12 +347,11 @@ jobs:
             @{ n='viosock';   root='viosock';   bins=@('viosock.sys','viosocklib.dll','viosockwspsvc.exe'); inf='viosock.inf' },
             @{ n='NetKVM';    root='NetKVM';    bins=@('netkvm.sys','netkvmp.exe'); inf='netkvm.inf' },
             @{ n='vioinput';  root='vioinput';  bins=@('vioinput.sys','viohidkmdf.sys'); inf='vioinput.inf' },
-            @{ n='viogpu';    root='viogpu';    bins=@('viogpudo.sys','viogpudo.pdb','viogpuap.exe','viogpuap.pdb','vgpusrv.exe','vgpusrv.pdb','viogpures.exe','viogpures.pdb'); inf='viogpudo.inf' },
-            @{ n='viogpuwddm'; root='viogpu/viogpuwddm'; bins=@('viogpuwddm.sys','viogpud3d.dll'); inf='viogpuwddm.inf' },
+            @{ n='viogpu'; root='viogpu/viogpuwddm'; bins=@('viogpudo.sys','viogpud3d.dll'); inf='viogpudo.inf' },
             @{ n='pvmpower';  root='pvmpower';  bins=@('pvmpower.sys'); inf='pvmpower.inf' }
           )
           $nativeDebugRoot = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'
-          $nativeDebugFiles = @('viogpuwddm.pdb', 'viogpuwddm.map', 'viogpud3d.pdb')
+          $nativeDebugFiles = @('viogpudo.pdb', 'viogpudo.map', 'viogpud3d.pdb')
           # 在 root 下找最佳檔案：優先路徑含 ARM64、最新修改
           function Pick($root,$file) {
             Get-ChildItem $root -Recurse -Filter $file -File -EA SilentlyContinue |
@@ -417,7 +415,7 @@ jobs:
             if ((Get-Content $infPath -Raw) -match 'NT(?:ARM64|AMD64|x86)(?:\.\d+){2,}\.\.\.\d+\.\d+\.\d+') {
               throw "$($d.n): $($d.inf) contains a duplicated TargetOSVersion decoration"
             }
-            if ($d.n -eq 'viogpuwddm') {
+            if ($d.n -eq 'viogpu') {
               & $infverif /w /v $infPath
               if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
             }
@@ -439,7 +437,7 @@ jobs:
               & $signtool sign /fd SHA256 /f $pfx /p "$pfxPw" $cat.FullName
               if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($cat.FullName)" }
             }
-            if ($d.n -eq 'viogpuwddm') {
+            if ($d.n -eq 'viogpu') {
               foreach ($debugFile in $nativeDebugFiles) {
                 $debugSource = Join-Path $nativeDebugRoot $debugFile
                 if (-not (Test-Path -LiteralPath $debugSource -PathType Leaf) -or

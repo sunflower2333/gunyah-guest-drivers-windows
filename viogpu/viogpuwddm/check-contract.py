@@ -35,7 +35,7 @@ VIRTIO_COMMON_PATH = VIRTIO_DIR / "VirtIOPCICommon.c"
 VIRTIO_MODERN_PATH = VIRTIO_DIR / "VirtIOPCIModern.c"
 VIRTIO_LEGACY_PATH = VIRTIO_DIR / "VirtIOPCILegacy.c"
 PROJECT = PROJECT_DIR / "viogpuwddm.vcxproj"
-INF_TEMPLATE = PROJECT_DIR / "viogpuwddm.inx"
+INF_TEMPLATE = PROJECT_DIR / "viogpudo.inx"
 WPP_NON_OWNER_TEMPLATE = PROJECT_DIR / "wpp-non-owner.tpl"
 UMD_PROJECT_DIR = (PROJECT_DIR.parent / "viogpud3d").resolve()
 UMD_PROJECT = UMD_PROJECT_DIR / "viogpud3d.vcxproj"
@@ -909,15 +909,23 @@ def check_arm64_workflow_contract() -> None:
         fail("the signed ARM64 product workflow must build the D3D UMD shim exactly once")
     if sources["product drivers"].count("viogpu/viogpuwddm/viogpuwddm.vcxproj") != 1:
         fail("the signed ARM64 product workflow must build the Native Context full miniport exactly once")
+    if "viogpu/viogpudo/viogpudo.vcxproj" in sources["product drivers"]:
+        fail("the signed ARM64 product workflow must not build a second display-only viogpu SYS")
     product_package = (
-        "@{ n='viogpuwddm'; root='viogpu/viogpuwddm'; "
-        "bins=@('viogpuwddm.sys','viogpud3d.dll'); inf='viogpuwddm.inf' }"
+        "@{ n='viogpu'; root='viogpu/viogpuwddm'; "
+        "bins=@('viogpudo.sys','viogpud3d.dll'); inf='viogpudo.inf' }"
     )
     if sources["product drivers"].count(product_package) != 1:
-        fail("the signed ARM64 product workflow must stage one SYS/D3D-UMD/INF package")
+        fail("the signed ARM64 product workflow must stage one integrated viogpu SYS/D3D-UMD/INF package")
+    if "n='viogpuwddm'" in sources["product drivers"]:
+        fail("the signed ARM64 product workflow must not stage a second viogpuwddm package")
+    for label, source in sources.items():
+        for retired_name in ("viogpuwddm.sys", "viogpuwddm.inf", "viogpuwddm.cat"):
+            if retired_name in source:
+                fail(f"{label} workflow must emit only the integrated viogpudo package, not {retired_name}")
     product_debug_fragments = (
         "$nativeDebugRoot = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'",
-        "$nativeDebugFiles = @('viogpuwddm.pdb', 'viogpuwddm.map', 'viogpud3d.pdb')",
+        "$nativeDebugFiles = @('viogpudo.pdb', 'viogpudo.map', 'viogpud3d.pdb')",
         "$debugSource = Join-Path $nativeDebugRoot $debugFile",
         'throw "Native Context product debug file is missing or empty: $debugSource"',
         "Copy-Item -LiteralPath $debugSource -Destination $dest -Force",
@@ -9089,6 +9097,13 @@ def check_project_safety(root: ET.Element) -> None:
     if map_file_names != [r"$(OutDir)$(TargetName).map"]:
         fail("full-miniport project must emit its linker map beside the driver")
 
+    target_names = [
+        (element.text or "").strip()
+        for element in root.findall(".//msbuild:TargetName", NAMESPACE)
+    ]
+    if target_names != ["viogpudo"]:
+        fail("the Native Context composition target must replace, not accompany, the viogpudo SYS")
+
     driver_items = [
         element
         for element in root.findall(".//msbuild:ClCompile[@Include]", NAMESPACE)
@@ -9125,8 +9140,8 @@ def check_project_safety(root: ET.Element) -> None:
         element.attrib.get("Include", "").replace("\\", "/")
         for element in root.findall(".//msbuild:Inf[@Include]", NAMESPACE)
     ]
-    if inf_inputs != ["viogpuwddm.inx"]:
-        fail("full-miniport project must contain exactly the ARM64 viogpuwddm INX input")
+    if inf_inputs != ["viogpudo.inx"]:
+        fail("full-miniport project must contain exactly the integrated ARM64 viogpudo INX input")
 
     package_inputs = [
         element.attrib.get("Include", "")
@@ -9153,7 +9168,8 @@ def check_installation_contract() -> None:
         "Class=Display",
         "ClassGuid={4d36e968-e325-11ce-bfc1-08002be10318}",
         "DriverVer=08/22/2026,0.1.0.0",
-        "CatalogFile=viogpuwddm.cat",
+        "CatalogFile=viogpudo.cat",
+        "viogpudo.sys=1,,",
         "viogpud3d.dll=1,,",
         "%DroidVM%=VioGpuWddm,NT$ARCH$",
         "%VioGpuWddm.DeviceDesc%=VioGpuWddm_Install,PCI\\VEN_1AF4&DEV_1050",
@@ -9161,8 +9177,8 @@ def check_installation_contract() -> None:
         "viogpud3d.dll,,,2",
         "DelReg=VioGpuWddm_RetiredDeviceSettings",
         "[VioGpuWddm_RetiredDeviceSettings]HKR,,RequireRestrictedDma",
-        "AddService=VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog",
-        "ServiceBinary=%INX_PLATFORM_DRIVERS_DIR%\\viogpuwddm.sys",
+        "AddService=VioGpuDod,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog",
+        "ServiceBinary=%INX_PLATFORM_DRIVERS_DIR%\\viogpudo.sys",
         "MSISupported,%REG_DWORD%,1",
         "MessageNumberLimit,%REG_DWORD%,4",
         'UserModeDriverName,%REG_MULTI_SZ%,"%13%\\viogpud3d.dll",'
@@ -9175,8 +9191,8 @@ def check_installation_contract() -> None:
             fail(f"full-miniport INX must contain exactly one installation contract fragment: {fragment}")
     if re.search(r"NT\$ARCH\$\.\d+\.\d+\.\.\.\d+", source):
         fail("full-miniport INX must leave TargetOSVersion decoration to InfArch")
-    if re.search(r"(?i)nt(?:amd64|x86)|viogpudo\.sys|include\s*=\s*msdv\.inf", source):
-        fail("full-miniport INX must remain ARM64-tokenized and independent of the display-only package")
+    if re.search(r"(?i)nt(?:amd64|x86)|viogpuwddm\.sys|include\s*=\s*msdv\.inf", source):
+        fail("full-miniport INX must remain ARM64-tokenized and replace the display-only viogpu binary")
     if re.search(r"(?i)HKR\s*,\s*,\s*RequireRestrictedDma\s*,", source):
         fail("full-miniport INX must delete, never configure, the retired restricted-DMA value")
     if re.search(r"(?i)UserModeDriverNameWow|OpenAdapter12", source):
