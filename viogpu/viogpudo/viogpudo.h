@@ -679,6 +679,9 @@ class VioGpuDod
     volatile LONG m_NativeSubmissionFaultDiagnosticRecorded;
     volatile LONG m_NativeSubmissionFaultCallerRva;
     volatile LONG m_NativeSubmissionFaultExecutionDiagnosticState;
+    volatile LONG m_NativeSubmissionFaultPresentSubmitStage;
+    volatile LONG m_NativeSubmissionFaultPresentSubmitStatus;
+    volatile LONG m_NativeSubmissionFaultPresentSubmitDetail;
     KSPIN_LOCK m_NativeFenceLock;
     UINT m_NativeFenceHead;
     UINT m_NativeFenceCount;
@@ -919,7 +922,10 @@ class VioGpuDod
                                                           _In_ NTSTATUS status,
                                                           _In_ UINT nodeOrdinal,
                                                           _In_ UINT engineOrdinal,
-                                                          _In_ BOOLEAN queueDpc);
+                                                          _In_ BOOLEAN queueDpc,
+                                                          _In_ DWORD presentSubmitStage = 0,
+                                                          _In_ NTSTATUS presentSubmitStatus = STATUS_SUCCESS,
+                                                          _In_ DWORD presentSubmitDetail = 0);
     void NotifyNativeSoftwareCompletion(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal);
     BOOLEAN CompleteNativeSoftwareSubmission(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal);
     BOOLEAN CompleteNativeSystemSubmission(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal);

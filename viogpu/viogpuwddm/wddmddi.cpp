@@ -7611,6 +7611,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
     else if (NT_SUCCESS(status) && privateData->Kind == VioGpuWddmDmaKindPresent)
     {
         VIOGPU_WDDM_PRESENT_TRANSACTION *transaction = NULL;
+        VIOGPU_WDDM_PRESENT_SUBMIT_STAGE submitFailureStage = VioGpuWddmPresentSubmitNone;
+        DWORD submitFailureDetail = 0;
         status = ResolvePresentTransaction(submitCommand->pDmaBufferPrivateData,
                                            submitCommand->DmaBufferPrivateDataSize,
                                            privateStart,
@@ -7619,6 +7621,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                            submitCommand->hContext,
                                            -1,
                                            &transaction);
+        if (!NT_SUCCESS(status))
+        {
+            submitFailureStage = VioGpuWddmPresentSubmitResolveTransaction;
+        }
         BOOLEAN promotePrepatch = FALSE;
         if (NT_SUCCESS(status))
         {
@@ -7629,22 +7635,28 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                               transaction->FenceId == submitCommand->SubmissionFenceId;
             promotePrepatch = state == VioGpuWddmPresentBuilt && transaction->FullyPrepatched &&
                               transaction->FenceId == 0;
-            BOOLEAN exact = submitCommand->hContext != NULL && submitCommand->Flags.Value == 0 &&
-                            privateLength == sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) &&
-                            dmaLength == sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) &&
-                            ValidatePresentSubmitDmaRange(transaction,
-                                                          submitCommand->DmaBufferSize,
-                                                          submitCommand->DmaBufferSubmissionStartOffset,
-                                                          submitCommand->DmaBufferSubmissionEndOffset) &&
-                            transaction->DmaBuffer == privateData->DmaBuffer &&
-                            submitCommand->DmaBufferSize - submitCommand->DmaBufferSubmissionStartOffset == transaction->DmaBufferSize &&
-                            privateLength == transaction->PrivateDataSize && transaction->PrivateData == privateData &&
-                            (patched || promotePrepatch) &&
-                            transaction->Context->NodeOrdinal == submitCommand->NodeOrdinal &&
-                            transaction->Context->EngineAffinity == 1;
-            if (!exact)
+            BOOLEAN dmaRangeValid = ValidatePresentSubmitDmaRange(transaction,
+                                                                  submitCommand->DmaBufferSize,
+                                                                  submitCommand->DmaBufferSubmissionStartOffset,
+                                                                  submitCommand->DmaBufferSubmissionEndOffset);
+            submitFailureDetail = submitCommand->hContext == NULL ? 1U << 0 : 0;
+            submitFailureDetail |= submitCommand->Flags.Value != 0 ? 1U << 1 : 0;
+            submitFailureDetail |= privateLength != sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) ? 1U << 2 : 0;
+            submitFailureDetail |= dmaLength != sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) ? 1U << 3 : 0;
+            submitFailureDetail |= !dmaRangeValid ? 1U << 4 : 0;
+            submitFailureDetail |= transaction->DmaBuffer != privateData->DmaBuffer ? 1U << 5 : 0;
+            submitFailureDetail |= submitCommand->DmaBufferSize - submitCommand->DmaBufferSubmissionStartOffset != transaction->DmaBufferSize
+                                                                                                                                       ? 1U << 6
+                                                                                                                                       : 0;
+            submitFailureDetail |= privateLength != transaction->PrivateDataSize ? 1U << 7 : 0;
+            submitFailureDetail |= transaction->PrivateData != privateData ? 1U << 8 : 0;
+            submitFailureDetail |= !patched && !promotePrepatch ? 1U << 9 : 0;
+            submitFailureDetail |= transaction->Context->NodeOrdinal != submitCommand->NodeOrdinal ? 1U << 10 : 0;
+            submitFailureDetail |= transaction->Context->EngineAffinity != 1 ? 1U << 11 : 0;
+            if (submitFailureDetail != 0)
             {
                 status = STATUS_INVALID_PARAMETER;
+                submitFailureStage = VioGpuWddmPresentSubmitContract;
             }
         }
 
@@ -7652,14 +7664,24 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
         {
             transaction->FenceId = submitCommand->SubmissionFenceId;
             KeMemoryBarrier();
-            if (InterlockedCompareExchange(&transaction->State, VioGpuWddmPresentPatched, VioGpuWddmPresentBuilt) !=
-                VioGpuWddmPresentBuilt)
+            LONG previous = InterlockedCompareExchange(&transaction->State,
+                                                       VioGpuWddmPresentPatched,
+                                                       VioGpuWddmPresentBuilt);
+            if (previous != VioGpuWddmPresentBuilt)
             {
                 status = STATUS_DEVICE_NOT_READY;
+                submitFailureStage = VioGpuWddmPresentSubmitPrepatchTransition;
+                submitFailureDetail = static_cast<DWORD>(previous);
             }
-            else if (InterlockedCompareExchange(&transaction->CancelRequested, 0, 0) != 0)
+            else
             {
-                status = STATUS_CANCELLED;
+                LONG cancelRequested = InterlockedCompareExchange(&transaction->CancelRequested, 0, 0);
+                if (cancelRequested != 0)
+                {
+                    status = STATUS_CANCELLED;
+                    submitFailureStage = VioGpuWddmPresentSubmitCancelled;
+                    submitFailureDetail = static_cast<DWORD>(cancelRequested);
+                }
             }
         }
 
@@ -7671,6 +7693,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
             if (!workReference)
             {
                 status = STATUS_DEVICE_NOT_READY;
+                submitFailureStage = VioGpuWddmPresentSubmitWorkReference;
+                submitFailureDetail = static_cast<DWORD>(InterlockedCompareExchange(&transaction->WorkReferenceHeld,
+                                                                                    0,
+                                                                                    0));
             }
         }
         if (NT_SUCCESS(status))
@@ -7687,6 +7713,19 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                     adapter->ReleaseNativeSubmissionOperation();
                     return STATUS_SUCCESS;
                 }
+                submitFailureStage = VioGpuWddmPresentSubmitPassiveQueue;
+                LONG workState = InterlockedCompareExchange(&transaction->Work.State, 0, 0);
+                LONG cancelRequested = InterlockedCompareExchange(&transaction->CancelRequested, 0, 0);
+                LONG retired = InterlockedCompareExchange(&transaction->Work.Retired, 0, 0);
+                submitFailureDetail = static_cast<DWORD>(previous & 0xFF) |
+                                      (static_cast<DWORD>(workState & 0xFF) << 8) |
+                                      (static_cast<DWORD>(cancelRequested & 0xFF) << 16) |
+                                      (static_cast<DWORD>(retired & 0xFF) << 24);
+            }
+            else
+            {
+                submitFailureStage = VioGpuWddmPresentSubmitQueueTransition;
+                submitFailureDetail = static_cast<DWORD>(previous);
             }
             status = STATUS_DEVICE_NOT_READY;
         }
@@ -7700,11 +7739,18 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                 RetirePresentTransaction(transaction, state, VioGpuWddmPresentCancelled);
             }
         }
+        if (submitFailureStage == VioGpuWddmPresentSubmitNone)
+        {
+            submitFailureStage = VioGpuWddmPresentSubmitUnexpected;
+        }
         adapter->NotifyNativeSubmissionFault(submitCommand->SubmissionFenceId,
                                              STATUS_DEVICE_NOT_READY,
                                              submitCommand->NodeOrdinal,
                                              submitCommand->EngineOrdinal,
-                                             TRUE);
+                                             TRUE,
+                                             static_cast<DWORD>(submitFailureStage),
+                                             status,
+                                             submitFailureDetail);
         if (transaction != NULL)
         {
             if (workReference)

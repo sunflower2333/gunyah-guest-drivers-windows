@@ -1385,14 +1385,20 @@ def check_native_present_diagnostics() -> None:
        adapter_header.count("volatileLONGm_HardwareResetCallerRva;") != 1 or \
        adapter_header.count("volatileLONGm_NativeSubmissionFaultDiagnosticRecorded;") != 1 or \
        adapter_header.count("volatileLONGm_NativeSubmissionFaultCallerRva;") != 1 or \
-       adapter_header.count("volatileLONGm_NativeSubmissionFaultExecutionDiagnosticState;") != 1:
+       adapter_header.count("volatileLONGm_NativeSubmissionFaultExecutionDiagnosticState;") != 1 or \
+       adapter_header.count("volatileLONGm_NativeSubmissionFaultPresentSubmitStage;") != 1 or \
+       adapter_header.count("volatileLONGm_NativeSubmissionFaultPresentSubmitStatus;") != 1 or \
+       adapter_header.count("volatileLONGm_NativeSubmissionFaultPresentSubmitDetail;") != 1:
         fail("adapter must retain one first-failure Present diagnostic recorder")
     constructor = canonical_code(function_body("VioGpuDod::VioGpuDod", VIOGPU_CODE))
     if constructor.count("m_NativePresentDiagnosticRecorded=0;") != 1 or \
        constructor.count("m_HardwareResetCallerRva=0;") != 1 or \
        constructor.count("m_NativeSubmissionFaultDiagnosticRecorded=0;") != 1 or \
        constructor.count("m_NativeSubmissionFaultCallerRva=0;") != 1 or \
-       constructor.count("m_NativeSubmissionFaultExecutionDiagnosticState=0;") != 1:
+       constructor.count("m_NativeSubmissionFaultExecutionDiagnosticState=0;") != 1 or \
+       constructor.count("m_NativeSubmissionFaultPresentSubmitStage=0;") != 1 or \
+       constructor.count("m_NativeSubmissionFaultPresentSubmitStatus=0;") != 1 or \
+       constructor.count("m_NativeSubmissionFaultPresentSubmitDetail=0;") != 1:
         fail("adapter construction must reset the first-failure Present diagnostic claim")
     start_recorder = canonical_code(function_body("VioGpuDod::RecordNativeStartDiagnostic", VIOGPU_SOURCE))
     require_order(
@@ -1409,6 +1415,9 @@ def check_native_present_diagnostics() -> None:
             'WriteRegistryDWORD(deviceKey,L"NativePresentDiagnosticEpoch",&presentEpochCommitted)',
             "InterlockedExchange(&m_NativeSubmissionFaultCallerRva,0);",
             "InterlockedExchange(&m_NativeSubmissionFaultExecutionDiagnosticState,0);",
+            "InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitStage,0);",
+            "InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitStatus,0);",
+            "InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitDetail,0);",
             "InterlockedExchange(&m_NativePresentDiagnosticRecorded,0);",
             "InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded,0);",
             "InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded,0);",
@@ -1453,6 +1462,9 @@ def check_native_present_diagnostics() -> None:
         "InterlockedCompareExchange(&m_NativeSubmissionFaultDiagnosticRecorded,2,2)==2?1:0;",
         "InterlockedCompareExchange(&m_NativeSubmissionFaultCallerRva,0,0)",
         "InterlockedCompareExchange(&m_NativeSubmissionFaultExecutionDiagnosticState,0,0)",
+        "InterlockedCompareExchange(&m_NativeSubmissionFaultPresentSubmitStage,0,0)",
+        "InterlockedCompareExchange(&m_NativeSubmissionFaultPresentSubmitStatus,0,0)",
+        "InterlockedCompareExchange(&m_NativeSubmissionFaultPresentSubmitDetail,0,0)",
     ):
         if recorder.count(fragment) != 1:
             fail(f"Present diagnostics must snapshot reset and first-fault provenance: {fragment}")
@@ -1464,6 +1476,9 @@ def check_native_present_diagnostics() -> None:
         "NativePresentSubmissionFaultProvenanceValid",
         "NativePresentSubmissionFaultCallerRva",
         "NativePresentSubmissionFaultExecutionDiagnosticState",
+        "NativePresentSubmissionFaultPresentSubmitStage",
+        "NativePresentSubmissionFaultPresentSubmitStatus",
+        "NativePresentSubmissionFaultPresentSubmitDetail",
     ] + [
         f"NativePresent{field.removeprefix('Present')}" for field in expected_fields
     ]
@@ -1618,6 +1633,9 @@ def check_native_present_diagnostics() -> None:
         "InterlockedCompareExchange(&m_NativePresentExecutionDiagnosticRecorded,0,0)",
         "InterlockedExchange(&m_NativeSubmissionFaultCallerRva,",
         "InterlockedExchange(&m_NativeSubmissionFaultExecutionDiagnosticState,executionDiagnosticState);",
+        "InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitStage,static_cast<LONG>(presentSubmitStage));",
+        "InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitStatus,static_cast<LONG>(presentSubmitStatus));",
+        "InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitDetail,static_cast<LONG>(presentSubmitDetail));",
         "KeMemoryBarrier();",
         "InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded,2);",
     ):
@@ -1628,6 +1646,9 @@ def check_native_present_diagnostics() -> None:
         (
             "InterlockedCompareExchange(&m_NativeSubmissionFaultDiagnosticRecorded,1,0)==0",
             "InterlockedExchange(&m_NativeSubmissionFaultExecutionDiagnosticState,executionDiagnosticState);",
+            "InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitStage,static_cast<LONG>(presentSubmitStage));",
+            "InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitStatus,static_cast<LONG>(presentSubmitStatus));",
+            "InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitDetail,static_cast<LONG>(presentSubmitDetail));",
             "KeMemoryBarrier();",
             "InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded,2);",
             "RequestHardwareResetAtAnyIrql();",
@@ -1697,6 +1718,10 @@ def check_native_present_diagnostics() -> None:
         "$values['NativePresentDiagnosticEpoch'] = 2",
         "$values['NativePresentSubmissionFaultCallerRva'] = 0x4321",
         "$result.SubmissionFaultExecutionDiagnosticState -ne 'Consumed (2)'",
+        "$values['NativePresentSubmissionFaultPresentSubmitStage'] = 7",
+        "$result.SubmissionFaultPresentSubmitStage -ne 'PassiveQueue (7)'",
+        "$result.SubmissionFaultPresentSubmitStatus -ne '0xC00000A3'",
+        "$result.SubmissionFaultPresentSubmitDetail -ne '0x00030201'",
         "$presentOnlyValues['NativePresentExecuteStage'] = 0",
         "NativePresentDiagnosticEpoch = 2",
         "NativePresentReason = 0",
@@ -4108,6 +4133,36 @@ def check_wddm_present_contract() -> None:
         ),
         "Present Submit must promote only a fully prepatched Built owner before Queued publication",
     )
+    expected_submit_stages = {
+        "VioGpuWddmPresentSubmitNone": "0",
+        "VioGpuWddmPresentSubmitResolveTransaction": "1",
+        "VioGpuWddmPresentSubmitContract": "2",
+        "VioGpuWddmPresentSubmitPrepatchTransition": "3",
+        "VioGpuWddmPresentSubmitCancelled": "4",
+        "VioGpuWddmPresentSubmitWorkReference": "5",
+        "VioGpuWddmPresentSubmitQueueTransition": "6",
+        "VioGpuWddmPresentSubmitPassiveQueue": "7",
+        "VioGpuWddmPresentSubmitUnexpected": "0x0FFF",
+    }
+    for stage, value in expected_submit_stages.items():
+        if len(re.findall(rf"\b{stage}\s*=\s*{value}\s*[,}}]", WDDM_DDI_HEADER_SOURCE)) != 1:
+            fail(f"Present Submit diagnostic stage ABI drifted: {stage}")
+    for fragment in (
+        "submitFailureStage=VioGpuWddmPresentSubmitResolveTransaction;",
+        "submitFailureStage=VioGpuWddmPresentSubmitContract;",
+        "submitFailureStage=VioGpuWddmPresentSubmitPrepatchTransition;",
+        "submitFailureStage=VioGpuWddmPresentSubmitCancelled;",
+        "submitFailureStage=VioGpuWddmPresentSubmitWorkReference;",
+        "submitFailureStage=VioGpuWddmPresentSubmitQueueTransition;",
+        "submitFailureStage=VioGpuWddmPresentSubmitPassiveQueue;",
+        "submitFailureStage=VioGpuWddmPresentSubmitUnexpected;",
+        "static_cast<DWORD>(submitFailureStage),status,submitFailureDetail);",
+    ):
+        if present_submit.count(fragment) != 1:
+            fail(f"Present Submit must publish one exact pre-worker failure stage: {fragment}")
+    for bit in range(12):
+        if len(re.findall(rf"1<<{bit}(?![0-9])", present_submit)) != 1:
+            fail(f"Present Submit contract failure mask must retain bit {bit}")
 
     worker = canonical_code(function_body("NativePresentWorker", WDDM_DDI_CODE))
     executing_claim = worker.find(

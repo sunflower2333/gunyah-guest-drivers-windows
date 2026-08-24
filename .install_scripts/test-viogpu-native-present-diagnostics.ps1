@@ -10,6 +10,9 @@ $names = @(
     'NativePresentSubmissionFaultProvenanceValid',
     'NativePresentSubmissionFaultCallerRva',
     'NativePresentSubmissionFaultExecutionDiagnosticState',
+    'NativePresentSubmissionFaultPresentSubmitStage',
+    'NativePresentSubmissionFaultPresentSubmitStatus',
+    'NativePresentSubmissionFaultPresentSubmitDetail',
     'NativePresentContextType',
     'NativePresentFlags',
     'NativePresentSubRectCount',
@@ -82,6 +85,9 @@ $values['NativePresentReason'] = 18
 $values['NativePresentSubmissionFaultProvenanceValid'] = 1
 $values['NativePresentSubmissionFaultCallerRva'] = 0x4321
 $values['NativePresentSubmissionFaultExecutionDiagnosticState'] = 2
+$values['NativePresentSubmissionFaultPresentSubmitStage'] = 7
+$values['NativePresentSubmissionFaultPresentSubmitStatus'] = -1073741661
+$values['NativePresentSubmissionFaultPresentSubmitDetail'] = 0x030201
 $values['NativePresentExecuteStage'] = 19
 $values['NativePresentExecuteStatus'] = -1073741661
 $values['NativePresentExecuteDetail'] = 2
@@ -102,6 +108,9 @@ if ($result.ExecuteStage -ne 'HostPresent (19)' -or
     -not $result.SubmissionFaultProvenanceAvailable -or
     $result.SubmissionFaultCallerRva -ne '0x00004321' -or
     $result.SubmissionFaultExecutionDiagnosticState -ne 'Consumed (2)' -or
+    $result.SubmissionFaultPresentSubmitStage -ne 'PassiveQueue (7)' -or
+    $result.SubmissionFaultPresentSubmitStatus -ne '0xC00000A3' -or
+    $result.SubmissionFaultPresentSubmitDetail -ne '0x00030201' -or
     $result.ExecuteSourcePlacementState -ne 'PlacementValid,ApertureMdl,ApertureAddress,FullyMapped,SignatureValid' -or
     $result.ExecuteSourcePlacementOffset -ne '0x0123456789ABCDEF') {
     throw "Native Present diagnostic decoder fixture failed: $($result | Format-List | Out-String)"

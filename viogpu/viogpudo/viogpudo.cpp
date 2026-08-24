@@ -155,6 +155,9 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
     m_NativeSubmissionFaultExecutionDiagnosticState = 0;
+    m_NativeSubmissionFaultPresentSubmitStage = 0;
+    m_NativeSubmissionFaultPresentSubmitStatus = 0;
+    m_NativeSubmissionFaultPresentSubmitDetail = 0;
     m_NativeFenceHead = 0;
     m_NativeFenceCount = 0;
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
@@ -900,7 +903,10 @@ __declspec(noinline) void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fence
                                                                  _In_ NTSTATUS status,
                                                                  _In_ UINT nodeOrdinal,
                                                                  _In_ UINT engineOrdinal,
-                                                                 _In_ BOOLEAN queueDpc)
+                                                                 _In_ BOOLEAN queueDpc,
+                                                                 _In_ DWORD presentSubmitStage,
+                                                                 _In_ NTSTATUS presentSubmitStatus,
+                                                                 _In_ DWORD presentSubmitDetail)
 {
 #if defined(VIOGPU_NATIVE_CONTEXT)
     if (InterlockedCompareExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 1, 0) == 0)
@@ -912,6 +918,9 @@ __declspec(noinline) void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fence
         InterlockedExchange(&m_NativeSubmissionFaultCallerRva,
                             callerRva <= MAXULONG ? static_cast<LONG>(callerRva) : 0);
         InterlockedExchange(&m_NativeSubmissionFaultExecutionDiagnosticState, executionDiagnosticState);
+        InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitStage, static_cast<LONG>(presentSubmitStage));
+        InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitStatus, static_cast<LONG>(presentSubmitStatus));
+        InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitDetail, static_cast<LONG>(presentSubmitDetail));
         KeMemoryBarrier();
         InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 2);
     }
@@ -4256,6 +4265,9 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
         {
             InterlockedExchange(&m_NativeSubmissionFaultCallerRva, 0);
             InterlockedExchange(&m_NativeSubmissionFaultExecutionDiagnosticState, 0);
+            InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitStage, 0);
+            InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitStatus, 0);
+            InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitDetail, 0);
             InterlockedExchange(&m_NativePresentDiagnosticRecorded, 0);
             InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 0);
             InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 0);
@@ -4387,6 +4399,18 @@ VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,
                                                                                                                                         0,
                                                                                                                                         0))
                                                                                         : 0;
+    DWORD submissionFaultPresentSubmitStage = submissionFaultProvenanceValid != 0 ? static_cast<DWORD>(InterlockedCompareExchange(&m_NativeSubmissionFaultPresentSubmitStage,
+                                                                                                                                  0,
+                                                                                                                                  0))
+                                                                                  : 0;
+    DWORD submissionFaultPresentSubmitStatus = submissionFaultProvenanceValid != 0 ? static_cast<DWORD>(InterlockedCompareExchange(&m_NativeSubmissionFaultPresentSubmitStatus,
+                                                                                                                                   0,
+                                                                                                                                   0))
+                                                                                   : 0;
+    DWORD submissionFaultPresentSubmitDetail = submissionFaultProvenanceValid != 0 ? static_cast<DWORD>(InterlockedCompareExchange(&m_NativeSubmissionFaultPresentSubmitDetail,
+                                                                                                                                   0,
+                                                                                                                                   0))
+                                                                                   : 0;
     // clang-format off
     const DIAGNOSTIC_VALUE values[] = {
         {L"NativePresentStatus", statusValue},
@@ -4395,6 +4419,9 @@ VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,
         {L"NativePresentSubmissionFaultProvenanceValid", submissionFaultProvenanceValid},
         {L"NativePresentSubmissionFaultCallerRva", submissionFaultCallerRva},
         {L"NativePresentSubmissionFaultExecutionDiagnosticState", submissionFaultExecutionDiagnosticState},
+        {L"NativePresentSubmissionFaultPresentSubmitStage", submissionFaultPresentSubmitStage},
+        {L"NativePresentSubmissionFaultPresentSubmitStatus", submissionFaultPresentSubmitStatus},
+        {L"NativePresentSubmissionFaultPresentSubmitDetail", submissionFaultPresentSubmitDetail},
         {L"NativePresentContextType", diagnostic->ContextType},
         {L"NativePresentFlags", diagnostic->PresentFlags},
         {L"NativePresentSubRectCount", diagnostic->SubRectCount},

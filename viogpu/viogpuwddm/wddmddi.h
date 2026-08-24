@@ -361,6 +361,19 @@ enum VIOGPU_WDDM_PRESENT_EXECUTION_STAGE : DWORD
     VioGpuWddmPresentExecuteComplete = 0x0FFF,
 };
 
+enum VIOGPU_WDDM_PRESENT_SUBMIT_STAGE : DWORD
+{
+    VioGpuWddmPresentSubmitNone = 0,
+    VioGpuWddmPresentSubmitResolveTransaction = 1,
+    VioGpuWddmPresentSubmitContract = 2,
+    VioGpuWddmPresentSubmitPrepatchTransition = 3,
+    VioGpuWddmPresentSubmitCancelled = 4,
+    VioGpuWddmPresentSubmitWorkReference = 5,
+    VioGpuWddmPresentSubmitQueueTransition = 6,
+    VioGpuWddmPresentSubmitPassiveQueue = 7,
+    VioGpuWddmPresentSubmitUnexpected = 0x0FFF,
+};
+
 struct VIOGPU_WDDM_PRESENT_TRANSACTION
 {
     ULONG Signature;

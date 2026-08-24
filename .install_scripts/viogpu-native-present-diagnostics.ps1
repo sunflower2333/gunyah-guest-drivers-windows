@@ -55,6 +55,9 @@ $valueNames = @(
     'NativePresentSubmissionFaultProvenanceValid',
     'NativePresentSubmissionFaultCallerRva',
     'NativePresentSubmissionFaultExecutionDiagnosticState',
+    'NativePresentSubmissionFaultPresentSubmitStage',
+    'NativePresentSubmissionFaultPresentSubmitStatus',
+    'NativePresentSubmissionFaultPresentSubmitDetail',
     'NativePresentContextType',
     'NativePresentFlags',
     'NativePresentSubRectCount',
@@ -182,6 +185,25 @@ function Decode-PresentExecutionDiagnosticState {
         default { 'Unknown' }
     }
     return '{0} ({1})' -f $name, $state
+}
+
+function Decode-PresentSubmitStage {
+    param([object]$Value)
+
+    [uint64]$stage = ConvertTo-DwordValue $Value
+    $name = switch ($stage) {
+        0 { 'None' }
+        1 { 'ResolveTransaction' }
+        2 { 'Contract' }
+        3 { 'PrepatchTransition' }
+        4 { 'Cancelled' }
+        5 { 'WorkReference' }
+        6 { 'QueueTransition' }
+        7 { 'PassiveQueue' }
+        0x0FFF { 'Unexpected' }
+        default { 'Unknown' }
+    }
+    return '{0} ({1})' -f $name, $stage
 }
 
 function Decode-PlacementState {
@@ -321,6 +343,11 @@ if ($reason -ne 0) {
         if ($submissionFaultExecutionDiagnosticState -gt 2) {
             throw "Driver key '$driverKey' contains an invalid submission-fault execution diagnostic state."
         }
+        [uint64]$submissionFaultPresentSubmitStage =
+            ConvertTo-DwordValue $diagnostic.NativePresentSubmissionFaultPresentSubmitStage
+        if ($submissionFaultPresentSubmitStage -notin @(0, 1, 2, 3, 4, 5, 6, 7, 0x0FFF)) {
+            throw "Driver key '$driverKey' contains an invalid Present Submit stage."
+        }
     }
 }
 if ($executeStage -ne 0) {
@@ -398,6 +425,12 @@ if ($reason -ne 0) {
             $diagnostic.NativePresentSubmissionFaultCallerRva
         $presentResult['SubmissionFaultExecutionDiagnosticState'] = Decode-PresentExecutionDiagnosticState `
             $diagnostic.NativePresentSubmissionFaultExecutionDiagnosticState
+        $presentResult['SubmissionFaultPresentSubmitStage'] = Decode-PresentSubmitStage `
+            $diagnostic.NativePresentSubmissionFaultPresentSubmitStage
+        $presentResult['SubmissionFaultPresentSubmitStatus'] = Format-Dword `
+            $diagnostic.NativePresentSubmissionFaultPresentSubmitStatus
+        $presentResult['SubmissionFaultPresentSubmitDetail'] = Format-Dword `
+            $diagnostic.NativePresentSubmissionFaultPresentSubmitDetail
     }
     foreach ($entry in $presentResult.GetEnumerator()) {
         $result[$entry.Key] = $entry.Value
