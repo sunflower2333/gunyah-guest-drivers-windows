@@ -2559,6 +2559,60 @@ BOOLEAN RetirePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     return TRUE;
 }
 
+VOID ProbePresentCopy(_In_ const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
+                      _Out_ VIOGPU_NATIVE_PRESENT_COPY_PROBE *probe)
+{
+    RtlZeroMemory(probe, sizeof(*probe));
+    probe->SourceHash = 2166136261U;
+    probe->DestinationHash = 2166136261U;
+    probe->FenceId = transaction->FenceId;
+    probe->SourceResourceId = transaction->Source->ResourceId;
+    probe->DestinationResourceId = transaction->Destination->ResourceId;
+    probe->RectCount = transaction->RectCount;
+    probe->HostPresentResult = static_cast<DWORD>(VioGpuHostContextNotSubmitted);
+
+    const PUCHAR sourceBase = static_cast<PUCHAR>(transaction->Source->ApertureAddress);
+    const PUCHAR destinationBase = static_cast<PUCHAR>(transaction->Destination->ApertureAddress);
+    for (UINT rectIndex = 0; rectIndex < transaction->RectCount && probe->SampleCount < 256; ++rectIndex)
+    {
+        const RECT *rect = &transaction->DestinationSubRects[rectIndex];
+        UINT width = static_cast<UINT>(rect->right - rect->left);
+        UINT height = static_cast<UINT>(rect->bottom - rect->top);
+        UINT xCells = width < 4 ? width : 4;
+        UINT yCells = height < 4 ? height : 4;
+        for (UINT row = 0; row < yCells && probe->SampleCount < 256; ++row)
+        {
+            SIZE_T relativeY = (static_cast<SIZE_T>(2 * row + 1) * height) / (2 * yCells);
+            SIZE_T destinationY = static_cast<SIZE_T>(rect->top) + relativeY;
+            SIZE_T sourceY = static_cast<SIZE_T>(transaction->SourceRect.top) +
+                             static_cast<SIZE_T>(rect->top - transaction->DestinationRect.top) + relativeY;
+            for (UINT column = 0; column < xCells && probe->SampleCount < 256; ++column)
+            {
+                SIZE_T relativeX = (static_cast<SIZE_T>(2 * column + 1) * width) / (2 * xCells);
+                SIZE_T destinationX = static_cast<SIZE_T>(rect->left) + relativeX;
+                SIZE_T sourceX = static_cast<SIZE_T>(transaction->SourceRect.left) +
+                                 static_cast<SIZE_T>(rect->left - transaction->DestinationRect.left) + relativeX;
+                SIZE_T sourceOffset = sourceY * transaction->Source->Pitch + sourceX * 4;
+                SIZE_T destinationOffset = destinationY * transaction->Destination->Pitch + destinationX * 4;
+                DWORD sourcePixel = 0;
+                DWORD destinationPixel = 0;
+                RtlCopyMemory(&sourcePixel, sourceBase + sourceOffset, sizeof(sourcePixel));
+                RtlCopyMemory(&destinationPixel, destinationBase + destinationOffset, sizeof(destinationPixel));
+                if (probe->SampleCount == 0)
+                {
+                    probe->SourceFirstPixel = sourcePixel;
+                    probe->DestinationFirstPixel = destinationPixel;
+                }
+                probe->SourceRgbNonzero += (sourcePixel & 0x00FFFFFFU) != 0 ? 1 : 0;
+                probe->DestinationRgbNonzero += (destinationPixel & 0x00FFFFFFU) != 0 ? 1 : 0;
+                probe->SourceHash = (probe->SourceHash ^ sourcePixel) * 16777619U;
+                probe->DestinationHash = (probe->DestinationHash ^ destinationPixel) * 16777619U;
+                ++probe->SampleCount;
+            }
+        }
+    }
+}
+
 NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                                    VIOGPU_WDDM_PRESENT_EXECUTION_STAGE *failureStage,
                                    DWORD *failureDetail,
@@ -2599,6 +2653,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     }
     BOOLEAN destinationLocked = FALSE;
     status = AcquireAllocationLifecycle(destination);
+    VIOGPU_NATIVE_PRESENT_COPY_PROBE copyProbe = {};
     if (NT_SUCCESS(status))
     {
         destinationLocked = TRUE;
@@ -2733,6 +2788,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                 }
             }
             KeMemoryBarrier();
+            ProbePresentCopy(transaction, &copyProbe);
         }
     }
 
@@ -2754,6 +2810,11 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                                                                                     static_cast<UINT>(rect->top),
                                                                                     &destination->Resource2DState,
                                                                                     &destination->Resource2DResetGeneration);
+        copyProbe.HostPresentResult = static_cast<DWORD>(result);
+        if (result == VioGpuHostContextConfirmed)
+        {
+            ++copyProbe.HostPresentCount;
+        }
         if (result != VioGpuHostContextConfirmed ||
             InterlockedCompareExchange(&transaction->CancelRequested, 0, 0) != 0)
         {
@@ -2771,6 +2832,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     if (NT_SUCCESS(status))
     {
         *failureStage = VioGpuWddmPresentExecuteComplete;
+        transaction->Adapter->RecordNativePresentCopyProbe(&copyProbe);
     }
     if (destinationLocked)
     {

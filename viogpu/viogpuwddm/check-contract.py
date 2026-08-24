@@ -1633,6 +1633,84 @@ def check_native_present_diagnostics() -> None:
         "Present execution reset provenance must publish its payload before its optional commit marker",
     )
 
+    copy_probe_fields = [
+        "FenceId",
+        "SampleCount",
+        "SourceRgbNonzero",
+        "DestinationRgbNonzero",
+        "SourceHash",
+        "DestinationHash",
+        "SourceFirstPixel",
+        "DestinationFirstPixel",
+        "SourceResourceId",
+        "DestinationResourceId",
+        "RectCount",
+        "HostPresentCount",
+        "HostPresentResult",
+    ]
+    copy_probe_matches = re.findall(
+        r"\bstruct\s+VIOGPU_NATIVE_PRESENT_COPY_PROBE\s*\{(?P<body>.*?)\}\s*;",
+        VIOGPU_HEADER_SOURCE,
+        re.DOTALL,
+    )
+    if len(copy_probe_matches) != 1 or \
+       re.findall(r"\bDWORD\s+([A-Za-z0-9_]+)\s*;", copy_probe_matches[0]) != copy_probe_fields:
+        fail("adapter must expose one stable Present copy-probe record")
+    copy_probe_declaration = (
+        "VOIDRecordNativePresentCopyProbe(_In_constVIOGPU_NATIVE_PRESENT_COPY_PROBE*probe);"
+    )
+    for fragment in (
+        copy_probe_declaration,
+        "volatileLONGm_NativePresentCopyProbeState;",
+        "volatileLONGm_NativePresentCopyProbeSequence;",
+    ):
+        if adapter_header.count(fragment) != 1:
+            fail(f"adapter must retain one low-frequency Present copy probe: {fragment}")
+    for fragment in (
+        "m_NativePresentCopyProbeState=0;",
+        "m_NativePresentCopyProbeSequence=0;",
+    ):
+        if constructor.count(fragment) != 1:
+            fail(f"adapter construction must reset Present copy-probe state: {fragment}")
+    for fragment in (
+        "InterlockedExchange(&m_NativePresentCopyProbeState,3);",
+        'WriteRegistryDWORD(deviceKey,L"NativePresentCopyProbeSequence",&presentCopyProbeSequence)',
+        "InterlockedExchange(&m_NativePresentCopyProbeSequence,0);",
+        "InterlockedExchange(&m_NativePresentCopyProbeState,0);",
+    ):
+        if start_recorder.count(fragment) != 1:
+            fail(f"StartDevice must invalidate and reopen the Present copy probe: {fragment}")
+
+    copy_probe_body = function_body("VioGpuDod::RecordNativePresentCopyProbe", VIOGPU_SOURCE)
+    copy_probe = canonical_code(copy_probe_body)
+    for fragment in (
+        "probe==NULL||probe->SampleCount==0||probe->HostPresentCount==0",
+        "LONGdesiredState=probe->SourceRgbNonzero==0?1:2;",
+        "InterlockedCompareExchange(&m_NativePresentCopyProbeState,desiredState,0)",
+        "InterlockedCompareExchange(&m_NativePresentCopyProbeState,desiredState,1)==1",
+        "InterlockedIncrement(&m_NativePresentCopyProbeSequence)",
+        'WriteRegistryDWORD(deviceKey,L"NativePresentCopyProbeSequence",&invalidSequence)',
+        'WriteRegistryDWORD(deviceKey,L"NativePresentCopyProbeSequence",&sequence)',
+    ):
+        if copy_probe.count(fragment) != 1:
+            fail(f"Present copy probe must retain one black-to-color registry transaction: {fragment}")
+    for field in copy_probe_fields:
+        if copy_probe_body.count(f'L"NativePresentCopyProbe{field}"') != 1:
+            fail(f"Present copy probe must write exactly one NativePresentCopyProbe{field} value")
+    if copy_probe_body.count('L"NativePresentCopyProbeState"') != 1 or \
+       copy_probe_body.count("ZwClose(deviceKey)") != 1:
+        fail("Present copy probe must publish one state payload and close one registry handle")
+    require_order(
+        copy_probe,
+        (
+            'WriteRegistryDWORD(deviceKey,L"NativePresentCopyProbeSequence",&invalidSequence)',
+            "for(UINTindex=0;NT_SUCCESS(writeStatus)&&index<ARRAYSIZE(values);++index)",
+            'WriteRegistryDWORD(deviceKey,L"NativePresentCopyProbeSequence",&sequence)',
+            "ZwClose(deviceKey);",
+        ),
+        "Present copy probe must commit its sequence after every sampled value",
+    )
+
     fault_notify_body = function_body("VioGpuDod::NotifyNativeSubmissionFault", VIOGPU_SOURCE)
     fault_notify = canonical_code(fault_notify_body)
     for fragment in (
@@ -4355,6 +4433,7 @@ def check_wddm_present_contract() -> None:
         "HasLiveGdiPresentIdentity(source,transaction->Context,transaction->Adapter)",
         "source->ApertureAddress==NULL||destination->ApertureAddress==NULL",
         "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
+        "ProbePresentCopy(transaction,&copyProbe);",
         "transaction->Adapter->Present2DResource(destination->ResourceId,0,",
         "result!=VioGpuHostContextConfirmed",
         "InterlockedCompareExchange(&transaction->CancelRequested,0,0)!=0",
@@ -4376,7 +4455,9 @@ def check_wddm_present_contract() -> None:
         (
             "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
             "KeMemoryBarrier();",
+            "ProbePresentCopy(transaction,&copyProbe);",
             "transaction->Adapter->Present2DResource(",
+            "transaction->Adapter->RecordNativePresentCopyProbe(&copyProbe);",
             "BuildPresentExecutionDiagnostic(transaction,*failureStage,status,*failureDetail,executionDiagnostic);",
             "KeReleaseMutex(&destination->LifecycleMutex,FALSE);",
         ),
@@ -4386,6 +4467,19 @@ def check_wddm_present_contract() -> None:
         fail("Present must retain exactly one CPU-to-Host ordering barrier after its row-copy batch")
     if "transferOffset" in execute_body:
         fail("Present must not add dirty-rect coordinates to both TRANSFER_TO_HOST_2D offset and box")
+
+    probe_copy = canonical_code(function_body("ProbePresentCopy", WDDM_DDI_CODE))
+    for fragment in (
+        "probe->SourceHash=2166136261;",
+        "probe->DestinationHash=2166136261;",
+        "probe->SampleCount<256",
+        "RtlCopyMemory(&sourcePixel,sourceBase+sourceOffset,sizeof(sourcePixel));",
+        "RtlCopyMemory(&destinationPixel,destinationBase+destinationOffset,sizeof(destinationPixel));",
+        "probe->SourceRgbNonzero+=(sourcePixel&0x00FFFFFF)!=0?1:0;",
+        "probe->DestinationRgbNonzero+=(destinationPixel&0x00FFFFFF)!=0?1:0;",
+    ):
+        if fragment not in probe_copy:
+            fail(f"Present copy probe must compare bounded source and destination samples: {fragment}")
 
     cancel = canonical_code(function_body("VioGpuWddmCancelCommand", WDDM_DDI_CODE))
     dma_range_parameters = (

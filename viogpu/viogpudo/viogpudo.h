@@ -205,6 +205,23 @@ struct VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC
     DWORD TransactionDestinationResetGenerationHigh;
 };
 
+struct VIOGPU_NATIVE_PRESENT_COPY_PROBE
+{
+    DWORD FenceId;
+    DWORD SampleCount;
+    DWORD SourceRgbNonzero;
+    DWORD DestinationRgbNonzero;
+    DWORD SourceHash;
+    DWORD DestinationHash;
+    DWORD SourceFirstPixel;
+    DWORD DestinationFirstPixel;
+    DWORD SourceResourceId;
+    DWORD DestinationResourceId;
+    DWORD RectCount;
+    DWORD HostPresentCount;
+    DWORD HostPresentResult;
+};
+
 enum VIOGPU_NATIVE_FENCE_STATE : LONG
 {
     VioGpuNativeFenceFree = 0,
@@ -704,6 +721,8 @@ class VioGpuDod
     volatile LONG m_WddmPresentClosing;
     volatile LONG m_NativePresentDiagnosticRecorded;
     volatile LONG m_NativePresentExecutionDiagnosticRecorded;
+    volatile LONG m_NativePresentCopyProbeState;
+    volatile LONG m_NativePresentCopyProbeSequence;
 #endif
 
     USHORT m_PersistentDispMode0Width;
@@ -977,6 +996,7 @@ class VioGpuDod
     BOOLEAN ClaimNativePresentExecutionDiagnostic(void);
     VOID RecordNativePresentExecutionDiagnostic(_In_ const VIOGPU_NATIVE_PRESENT_EXECUTION_DIAGNOSTIC *diagnostic);
     VOID RecordNativePresentExecutionResetProvenance(void);
+    VOID RecordNativePresentCopyProbe(_In_ const VIOGPU_NATIVE_PRESENT_COPY_PROBE *probe);
 #endif
 
   private:

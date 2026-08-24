@@ -179,6 +179,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_WddmPresentClosing = TRUE;
     m_NativePresentDiagnosticRecorded = 0;
     m_NativePresentExecutionDiagnosticRecorded = 0;
+    m_NativePresentCopyProbeState = 0;
+    m_NativePresentCopyProbeSequence = 0;
 #endif
     m_PersistentDispMode0Width = 0;
     m_PersistentDispMode0Height = 0;
@@ -4180,6 +4182,7 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
     {
         InterlockedExchange(&m_NativePresentDiagnosticRecorded, 2);
         InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 2);
+        InterlockedExchange(&m_NativePresentCopyProbeState, 3);
         InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 2);
     }
 
@@ -4215,6 +4218,7 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
         DWORD presentEpochInvalid = presentEpochAvailable ? previousCommittedPresentEpoch + 1 : MAXULONG;
         DWORD presentReason = 0;
         DWORD presentExecuteStage = 0;
+        DWORD presentCopyProbeSequence = 0;
         DWORD presentEpochCommitted = presentEpochAvailable ? previousCommittedPresentEpoch + 2 : 0;
         presentEpochInvalidateWrite = presentEpochAvailable ? WriteRegistryDWORD(deviceKey,
                                                                                  L"NativePresentDiagnosticEpoch",
@@ -4232,7 +4236,11 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
                                                           L"NativePresentExecuteStage",
                                                           &presentExecuteStage);
         }
-        presentEpochCommitWrite = presentExecuteStageWrite;
+        presentEpochCommitWrite = NT_SUCCESS(presentExecuteStageWrite)
+                                      ? WriteRegistryDWORD(deviceKey,
+                                                           L"NativePresentCopyProbeSequence",
+                                                           &presentCopyProbeSequence)
+                                      : presentExecuteStageWrite;
         if (NT_SUCCESS(presentEpochCommitWrite))
         {
             presentEpochCommitWrite = WriteRegistryDWORD(deviceKey,
@@ -4248,6 +4256,8 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
             InterlockedExchange(&m_NativeSubmissionFaultPresentSubmitDetail, 0);
             InterlockedExchange(&m_NativePresentDiagnosticRecorded, 0);
             InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 0);
+            InterlockedExchange(&m_NativePresentCopyProbeSequence, 0);
+            InterlockedExchange(&m_NativePresentCopyProbeState, 0);
             InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 0);
         }
     }
@@ -4640,6 +4650,76 @@ VOID VioGpuDod::RecordNativePresentExecutionResetProvenance(void)
                    stateWrite,
                    callerWrite,
                    commitWrite);
+    }
+}
+
+VOID VioGpuDod::RecordNativePresentCopyProbe(_In_ const VIOGPU_NATIVE_PRESENT_COPY_PROBE *probe)
+{
+    PAGED_CODE();
+
+    if (probe == NULL || probe->SampleCount == 0 || probe->HostPresentCount == 0)
+    {
+        return;
+    }
+
+    LONG desiredState = probe->SourceRgbNonzero == 0 ? 1 : 2;
+    LONG previousState = InterlockedCompareExchange(&m_NativePresentCopyProbeState, desiredState, 0);
+    if (previousState != 0 &&
+        !(desiredState == 2 && previousState == 1 &&
+          InterlockedCompareExchange(&m_NativePresentCopyProbeState, desiredState, 1) == 1))
+    {
+        return;
+    }
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        InterlockedExchange(&m_NativePresentCopyProbeState, 3);
+        return;
+    }
+
+    struct PROBE_VALUE
+    {
+        PCWSTR Name;
+        DWORD Value;
+    };
+    DWORD sequence = static_cast<DWORD>(InterlockedIncrement(&m_NativePresentCopyProbeSequence));
+    // clang-format off
+    const PROBE_VALUE values[] = {
+        {L"NativePresentCopyProbeFenceId", probe->FenceId},
+        {L"NativePresentCopyProbeSampleCount", probe->SampleCount},
+        {L"NativePresentCopyProbeSourceRgbNonzero", probe->SourceRgbNonzero},
+        {L"NativePresentCopyProbeDestinationRgbNonzero", probe->DestinationRgbNonzero},
+        {L"NativePresentCopyProbeSourceHash", probe->SourceHash},
+        {L"NativePresentCopyProbeDestinationHash", probe->DestinationHash},
+        {L"NativePresentCopyProbeSourceFirstPixel", probe->SourceFirstPixel},
+        {L"NativePresentCopyProbeDestinationFirstPixel", probe->DestinationFirstPixel},
+        {L"NativePresentCopyProbeSourceResourceId", probe->SourceResourceId},
+        {L"NativePresentCopyProbeDestinationResourceId", probe->DestinationResourceId},
+        {L"NativePresentCopyProbeRectCount", probe->RectCount},
+        {L"NativePresentCopyProbeHostPresentCount", probe->HostPresentCount},
+        {L"NativePresentCopyProbeHostPresentResult", probe->HostPresentResult},
+        {L"NativePresentCopyProbeState", static_cast<DWORD>(desiredState)},
+    };
+    // clang-format on
+
+    DWORD invalidSequence = 0;
+    NTSTATUS writeStatus = WriteRegistryDWORD(deviceKey, L"NativePresentCopyProbeSequence", &invalidSequence);
+    for (UINT index = 0; NT_SUCCESS(writeStatus) && index < ARRAYSIZE(values); ++index)
+    {
+        DWORD value = values[index].Value;
+        writeStatus = WriteRegistryDWORD(deviceKey, values[index].Name, &value);
+    }
+    if (NT_SUCCESS(writeStatus))
+    {
+        writeStatus = WriteRegistryDWORD(deviceKey, L"NativePresentCopyProbeSequence", &sequence);
+    }
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(writeStatus))
+    {
+        InterlockedExchange(&m_NativePresentCopyProbeState, 3);
     }
 }
 #endif
