@@ -2769,6 +2769,21 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
         {
             PUCHAR sourceBase = static_cast<PUCHAR>(source->ApertureAddress);
             PUCHAR destinationBase = static_cast<PUCHAR>(destination->ApertureAddress);
+            SIZE_T diagnosticFillSize = 0;
+            if (destination->Height != 0 && destination->Pitch <= MAXULONG_PTR / destination->Height)
+            {
+                diagnosticFillSize = static_cast<SIZE_T>(destination->Pitch) * destination->Height;
+                if (diagnosticFillSize > destination->BackingSize)
+                {
+                    diagnosticFillSize = destination->BackingSize;
+                }
+                diagnosticFillSize &= ~(sizeof(ULONG) - 1);
+            }
+            if (diagnosticFillSize != 0)
+            {
+                // Keep untouched pixels visibly nonblack while preserving the real dirty rectangles below.
+                RtlFillMemoryUlong(destinationBase, diagnosticFillSize, 0x00FF00FFU);
+            }
             for (UINT index = 0; index < transaction->RectCount; ++index)
             {
                 const RECT *destinationRect = &transaction->DestinationSubRects[index];
@@ -2797,6 +2812,22 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     {
         status = STATUS_CANCELLED;
         *failureStage = VioGpuWddmPresentExecuteCancelled;
+    }
+    if (NT_SUCCESS(status))
+    {
+        VIOGPU_HOST_CONTEXT_RESULT result = transaction->Adapter->Present2DResource(destination->ResourceId,
+                                                                                    0,
+                                                                                    destination->Width,
+                                                                                    destination->Height,
+                                                                                    0,
+                                                                                    0,
+                                                                                    &destination->Resource2DState,
+                                                                                    &destination->Resource2DResetGeneration);
+        copyProbe.HostPresentResult = static_cast<DWORD>(result);
+        if (result == VioGpuHostContextConfirmed)
+        {
+            ++copyProbe.HostPresentCount;
+        }
     }
     for (UINT index = 0; NT_SUCCESS(status) && index < transaction->RectCount; ++index)
     {
