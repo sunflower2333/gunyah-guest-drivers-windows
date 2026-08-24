@@ -1382,11 +1382,17 @@ def check_native_present_diagnostics() -> None:
     )
     if adapter_header.count(declaration) != 1 or \
        adapter_header.count("volatileLONGm_NativePresentDiagnosticRecorded;") != 1 or \
-       adapter_header.count("volatileLONGm_HardwareResetCallerRva;") != 1:
+       adapter_header.count("volatileLONGm_HardwareResetCallerRva;") != 1 or \
+       adapter_header.count("volatileLONGm_NativeSubmissionFaultDiagnosticRecorded;") != 1 or \
+       adapter_header.count("volatileLONGm_NativeSubmissionFaultCallerRva;") != 1 or \
+       adapter_header.count("volatileLONGm_NativeSubmissionFaultExecutionDiagnosticState;") != 1:
         fail("adapter must retain one first-failure Present diagnostic recorder")
     constructor = canonical_code(function_body("VioGpuDod::VioGpuDod", VIOGPU_CODE))
     if constructor.count("m_NativePresentDiagnosticRecorded=0;") != 1 or \
-       constructor.count("m_HardwareResetCallerRva=0;") != 1:
+       constructor.count("m_HardwareResetCallerRva=0;") != 1 or \
+       constructor.count("m_NativeSubmissionFaultDiagnosticRecorded=0;") != 1 or \
+       constructor.count("m_NativeSubmissionFaultCallerRva=0;") != 1 or \
+       constructor.count("m_NativeSubmissionFaultExecutionDiagnosticState=0;") != 1:
         fail("adapter construction must reset the first-failure Present diagnostic claim")
     start_recorder = canonical_code(function_body("VioGpuDod::RecordNativeStartDiagnostic", VIOGPU_SOURCE))
     require_order(
@@ -1395,21 +1401,30 @@ def check_native_present_diagnostics() -> None:
             "stage==VioGpuNativeStartEntered",
             "InterlockedExchange(&m_NativePresentDiagnosticRecorded,2);",
             "InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded,2);",
+            "InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded,2);",
+            'ReadRegistryDWORD(deviceKey,L"NativePresentDiagnosticEpoch",&previousPresentEpoch)',
+            'WriteRegistryDWORD(deviceKey,L"NativePresentDiagnosticEpoch",&presentEpochInvalid)',
             'WriteRegistryDWORD(deviceKey,L"NativePresentReason",&presentReason)',
             'WriteRegistryDWORD(deviceKey,L"NativePresentExecuteStage",&presentExecuteStage)',
+            'WriteRegistryDWORD(deviceKey,L"NativePresentDiagnosticEpoch",&presentEpochCommitted)',
+            "InterlockedExchange(&m_NativeSubmissionFaultCallerRva,0);",
+            "InterlockedExchange(&m_NativeSubmissionFaultExecutionDiagnosticState,0);",
             "InterlockedExchange(&m_NativePresentDiagnosticRecorded,0);",
             "InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded,0);",
+            "InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded,0);",
             'WriteRegistryDWORD(deviceKey,L"NativeStartStatus",&statusValue)',
             'WriteRegistryDWORD(deviceKey,L"NativeStartStage",&stageValue)',
         ),
         "StartDevice entry must disable diagnostics until both stale markers have been invalidated",
     )
-    if start_recorder.count(
-        "if(NT_SUCCESS(presentReasonWrite)&&NT_SUCCESS(presentExecuteStageWrite))"
-        "{InterlockedExchange(&m_NativePresentDiagnosticRecorded,0);"
-        "InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded,0);}"
-    ) != 1:
-        fail("StartDevice must enable both Present diagnostic slots only after both markers are invalidated")
+    if start_recorder.count("if(NT_SUCCESS(presentEpochCommitWrite))") != 2 or \
+       start_recorder.count('L"NativePresentDiagnosticEpoch"') != 3 or \
+       "DWORDpreviousCommittedPresentEpoch=previousPresentEpoch&~1UL;" not in start_recorder or \
+       "NT_SUCCESS(presentEpochReadStatus)||presentEpochReadStatus==STATUS_OBJECT_NAME_NOT_FOUND" not in start_recorder or \
+       "previousCommittedPresentEpoch<=MAXULONG-2" not in start_recorder or \
+       "previousCommittedPresentEpoch+1" not in start_recorder or \
+       "previousCommittedPresentEpoch+2" not in start_recorder:
+        fail("StartDevice must publish a monotonic odd-to-even Present diagnostic epoch before enabling writers")
 
     recorder_body = function_body("VioGpuDod::RecordNativePresentDiagnostic", VIOGPU_SOURCE)
     recorder = canonical_code(recorder_body)
@@ -1435,14 +1450,20 @@ def check_native_present_diagnostics() -> None:
         "DWORDhardwareResetState=static_cast<DWORD>(QueryHardwareResetState());",
         "DWORDhardwareResetCallerRva="
         "static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetCallerRva,0,0));",
+        "InterlockedCompareExchange(&m_NativeSubmissionFaultDiagnosticRecorded,2,2)==2?1:0;",
+        "InterlockedCompareExchange(&m_NativeSubmissionFaultCallerRva,0,0)",
+        "InterlockedCompareExchange(&m_NativeSubmissionFaultExecutionDiagnosticState,0,0)",
     ):
         if recorder.count(fragment) != 1:
-            fail(f"Present diagnostics must snapshot reset provenance: {fragment}")
+            fail(f"Present diagnostics must snapshot reset and first-fault provenance: {fragment}")
 
     value_names = [
         "NativePresentStatus",
         "NativePresentHardwareResetState",
         "NativePresentHardwareResetCallerRva",
+        "NativePresentSubmissionFaultProvenanceValid",
+        "NativePresentSubmissionFaultCallerRva",
+        "NativePresentSubmissionFaultExecutionDiagnosticState",
     ] + [
         f"NativePresent{field.removeprefix('Present')}" for field in expected_fields
     ]
@@ -1589,6 +1610,34 @@ def check_native_present_diagnostics() -> None:
         "Present execution reset provenance must publish its payload before its optional commit marker",
     )
 
+    fault_notify_body = function_body("VioGpuDod::NotifyNativeSubmissionFault", VIOGPU_SOURCE)
+    fault_notify = canonical_code(fault_notify_body)
+    for fragment in (
+        "InterlockedCompareExchange(&m_NativeSubmissionFaultDiagnosticRecorded,1,0)==0",
+        "reinterpret_cast<ULONG_PTR>(_ReturnAddress())",
+        "InterlockedCompareExchange(&m_NativePresentExecutionDiagnosticRecorded,0,0)",
+        "InterlockedExchange(&m_NativeSubmissionFaultCallerRva,",
+        "InterlockedExchange(&m_NativeSubmissionFaultExecutionDiagnosticState,executionDiagnosticState);",
+        "KeMemoryBarrier();",
+        "InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded,2);",
+    ):
+        if fault_notify.count(fragment) != 1:
+            fail(f"submission-fault provenance must retain one nonpaged first-caller transaction: {fragment}")
+    require_order(
+        fault_notify,
+        (
+            "InterlockedCompareExchange(&m_NativeSubmissionFaultDiagnosticRecorded,1,0)==0",
+            "InterlockedExchange(&m_NativeSubmissionFaultExecutionDiagnosticState,executionDiagnosticState);",
+            "KeMemoryBarrier();",
+            "InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded,2);",
+            "RequestHardwareResetAtAnyIrql();",
+        ),
+        "submission-fault caller and claim provenance must commit before reset publication",
+    )
+    if "PAGED_CODE()" in fault_notify_body or "WriteRegistryDWORD(" in fault_notify_body or \
+       VIOGPU_HEADER_SOURCE.count("__declspec(noinline) void NotifyNativeSubmissionFault(") != 1:
+        fail("submission-fault provenance capture must remain nonpaged and preserve its caller frame")
+
     present = canonical_code(function_body("VioGpuWddmPresent", WDDM_DDI_CODE))
     for reason_name in tuple(expected_reasons)[1:]:
         if present.count(reason_name) != 1:
@@ -1605,7 +1654,8 @@ def check_native_present_diagnostics() -> None:
         "NativePresentExecuteHardwareResetState",
         "NativePresentExecuteHardwareResetCallerRva",
     ]
-    for value_name in ["NativePresentReason"] + value_names + execution_value_names + reset_provenance_value_names:
+    for value_name in ["NativePresentDiagnosticEpoch", "NativePresentReason"] + value_names + \
+            execution_value_names + reset_provenance_value_names:
         if reader.count(value_name) < 2:
             fail(f"native Present diagnostic reader must require and report {value_name}")
     reader_reason_block = re.search(
@@ -1629,8 +1679,14 @@ def check_native_present_diagnostics() -> None:
     if reader_reasons != expected_reader_reasons:
         fail(f"native Present diagnostic reader reason map drifted: {reader_reasons}")
     for fragment in (
+        "Get-ItemPropertyValue -LiteralPath $registryPath -Name 'NativePresentDiagnosticEpoch'",
+        "if ($epoch -eq 0 -or ($epoch -band 1) -ne 0 -or",
+        "$epochBefore -ne $epoch -or $epochAfter -ne $epoch",
+        "$reasonBefore -ne $reason -or $reasonAfter -ne $reason",
+        "$executeStageBefore -ne $executeStage -or $executeStageAfter -ne $executeStage",
         "if ($reason -eq 0 -and $executeStage -eq 0)",
         "if ($reason -ne 0)",
+        "if ($submissionFaultProvenanceAvailable)",
         "if ($executeStage -ne 0)",
         "if ($resetProvenanceAvailable)",
     ):
@@ -1638,14 +1694,23 @@ def check_native_present_diagnostics() -> None:
             fail(f"native Present diagnostic reader must honor independent commit markers: {fragment}")
     fixture = PRESENT_DIAGNOSTIC_TEST_PATH.read_text(encoding="utf-8")
     for fragment in (
+        "$values['NativePresentDiagnosticEpoch'] = 2",
+        "$values['NativePresentSubmissionFaultCallerRva'] = 0x4321",
+        "$result.SubmissionFaultExecutionDiagnosticState -ne 'Consumed (2)'",
         "$presentOnlyValues['NativePresentExecuteStage'] = 0",
-        "$executionOnlyValues = [ordered]@{ NativePresentReason = 0 }",
+        "NativePresentDiagnosticEpoch = 2",
+        "NativePresentReason = 0",
         "$null -ne $presentOnly.PSObject.Properties['ExecuteStage']",
         "$null -ne $executionOnly.PSObject.Properties['Reason']",
         "$executionOnly.ExecuteResetProvenanceAvailable",
         "$null -ne $executionOnly.PSObject.Properties['ExecuteHardwareResetState']",
         "$stateTransitionValues['NativePresentExecuteStage'] = 22",
         "$stateTransition.ExecuteStage -ne 'StateTransition (22)'",
+        "$staleEpochValues['NativePresentDiagnosticEpoch'] = 3",
+        "throw 'Stale Present diagnostic epoch was not rejected.'",
+        "EpochBefore = 2",
+        "EpochAfter = 4",
+        "throw 'Racing Present diagnostic marker snapshot was not rejected.'",
     ):
         if fixture.count(fragment) != 1:
             fail(f"Native Present decoder fixture must cover independent marker generations: {fragment}")

@@ -10,7 +10,7 @@ contracts remain disabled. The source contains the registration entry point, a
 dedicated display-class INX, and an ARM64-only fail-closed D3D UMD shim.
 The last committed activation batch passed the ARM64 compile, link, MAP, INF,
 signing, and package gates in the dedicated and product workflows. Signed
-package `100.6.101.58027` is installed in the unprotected Windows VM, starts
+package `100.6.101.58029` is installed in the unprotected Windows VM, starts
 the adapter, and completes the paging system commands that faulted package
 `58019` with bug check `0x119/5`. The display remains black. Its first-reset
 caller RVA is `0x7880`; the exact package MAP/PDB resolves that return address
@@ -19,12 +19,17 @@ to the `RequestHardwareResetAtAnyIrql()` call in
 `TransactionRegistration` rejection occurs after reset has closed the
 publication gate and is not the original failure. The current source adds an
 independent, allocation-lock-consistent execution-stage diagnostic. Package
-`58027` left only its zero stage marker and no payload: the worker claimed the
-slot and then entered reset/fault notification before calling the recorder.
-The current source commits the core failure transaction before either reset
-entry point. Reset state/caller provenance is a separate, optional transaction
-published only if that call returns. This correction has not passed a new
-ARM64 run or guarded device test. Successful 2D display,
+`58029` also left only its zero stage marker and no payload, despite moving the
+covered Present-worker recorders before reset notification. Its subsequent
+Build rejection remains `TransactionRegistration / STATUS_DEVICE_NOT_READY`,
+with reset state `ResetRequested` and caller RVA `0x7880`. The RVA proves only
+that reset was requested inside `NotifyNativeSubmissionFault`; it does not
+identify that function's caller. The current source captures the first direct
+caller of `NotifyNativeSubmissionFault` together with the execution-diagnostic
+claim state before reset publication. Reset state/caller provenance remains a
+separate, optional transaction published only if the reset call returns. Package
+`58029` passed the ARM64 compile/link/package gates and a guarded load, but the
+new direct-caller diagnostic source has not. Successful 2D display,
 KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
 
 - `DriverEntry` calls the single `DxgkInitialize` registration helper.
@@ -43,13 +48,13 @@ KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
   color conversion are explicitly not advertised.
 
 The current Windows runtime evidence is narrower than those source contracts.
-Package `58027` reports the first classified Present rejection as
+Package `58029` reports the first classified Present rejection as
 `TransactionRegistration` (`STATUS_DEVICE_NOT_READY`). The source and primary
 both have `SegmentId=1`, complete aperture placement, and current 2D Host
 backing, so the earlier pageable-GDI placement problem has been passed. The
 same record reports an already-requested reset and caller RVA `0x7880`; exact
-symbols prove that a prior Present worker failure called
-`NotifyNativeSubmissionFault`, after which registration is expected to reject.
+symbols prove that `NotifyNativeSubmissionFault` requested the prior reset, but
+do not identify its direct caller. Registration is expected to reject afterward.
 The current execution diagnostic classifies that earlier failure and snapshots
 its fence, resources, placement offsets, and reset generations while allocation
 lifecycle locks remain held. The failing worker claims and commits the
@@ -59,8 +64,14 @@ disables both Present diagnostic slots until both
 registry markers are cleared successfully. Each writer invalidates its marker
 again before publishing payload, commits `NativePresentReason` or
 `NativePresentExecuteStage` last, and never lets a later failure replace the
-first claim after a persistence error. The reader treats the rejection and
-execution markers as independent transactions and reset provenance as optional.
+first claim after a persistence error. A common
+`NativePresentDiagnosticEpoch` sequence suppresses both transactions unless
+StartDevice successfully published an odd in-progress sequence, invalidated
+their stale markers, and committed the next even sequence. The reader brackets
+its registry snapshot with scalar epoch and transaction-marker reads and rejects
+any change. It otherwise treats the rejection and execution markers as
+independent transactions, reset provenance as optional, and reports the first
+submission-fault caller/claim snapshot when available.
 
 The current source leaves CPU-visible allocations pageable, separates static
 GDI allocation identity from live aperture/Host identity, and defers placement

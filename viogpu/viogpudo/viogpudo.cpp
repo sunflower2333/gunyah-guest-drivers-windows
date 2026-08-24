@@ -152,6 +152,9 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
 #if defined(VIOGPU_NATIVE_CONTEXT)
     KeInitializeSpinLock(&m_NativeFenceLock);
     m_HardwareResetCallerRva = 0;
+    m_NativeSubmissionFaultDiagnosticRecorded = 0;
+    m_NativeSubmissionFaultCallerRva = 0;
+    m_NativeSubmissionFaultExecutionDiagnosticState = 0;
     m_NativeFenceHead = 0;
     m_NativeFenceCount = 0;
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
@@ -893,12 +896,26 @@ void VioGpuDod::NotifyNativeSubmissionCompletion(_In_ UINT fenceId,
     NotifyNativeCompletedFence(completedFence, nodeOrdinal, engineOrdinal, queueDpc);
 }
 
-void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fenceId,
-                                            _In_ NTSTATUS status,
-                                            _In_ UINT nodeOrdinal,
-                                            _In_ UINT engineOrdinal,
-                                            _In_ BOOLEAN queueDpc)
+__declspec(noinline) void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fenceId,
+                                                                 _In_ NTSTATUS status,
+                                                                 _In_ UINT nodeOrdinal,
+                                                                 _In_ UINT engineOrdinal,
+                                                                 _In_ BOOLEAN queueDpc)
 {
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (InterlockedCompareExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 1, 0) == 0)
+    {
+        ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+        ULONG_PTR returnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+        ULONG_PTR callerRva = returnAddress >= imageBase ? returnAddress - imageBase : 0;
+        LONG executionDiagnosticState = InterlockedCompareExchange(&m_NativePresentExecutionDiagnosticRecorded, 0, 0);
+        InterlockedExchange(&m_NativeSubmissionFaultCallerRva,
+                            callerRva <= MAXULONG ? static_cast<LONG>(callerRva) : 0);
+        InterlockedExchange(&m_NativeSubmissionFaultExecutionDiagnosticState, executionDiagnosticState);
+        KeMemoryBarrier();
+        InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 2);
+    }
+#endif
     BOOLEAN validIdentity = fenceId != 0 && nodeOrdinal == 0 && engineOrdinal == 0;
     RequestHardwareResetAtAnyIrql();
 #if defined(VIOGPU_NATIVE_CONTEXT)
@@ -4176,10 +4193,14 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
     {
         InterlockedExchange(&m_NativePresentDiagnosticRecorded, 2);
         InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 2);
+        InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 2);
     }
 
     HANDLE deviceKey = NULL;
-    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice,
+                                                  PLUGPLAY_REGKEY_DRIVER,
+                                                  KEY_QUERY_VALUE | KEY_SET_VALUE,
+                                                  &deviceKey);
     if (!NT_SUCCESS(openStatus))
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
@@ -4192,16 +4213,52 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
 
     NTSTATUS presentReasonWrite = STATUS_SUCCESS;
     NTSTATUS presentExecuteStageWrite = STATUS_SUCCESS;
+    NTSTATUS presentEpochInvalidateWrite = STATUS_SUCCESS;
+    NTSTATUS presentEpochCommitWrite = STATUS_SUCCESS;
     if (stage == VioGpuNativeStartEntered)
     {
+        DWORD previousPresentEpoch = 0;
+        NTSTATUS presentEpochReadStatus = ReadRegistryDWORD(deviceKey,
+                                                            L"NativePresentDiagnosticEpoch",
+                                                            &previousPresentEpoch);
+        BOOLEAN presentEpochReadAvailable = NT_SUCCESS(presentEpochReadStatus) ||
+                                            presentEpochReadStatus == STATUS_OBJECT_NAME_NOT_FOUND;
+        DWORD previousCommittedPresentEpoch = previousPresentEpoch & ~1UL;
+        BOOLEAN presentEpochAvailable = presentEpochReadAvailable && previousCommittedPresentEpoch <= MAXULONG - 2;
+        DWORD presentEpochInvalid = presentEpochAvailable ? previousCommittedPresentEpoch + 1 : MAXULONG;
         DWORD presentReason = 0;
         DWORD presentExecuteStage = 0;
-        presentReasonWrite = WriteRegistryDWORD(deviceKey, L"NativePresentReason", &presentReason);
-        presentExecuteStageWrite = WriteRegistryDWORD(deviceKey, L"NativePresentExecuteStage", &presentExecuteStage);
-        if (NT_SUCCESS(presentReasonWrite) && NT_SUCCESS(presentExecuteStageWrite))
+        DWORD presentEpochCommitted = presentEpochAvailable ? previousCommittedPresentEpoch + 2 : 0;
+        presentEpochInvalidateWrite = presentEpochAvailable ? WriteRegistryDWORD(deviceKey,
+                                                                                 L"NativePresentDiagnosticEpoch",
+                                                                                 &presentEpochInvalid)
+                                                            : STATUS_INTEGER_OVERFLOW;
+        presentReasonWrite = presentEpochInvalidateWrite;
+        if (NT_SUCCESS(presentReasonWrite))
         {
+            presentReasonWrite = WriteRegistryDWORD(deviceKey, L"NativePresentReason", &presentReason);
+        }
+        presentExecuteStageWrite = presentReasonWrite;
+        if (NT_SUCCESS(presentExecuteStageWrite))
+        {
+            presentExecuteStageWrite = WriteRegistryDWORD(deviceKey,
+                                                          L"NativePresentExecuteStage",
+                                                          &presentExecuteStage);
+        }
+        presentEpochCommitWrite = presentExecuteStageWrite;
+        if (NT_SUCCESS(presentEpochCommitWrite))
+        {
+            presentEpochCommitWrite = WriteRegistryDWORD(deviceKey,
+                                                         L"NativePresentDiagnosticEpoch",
+                                                         &presentEpochCommitted);
+        }
+        if (NT_SUCCESS(presentEpochCommitWrite))
+        {
+            InterlockedExchange(&m_NativeSubmissionFaultCallerRva, 0);
+            InterlockedExchange(&m_NativeSubmissionFaultExecutionDiagnosticState, 0);
             InterlockedExchange(&m_NativePresentDiagnosticRecorded, 0);
             InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 0);
+            InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 0);
         }
     }
 
@@ -4213,17 +4270,20 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
     NTSTATUS stageWrite = WriteRegistryDWORD(deviceKey, L"NativeStartStage", &stageValue);
     ZwClose(deviceKey);
 
-    if (!NT_SUCCESS(presentReasonWrite) || !NT_SUCCESS(presentExecuteStageWrite) || !NT_SUCCESS(statusWrite) ||
+    if (!NT_SUCCESS(presentEpochInvalidateWrite) || !NT_SUCCESS(presentReasonWrite) ||
+        !NT_SUCCESS(presentExecuteStageWrite) || !NT_SUCCESS(presentEpochCommitWrite) || !NT_SUCCESS(statusWrite) ||
         !NT_SUCCESS(detailWrite) || !NT_SUCCESS(stageWrite))
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
                    "viogpu native start diagnostic: write failed, stage=0x%04X status=0x%08X "
-                   "writes=%08X/%08X/%08X/%08X/%08X\n",
+                   "writes=%08X/%08X/%08X/%08X/%08X/%08X/%08X\n",
                    stageValue,
                    statusValue,
+                   presentEpochInvalidateWrite,
                    presentReasonWrite,
                    presentExecuteStageWrite,
+                   presentEpochCommitWrite,
                    statusWrite,
                    detailWrite,
                    stageWrite);
@@ -4317,11 +4377,24 @@ VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,
     DWORD statusValue = static_cast<DWORD>(status);
     DWORD hardwareResetState = static_cast<DWORD>(QueryHardwareResetState());
     DWORD hardwareResetCallerRva = static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetCallerRva, 0, 0));
+    DWORD submissionFaultProvenanceValid = InterlockedCompareExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 2, 2) == 2 ? 1
+                                                                                                                             : 0;
+    DWORD submissionFaultCallerRva = submissionFaultProvenanceValid != 0 ? static_cast<DWORD>(InterlockedCompareExchange(&m_NativeSubmissionFaultCallerRva,
+                                                                                                                         0,
+                                                                                                                         0))
+                                                                         : 0;
+    DWORD submissionFaultExecutionDiagnosticState = submissionFaultProvenanceValid != 0 ? static_cast<DWORD>(InterlockedCompareExchange(&m_NativeSubmissionFaultExecutionDiagnosticState,
+                                                                                                                                        0,
+                                                                                                                                        0))
+                                                                                        : 0;
     // clang-format off
     const DIAGNOSTIC_VALUE values[] = {
         {L"NativePresentStatus", statusValue},
         {L"NativePresentHardwareResetState", hardwareResetState},
         {L"NativePresentHardwareResetCallerRva", hardwareResetCallerRva},
+        {L"NativePresentSubmissionFaultProvenanceValid", submissionFaultProvenanceValid},
+        {L"NativePresentSubmissionFaultCallerRva", submissionFaultCallerRva},
+        {L"NativePresentSubmissionFaultExecutionDiagnosticState", submissionFaultExecutionDiagnosticState},
         {L"NativePresentContextType", diagnostic->ContextType},
         {L"NativePresentFlags", diagnostic->PresentFlags},
         {L"NativePresentSubRectCount", diagnostic->SubRectCount},
