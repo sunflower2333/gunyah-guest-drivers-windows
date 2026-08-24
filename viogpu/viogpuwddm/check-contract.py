@@ -4434,7 +4434,9 @@ def check_wddm_present_contract() -> None:
         "source->ApertureAddress==NULL||destination->ApertureAddress==NULL",
         "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
         "ProbePresentCopy(transaction,&copyProbe);",
-        "transaction->Adapter->Present2DResource(destination->ResourceId,0,",
+        "ULONGLONGtransferOffset=static_cast<ULONGLONG>(rect->top)*destination->Pitch+"
+        "static_cast<ULONGLONG>(rect->left)*4;",
+        "transaction->Adapter->Present2DResource(destination->ResourceId,transferOffset,",
         "result!=VioGpuHostContextConfirmed",
         "InterlockedCompareExchange(&transaction->CancelRequested,0,0)!=0",
         "BuildPresentExecutionDiagnostic(transaction,*failureStage,status,*failureDetail,executionDiagnostic);",
@@ -4455,6 +4457,7 @@ def check_wddm_present_contract() -> None:
         (
             "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
             "KeMemoryBarrier();",
+            "KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);",
             "ProbePresentCopy(transaction,&copyProbe);",
             "transaction->Adapter->Present2DResource(",
             "transaction->Adapter->RecordNativePresentCopyProbe(&copyProbe);",
@@ -4465,8 +4468,8 @@ def check_wddm_present_contract() -> None:
     )
     if execute.count("KeMemoryBarrier();") != 1:
         fail("Present must retain exactly one CPU-to-Host ordering barrier after its row-copy batch")
-    if "transferOffset" in execute_body:
-        fail("Present must not add dirty-rect coordinates to both TRANSFER_TO_HOST_2D offset and box")
+    if execute.count("KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);") != 1:
+        fail("Present must flush the CPU-written primary backing before Host transfer")
 
     probe_copy = canonical_code(function_body("ProbePresentCopy", WDDM_DDI_CODE))
     for fragment in (
