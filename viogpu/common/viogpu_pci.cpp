@@ -379,6 +379,23 @@ NTSTATUS CPciResources::Close(void)
 {
     NTSTATUS firstFailure = STATUS_SUCCESS;
 
+    if (m_HostVisibleMappedVA != nullptr)
+    {
+        if (m_pDxgkInterface == nullptr || m_pDxgkInterface->DxgkCbUnmapMemory == nullptr)
+        {
+            return STATUS_DEVICE_NOT_READY;
+        }
+
+        NTSTATUS status = m_pDxgkInterface->DxgkCbUnmapMemory(m_pDxgkInterface->DeviceHandle, m_HostVisibleMappedVA);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        m_HostVisibleMappedVA = nullptr;
+        m_HostVisibleMappedOffset = 0;
+        m_HostVisibleMappedSize = 0;
+    }
+
     for (UINT bar = 0; bar < PCI_TYPE0_ADDRESSES; ++bar)
     {
         NTSTATUS status = m_Bars[bar].Unmap(m_pDxgkInterface);
@@ -402,6 +419,9 @@ NTSTATUS CPciResources::Close(void)
     m_HostVisibleBar = MAXUINT;
     m_HostVisibleOffset = 0;
     m_HostVisibleSize = 0;
+    m_HostVisibleMappedVA = nullptr;
+    m_HostVisibleMappedOffset = 0;
+    m_HostVisibleMappedSize = 0;
     m_pDxgkInterface = nullptr;
     return STATUS_SUCCESS;
 }
@@ -666,14 +686,12 @@ NTSTATUS CPciResources::MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
 
     CPciBar *bar = &m_Bars[m_HostVisibleBar];
     ULONGLONG barSize = bar->GetSize();
-    PHYSICAL_ADDRESS barAddress = bar->GetPA();
     if (m_HostVisibleOffset > MAXULONGLONG - regionOffset)
     {
         return STATUS_INVALID_PARAMETER;
     }
     ULONGLONG barOffset = m_HostVisibleOffset + regionOffset;
-    if (barAddress.QuadPart < 0 || static_cast<ULONGLONG>(barAddress.QuadPart) > MAXULONGLONG - barOffset ||
-        barSize > MAXULONG || barOffset > barSize || length > barSize - barOffset)
+    if (barSize > MAXULONG || barOffset > barSize || length > barSize - barOffset)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -684,23 +702,52 @@ NTSTATUS CPciResources::MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
         return STATUS_INVALID_PARAMETER;
     }
 
-    // DxgkCbMapMemory can return an unusable ARM64 mapping for an interior
-    // slice of this BAR. Reuse the BAR owner's whole-resource mapping and
-    // expose only the validated suffix alias. The guard prefix is never read.
-    PVOID baseVA = bar->GetVA(m_pDxgkInterface);
-    if (baseVA == nullptr)
+    if (m_HostVisibleMappedVA == nullptr)
     {
-        return STATUS_INSUFFICIENT_RESOURCES;
+        // Map from the first requested control slot through the end of the
+        // host-visible region.  crosvm leaves the BAR prefix as an unmapped
+        // guard, so mapping the entire BAR can raise an external abort.
+        ULONGLONG mappedSize = m_HostVisibleSize - regionOffset;
+        if (mappedSize == 0 || mappedSize > MAXULONG || m_HostVisibleOffset > MAXULONGLONG - regionOffset)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (bar->GetPA().QuadPart < 0 || static_cast<ULONGLONG>(bar->GetPA().QuadPart) > MAXULONGLONG - barOffset)
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+
+        PHYSICAL_ADDRESS mappedPA = bar->GetPA();
+        mappedPA.QuadPart += barOffset;
+        PVOID mappedVA = nullptr;
+        NTSTATUS status = m_pDxgkInterface->DxgkCbMapMemory(m_pDxgkInterface->DeviceHandle,
+                                                            mappedPA,
+                                                            static_cast<ULONG>(mappedSize),
+                                                            FALSE,
+                                                            FALSE,
+                                                            MmNonCached,
+                                                            &mappedVA);
+        if (!NT_SUCCESS(status) || mappedVA == nullptr)
+        {
+            DbgPrint(TRACE_LEVEL_ERROR,
+                     ("[%s] failed to map host-visible suffix at %I64x length %I64x, status 0x%X\n",
+                      __FUNCTION__,
+                      mappedPA.QuadPart,
+                      mappedSize,
+                      status));
+            return NT_SUCCESS(status) ? STATUS_INSUFFICIENT_RESOURCES : status;
+        }
+        m_HostVisibleMappedVA = mappedVA;
+        m_HostVisibleMappedOffset = regionOffset;
+        m_HostVisibleMappedSize = mappedSize;
     }
-    DbgPrint(TRACE_LEVEL_VERBOSE,
-             ("[%s] using whole BAR alias: bar=%u pa=%I64x barOffset=%I64x length=%I64x va=%p\n",
-              __FUNCTION__,
-              m_HostVisibleBar,
-              static_cast<ULONGLONG>(barAddress.QuadPart),
-              barOffset,
-              static_cast<ULONGLONG>(length),
-              baseVA));
-    *address = static_cast<PUCHAR>(baseVA) + barOffset;
+    else if (regionOffset < m_HostVisibleMappedOffset ||
+             requestedEnd - m_HostVisibleMappedOffset > m_HostVisibleMappedSize)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *address = static_cast<PUCHAR>(m_HostVisibleMappedVA) + (regionOffset - m_HostVisibleMappedOffset);
     return STATUS_SUCCESS;
 }
 
@@ -711,24 +758,21 @@ NTSTATUS CPciResources::UnmapHostVisibleAddress(_In_ PVOID address)
         return STATUS_INVALID_PARAMETER;
     }
 
-    CPciBar *bar = &m_Bars[m_HostVisibleBar];
-    PVOID baseVA = bar->GetMappedVA();
-    ULONGLONG barSize = bar->GetSize();
-    if (baseVA == nullptr || barSize > MAXULONG)
+    if (m_HostVisibleMappedVA == nullptr || m_HostVisibleMappedSize == 0)
     {
         return STATUS_DEVICE_NOT_READY;
     }
 
-    PUCHAR begin = static_cast<PUCHAR>(baseVA) + m_HostVisibleOffset;
-    PUCHAR end = begin + m_HostVisibleSize;
+    PUCHAR begin = static_cast<PUCHAR>(m_HostVisibleMappedVA);
+    PUCHAR end = begin + m_HostVisibleMappedSize;
     PUCHAR candidate = static_cast<PUCHAR>(address);
     if (candidate < begin || candidate >= end)
     {
         return STATUS_INVALID_PARAMETER;
     }
 
-    // This is an alias into the whole-BAR mapping, not an independent mapping.
-    // CPciResources::Close releases the BAR owner after all owners retire.
+    // This is an alias into the shared suffix mapping, not an independent
+    // mapping. CPciResources::Close releases the mapping after owners retire.
     return STATUS_SUCCESS;
 }
 
