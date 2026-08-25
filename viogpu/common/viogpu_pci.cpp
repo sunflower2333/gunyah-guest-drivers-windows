@@ -725,11 +725,7 @@ NTSTATUS CPciResources::MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
                                                             static_cast<ULONG>(mappedSize),
                                                             FALSE,
                                                             FALSE,
-                                                            // RESOURCE_MAP_BLOB requires the cached map-info contract.  The
-                                                            // drm2kgsl suffix is ordinary shared RAM, not device registers;
-                                                            // using a device mapping here causes an ARM64 external abort when
-                                                            // the guest stage-2 mapping is normal cached memory.
-                                                            MmCached,
+                                                            MmNonCached,
                                                             &mappedVA);
         if (!NT_SUCCESS(status) || mappedVA == nullptr)
         {
