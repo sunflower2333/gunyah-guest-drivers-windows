@@ -4417,6 +4417,7 @@ def check_wddm_present_contract() -> None:
     if "constUINTpresentSubmitFlags=0x6;" not in present_submit or \
        "BOOLEANpresentFlagsValid=submitCommand->Flags.Value==0||(submitCommand->Flags.Present!=0&&" not in present_submit or \
        "(submitCommand->Flags.Value&~presentSubmitFlags)==0)" not in present_submit or \
+       "if(submitFailureDetail!=0){submitFailureDetail|=(submitCommand->Flags.Value&0xFFFF)<<16;" not in present_submit or \
        "submitFailureDetail|=!presentFlagsValid?1<<1:0" not in present_submit:
         fail("Present Submit must accept legacy zero, Present, or Present|RedirectedPresent flags only")
 
