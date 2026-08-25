@@ -664,32 +664,51 @@ NTSTATUS CPciResources::MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
     }
 
     ULONGLONG barOffset = m_HostVisibleOffset + regionOffset;
-    ULONGLONG barSize = m_Bars[m_HostVisibleBar].GetSize();
-    PHYSICAL_ADDRESS barAddress = m_Bars[m_HostVisibleBar].GetPA();
-    if (barAddress.QuadPart < 0 || barOffset > barSize || length > barSize - barOffset ||
-        static_cast<ULONGLONG>(barAddress.QuadPart) > MAXULONGLONG - barOffset)
+    CPciBar *bar = &m_Bars[m_HostVisibleBar];
+    ULONGLONG barSize = bar->GetSize();
+    if (barSize > MAXULONG || barOffset > barSize || length > barSize - barOffset)
     {
         return STATUS_INVALID_PARAMETER;
     }
 
-    PHYSICAL_ADDRESS physicalAddress = {};
-    physicalAddress.QuadPart = static_cast<LONGLONG>(static_cast<ULONGLONG>(barAddress.QuadPart) + barOffset);
-    return m_pDxgkInterface->DxgkCbMapMemory(m_pDxgkInterface->DeviceHandle,
-                                             physicalAddress,
-                                             static_cast<ULONG>(length),
-                                             FALSE,
-                                             FALSE,
-                                             MmNonCached,
-                                             address);
+    // DxgkCbMapMemory may not provide a usable CPU mapping when asked to map
+    // an interior slice of this VirtIO BAR.  Reuse the BAR owner mapping and
+    // hand out an alias; CPciBar::Unmap owns the only actual mapping lifetime.
+    PVOID baseVA = bar->GetVA(m_pDxgkInterface);
+    if (baseVA == NULL)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    *address = static_cast<PUCHAR>(baseVA) + barOffset;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS CPciResources::UnmapHostVisibleAddress(_In_ PVOID address)
 {
-    if (address == NULL || m_pDxgkInterface == nullptr || m_pDxgkInterface->DxgkCbUnmapMemory == nullptr)
+    if (address == NULL || m_HostVisibleBar >= PCI_TYPE0_ADDRESSES)
     {
         return STATUS_INVALID_PARAMETER;
     }
-    return m_pDxgkInterface->DxgkCbUnmapMemory(m_pDxgkInterface->DeviceHandle, address);
+
+    CPciBar *bar = &m_Bars[m_HostVisibleBar];
+    PVOID baseVA = bar->GetMappedVA();
+    ULONGLONG barSize = bar->GetSize();
+    if (baseVA == NULL || barSize > MAXULONG)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    PUCHAR begin = static_cast<PUCHAR>(baseVA) + m_HostVisibleOffset;
+    PUCHAR end = begin + m_HostVisibleSize;
+    PUCHAR candidate = static_cast<PUCHAR>(address);
+    if (candidate < begin || candidate >= end)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // This is an alias into the whole-BAR mapping, not an independent mapping.
+    // The BAR owner releases it from CPciResources::Close after all owners retire.
+    return STATUS_SUCCESS;
 }
 
 PVOID CPciResources::GetMappedAddress(UINT bar, ULONG uOffset)

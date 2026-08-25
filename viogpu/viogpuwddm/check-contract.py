@@ -8728,12 +8728,17 @@ def check_pci_resource_lifetime() -> None:
     for fragment in (
         "length>MAXULONG",
         "length>m_HostVisibleSize-regionOffset",
-        "length>barSize-barOffset",
-        "static_cast<ULONG>(length)",
-        "MmNonCached",
+        "CPciBar*bar=&m_Bars[m_HostVisibleBar];",
+        "barSize>MAXULONG",
+        "PVOIDbaseVA=bar->GetVA(m_pDxgkInterface);",
+        "baseVA==NULL",
+        "*address=static_cast<PUCHAR>(baseVA)+barOffset;",
     ):
         if map_host_visible.count(fragment) != 1:
-            fail(f"host-visible blob slots must use one bounded subrange mapping: {fragment}")
+            fail(f"host-visible blob slots must alias the existing whole-BAR mapping: {fragment}")
+    unmap_host_visible = canonical_code(function_body("CPciResources::UnmapHostVisibleAddress", PCI_CODE))
+    if "DxgkCbUnmapMemory" in unmap_host_visible or "GetMappedVA()" not in unmap_host_visible:
+        fail("host-visible blob aliases must not independently unmap the whole BAR")
 
     virtio_header = canonical_code(VIRTIO_HEADER_CODE)
     for fragment in (

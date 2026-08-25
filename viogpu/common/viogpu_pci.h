@@ -41,6 +41,12 @@ class CPciBar
     // Maps BAR into virtual memory if not already mapped
     PVOID GetVA(PDXGKRNL_INTERFACE pDxgkInterface);
 
+    // Returns the existing whole-BAR mapping without creating a new mapping.
+    PVOID GetMappedVA() const
+    {
+        return m_BaseVA;
+    }
+
     // Undoes the effect of GetVA
     NTSTATUS Unmap(PDXGKRNL_INTERFACE pDxgkInterface);
 
