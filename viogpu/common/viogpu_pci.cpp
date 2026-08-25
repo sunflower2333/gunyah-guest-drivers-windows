@@ -726,8 +726,9 @@ NTSTATUS CPciResources::MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
                                                             FALSE,
                                                             FALSE,
                                                             // The shared-memory BAR is ordinary host RAM, not device
-                                                            // registers. Keep the mapping cacheable on ARM64; the control
-                                                            // protocol uses explicit barriers for producer/consumer order.
+                                                            // registers. Keep the mapping cacheable on ARM64; the
+                                                            // control protocol uses explicit barriers for
+                                                            // producer/consumer order.
                                                             MmCached,
                                                             &mappedVA);
         if (!NT_SUCCESS(status) || mappedVA == nullptr)
