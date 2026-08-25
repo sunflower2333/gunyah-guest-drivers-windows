@@ -1325,6 +1325,8 @@ def check_native_query_adapter_info_diagnostics() -> None:
         "status=QueryUmdPrivateInfo(adapter,pQueryAdapterInfo);",
         "status=QuerySegment(adapter,pQueryAdapterInfo);",
         "static_cast<UINT>(pQueryAdapterInfo->Type)==24||static_cast<UINT>(pQueryAdapterInfo->Type)==25",
+        "if(pQueryAdapterInfo->OutputDataSize!=0&&pQueryAdapterInfo->pOutputData==NULL){status=STATUS_INVALID_PARAMETER;}",
+        "if(pQueryAdapterInfo->OutputDataSize!=0){RtlZeroMemory(pQueryAdapterInfo->pOutputData,pQueryAdapterInfo->OutputDataSize);}",
         "status=STATUS_SUCCESS;",
         "status=VioGpuDodQueryAdapterInfo(hAdapter,pQueryAdapterInfo);",
         "if(!NT_SUCCESS(status)){adapter->RecordNativeQueryAdapterInfoDiagnostic("

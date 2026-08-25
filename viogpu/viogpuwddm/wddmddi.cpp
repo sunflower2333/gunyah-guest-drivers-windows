@@ -3673,7 +3673,18 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
          * ADAPTER_RENDER activation.  The Win7 Native Context target does
          * not publish performance counters, but rejecting these optional
          * probes makes AddAdapter fail before the UMD can open. */
-        status = STATUS_SUCCESS;
+        if (pQueryAdapterInfo->OutputDataSize != 0U && pQueryAdapterInfo->pOutputData == NULL)
+        {
+            status = STATUS_INVALID_PARAMETER;
+        }
+        else
+        {
+            if (pQueryAdapterInfo->OutputDataSize != 0U)
+            {
+                RtlZeroMemory(pQueryAdapterInfo->pOutputData, pQueryAdapterInfo->OutputDataSize);
+            }
+            status = STATUS_SUCCESS;
+        }
     }
     else
     {
