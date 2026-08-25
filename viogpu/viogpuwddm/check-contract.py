@@ -8730,7 +8730,7 @@ def check_pci_resource_lifetime() -> None:
         "length>m_HostVisibleSize-regionOffset",
         "length>barSize-barOffset",
         "static_cast<ULONG>(length)",
-        "MmCached",
+        "MmNonCached",
     ):
         if map_host_visible.count(fragment) != 1:
             fail(f"host-visible blob slots must use one bounded subrange mapping: {fragment}")

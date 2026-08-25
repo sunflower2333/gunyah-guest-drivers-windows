@@ -679,7 +679,7 @@ NTSTATUS CPciResources::MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
                                              static_cast<ULONG>(length),
                                              FALSE,
                                              FALSE,
-                                             MmCached,
+                                             MmNonCached,
                                              address);
 }
 
