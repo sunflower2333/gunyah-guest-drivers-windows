@@ -5200,7 +5200,8 @@ def check_native_context_ownership() -> None:
     for fragment in (
         "*offset=0;",
         "*address=NULL;",
-        "ULONGLONGslotCount=regionSize/VIOGPU_NATIVE_CONTROL_BLOB_SIZE;",
+        "regionSize<=VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE||regionSize-VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE<VIOGPU_NATIVE_CONTROL_BLOB_SIZE",
+        "ULONGLONGslotCount=(regionSize-VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE)/VIOGPU_NATIVE_CONTROL_BLOB_SIZE;",
         "owner->ControlAddress!=NULL&&owner->ControlBarOffset==candidate",
         "m_PciResources.MapHostVisibleAddress(candidate,VIOGPU_NATIVE_CONTROL_BLOB_SIZE,&slotAddress)",
         "*offset=candidate;",
@@ -5208,6 +5209,10 @@ def check_native_context_ownership() -> None:
     ):
         if map_slot.count(fragment) != 1:
             fail(f"native control BAR allocator must select one free mapped slot: {fragment}")
+    if map_slot.count(
+        "ULONGLONGcandidate=VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE+slot*VIOGPU_NATIVE_CONTROL_BLOB_SIZE;"
+    ) != 1:
+        fail("native control BAR allocator must skip crosvm's drm2kgsl base guard")
     if create.count("owner->Registration=NULL;FailNativeContextAtAnyIrql();") != 1:
         fail("native create must retain every unresolved Host owner until reset")
     va_validation = (

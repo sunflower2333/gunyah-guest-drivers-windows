@@ -50,6 +50,10 @@ VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 
 static const ULONG VIOGPU_WIN7_DRIVERCAPS_SIZE = FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps);
 static_assert(VIOGPU_WIN7_DRIVERCAPS_SIZE == 528, "unexpected Win7 DXGK_DRIVERCAPS prefix size");
+/* crosvm's drm2kgsl arena leaves its first 2 MiB unused so a native control
+ * blob never starts at the base of the Gunyah SHARE window.  The BAR mapping
+ * must use the same guard-relative offset as the host backing. */
+static const ULONGLONG VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE = 2ULL << 20;
 #endif
 
 #define VIOGPU_MAX_CAPSETS               64U
@@ -6698,15 +6702,16 @@ BOOLEAN VioGpuAdapter::AllocateNativeControlSlotLocked(_Out_ PULONGLONG offset, 
     ULONGLONG regionOffset = 0;
     ULONGLONG regionSize = 0;
     if (!m_PciResources.QueryHostVisibleRegion(&bar, &regionOffset, &regionSize) ||
-        regionSize < VIOGPU_NATIVE_CONTROL_BLOB_SIZE)
+        regionSize <= VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE ||
+        regionSize - VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE < VIOGPU_NATIVE_CONTROL_BLOB_SIZE)
     {
         return FALSE;
     }
 
-    ULONGLONG slotCount = regionSize / VIOGPU_NATIVE_CONTROL_BLOB_SIZE;
+    ULONGLONG slotCount = (regionSize - VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE) / VIOGPU_NATIVE_CONTROL_BLOB_SIZE;
     for (ULONGLONG slot = 0; slot < slotCount; ++slot)
     {
-        ULONGLONG candidate = slot * VIOGPU_NATIVE_CONTROL_BLOB_SIZE;
+        ULONGLONG candidate = VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE + slot * VIOGPU_NATIVE_CONTROL_BLOB_SIZE;
         BOOLEAN inUse = FALSE;
         for (PLIST_ENTRY link = m_NativeContextRegistry.Flink; link != &m_NativeContextRegistry; link = link->Flink)
         {
