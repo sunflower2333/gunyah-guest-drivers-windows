@@ -1,18 +1,18 @@
 [CmdletBinding()]
 param(
-    [string]$PackageRoot = 'C:\Users\Administrator\viogpu-58081'
+    [string]$PackageRoot = 'C:\Users\Administrator\viogpu-58085'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$expectedVersion = '100.6.101.58081'
+$expectedVersion = '100.6.101.58085'
 $expected = [ordered]@{
     'DroidVM_Test.cer' = 'da88f450dbd881c91511c5b801295cd9cc0d3ca84ea9d3dc08eff9481eed64b3'
-    'drivers\viogpu\viogpuwddm.inf' = '7b47b552daef465cda89b3939e2b13f42034a2567ff4d8abec8b8786faa29df3'
-    'drivers\viogpu\viogpuwddm.cat' = 'ead262aa8c8333d0c5d2fc88b22adabe583b045bdaeba6506971048868abb846'
-    'drivers\viogpu\viogpuwddm.sys' = 'ea722e27cb01ac8fcde81a13bc20b3ac27a02d5e5ac48093b12c8d0500caba96'
-    'drivers\viogpu\viogpud3d.dll' = 'c430f387409cb84743285e6788b50c2c18625dc255938e3360ce105cb180af06'
+    'drivers\viogpu\viogpuwddm.inf' = '72482a4fef6343387a425f05c58ed8f7485e34f534c3ab17f7524a2cc2863d87'
+    'drivers\viogpu\viogpuwddm.cat' = '1823f7529aa39b25407f14b81cbc413b350dfc09209def67da0421a056f7e119'
+    'drivers\viogpu\viogpuwddm.sys' = '515bda174051d434e2a45fa5a126759dd261e935ad8cb034244fd0a0929ca1f8'
+    'drivers\viogpu\viogpud3d.dll' = 'c74df2992fe130a57e7786f477e192bc185998130c176f5d69a239f75bdedd23'
 }
 
 function Get-VioGpuDevice {
