@@ -96,7 +96,8 @@ jobs:
         run: |
           $scripts = @(
             '.install_scripts/viogpu-native-start-diagnostics.ps1',
-            '.install_scripts/viogpu-native-present-diagnostics.ps1'
+            '.install_scripts/viogpu-native-present-diagnostics.ps1',
+            '.install_scripts/install-viogpu-58085.ps1'
           )
           foreach ($script in $scripts) {
             $tokens = $null
