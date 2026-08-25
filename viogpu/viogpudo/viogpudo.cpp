@@ -6727,16 +6727,11 @@ BOOLEAN VioGpuAdapter::AllocateNativeControlSlotLocked(_Out_ PULONGLONG offset, 
             continue;
         }
 
-        PVOID slotAddress = NULL;
-        NTSTATUS status = m_PciResources.MapHostVisibleAddress(candidate,
-                                                               VIOGPU_NATIVE_CONTROL_BLOB_SIZE,
-                                                               &slotAddress);
-        if (!NT_SUCCESS(status) || slotAddress == NULL)
-        {
-            return FALSE;
-        }
+        // Do not touch the BAR until RESOURCE_MAP_BLOB has installed the
+        // backing at this guest offset.  On Gunyah the initial BAR mapping
+        // can otherwise retain an unmapped stage-2 entry and fault on the
+        // first CPU read even though the later host map succeeds.
         *offset = candidate;
-        *address = slotAddress;
         return TRUE;
     }
     return FALSE;
@@ -6918,11 +6913,21 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
         else
         {
             owner->ControlBarOffset = controlOffset;
-            owner->ControlAddress = controlAddress;
             stageResult = m_CtrlQueue.MapNativeControlBlob(resourceId, controlOffset);
             if (stageResult == VioGpuHostContextConfirmed)
             {
                 owner->ControlMapped = TRUE;
+                NTSTATUS mapStatus = m_PciResources.MapHostVisibleAddress(controlOffset,
+                                                                          VIOGPU_NATIVE_CONTROL_BLOB_SIZE,
+                                                                          &controlAddress);
+                if (!NT_SUCCESS(mapStatus) || controlAddress == NULL)
+                {
+                    stageResult = VioGpuHostContextNotSubmitted;
+                }
+                else
+                {
+                    owner->ControlAddress = controlAddress;
+                }
             }
             if (m_pVioGpuDod != NULL)
             {

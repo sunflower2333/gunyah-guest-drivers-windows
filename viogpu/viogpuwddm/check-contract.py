@@ -5182,9 +5182,10 @@ def check_native_context_ownership() -> None:
         create.find("m_CtrlQueue.CreateNativeControlBlob(contextId,resourceId)"),
         create.find("AllocateNativeControlSlotLocked(&controlOffset,&controlAddress)"),
         create.find("owner->ControlBarOffset=controlOffset;"),
-        create.find("owner->ControlAddress=controlAddress;"),
         create.find("m_CtrlQueue.MapNativeControlBlob(resourceId,controlOffset)"),
         create.find("owner->ControlMapped=TRUE;"),
+        create.find("m_PciResources.MapHostVisibleAddress(controlOffset,VIOGPU_NATIVE_CONTROL_BLOB_SIZE,&controlAddress)"),
+        create.find("owner->ControlAddress=controlAddress;"),
         create.find("QueryNativeContextParameterLocked(owner,MSM_PARAM_VA_START,&vaStart)"),
         create.find("QueryNativeContextParameterLocked(owner,MSM_PARAM_VA_SIZE,&vaSize)"),
         create.find("CreateNativeSubmitQueueLocked(owner,&submitQueueId)"),
@@ -5203,9 +5204,8 @@ def check_native_context_ownership() -> None:
         "regionSize<=VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE||regionSize-VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE<VIOGPU_NATIVE_CONTROL_BLOB_SIZE",
         "ULONGLONGslotCount=(regionSize-VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE)/VIOGPU_NATIVE_CONTROL_BLOB_SIZE;",
         "owner->ControlAddress!=NULL&&owner->ControlBarOffset==candidate",
-        "m_PciResources.MapHostVisibleAddress(candidate,VIOGPU_NATIVE_CONTROL_BLOB_SIZE,&slotAddress)",
         "*offset=candidate;",
-        "*address=slotAddress;",
+        "*address=NULL;",
     ):
         if map_slot.count(fragment) != 1:
             fail(f"native control BAR allocator must select one free mapped slot: {fragment}")
