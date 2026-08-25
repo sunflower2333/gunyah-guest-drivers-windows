@@ -97,9 +97,12 @@ The matching Mesa branch builds `vulkan_freedreno.dll` and an independent
 `turnip-wddm-icd.ps1` manager. The KMD package does not copy or register the
 Vulkan ICD: kernel-driver rollback and Vulkan-loader rollback remain separate,
 and neither package silently replaces the stable `viogpudo` files.
-`viogpud3d.dll` is not Turnip and is not a rendering UMD: its three legacy
-entry points return `E_NOTIMPL` solely to provide a deterministic loader and
-revision boundary. It deliberately has no `OpenAdapter12` export.
+`viogpud3d.dll` is not Turnip and is not a rendering UMD. Its D3D9
+`OpenAdapter` entry point remains fail-closed, while D3D10/10.2
+`OpenAdapter` entries publish only the minimal adapter activation table needed
+by the legacy loader; `CreateDevice` remains `E_NOTIMPL`. Actual 3D work is
+owned by Mesa's separate `vulkan_freedreno.dll` Native Context path. The shim
+deliberately has no `OpenAdapter12` export.
 
 ## Native Context scope
 
