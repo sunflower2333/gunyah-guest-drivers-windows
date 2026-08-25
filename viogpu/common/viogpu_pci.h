@@ -41,6 +41,12 @@ class CPciBar
     // Maps BAR into virtual memory if not already mapped
     PVOID GetVA(PDXGKRNL_INTERFACE pDxgkInterface);
 
+    // Returns the existing BAR mapping without creating a second mapping.
+    PVOID GetMappedVA() const
+    {
+        return m_BaseVA;
+    }
+
     // Undoes the effect of GetVA
     NTSTATUS Unmap(PDXGKRNL_INTERFACE pDxgkInterface);
 
@@ -57,8 +63,7 @@ class CPciResources
   public:
     CPciResources()
         : m_pDxgkInterface(nullptr), m_InterruptFlags(0), m_InterruptMessageCount(0),
-          m_InterruptMessageCountKnown(FALSE), m_HostVisibleBar(MAXUINT), m_HostVisibleOffset(0), m_HostVisibleSize(0),
-          m_HostVisibleMappedVA(nullptr), m_HostVisibleMappedOffset(0), m_HostVisibleMappedSize(0)
+          m_InterruptMessageCountKnown(FALSE), m_HostVisibleBar(MAXUINT), m_HostVisibleOffset(0), m_HostVisibleSize(0)
     {
     }
 
@@ -129,9 +134,6 @@ class CPciResources
     UINT m_HostVisibleBar;
     ULONGLONG m_HostVisibleOffset;
     ULONGLONG m_HostVisibleSize;
-    PVOID m_HostVisibleMappedVA;
-    ULONGLONG m_HostVisibleMappedOffset;
-    ULONGLONG m_HostVisibleMappedSize;
     CPciBar m_Bars[PCI_TYPE0_ADDRESSES];
 };
 
