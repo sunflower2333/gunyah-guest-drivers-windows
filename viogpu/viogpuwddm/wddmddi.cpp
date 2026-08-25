@@ -7732,6 +7732,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
             submitFailureDetail |= !patched && !promotePrepatch ? 1U << 9 : 0;
             submitFailureDetail |= transaction->Context->NodeOrdinal != submitCommand->NodeOrdinal ? 1U << 10 : 0;
             submitFailureDetail |= transaction->Context->EngineAffinity != 1 ? 1U << 11 : 0;
+            /* Keep the low contract bits stable while retaining the exact
+             * WDDM flag word in the diagnostic-only upper half.  Legacy
+             * runtimes may add a Present modifier; rejecting it without the
+             * raw word makes the first-failure record insufficient to select
+             * the correct contract. */
+            submitFailureDetail |= (submitCommand->Flags.Value & 0xFFFFU) << 16;
             if (submitFailureDetail != 0)
             {
                 status = STATUS_INVALID_PARAMETER;
