@@ -6946,9 +6946,8 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
                 m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateControlMap,
                                                                   stageResult == VioGpuHostContextConfirmed ? STATUS_SUCCESS
                                                                                                             : STATUS_DEVICE_NOT_READY,
-                                                                  stageResult == VioGpuHostContextConfirmed
-                                                                      ? static_cast<DWORD>(stageResult)
-                                                                      : controlMapDetail);
+                                                                  stageResult == VioGpuHostContextConfirmed ? static_cast<DWORD>(stageResult)
+                                                                                                            : controlMapDetail);
             }
         }
     }
