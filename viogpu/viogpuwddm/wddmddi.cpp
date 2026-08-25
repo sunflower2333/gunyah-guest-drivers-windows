@@ -7715,10 +7715,13 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
             submitFailureDetail = submitCommand->hContext == NULL ? 1U << 0 : 0;
             /* The Win7/WDDMv1 registration used by this miniport sends the
              * legacy Present form with no SubmitCommand flag bits. Newer
-             * runtimes may set the explicit Present bit (Value == 2), but no
-             * other flag combination belongs to this CPU-copy Present path. */
+             * runtimes may add RedirectedPresent to the explicit Present bit;
+             * no paging, flip, null-rendering, context-switch, or reserved bit
+             * belongs to this CPU-copy Present path. */
+            const UINT presentSubmitFlags = 0x6U;
             BOOLEAN presentFlagsValid = submitCommand->Flags.Value == 0U ||
-                                        (submitCommand->Flags.Present != 0 && submitCommand->Flags.Value == 2U);
+                                        (submitCommand->Flags.Present != 0 &&
+                                         (submitCommand->Flags.Value & ~presentSubmitFlags) == 0);
             submitFailureDetail |= !presentFlagsValid ? 1U << 1 : 0;
             submitFailureDetail |= privateLength != sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) ? 1U << 2 : 0;
             submitFailureDetail |= dmaLength != sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) ? 1U << 3 : 0;

@@ -4414,10 +4414,11 @@ def check_wddm_present_contract() -> None:
     for bit in range(12):
         if len(re.findall(rf"1<<{bit}(?![0-9])", present_submit)) != 1:
             fail(f"Present Submit contract failure mask must retain bit {bit}")
-    if "BOOLEANpresentFlagsValid=submitCommand->Flags.Value==0||(submitCommand->Flags.Present!=0&&" not in present_submit or \
-       "submitCommand->Flags.Value==2)" not in present_submit or \
+    if "constUINTpresentSubmitFlags=0x6;" not in present_submit or \
+       "BOOLEANpresentFlagsValid=submitCommand->Flags.Value==0||(submitCommand->Flags.Present!=0&&" not in present_submit or \
+       "(submitCommand->Flags.Value&~presentSubmitFlags)==0)" not in present_submit or \
        "submitFailureDetail|=!presentFlagsValid?1<<1:0" not in present_submit:
-        fail("Present Submit must accept legacy zero flags or only the explicit Present bit")
+        fail("Present Submit must accept legacy zero, Present, or Present|RedirectedPresent flags only")
 
     worker = canonical_code(function_body("NativePresentWorker", WDDM_DDI_CODE))
     executing_claim = worker.find(
