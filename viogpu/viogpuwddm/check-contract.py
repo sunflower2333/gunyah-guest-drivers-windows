@@ -8503,13 +8503,17 @@ def check_pci_resource_lifetime() -> None:
         "UINTm_HostVisibleBar;",
         "ULONGLONGm_HostVisibleOffset;",
         "ULONGLONGm_HostVisibleSize;",
+        "PVOIDm_HostVisibleMappedVA;",
+        "ULONGLONGm_HostVisibleMappedOffset;",
+        "ULONGLONGm_HostVisibleMappedSize;",
     ):
         if pci_header.count(member) != 1:
             fail(f"PCI resources must retain exactly one ownership field: {member}")
     constructor = (
         "CPciResources():m_pDxgkInterface(NULL),m_InterruptFlags(0),"
         "m_InterruptMessageCount(0),m_InterruptMessageCountKnown(FALSE),"
-        "m_HostVisibleBar(MAXUINT),m_HostVisibleOffset(0),m_HostVisibleSize(0){}"
+        "m_HostVisibleBar(MAXUINT),m_HostVisibleOffset(0),m_HostVisibleSize(0),"
+        "m_HostVisibleMappedVA(NULL),m_HostVisibleMappedOffset(0),m_HostVisibleMappedSize(0){}"
     )
     getter = "ULONGGetInterruptMessageCount(){returnm_InterruptMessageCount;}"
     known_getter = "BOOLEANHasKnownInterruptMessageCount(){returnm_InterruptMessageCountKnown;}"
@@ -8559,6 +8563,9 @@ def check_pci_resource_lifetime() -> None:
     clear_host_bar = "m_HostVisibleBar=MAXUINT;"
     clear_host_offset = "m_HostVisibleOffset=0;"
     clear_host_size = "m_HostVisibleSize=0;"
+    clear_host_mapped_va = "m_HostVisibleMappedVA=NULL;"
+    clear_host_mapped_offset = "m_HostVisibleMappedOffset=0;"
+    clear_host_mapped_size = "m_HostVisibleMappedSize=0;"
     clear_owner = "m_pDxgkInterface=NULL;"
     loops = list(re.finditer(r"for\(UINTbar=0;bar<PCI_TYPE0_ADDRESSES;(?:\+\+bar|bar\+\+)\)", close))
     loop_offset = loops[0].start() if len(loops) == 2 else -1
@@ -8572,7 +8579,10 @@ def check_pci_resource_lifetime() -> None:
     host_bar_offset = close.find(clear_host_bar, message_trust_offset)
     host_offset_offset = close.find(clear_host_offset, host_bar_offset)
     host_size_offset = close.find(clear_host_size, host_offset_offset)
-    owner_offset = close.find(clear_owner, host_size_offset)
+    host_mapped_va_offset = close.find(clear_host_mapped_va, host_size_offset)
+    host_mapped_offset_offset = close.find(clear_host_mapped_offset, host_mapped_va_offset)
+    host_mapped_size_offset = close.find(clear_host_mapped_size, host_mapped_offset_offset)
+    owner_offset = close.find(clear_owner, host_mapped_size_offset)
     if min(
         loop_offset,
         unmap_offset,
@@ -8585,6 +8595,9 @@ def check_pci_resource_lifetime() -> None:
         host_bar_offset,
         host_offset_offset,
         host_size_offset,
+        host_mapped_va_offset,
+        host_mapped_offset_offset,
+        host_mapped_size_offset,
         owner_offset,
     ) < 0 or not (
         loop_offset
@@ -8598,6 +8611,9 @@ def check_pci_resource_lifetime() -> None:
         < host_bar_offset
         < host_offset_offset
         < host_size_offset
+        < host_mapped_va_offset
+        < host_mapped_offset_offset
+        < host_mapped_size_offset
         < owner_offset
     ):
         fail("PCI close must retain interrupt ownership until every BAR unmap succeeds")
@@ -8610,6 +8626,9 @@ def check_pci_resource_lifetime() -> None:
         or close.count(clear_host_bar) != 1
         or close.count(clear_host_offset) != 1
         or close.count(clear_host_size) != 1
+        or close.count(clear_host_mapped_va) != 2
+        or close.count(clear_host_mapped_offset) != 2
+        or close.count(clear_host_mapped_size) != 2
         or close.count(clear_owner) != 1
     ):
         fail("PCI close must use one full unmap pass followed by one metadata reset pass")
@@ -8730,15 +8749,19 @@ def check_pci_resource_lifetime() -> None:
         "length>m_HostVisibleSize-regionOffset",
         "CPciBar*bar=&m_Bars[m_HostVisibleBar];",
         "barSize>MAXULONG",
-        "PVOIDbaseVA=bar->GetVA(m_pDxgkInterface);",
-        "baseVA==NULL",
-        "*address=static_cast<PUCHAR>(baseVA)+barOffset;",
+        "ULONGLONGmappedSize=m_HostVisibleSize-regionOffset;",
+        "PVOIDmappedVA=NULL;",
+        "m_pDxgkInterface->DxgkCbMapMemory(m_pDxgkInterface->DeviceHandle",
+        "m_HostVisibleMappedVA=mappedVA;",
+        "m_HostVisibleMappedOffset=regionOffset;",
+        "m_HostVisibleMappedSize=mappedSize;",
+        "*address=static_cast<PUCHAR>(m_HostVisibleMappedVA)+(regionOffset-m_HostVisibleMappedOffset);",
     ):
         if map_host_visible.count(fragment) != 1:
-            fail(f"host-visible blob slots must alias the existing whole-BAR mapping: {fragment}")
+            fail(f"host-visible blob slots must share a bounded suffix mapping: {fragment}")
     unmap_host_visible = canonical_code(function_body("CPciResources::UnmapHostVisibleAddress", PCI_CODE))
-    if "DxgkCbUnmapMemory" in unmap_host_visible or "GetMappedVA()" not in unmap_host_visible:
-        fail("host-visible blob aliases must not independently unmap the whole BAR")
+    if "DxgkCbUnmapMemory" in unmap_host_visible or "GetMappedVA()" in unmap_host_visible:
+        fail("host-visible blob aliases must not independently unmap the suffix mapping")
 
     virtio_header = canonical_code(VIRTIO_HEADER_CODE)
     for fragment in (
