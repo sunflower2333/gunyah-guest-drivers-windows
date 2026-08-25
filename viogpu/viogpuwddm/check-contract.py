@@ -832,7 +832,7 @@ def check_arm64_workflow_contract() -> None:
         fail(f"missing shared Windows SDK/WDK locator: {WINDOWS_KIT_SCRIPT_PATH}")
     kit_script = WINDOWS_KIT_SCRIPT_PATH.read_text(encoding="utf-8")
     required_toolchain_fragments = (
-        "runs-on: windows-2025-vs2026",
+        "runs-on: windows-2025",
         "Locate preinstalled Windows SDK and WDK",
         ".github/scripts/locate-windows-kit.ps1",
     )
