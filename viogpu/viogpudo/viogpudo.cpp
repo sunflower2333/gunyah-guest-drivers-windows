@@ -6913,6 +6913,15 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
         else
         {
             owner->ControlBarOffset = controlOffset;
+            UINT hostVisibleBar = 0;
+            ULONGLONG hostVisibleOffset = 0;
+            ULONGLONG hostVisibleSize = 0;
+            if (m_PciResources.QueryHostVisibleRegion(&hostVisibleBar, &hostVisibleOffset, &hostVisibleSize))
+            {
+                owner->ControlHostVisibleBar = hostVisibleBar;
+                owner->ControlHostVisibleOffset = hostVisibleOffset;
+                owner->ControlHostVisibleSize = hostVisibleSize;
+            }
             stageResult = m_CtrlQueue.MapNativeControlBlob(resourceId, controlOffset);
             if (stageResult == VioGpuHostContextConfirmed)
             {
@@ -6920,6 +6929,7 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
                 NTSTATUS mapStatus = m_PciResources.MapHostVisibleAddress(controlOffset,
                                                                           VIOGPU_NATIVE_CONTROL_BLOB_SIZE,
                                                                           &controlAddress);
+                owner->ControlMapStatus = static_cast<ULONG>(mapStatus);
                 if (!NT_SUCCESS(mapStatus) || controlAddress == NULL)
                 {
                     stageResult = VioGpuHostContextNotSubmitted;

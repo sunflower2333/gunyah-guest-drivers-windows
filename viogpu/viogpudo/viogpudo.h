@@ -310,6 +310,10 @@ struct VIOGPU_NATIVE_CONTEXT_OWNER
     BOOLEAN ControlResourceCreated;
     BOOLEAN ControlMapped;
     BOOLEAN SubmitQueueCreated;
+    UINT ControlHostVisibleBar;
+    ULONG ControlMapStatus;
+    ULONGLONG ControlHostVisibleOffset;
+    ULONGLONG ControlHostVisibleSize;
 #endif
 };
 
