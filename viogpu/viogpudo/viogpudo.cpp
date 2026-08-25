@@ -6923,6 +6923,7 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
                 owner->ControlHostVisibleSize = hostVisibleSize;
             }
             stageResult = m_CtrlQueue.MapNativeControlBlob(resourceId, controlOffset);
+            DWORD controlMapDetail = static_cast<DWORD>(stageResult);
             if (stageResult == VioGpuHostContextConfirmed)
             {
                 owner->ControlMapped = TRUE;
@@ -6932,6 +6933,7 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
                 owner->ControlMapStatus = static_cast<ULONG>(mapStatus);
                 if (!NT_SUCCESS(mapStatus) || controlAddress == NULL)
                 {
+                    controlMapDetail = static_cast<DWORD>(mapStatus);
                     stageResult = VioGpuHostContextNotSubmitted;
                 }
                 else
@@ -6944,7 +6946,9 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
                 m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateControlMap,
                                                                   stageResult == VioGpuHostContextConfirmed ? STATUS_SUCCESS
                                                                                                             : STATUS_DEVICE_NOT_READY,
-                                                                  static_cast<DWORD>(stageResult));
+                                                                  stageResult == VioGpuHostContextConfirmed
+                                                                      ? static_cast<DWORD>(stageResult)
+                                                                      : controlMapDetail);
             }
         }
     }
