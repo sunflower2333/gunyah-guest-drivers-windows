@@ -4321,8 +4321,22 @@ def check_wddm_present_contract() -> None:
     )
     if present_lifecycle.count("returnstatus;") != 2:
         fail("Present allocation lifetime helper must retain both failure exits with the first lock owned by its caller")
+    present_guard_end = present.find("present->AllocationListSize<2")
+    source_index = present.find("present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX]")
+    destination_index = present.find("present->pAllocationList[DXGK_PRESENT_DESTINATION_INDEX]")
+    if min(present_guard_end, source_index, destination_index) < 0 or \
+       present_guard_end > min(source_index, destination_index):
+        fail("Present must validate at least two allocation-list entries before indexing source or destination")
+    present_diagnostic = canonical_code(function_body("RecordPresentDiagnostic", WDDM_DDI_CODE))
+    diagnostic_guard_end = present_diagnostic.find("present->AllocationListSize<2")
+    diagnostic_source_index = present_diagnostic.find("present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX]")
+    diagnostic_destination_index = present_diagnostic.find("present->pAllocationList[DXGK_PRESENT_DESTINATION_INDEX]")
+    if min(diagnostic_guard_end, diagnostic_source_index, diagnostic_destination_index) < 0 or \
+       diagnostic_guard_end > min(diagnostic_source_index, diagnostic_destination_index):
+        fail("Present diagnostics must validate at least two allocation-list entries before indexing")
     for fragment in (
         "KeGetCurrentIrql()!=PASSIVE_LEVEL",
+        "present->AllocationListSize<2",
         "present->SubRectCnt==0&&present->MultipassOffset!=0",
         "present->MultipassOffset>=present->SubRectCnt",
         "present->DmaSize<sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET)||present->PatchLocationListOutSize<2",

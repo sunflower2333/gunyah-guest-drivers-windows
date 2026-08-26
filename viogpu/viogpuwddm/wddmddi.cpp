@@ -2221,7 +2221,7 @@ VOID RecordPresentDiagnostic(_In_ VIOGPU_WDDM_CONTEXT *context,
                              _In_ NTSTATUS status)
 {
     if (context == NULL || context->Device == NULL || context->Device->Adapter == NULL || present == NULL ||
-        present->pAllocationList == NULL || source == NULL || destination == NULL ||
+        present->pAllocationList == NULL || present->AllocationListSize < 2 || source == NULL || destination == NULL ||
         reason == VioGpuWddmPresentDiagnosticNone)
     {
         return;
@@ -7149,8 +7149,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     if (context == NULL || present == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || present->pDmaBuffer == NULL ||
         present->pDmaBufferPrivateData == NULL ||
         present->DmaBufferPrivateDataSize < sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) || present->pAllocationList == NULL ||
-        present->pPatchLocationListOut == NULL || present->Flags.Value != 1U || !present->Flags.Blt ||
-        present->DmaBufferSegmentId != 0 || (present->SubRectCnt == 0 && present->MultipassOffset != 0) ||
+        present->AllocationListSize < 2 || present->pPatchLocationListOut == NULL || present->Flags.Value != 1U ||
+        !present->Flags.Blt || present->DmaBufferSegmentId != 0 ||
+        (present->SubRectCnt == 0 && present->MultipassOffset != 0) ||
         (present->SubRectCnt != 0 &&
          (present->pDstSubRects == NULL || present->MultipassOffset >= present->SubRectCnt)))
     {
