@@ -8527,13 +8527,25 @@ NTSTATUS VioGpuAdapter::ExecutePresentDisplayOnly(_In_ BYTE *DstAddr,
               pModeCur->SrcModeWidth,
               pModeCur->SrcModeHeight));
 
-    m_CtrlQueue.TransferToHost2D(resid,
-                                 offset,
-                                 updrect.right - updrect.left,
-                                 updrect.bottom - updrect.top,
-                                 updrect.left,
-                                 updrect.top);
-    m_CtrlQueue.ResFlush(resid, updrect.right - updrect.left, updrect.bottom - updrect.top, updrect.left, updrect.top);
+    if (!m_CtrlQueue.TransferToHost2D(resid,
+                                      offset,
+                                      updrect.right - updrect.left,
+                                      updrect.bottom - updrect.top,
+                                      updrect.left,
+                                      updrect.top))
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s failed to queue framebuffer transfer\n", __FUNCTION__));
+        return STATUS_DEVICE_NOT_READY;
+    }
+    if (!m_CtrlQueue.ResFlush(resid,
+                              updrect.right - updrect.left,
+                              updrect.bottom - updrect.top,
+                              updrect.left,
+                              updrect.top))
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s failed to queue framebuffer flush\n", __FUNCTION__));
+        return STATUS_DEVICE_NOT_READY;
+    }
 
     return STATUS_SUCCESS;
 }

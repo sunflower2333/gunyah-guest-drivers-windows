@@ -3820,6 +3820,14 @@ def check_wddm_standard_primary_scanout() -> None:
 
 def check_wddm_present_contract() -> None:
     header = canonical_code(WDDM_DDI_HEADER_CODE)
+    present_display = canonical_code(function_body("VioGpuAdapter::ExecutePresentDisplayOnly", VIOGPU_CODE))
+    for fragment in (
+        "if(!m_CtrlQueue.TransferToHost2D",
+        "if(!m_CtrlQueue.ResFlush",
+        "returnSTATUS_DEVICE_NOT_READY;",
+    ):
+        if present_display.count(fragment) != (2 if fragment == "returnSTATUS_DEVICE_NOT_READY;" else 1):
+            fail(f"display-only Present must propagate 2D queue failure: {fragment}")
     packet_matches = re.findall(
         r"\bstruct\s+VIOGPU_WDDM_PRESENT_DMA_PACKET\s*\{(.*?)\}\s*;",
         WDDM_DDI_HEADER_CODE,
