@@ -624,6 +624,11 @@ void CtrlQueue::CreateResource(UINT res_id, UINT format, UINT width, UINT height
     PGPU_RES_CREATE_2D cmd;
     PGPU_VBUFFER vbuf;
     cmd = (PGPU_RES_CREATE_2D)AllocCmd(&vbuf, sizeof(*cmd));
+    if (cmd == NULL || vbuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
+        return;
+    }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
     cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
@@ -632,8 +637,12 @@ void CtrlQueue::CreateResource(UINT res_id, UINT format, UINT width, UINT height
     cmd->width = width;
     cmd->height = height;
 
-    // FIXME!!! if
-    QueueBuffer(vbuf);
+    if (QueueBuffer(vbuf) < 0)
+    {
+        ReleaseBuffer(vbuf);
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
+        return;
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -646,6 +655,11 @@ void CtrlQueue::ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y)
     PGPU_RES_FLUSH cmd;
     PGPU_VBUFFER vbuf;
     cmd = (PGPU_RES_FLUSH)AllocCmd(&vbuf, sizeof(*cmd));
+    if (cmd == NULL || vbuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
+        return;
+    }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
     cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
@@ -655,7 +669,12 @@ void CtrlQueue::ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y)
     cmd->r.x = x;
     cmd->r.y = y;
 
-    QueueBuffer(vbuf);
+    if (QueueBuffer(vbuf) < 0)
+    {
+        ReleaseBuffer(vbuf);
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
+        return;
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -668,6 +687,11 @@ void CtrlQueue::TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT hei
     PGPU_RES_TRANSF_TO_HOST_2D cmd;
     PGPU_VBUFFER vbuf;
     cmd = (PGPU_RES_TRANSF_TO_HOST_2D)AllocCmd(&vbuf, sizeof(*cmd));
+    if (cmd == NULL || vbuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
+        return;
+    }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
     cmd->hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
@@ -678,7 +702,12 @@ void CtrlQueue::TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT hei
     cmd->r.x = x;
     cmd->r.y = y;
 
-    QueueBuffer(vbuf);
+    if (QueueBuffer(vbuf) < 0)
+    {
+        ReleaseBuffer(vbuf);
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
+        return;
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -692,6 +721,11 @@ void CtrlQueue::AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents)
     PGPU_RES_ATTACH_BACKING cmd;
     PGPU_VBUFFER vbuf;
     cmd = (PGPU_RES_ATTACH_BACKING)AllocCmd(&vbuf, sizeof(*cmd));
+    if (cmd == NULL || vbuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
+        return;
+    }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
     cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
@@ -701,7 +735,12 @@ void CtrlQueue::AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents)
     vbuf->data_buf = ents;
     vbuf->data_size = sizeof(*ents) * nents;
 
-    QueueBuffer(vbuf);
+    if (QueueBuffer(vbuf) < 0)
+    {
+        ReleaseBuffer(vbuf);
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
+        return;
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -1710,12 +1749,22 @@ void CtrlQueue::DestroyResource(UINT res_id)
     PGPU_RES_UNREF cmd;
     PGPU_VBUFFER vbuf;
     cmd = (PGPU_RES_UNREF)AllocCmd(&vbuf, sizeof(*cmd));
+    if (cmd == NULL || vbuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
+        return;
+    }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
     cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_UNREF;
     cmd->resource_id = res_id;
 
-    QueueBuffer(vbuf);
+    if (QueueBuffer(vbuf) < 0)
+    {
+        ReleaseBuffer(vbuf);
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
+        return;
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -1727,12 +1776,22 @@ void CtrlQueue::DetachBacking(UINT res_id)
     PGPU_RES_DETACH_BACKING cmd;
     PGPU_VBUFFER vbuf;
     cmd = (PGPU_RES_DETACH_BACKING)AllocCmd(&vbuf, sizeof(*cmd));
+    if (cmd == NULL || vbuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
+        return;
+    }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
     cmd->hdr.type = VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING;
     cmd->resource_id = res_id;
 
-    QueueBuffer(vbuf);
+    if (QueueBuffer(vbuf) < 0)
+    {
+        ReleaseBuffer(vbuf);
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
+        return;
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -1993,6 +2052,11 @@ void CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, U
     PGPU_SET_SCANOUT cmd;
     PGPU_VBUFFER vbuf;
     cmd = (PGPU_SET_SCANOUT)AllocCmd(&vbuf, sizeof(*cmd));
+    if (cmd == NULL || vbuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
+        return;
+    }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
     cmd->hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
@@ -2003,8 +2067,12 @@ void CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, U
     cmd->r.x = x;
     cmd->r.y = y;
 
-    // FIXME if
-    QueueBuffer(vbuf);
+    if (QueueBuffer(vbuf) < 0)
+    {
+        ReleaseBuffer(vbuf);
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
+        return;
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
@@ -2015,6 +2083,12 @@ static const int VIOGPU_QUEUE_ERROR = -1;
 int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
+
+    if (buf == NULL || m_pBuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s invalid buffer\n", __FUNCTION__));
+        return VIOGPU_QUEUE_ERROR;
+    }
 
     VirtIOBufferDescriptor sg[SGLIST_SIZE];
     UINT sgleft = SGLIST_SIZE;

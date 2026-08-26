@@ -3091,6 +3091,23 @@ def check_queue_failure_semantics() -> None:
     ):
         fail("synchronous submit must publish Submitted only after the descriptor enters the queue")
 
+    for name in (
+        "CtrlQueue::CreateResource",
+        "CtrlQueue::ResFlush",
+        "CtrlQueue::TransferToHost2D",
+        "CtrlQueue::AttachBacking",
+        "CtrlQueue::DestroyResource",
+        "CtrlQueue::DetachBacking",
+        "CtrlQueue::SetScanout",
+    ):
+        asynchronous = canonical_code(function_body(name, QUEUE_CODE))
+        if "if(cmd==NULL||vbuf==NULL)" not in asynchronous:
+            fail(f"{name} must fail safely when its command buffer cannot be allocated")
+        queue_failure = asynchronous.find("if(QueueBuffer(vbuf)<0)")
+        release = asynchronous.find("ReleaseBuffer(vbuf)", queue_failure)
+        if queue_failure < 0 or release < queue_failure:
+            fail(f"{name} must release an asynchronous command buffer after queue failure")
+
 
 def check_control_queue_dma_and_response_contract() -> None:
     """Require page-complete SG lists and an exact CTX_CREATE response classifier."""
