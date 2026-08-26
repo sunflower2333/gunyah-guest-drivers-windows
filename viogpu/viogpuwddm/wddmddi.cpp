@@ -4041,7 +4041,15 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
         }
 
         VIOGPU_WDDM_ALLOCATION_INFO privateData = {};
-        RtlCopyMemory(&privateData, allocationInfo->pPrivateDriverData, sizeof(privateData));
+        __try
+        {
+            RtlCopyMemory(&privateData, allocationInfo->pPrivateDriverData, sizeof(privateData));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            status = STATUS_INVALID_USER_BUFFER;
+            break;
+        }
         SIZE_T alignedSize = 0;
         status = ValidateAllocationPrivate(&privateData, &alignedSize);
         if (!NT_SUCCESS(status))
@@ -4424,7 +4432,15 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
         }
 
         VIOGPU_WDDM_ALLOCATION_INFO privateData = {};
-        RtlCopyMemory(&privateData, openInfo->pPrivateDriverData, sizeof(privateData));
+        __try
+        {
+            RtlCopyMemory(&privateData, openInfo->pPrivateDriverData, sizeof(privateData));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            status = STATUS_INVALID_USER_BUFFER;
+            break;
+        }
         DXGKARGCB_GETHANDLEDATA getHandleData = {};
         getHandleData.hObject = openInfo->hAllocation;
         getHandleData.Type = DXGK_HANDLE_ALLOCATION;

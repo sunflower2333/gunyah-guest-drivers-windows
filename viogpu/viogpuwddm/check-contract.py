@@ -5863,6 +5863,12 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     )
     if create_allocation.count(create_resource_guard) != 1:
         fail("CreateAllocation must reject resource-private data in the current pre-v1 contract")
+    create_private_copy_guard = (
+        "__try{RtlCopyMemory(&privateData,allocationInfo->pPrivateDriverData,sizeof(privateData));}"
+        "__except(EXCEPTION_EXECUTE_HANDLER){status=STATUS_INVALID_USER_BUFFER;break;}"
+    )
+    if create_allocation.count(create_private_copy_guard) != 1:
+        fail("CreateAllocation must convert an invalid UMD private-data pointer into STATUS_INVALID_USER_BUFFER")
     create_allocation_sequence = (
         "allocationInfo->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_ALLOCATION_INFO)",
         "VIOGPU_WDDM_ALLOCATION_INFOprivateData={};",
@@ -5886,6 +5892,12 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     )
     if open_allocation.count(open_guard) != 1:
         fail("OpenAllocation must reject unknown flags and resource-private data in the current pre-v1 contract")
+    open_private_copy_guard = (
+        "__try{RtlCopyMemory(&privateData,openInfo->pPrivateDriverData,sizeof(privateData));}"
+        "__except(EXCEPTION_EXECUTE_HANDLER){status=STATUS_INVALID_USER_BUFFER;break;}"
+    )
+    if open_allocation.count(open_private_copy_guard) != 1:
+        fail("OpenAllocation must convert an invalid UMD private-data pointer into STATUS_INVALID_USER_BUFFER")
     open_allocation_sequence = (
         "openInfo->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_ALLOCATION_INFO)",
         "VIOGPU_WDDM_ALLOCATION_INFOprivateData={};",
