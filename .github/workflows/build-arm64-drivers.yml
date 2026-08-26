@@ -33,15 +33,15 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
         with:
-          msbuild-architecture: x64
+          msbuild-architecture: arm64
 
       - name: Verify ARM64 cross-build host tools
         shell: pwsh
         run: |
           $msbuild = (Get-Command msbuild -ErrorAction Stop).Source
           Write-Host "MSBuild host: $msbuild"
-          if ($msbuild -notmatch '\\amd64\\MSBuild\.exe$') {
-            throw "Expected the x64 host MSBuild used for ARM64 cross-builds, got: $msbuild"
+          if ($msbuild -notmatch '\\arm64\\MSBuild\.exe$') {
+            throw "Expected the ARM64 MSBuild host required by the ARM64 WDK, got: $msbuild"
           }
 
       - name: Add host MSVC and WDK tools to PATH
