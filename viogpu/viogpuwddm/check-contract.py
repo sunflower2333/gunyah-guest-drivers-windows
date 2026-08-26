@@ -5581,7 +5581,9 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     )
     if query.count(query_guard) != 1 or query.count("adapterInfo->Capabilities=VIOGPU_WDDM_CAPABILITIES_NONE;") != 1:
         fail("UMDRIVERPRIVATE must require zero input, exact output size, and zero capabilities")
-    if query.count("InitializeAbiHeader(&adapterInfo->Header,sizeof(*adapterInfo));") != 1:
+    zero_output = query.find("RtlZeroMemory(adapterInfo,sizeof(*adapterInfo));")
+    initialize_header = query.find("InitializeAbiHeader(&adapterInfo->Header,sizeof(*adapterInfo));")
+    if min(zero_output, initialize_header) < 0 or zero_output > initialize_header:
         fail("UMDRIVERPRIVATE must initialize and zero the complete current pre-v1 output")
     if query.count("adapterInfo->ResetGeneration=resetGeneration;") != 1 or query.count(
         "adapter->QueryNativeContextReadiness(&capset,NULL,NULL,&resetGeneration)"

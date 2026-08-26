@@ -3068,6 +3068,7 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
     }
 
     VIOGPU_WDDM_ADAPTER_INFO *adapterInfo = static_cast<VIOGPU_WDDM_ADAPTER_INFO *>(queryAdapterInfo->pOutputData);
+    RtlZeroMemory(adapterInfo, sizeof(*adapterInfo));
     InitializeAbiHeader(&adapterInfo->Header, sizeof(*adapterInfo));
     adapterInfo->Capabilities = VIOGPU_WDDM_CAPABILITIES_NONE;
     adapterInfo->ResetGeneration = resetGeneration;
