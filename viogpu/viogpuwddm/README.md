@@ -252,7 +252,13 @@ trace calls and cleanup reference without emitting a second provider definition.
 
 The legacy runtime table registers the full-graphics slots that the previous
 ETW trace reported missing: ACPI notification, ETW control, palette, scanline,
-interrupt control, and `RenderKm`. Unsupported operations fail closed and
+interrupt control, and `RenderKm`. `GetScanLine` now publishes a bounded
+software progressive timing result from the active VidPN mode and the kernel
+performance counter; VirtIO-GPU has no hardware scanline register, so this
+does not imply a vblank interrupt source. `ControlInterrupt` supports the
+three DMA notification classes used by the native scheduler and gates the
+control/cursor queues with the same ISR barrier and DPC-drain ordering as
+transport teardown. Unsupported interrupt classes still fail closed, and
 `RenderKm` never sends CDD commands through the MSM parser. The Win8-only
 `CancelCommand`, per-engine TDR, post-display-ownership, and system-display
 callbacks remain implemented internally where needed by existing source but

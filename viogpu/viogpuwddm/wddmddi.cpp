@@ -3770,7 +3770,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetScanLine(CONST HANDLE hAda
     }
     getScanLine->InVerticalBlank = FALSE;
     getScanLine->ScanLine = 0;
-    return STATUS_NOT_IMPLEMENTED;
+    VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    return adapter->GetScanLine(getScanLine);
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmControlInterrupt(CONST HANDLE hAdapter,
@@ -3778,13 +3779,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmControlInterrupt(CONST HANDLE
                                                                     BOOLEAN enableInterrupt)
 {
     PAGED_CODE();
-    UNREFERENCED_PARAMETER(enableInterrupt);
     if (hAdapter == NULL)
     {
         return STATUS_INVALID_PARAMETER;
     }
-    UNREFERENCED_PARAMETER(interruptType);
-    return STATUS_NOT_IMPLEMENTED;
+    VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    return adapter->ControlInterrupt(interruptType, enableInterrupt);
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRenderKm(CONST HANDLE hContext, DXGKARG_RENDER *render)

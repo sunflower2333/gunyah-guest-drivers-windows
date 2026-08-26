@@ -42,6 +42,7 @@
 #endif
 
 static UINT g_InstanceId = 0;
+static const UINT VIOGPU_SCANLINE_REFRESH_HZ = 60U;
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
 extern "C" UCHAR __ImageBase;
@@ -2152,6 +2153,65 @@ NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVI
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return STATUS_MONITOR_NO_MORE_DESCRIPTOR_DATA;
+}
+
+NTSTATUS VioGpuDod::GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine)
+{
+    PAGED_CODE();
+
+    if (pGetScanLine == NULL || pGetScanLine->VidPnTargetId != 0 || !IsDriverActive() || !IsHardwareInit() ||
+        !m_CurrentMode.Flags.FrameBufferIsActive || m_CurrentMode.Flags.SourceNotVisible)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    UINT height = m_CurrentMode.DispInfo.Height;
+    if (height == 0)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER counter = KeQueryPerformanceCounter(&frequency);
+    ULONGLONG frequencyTicks = frequency.QuadPart > 0 ? static_cast<ULONGLONG>(frequency.QuadPart) : 0;
+    if (frequencyTicks == 0 || counter.QuadPart < 0)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    /* VirtIO-GPU exposes no scanline register. Emulate a progressive 60 Hz
+     * timing domain from the active VidPN mode without claiming hardware
+     * vblank interrupts. */
+    const UINT blankingLines = max(1U, height / 20U);
+    const ULONGLONG totalLines = static_cast<ULONGLONG>(height) + blankingLines;
+    const ULONGLONG frameTicks = max(1ULL, frequencyTicks / VIOGPU_SCANLINE_REFRESH_HZ);
+    const ULONGLONG framePosition = static_cast<ULONGLONG>(counter.QuadPart) % frameTicks;
+    const ULONGLONG scanLine = (framePosition * totalLines) / frameTicks;
+
+    pGetScanLine->InVerticalBlank = scanLine >= height;
+    pGetScanLine->ScanLine = static_cast<ULONG>(min(scanLine, totalLines - 1));
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS VioGpuDod::ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In_ BOOLEAN enableInterrupt)
+{
+    PAGED_CODE();
+
+    switch (interruptType)
+    {
+        case DXGK_INTERRUPT_DMA_COMPLETED:
+        case DXGK_INTERRUPT_DMA_PREEMPTED:
+        case DXGK_INTERRUPT_DMA_FAULTED:
+            break;
+        default:
+            return STATUS_NOT_SUPPORTED;
+    }
+
+    if (!IsDriverActive() || !IsHardwareInit() || m_pHWDevice == NULL)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    return m_pHWDevice->ControlInterrupt(enableInterrupt);
 }
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
@@ -9459,6 +9519,42 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     m_u32NumScanouts = 0;
     InterlockedExchange(&m_NativeContextState, VioGpuNativeContextOffline);
     DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s\n", __FUNCTION__));
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS VioGpuAdapter::ControlInterrupt(_In_ BOOLEAN enableInterrupt)
+{
+    PAGED_CODE();
+
+    if (!m_bVirtioInitialized || !m_bQueuesInitialized || m_pVioGpuDod == NULL || !m_pVioGpuDod->IsHardwareInit())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    if (enableInterrupt)
+    {
+        if (!m_CtrlQueue.EnableInterrupt() || !m_CursorQueue.EnableInterrupt())
+        {
+            m_CtrlQueue.DisableInterrupt();
+            m_CursorQueue.DisableInterrupt();
+            InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
+            return STATUS_DEVICE_NOT_READY;
+        }
+        InterlockedExchange(&m_InterruptDispatchEnabled, TRUE);
+        return STATUS_SUCCESS;
+    }
+
+    /* Match the transport teardown ordering: close the ISR publication gate,
+     * synchronize every message, drain already queued DPCs, then mask queues. */
+    InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
+    NTSTATUS status = SynchronizeInterruptMessages();
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    KeFlushQueuedDpcs();
+    m_CtrlQueue.DisableInterrupt();
+    m_CursorQueue.DisableInterrupt();
     return STATUS_SUCCESS;
 }
 

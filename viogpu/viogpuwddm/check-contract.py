@@ -2287,20 +2287,46 @@ def check_legacy_runtime_callback_contract() -> None:
         "hAdapter==NULL||getScanLine==NULL",
         "getScanLine->InVerticalBlank=FALSE;",
         "getScanLine->ScanLine=0;",
-        "returnSTATUS_NOT_IMPLEMENTED;",
+        "VioGpuDod*adapter=reinterpret_cast<VioGpuDod*>(hAdapter);",
+        "returnadapter->GetScanLine(getScanLine);",
     ):
         if get_scan_line.count(fragment) != 1:
-            fail(f"scanline callback must initialize output and fail closed: {fragment}")
+            fail(f"scanline callback must initialize output and use the active mode timing path: {fragment}")
 
     control_interrupt = canonical_code(function_body("VioGpuWddmControlInterrupt", WDDM_DDI_CODE))
     for fragment in (
         "hAdapter==NULL",
-        "UNREFERENCED_PARAMETER(interruptType);",
-        "UNREFERENCED_PARAMETER(enableInterrupt);",
-        "returnSTATUS_NOT_IMPLEMENTED;",
+        "VioGpuDod*adapter=reinterpret_cast<VioGpuDod*>(hAdapter);",
+        "returnadapter->ControlInterrupt(interruptType,enableInterrupt);",
     ):
         if control_interrupt.count(fragment) != 1:
-            fail(f"interrupt-control callback must reject unsupported control: {fragment}")
+            fail(f"interrupt-control callback must route supported DMA interrupt control: {fragment}")
+
+    scanline = canonical_code(function_body("VioGpuDod::GetScanLine", VIOGPU_CODE))
+    for fragment in (
+        "pGetScanLine==NULL||pGetScanLine->VidPnTargetId!=0",
+        "KeQueryPerformanceCounter(&frequency)",
+        "pGetScanLine->InVerticalBlank=scanLine>=height;",
+        "pGetScanLine->ScanLine=static_cast<ULONG>(min(scanLine,totalLines-1));",
+        "returnSTATUS_SUCCESS;",
+    ):
+        if fragment not in scanline:
+            fail(f"VioGpuDod::GetScanLine must publish bounded software timing: {fragment}")
+
+    adapter_interrupt = canonical_code(function_body("VioGpuAdapter::ControlInterrupt", VIOGPU_CODE))
+    for fragment in (
+        "if(!m_bVirtioInitialized||!m_bQueuesInitialized||m_pVioGpuDod==NULL||!m_pVioGpuDod->IsHardwareInit())",
+        "if(enableInterrupt)",
+        "m_CtrlQueue.EnableInterrupt()",
+        "m_CursorQueue.EnableInterrupt()",
+        "InterlockedExchange(&m_InterruptDispatchEnabled,FALSE);",
+        "status=SynchronizeInterruptMessages();",
+        "KeFlushQueuedDpcs();",
+        "m_CtrlQueue.DisableInterrupt();",
+        "m_CursorQueue.DisableInterrupt();",
+    ):
+        if fragment not in adapter_interrupt:
+            fail(f"VioGpuAdapter::ControlInterrupt must gate and synchronize queue interrupts: {fragment}")
 
     render_km = canonical_code(function_body("VioGpuWddmRenderKm", WDDM_DDI_CODE))
     for fragment in (

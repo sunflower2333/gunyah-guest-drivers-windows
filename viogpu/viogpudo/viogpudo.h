@@ -397,6 +397,7 @@ class VioGpuAdapter : IVioGpuPCI
                            CURRENT_MODE *pCurrentMode);
     NTSTATUS HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMATION *pDispInfo);
     NTSTATUS HWClose(void);
+    NTSTATUS ControlInterrupt(_In_ BOOLEAN enableInterrupt);
     NTSTATUS ExecutePresentDisplayOnly(_In_ BYTE *DstAddr,
                                        _In_ UINT DstBitPerPixel,
                                        _In_ BYTE *SrcAddr,
@@ -846,6 +847,8 @@ class VioGpuDod
                                  _In_ ULONG ChildRelationsSize);
     NTSTATUS QueryChildStatus(_Inout_ DXGK_CHILD_STATUS *pChildStatus, _In_ BOOLEAN NonDestructiveOnly);
     NTSTATUS QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVICE_DESCRIPTOR *pDeviceDescriptor);
+    NTSTATUS GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine);
+    NTSTATUS ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In_ BOOLEAN enableInterrupt);
     BOOLEAN InterruptRoutine(_In_ ULONG MessageNumber);
     VOID DpcRoutine(VOID);
     NTSTATUS QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQueryAdapterInfo);
