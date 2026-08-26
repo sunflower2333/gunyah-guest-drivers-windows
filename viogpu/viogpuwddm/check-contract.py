@@ -2337,6 +2337,21 @@ def check_legacy_runtime_callback_contract() -> None:
             fail(f"kernel GDI command buffer callback must not enter the MSM parser: {fragment}")
 
 
+def check_wddm_handle_ownership() -> None:
+    create_context = canonical_code(function_body("VioGpuWddmCreateContext", WDDM_DDI_CODE))
+    if "device==NULL||device->Signature!=VIOGPU_WDDM_DEVICE_SIGNATURE||createContext==NULL" not in create_context:
+        fail("CreateContext must validate the WDDM device signature before dereferencing the handle")
+
+    describe = canonical_code(function_body("VioGpuWddmDescribeAllocation", WDDM_DDI_CODE))
+    for fragment in (
+        "VioGpuDod*adapter=reinterpret_cast<VioGpuDod*>(hAdapter);",
+        "adapter==NULL||describeAllocation==NULL",
+        "allocation->Signature!=VIOGPU_WDDM_ALLOCATION_SIGNATURE||allocation->Adapter!=adapter",
+    ):
+        if fragment not in describe:
+            fail(f"DescribeAllocation must enforce adapter ownership before reading allocation metadata: {fragment}")
+
+
 def check_native_context_readiness(
     viogpu_code: Optional[str] = None,
     viogpu_header_code: Optional[str] = None,
@@ -9688,6 +9703,7 @@ def main() -> None:
     check_callback_table()
     check_vidpn_mode_contract()
     check_legacy_runtime_callback_contract()
+    check_wddm_handle_ownership()
     check_virtio_reset_contract()
     check_virtio_queue_allocation_cleanup()
     check_dod_reset_entrypoints()

@@ -4375,15 +4375,15 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDescribeAllocation(CONST HANDLE hAdapter,
                                                                       DXGKARG_DESCRIBEALLOCATION *describeAllocation)
 {
-    UNREFERENCED_PARAMETER(hAdapter);
-
-    if (describeAllocation == NULL)
+    VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    if (adapter == NULL || describeAllocation == NULL)
     {
         return STATUS_INVALID_PARAMETER;
     }
 
     VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(describeAllocation->hAllocation);
-    if (allocation == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE)
+    if (allocation == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
+        allocation->Adapter != adapter)
     {
         return STATUS_INVALID_HANDLE;
     }
@@ -4592,8 +4592,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
                                                                  DXGKARG_CREATECONTEXT *createContext)
 {
     VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(hDevice);
-    if (device == NULL || createContext == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL ||
-        createContext->NodeOrdinal != 0 || createContext->EngineAffinity != 1)
+    if (device == NULL || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || createContext == NULL ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL || createContext->NodeOrdinal != 0 || createContext->EngineAffinity != 1)
     {
         return STATUS_INVALID_PARAMETER;
     }
