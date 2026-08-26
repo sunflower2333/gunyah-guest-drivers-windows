@@ -41,7 +41,7 @@ on:
 
 jobs:
   contract-check:
-    runs-on: windows-2025-vs2026
+    runs-on: windows-11-vs2026-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
