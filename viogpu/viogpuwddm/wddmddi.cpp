@@ -5539,7 +5539,8 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
         allocation->ApertureMappedPageCount > allocation->AperturePageCount ||
         allocationPage > allocation->AperturePageCount ||
         numberOfPages > allocation->AperturePageCount - allocationPage ||
-        (nativeAllocation && allocation->HostState != VioGpuWddmAllocationHostNone && !snapshotAcquired && !resetRetired))
+        (nativeAllocation && allocation->HostState != VioGpuWddmAllocationHostNone && !snapshotAcquired &&
+         !resetRetired))
     {
         status = STATUS_DEVICE_NOT_READY;
     }
