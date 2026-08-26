@@ -6617,7 +6617,9 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "resourceId!=blobId",
         "backingSize>MAXULONG",
         "backingSize<PAGE_SIZE",
-        "logicalSize<=(ULONGLONG)backingSize-PAGE_SIZE",
+        "logicalSize>MAXULONGLONG-(PAGE_SIZE-1)",
+        "constULONGLONGlogicalAlignedSize=(logicalSize+PAGE_SIZE-1)&~((ULONGLONG)PAGE_SIZE-1);",
+        "logicalAlignedSize!=(ULONGLONG)backingSize",
         "entries==NULL||entryCount==0",
         "capset.msm.has_cached_coherent==0",
         "(msmFlags&MSM_BO_CACHED_COHERENT)==0",
@@ -6854,6 +6856,35 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     if len(render_private_pointer_writes) != 1 or len(render_private_size_writes) != 1 or render_publication < 0 or \
        render_private_pointer_writes[0] < render_publication or render_private_size_writes[0] < render_publication:
         fail("Render must consume exactly one private-data record only after publishing its submission")
+
+
+def check_native_guest_allocation_extent_math() -> None:
+    page_size = 4096
+    max_u64 = (1 << 64) - 1
+
+    def page_round(logical_size: int) -> Optional[int]:
+        if logical_size == 0 or logical_size > max_u64 - (page_size - 1):
+            return None
+        return (logical_size + page_size - 1) & ~(page_size - 1)
+
+    for logical_size, backing_size in (
+        (page_size, page_size),
+        (page_size + 1, page_size * 2),
+        (page_size * 2 - 1, page_size * 2),
+    ):
+        rounded = page_round(logical_size)
+        if rounded != backing_size:
+            fail(f"page-rounded logical extent must accept matching backing: {logical_size}, {backing_size}")
+
+    for logical_size, backing_size in (
+        (0, page_size),
+        (page_size, page_size * 2),
+        (page_size + 1, page_size),
+        (max_u64 - (page_size - 2), max_u64),
+    ):
+        rounded = page_round(logical_size)
+        if rounded is not None and rounded == backing_size:
+            fail(f"page-rounded logical extent must reject mismatched backing: {logical_size}, {backing_size}")
 
 
 def check_wddm_context_lifetime() -> None:
@@ -9632,6 +9663,7 @@ def main() -> None:
     check_native_context_ownership()
     check_wddm_private_abi(root)
     check_wddm_paging_transaction_gate()
+    check_native_guest_allocation_extent_math()
     check_wddm_guest_allocation_lifecycle()
     check_wddm_context_lifetime()
     check_wddm_submission_lifetime()

@@ -6373,6 +6373,11 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         return VioGpuHostContextNotSubmitted;
     }
     *ownershipRetained = FALSE;
+    if (logicalSize == 0 || logicalSize > MAXULONGLONG - (PAGE_SIZE - 1))
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    const ULONGLONG logicalAlignedSize = (logicalSize + PAGE_SIZE - 1) & ~((ULONGLONG)PAGE_SIZE - 1);
     GPU_CAPSET_DRM capset = {};
     ULONGLONG readyResetGeneration = 0;
     /* drm2kgsl rounds GEM_NEW.size to pages before matching the subsequent
@@ -6386,9 +6391,9 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         snapshot->Owner->ResetGeneration != snapshot->ResetGeneration ||
         snapshot->Owner->ContextId != snapshot->ContextId || ReadNativeAllocationCount(snapshot->Owner) == MAXLONG ||
         snapshot->ResetGeneration == 0 || snapshot->VaStart == 0 || snapshot->VaSize == 0 ||
-        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || blobId == 0 || resourceId != blobId || logicalSize == 0 ||
+        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || blobId == 0 || resourceId != blobId ||
         backingSize == 0 || logicalSize > backingSize || backingSize < PAGE_SIZE || backingSize > MAXULONG ||
-        (backingSize & (PAGE_SIZE - 1)) != 0 || logicalSize <= (ULONGLONG)backingSize - PAGE_SIZE ||
+        (backingSize & (PAGE_SIZE - 1)) != 0 || logicalAlignedSize != (ULONGLONG)backingSize ||
         (ULONGLONG)backingSize > snapshot->VaSize || requestedIova == 0 || (requestedIova & (PAGE_SIZE - 1)) != 0 ||
         requestedIova > MAXULONGLONG - (backingSize - 1) || entries == NULL || entryCount == 0 ||
         (msmFlags & MSM_BO_CACHED_COHERENT) == 0 || (msmFlags & ~validMsmFlags) != 0 ||
