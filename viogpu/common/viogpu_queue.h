@@ -392,13 +392,13 @@ class CtrlQueue : public VioGpuQueue
     void CompleteSynchronousRequestTeardown(void);
     void PoisonSynchronousRequests(void);
 
-    void CreateResource(UINT res_id, UINT format, UINT width, UINT height);
-    void DestroyResource(UINT id);
-    void SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, UINT x, UINT y);
-    void ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y);
-    void TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT height, UINT x, UINT y);
-    void AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents);
-    void DetachBacking(UINT id);
+    BOOLEAN CreateResource(UINT res_id, UINT format, UINT width, UINT height);
+    BOOLEAN DestroyResource(UINT id);
+    BOOLEAN SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, UINT x, UINT y);
+    BOOLEAN ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y);
+    BOOLEAN TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT height, UINT x, UINT y);
+    BOOLEAN AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents);
+    BOOLEAN DetachBacking(UINT id);
 
     BOOLEAN QueryDisplayInfo(UINT id, _Out_ PULONG xres, _Out_ PULONG yres);
     BOOLEAN QueryEdidInfo(UINT id, _Out_writes_bytes_(EDID_RAW_BLOCK_SIZE) PBYTE edid);

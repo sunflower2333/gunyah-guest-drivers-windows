@@ -615,7 +615,7 @@ BOOLEAN CtrlQueue::QueryEdidInfo(UINT id, _Out_writes_bytes_(EDID_RAW_BLOCK_SIZE
     return success;
 }
 
-void CtrlQueue::CreateResource(UINT res_id, UINT format, UINT width, UINT height)
+BOOLEAN CtrlQueue::CreateResource(UINT res_id, UINT format, UINT width, UINT height)
 {
     PAGED_CODE();
 
@@ -627,7 +627,7 @@ void CtrlQueue::CreateResource(UINT res_id, UINT format, UINT width, UINT height
     if (cmd == NULL || vbuf == NULL)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
@@ -641,13 +641,14 @@ void CtrlQueue::CreateResource(UINT res_id, UINT format, UINT width, UINT height
     {
         ReleaseBuffer(vbuf);
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    return TRUE;
 }
 
-void CtrlQueue::ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y)
+BOOLEAN CtrlQueue::ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y)
 {
     PAGED_CODE();
 
@@ -658,7 +659,7 @@ void CtrlQueue::ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y)
     if (cmd == NULL || vbuf == NULL)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
@@ -673,13 +674,14 @@ void CtrlQueue::ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y)
     {
         ReleaseBuffer(vbuf);
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    return TRUE;
 }
 
-void CtrlQueue::TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT height, UINT x, UINT y)
+BOOLEAN CtrlQueue::TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT height, UINT x, UINT y)
 {
     PAGED_CODE();
 
@@ -690,7 +692,7 @@ void CtrlQueue::TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT hei
     if (cmd == NULL || vbuf == NULL)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
@@ -706,13 +708,14 @@ void CtrlQueue::TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT hei
     {
         ReleaseBuffer(vbuf);
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    return TRUE;
 }
 
-void CtrlQueue::AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents)
+BOOLEAN CtrlQueue::AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents)
 {
     PAGED_CODE();
 
@@ -724,7 +727,7 @@ void CtrlQueue::AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents)
     if (cmd == NULL || vbuf == NULL)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
@@ -739,10 +742,11 @@ void CtrlQueue::AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents)
     {
         ReleaseBuffer(vbuf);
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    return TRUE;
 }
 
 PAGED_CODE_SEG_END
@@ -1742,7 +1746,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitNativeControl(UINT context_id, const
 
 PAGED_CODE_SEG_END
 
-void CtrlQueue::DestroyResource(UINT res_id)
+BOOLEAN CtrlQueue::DestroyResource(UINT res_id)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
@@ -1752,7 +1756,7 @@ void CtrlQueue::DestroyResource(UINT res_id)
     if (cmd == NULL || vbuf == NULL)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
@@ -1763,13 +1767,14 @@ void CtrlQueue::DestroyResource(UINT res_id)
     {
         ReleaseBuffer(vbuf);
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    return TRUE;
 }
 
-void CtrlQueue::DetachBacking(UINT res_id)
+BOOLEAN CtrlQueue::DetachBacking(UINT res_id)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
@@ -1779,7 +1784,7 @@ void CtrlQueue::DetachBacking(UINT res_id)
     if (cmd == NULL || vbuf == NULL)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
@@ -1790,10 +1795,11 @@ void CtrlQueue::DetachBacking(UINT res_id)
     {
         ReleaseBuffer(vbuf);
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    return TRUE;
 }
 
 PVOID CtrlQueue::AllocCmdResp(PGPU_VBUFFER *buf, int cmd_sz, PVOID resp_buf, int resp_sz)
@@ -2045,7 +2051,7 @@ BOOLEAN CtrlQueue::ResetNativeSubmitBacklog(void)
     return empty;
 }
 
-void CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, UINT x, UINT y)
+BOOLEAN CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, UINT x, UINT y)
 {
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
@@ -2055,7 +2061,7 @@ void CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, U
     if (cmd == NULL || vbuf == NULL)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s allocation failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
     RtlZeroMemory(cmd, sizeof(*cmd));
 
@@ -2071,10 +2077,11 @@ void CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, U
     {
         ReleaseBuffer(vbuf);
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
-        return;
+        return FALSE;
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    return TRUE;
 }
 
 #define SGLIST_SIZE 256

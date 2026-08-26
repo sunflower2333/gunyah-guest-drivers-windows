@@ -3095,7 +3095,6 @@ def check_queue_failure_semantics() -> None:
         "CtrlQueue::CreateResource",
         "CtrlQueue::ResFlush",
         "CtrlQueue::TransferToHost2D",
-        "CtrlQueue::AttachBacking",
         "CtrlQueue::DestroyResource",
         "CtrlQueue::DetachBacking",
         "CtrlQueue::SetScanout",
@@ -3107,6 +3106,10 @@ def check_queue_failure_semantics() -> None:
         release = asynchronous.find("ReleaseBuffer(vbuf)", queue_failure)
         if queue_failure < 0 or release < queue_failure:
             fail(f"{name} must release an asynchronous command buffer after queue failure")
+
+    attach = canonical_code(function_body("CtrlQueue::AttachBacking", QUEUE_CODE))
+    if "returnFALSE;" not in attach or not attach.endswith("returnTRUE;"):
+        fail("CtrlQueue::AttachBacking must report asynchronous enqueue failure to its caller")
 
 
 def check_control_queue_dma_and_response_contract() -> None:

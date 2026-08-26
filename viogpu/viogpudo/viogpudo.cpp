@@ -9792,7 +9792,12 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
     DbgPrint(TRACE_LEVEL_INFORMATION,
              ("---> %s - (%d -> %d)\n", __FUNCTION__, pCurrentMode->DispInfo.ColorFormat, format));
     resid = m_Idr.GetId();
-    m_CtrlQueue.CreateResource(resid, format, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight);
+    if (!m_CtrlQueue.CreateResource(resid, format, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight))
+    {
+        m_Idr.PutId(resid);
+        DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s Failed to queue resource creation\n", __FUNCTION__));
+        return FALSE;
+    }
     obj = new (NonPagedPoolNx) VioGpuObj();
     if (!obj->Init(size, &m_FrameSegment))
     {
@@ -9803,10 +9808,25 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
         return FALSE;
     }
 
-    GpuObjectAttach(resid, obj);
-    m_CtrlQueue.SetScanout(0 /*FIXME m_Id*/, resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
-    m_CtrlQueue.TransferToHost2D(resid, 0, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
-    m_CtrlQueue.ResFlush(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0);
+    if (!GpuObjectAttach(resid, obj))
+    {
+        DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s Failed to attach gpu object\n", __FUNCTION__));
+        m_CtrlQueue.DestroyResource(resid);
+        m_Idr.PutId(resid);
+        delete obj;
+        return FALSE;
+    }
+    if (!m_CtrlQueue.SetScanout(0, resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||
+        !m_CtrlQueue.TransferToHost2D(resid, 0, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||
+        !m_CtrlQueue.ResFlush(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0))
+    {
+        m_CtrlQueue.DetachBacking(resid);
+        m_CtrlQueue.DestroyResource(resid);
+        m_Idr.PutId(resid);
+        delete obj;
+        DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s Failed to queue initial scanout\n", __FUNCTION__));
+        return FALSE;
+    }
     m_pFrameBuf = obj;
     pCurrentMode->FrameBuffer = obj->GetVirtualAddress();
     pCurrentMode->Flags.FrameBufferIsActive = TRUE;
@@ -9836,7 +9856,12 @@ BOOLEAN VioGpuAdapter::CreateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
     DbgPrint(TRACE_LEVEL_INFORMATION,
              ("---> %s - (%x -> %x)\n", __FUNCTION__, pCurrentMode->DispInfo.ColorFormat, format));
     resid = (UINT)m_Idr.GetId();
-    m_CtrlQueue.CreateResource(resid, format, POINTER_SIZE, POINTER_SIZE);
+    if (!m_CtrlQueue.CreateResource(resid, format, POINTER_SIZE, POINTER_SIZE))
+    {
+        m_Idr.PutId(resid);
+        DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s Failed to queue resource creation\n", __FUNCTION__));
+        return FALSE;
+    }
     obj = new (NonPagedPoolNx) VioGpuObj();
     if (!obj->Init(size, &m_CursorSegment))
     {
@@ -9910,7 +9935,11 @@ BOOLEAN VioGpuAdapter::UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
 
     BltBits(&DstBltInfo, &SrcBltInfo, &Rect);
 
-    m_CtrlQueue.TransferToHost2D(m_pCursorBuf->GetId(), 0, pSetPointerShape->Width, pSetPointerShape->Height, 0, 0);
+    if (!m_CtrlQueue.TransferToHost2D(m_pCursorBuf->GetId(), 0, pSetPointerShape->Width, pSetPointerShape->Height, 0, 0))
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s failed to queue cursor transfer\n", __FUNCTION__));
+        return FALSE;
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return TRUE;
@@ -9942,7 +9971,17 @@ BOOLEAN VioGpuAdapter::GpuObjectAttach(UINT res_id, VioGpuObj *obj)
     PGPU_MEM_ENTRY ents = NULL;
     PSCATTER_GATHER_LIST sgl = NULL;
     UINT size = 0;
+    if (obj == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s object is null\n", __FUNCTION__));
+        return FALSE;
+    }
     sgl = obj->GetSGList();
+    if (sgl == NULL || sgl->NumberOfElements == 0)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s scatter-gather list is empty\n", __FUNCTION__));
+        return FALSE;
+    }
     size = sizeof(GPU_MEM_ENTRY) * sgl->NumberOfElements;
     ents = reinterpret_cast<PGPU_MEM_ENTRY>(m_GpuBuf.AllocateMemory(size));
 
@@ -9955,7 +9994,6 @@ BOOLEAN VioGpuAdapter::GpuObjectAttach(UINT res_id, VioGpuObj *obj)
                   sgl->NumberOfElements));
         return FALSE;
     }
-    // FIXME
     RtlZeroMemory(ents, size);
 
     for (UINT i = 0; i < sgl->NumberOfElements; i++)
@@ -9965,7 +10003,12 @@ BOOLEAN VioGpuAdapter::GpuObjectAttach(UINT res_id, VioGpuObj *obj)
         ents[i].padding = 0;
     }
 
-    m_CtrlQueue.AttachBacking(res_id, ents, sgl->NumberOfElements);
+    if (!m_CtrlQueue.AttachBacking(res_id, ents, sgl->NumberOfElements))
+    {
+        m_GpuBuf.FreeMemory(ents);
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s queue failed\n", __FUNCTION__));
+        return FALSE;
+    }
     obj->SetId(res_id);
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return TRUE;
