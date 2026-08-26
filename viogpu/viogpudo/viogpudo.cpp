@@ -9935,7 +9935,12 @@ BOOLEAN VioGpuAdapter::UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
 
     BltBits(&DstBltInfo, &SrcBltInfo, &Rect);
 
-    if (!m_CtrlQueue.TransferToHost2D(m_pCursorBuf->GetId(), 0, pSetPointerShape->Width, pSetPointerShape->Height, 0, 0))
+    if (!m_CtrlQueue.TransferToHost2D(m_pCursorBuf->GetId(),
+                                      0,
+                                      pSetPointerShape->Width,
+                                      pSetPointerShape->Height,
+                                      0,
+                                      0))
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s failed to queue cursor transfer\n", __FUNCTION__));
         return FALSE;
