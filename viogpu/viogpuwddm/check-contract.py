@@ -3429,6 +3429,27 @@ def check_wddm_2d_resource_ownership() -> None:
         if fragment not in reconcile:
             fail(f"2D Host ownership must retire only across a confirmed reset generation: {fragment}")
 
+    native_reset_retired = canonical_code(function_body("VioGpuAdapter::IsNativeContextResetRetired", VIOGPU_CODE))
+    for fragment in (
+        "KeGetCurrentIrql()!=PASSIVE_LEVEL",
+        "InterlockedCompareExchange64(&m_2DRetiredResetGeneration,0,0)",
+        "retiredGeneration!=0&&resetGeneration<=retiredGeneration",
+    ):
+        if fragment not in native_reset_retired:
+            fail(f"Native Context reset retirement must use the confirmed adapter generation: {fragment}")
+
+    native_reset_retired_wrapper = canonical_code(
+        function_body("VioGpuDod::IsNativeContextResetRetired", VIOGPU_CODE)
+    )
+    for fragment in (
+        "ExAcquireRundownProtection(&m_HardwareOperations)",
+        "VioGpuAdapter*adapter=m_pHWDevice",
+        "adapter->IsNativeContextResetRetired(resetGeneration)",
+        "ExReleaseRundownProtection(&m_HardwareOperations)",
+    ):
+        if fragment not in native_reset_retired_wrapper:
+            fail(f"Native Context reset retirement wrapper must protect the adapter lifetime: {fragment}")
+
     publish = canonical_code(function_body("VioGpuAdapter::Publish2DResetRetirementLocked", VIOGPU_CODE))
     require_order(
         publish,
@@ -3581,6 +3602,8 @@ def check_wddm_standard_paging() -> None:
     ):
         if fragment not in map_allocation:
             fail(f"aperture map must attach ordinary VidMm page backing: {fragment}")
+    if "if(nativeAllocation&&!snapshotAcquired)" not in map_allocation or "resetRetired" in map_allocation:
+        fail("aperture map must remain fail-closed when a Native Context snapshot is unavailable")
     if "RtlMoveMemory(allocation->AperturePfns" in map_allocation or "rebasePages" in map_allocation:
         fail("aperture page identity must derive from MdlOffset, not mutate with partial-map call order")
     sg = canonical_code(function_body("BuildPfnEntries", WDDM_DDI_CODE))
@@ -3637,8 +3660,11 @@ def check_wddm_standard_paging() -> None:
         "adapter->Destroy2DResource(",
         "adapter->Detach2DScanoutResource(allocation->ResourceId,&detached)",
         "nativeAllocation&&allocation->HostState!=VioGpuWddmAllocationHostNone&&!snapshotAcquired",
+        "BOOLEANresetRetired=nativeAllocation&&AllocationResetRetired(allocation);",
+        "nativeAllocation&&allocation->HostState!=VioGpuWddmAllocationHostNone&&!snapshotAcquired&&!resetRetired",
         "BOOLEANreleased=FALSE;",
         "if(allocation->HostState==VioGpuWddmAllocationHostNone){released=TRUE;}",
+        "elseif(resetRetired){ClearAllocationHostBinding(allocation);released=TRUE;}",
         "if(allocation->Resource2DState==VioGpu2DResourceNone){released=TRUE;}",
         "ReleaseApertureCpuMapping(allocation);",
         "static_cast<ULONGLONG>(dummyPage.QuadPart)>>PAGE_SHIFT",
@@ -3650,6 +3676,29 @@ def check_wddm_standard_paging() -> None:
     ):
         if fragment not in unmap_allocation:
             fail(f"partial aperture unmap must retire host ownership and install DummyPage state: {fragment}")
+    require_order(
+        unmap_allocation,
+        (
+            "BOOLEANsnapshotAcquired=nativeAllocation&&AcquireAllocationNativeContextSnapshot(allocation,&snapshot);",
+            "BOOLEANresetRetired=nativeAllocation&&AllocationResetRetired(allocation);",
+            "if(nativeAllocation&&!snapshotAcquired&&!resetRetired)",
+        ),
+        "aperture unmap must evaluate confirmed reset retirement before rejecting a dead registration",
+    )
+
+    allocation_retirement = canonical_code(
+        function_body_with_parameters(
+            "AllocationResetRetired",
+            "VIOGPU_WDDM_ALLOCATION *allocation",
+            WDDM_DDI_CODE,
+        )
+    )
+    for fragment in (
+        "VioGpuAdapter::IsNativeContextAllocationBindingRetired(allocation->NativeContext)",
+        "allocation->Adapter->IsNativeContextResetRetired(allocation->ContextResetGeneration)",
+    ):
+        if fragment not in allocation_retirement:
+            fail(f"Native allocation reset retirement must require confirmed generation proof: {fragment}")
     host_release = min(
         unmap_allocation.find("snapshot.Adapter->DestroyNativeGuestAllocation("),
         unmap_allocation.find("adapter->Destroy2DResource("),

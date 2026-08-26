@@ -493,6 +493,7 @@ class VioGpuAdapter : IVioGpuPCI
     VIOGPU_HOST_CONTEXT_RESULT DestroyNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
                                                             _In_ UINT resourceId,
                                                             _Out_ BOOLEAN *released);
+    BOOLEAN IsNativeContextResetRetired(_In_ ULONGLONG resetGeneration);
 #endif
     _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                                                             _Out_opt_ UINT *capsetVersion,
@@ -925,6 +926,7 @@ class VioGpuDod
     int QueueNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ ULONGLONG fenceId);
     BOOLEAN ReleaseNativeSubmitBuffer(_In_ PGPU_VBUFFER buffer);
     BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration) const;
+    BOOLEAN IsNativeContextResetRetired(_In_ ULONGLONG resetGeneration) const;
     UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
     BOOLEAN AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requestedIova,
                                                       _In_ SIZE_T backingSize,

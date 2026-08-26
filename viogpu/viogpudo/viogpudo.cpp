@@ -667,6 +667,21 @@ BOOLEAN VioGpuDod::IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ U
     return current;
 }
 
+BOOLEAN VioGpuDod::IsNativeContextResetRetired(_In_ ULONGLONG resetGeneration) const
+{
+    if (resetGeneration == 0 || !ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return FALSE;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    /* A reset request deliberately leaves the adapter alive until HWClose;
+     * the rundown protects this pointer while the retirement epoch is read. */
+    BOOLEAN retired = adapter != NULL && adapter->IsNativeContextResetRetired(resetGeneration);
+    ExReleaseRundownProtection(&m_HardwareOperations);
+    return retired;
+}
+
 BOOLEAN VioGpuDod::AcquireNativeSubmissionOperation(void) const
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))
@@ -6255,6 +6270,21 @@ BOOLEAN VioGpuAdapter::Reconcile2DResourceAfterReset(_Inout_ VIOGPU_2D_RESOURCE_
         *retired = TRUE;
     }
     return TRUE;
+}
+
+BOOLEAN VioGpuAdapter::IsNativeContextResetRetired(_In_ ULONGLONG resetGeneration)
+{
+    PAGED_CODE();
+
+    if (resetGeneration == 0 || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return FALSE;
+    }
+
+    ULONGLONG retiredGeneration = static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_2DRetiredResetGeneration,
+                                                                                      0,
+                                                                                      0));
+    return retiredGeneration != 0 && resetGeneration <= retiredGeneration;
 }
 
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Present2DResource(_In_ UINT resourceId,

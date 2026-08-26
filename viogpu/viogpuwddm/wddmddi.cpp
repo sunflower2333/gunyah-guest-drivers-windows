@@ -1849,7 +1849,9 @@ VOID ClearAllocationHostBinding(VIOGPU_WDDM_ALLOCATION *allocation)
 BOOLEAN AllocationResetRetired(VIOGPU_WDDM_ALLOCATION *allocation)
 {
     return allocation != NULL && allocation->NativeContext != NULL && allocation->ContextResetGeneration != 0 &&
-           VioGpuAdapter::IsNativeContextAllocationBindingRetired(allocation->NativeContext);
+           VioGpuAdapter::IsNativeContextAllocationBindingRetired(allocation->NativeContext) &&
+           allocation->Adapter != NULL &&
+           allocation->Adapter->IsNativeContextResetRetired(allocation->ContextResetGeneration);
 }
 
 NTSTATUS ReleaseAllocationHostOwnership(VIOGPU_WDDM_ALLOCATION *allocation,
@@ -5519,7 +5521,11 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
     VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
     BOOLEAN nativeAllocation = IsNativeAllocation(allocation);
     BOOLEAN snapshotAcquired = nativeAllocation && AcquireAllocationNativeContextSnapshot(allocation, &snapshot);
-    if (nativeAllocation && !snapshotAcquired)
+    /* A dead registration cannot yield a live snapshot after a confirmed
+     * reset. Keep this narrow path available for VidMm bookkeeping while
+     * every other snapshot failure remains busy. */
+    BOOLEAN resetRetired = nativeAllocation && AllocationResetRetired(allocation);
+    if (nativeAllocation && !snapshotAcquired && !resetRetired)
     {
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
@@ -5533,7 +5539,7 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
         allocation->ApertureMappedPageCount > allocation->AperturePageCount ||
         allocationPage > allocation->AperturePageCount ||
         numberOfPages > allocation->AperturePageCount - allocationPage ||
-        (nativeAllocation && allocation->HostState != VioGpuWddmAllocationHostNone && !snapshotAcquired))
+        (nativeAllocation && allocation->HostState != VioGpuWddmAllocationHostNone && !snapshotAcquired && !resetRetired))
     {
         status = STATUS_DEVICE_NOT_READY;
     }
@@ -5561,6 +5567,13 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
     {
         if (allocation->HostState == VioGpuWddmAllocationHostNone)
         {
+            released = TRUE;
+        }
+        else if (resetRetired)
+        {
+            /* The device reset is the ownership proof.  No old-generation
+             * UNREF can be submitted after the context has been retired. */
+            ClearAllocationHostBinding(allocation);
             released = TRUE;
         }
         else
