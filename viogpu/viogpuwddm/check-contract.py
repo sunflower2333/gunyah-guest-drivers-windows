@@ -8958,7 +8958,7 @@ def check_pci_resource_lifetime() -> None:
         "ULONGLONGmappedSize=m_HostVisibleSize-regionOffset;",
         "PVOIDmappedVA=NULL;",
         "m_pDxgkInterface->DxgkCbMapMemory(m_pDxgkInterface->DeviceHandle",
-        "MmCached",
+        "MmNonCached",
         "m_HostVisibleMappedVA=mappedVA;",
         "m_HostVisibleMappedOffset=regionOffset;",
         "m_HostVisibleMappedSize=mappedSize;",

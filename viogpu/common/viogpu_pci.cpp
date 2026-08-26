@@ -725,11 +725,12 @@ NTSTATUS CPciResources::MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
                                                             static_cast<ULONG>(mappedSize),
                                                             FALSE,
                                                             FALSE,
-                                                            // The shared-memory BAR is ordinary host RAM, not device
-                                                            // registers. Keep the mapping cacheable on ARM64; the
-                                                            // control protocol uses explicit barriers for
-                                                            // producer/consumer order.
-                                                            MmCached,
+                                                            // The shared-memory BAR is still a PCI BAR from the guest
+                                                            // driver's perspective. Use the same noncached CPU mapping
+                                                            // policy as the ordinary VirtIO BAR path; the map-info value
+                                                            // returned by RESOURCE_MAP_BLOB separately describes the
+                                                            // guest stage-2 mapping and must remain cached.
+                                                            MmNonCached,
                                                             &mappedVA);
         if (!NT_SUCCESS(status) || mappedVA == nullptr)
         {
