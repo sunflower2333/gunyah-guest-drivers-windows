@@ -3531,6 +3531,17 @@ def check_wddm_standard_paging() -> None:
         fail("UNMAP_APERTURE must return only success or a retryable paging-buffer status")
 
     map_allocation = canonical_code(function_body("MapApertureAllocation", WDDM_DDI_CODE))
+    for aperture_name in ("MapApertureAllocation", "UnmapApertureAllocation"):
+        aperture_body = canonical_code(function_body(aperture_name, WDDM_DDI_CODE))
+        require_order(
+            aperture_body,
+            (
+                "status=AcquireAllocationLifecycle(allocation);",
+                "BOOLEANnativeAllocation=IsNativeAllocation(allocation);",
+                "BOOLEANsnapshotAcquired=nativeAllocation&&AcquireAllocationNativeContextSnapshot(allocation,&snapshot);",
+            ),
+            f"{aperture_name} must serialize allocation teardown before taking a Native Context snapshot",
+        )
     for fragment in (
         "ADDRESS_AND_SIZE_TO_SPAN_PAGES(MmGetMdlVirtualAddress(mdl),MmGetMdlByteCount(mdl))",
         "SIZE_TallocationPage=static_cast<SIZE_T>(mdlOffset);",
@@ -3899,6 +3910,7 @@ def check_wddm_present_contract() -> None:
     for fragment in (
         "privateData->Kind!=VioGpuWddmDmaKindPresent",
         "privateData->Submission!=transaction",
+        "transaction->Source==transaction->Destination",
         "state!=VioGpuWddmPresentBuilt&&state!=VioGpuWddmPresentPatched&&"
         "state!=VioGpuWddmPresentQueued&&state!=VioGpuWddmPresentExecuting",
         "packet->Signature!=VIOGPU_WDDM_PRESENT_DMA_SIGNATURE",
@@ -4279,6 +4291,21 @@ def check_wddm_present_contract() -> None:
 
     present_body = function_body("VioGpuWddmPresent", WDDM_DDI_CODE)
     present = canonical_code(present_body)
+    present_lifecycle = canonical_code(function_body("AcquirePresentAllocationLifecycles", WDDM_DDI_CODE))
+    require_order(
+        present_lifecycle,
+        (
+            "source==NULL||destination==NULL||source==destination||sourceLocked==NULL||destinationLocked==NULL||KeGetCurrentIrql()!=PASSIVE_LEVEL",
+            "BOOLEANsourceFirst=reinterpret_cast<ULONG_PTR>(source)<reinterpret_cast<ULONG_PTR>(destination);",
+            "VIOGPU_WDDM_ALLOCATION*first=sourceFirst?source:destination;",
+            "VIOGPU_WDDM_ALLOCATION*second=sourceFirst?destination:source;",
+            "status=AcquireAllocationLifecycle(first);",
+            "status=AcquireAllocationLifecycle(second);",
+        ),
+        "Present allocation lifetimes must be acquired in one deterministic address order",
+    )
+    if present_lifecycle.count("returnstatus;") != 2:
+        fail("Present allocation lifetime helper must retain both failure exits with the first lock owned by its caller")
     for fragment in (
         "KeGetCurrentIrql()!=PASSIVE_LEVEL",
         "present->SubRectCnt==0&&present->MultipassOffset!=0",
@@ -4294,6 +4321,7 @@ def check_wddm_present_contract() -> None:
         "AcquireContextSubmissionReference(context)",
         "AcquireAllocationSubmissionReference(source,context->Device->Adapter)",
         "AcquireAllocationSubmissionReference(destination,context->Device->Adapter)",
+        "AcquirePresentAllocationLifecycles(source,destination,&sourceLocked,&destinationLocked)",
         "HasLiveNativePresentIdentity(source,context,context->Device->Adapter)",
         "gdiCandidate&&HasGdiPresentIdentity(source,context,context->Device->Adapter)",
         "IsStandardPrimaryAllocation(destination)",
@@ -4371,6 +4399,7 @@ def check_wddm_present_contract() -> None:
             "ResolvePresentTransaction(",
             "VioGpuWddmPresentBuilt,",
             "candidatePrivateLength!=transaction->PrivateDataSize",
+            "AcquirePresentAllocationLifecycles(source,destination,&sourceLocked,&destinationLocked)",
             "HasLiveNativePresentIdentity(source,transaction->Context,adapter)",
             "ReconcileGdiSourcePlacementAfterReset(source)",
             "HasLiveGdiPresentIdentity(source,transaction->Context,adapter)",
@@ -4393,18 +4422,22 @@ def check_wddm_present_contract() -> None:
     retire_owner = canonical_code(function_body("RetireDmaOwner", WDDM_DDI_CODE))
     for fragment in (
         "privateData->Kind==VioGpuWddmDmaKindPaging",
+        "if(!resolved&&count==0)",
         "CancelRecognizedPagingTransaction(pagingPrivate,adapter);",
+        "if(!cancelled)",
         "privateData->Kind==VioGpuWddmDmaKindPresent",
         "state==VioGpuWddmPresentBuilt||state==VioGpuWddmPresentPatched",
         "transaction->PrivateDataSize==privateEnd-privateStart",
         "dmaBuffer==NULL?ValidatePresentSubmitDmaRange(transaction,dmaBufferSize,dmaStart,dmaEnd):"
         "ValidatePresentDmaSubmissionRange(transaction,dmaBuffer,dmaBufferSize,dmaStart,dmaEnd)",
         "RetirePresentTransaction(transaction,state,VioGpuWddmPresentCancelled);",
+        "if(!retired)",
         "privateData->Kind==VioGpuWddmDmaKindRender",
         "dmaBuffer==NULL?ValidateRenderSubmitDmaRange(submission,dmaBufferSize,dmaStart,dmaEnd):"
         "ValidateRenderDmaSubmissionRange(submission,dmaBuffer,dmaBufferSize,dmaStart,dmaEnd)",
         "submission->DmaPrivateDataSize==privateEnd-privateStart",
         "QuarantineSubmission(submission,state,TRUE);",
+        "if(!quarantined)",
     ):
         if fragment not in retire_owner:
             fail(f"generic DMA retirement must cover each pre-submit owner: {fragment}")
@@ -4599,8 +4632,8 @@ def check_wddm_present_contract() -> None:
     execute_body = function_body("ExecutePresentTransaction", WDDM_DDI_CODE)
     execute = canonical_code(execute_body)
     for fragment in (
-        "AcquireAllocationLifecycle(source)",
-        "AcquireAllocationLifecycle(destination)",
+        "source==destination",
+        "AcquirePresentAllocationLifecycles(source,destination,&sourceLocked,&destinationLocked)",
         "ReconcileGdiSourcePlacementAfterReset(source)",
         "HasLiveGdiPresentIdentity(source,transaction->Context,transaction->Adapter)",
         "source->ApertureAddress==NULL||destination->ApertureAddress==NULL",
@@ -4611,6 +4644,7 @@ def check_wddm_present_contract() -> None:
         "result!=VioGpuHostContextConfirmed",
         "InterlockedCompareExchange(&transaction->CancelRequested,0,0)!=0",
         "BuildPresentExecutionDiagnostic(transaction,*failureStage,status,*failureDetail,executionDiagnostic);",
+        "if(sourceLocked){KeReleaseMutex(&source->LifecycleMutex,FALSE);}",
     ):
         if fragment not in execute:
             fail(f"Present execution must keep the copy and Host flush in one validated ownership epoch: {fragment}")
@@ -6700,7 +6734,12 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     for fragment in (
         "allocation->ApertureMdl!=NULL",
         "allocation->ApertureAddress!=NULL",
+        "EnsureStandard2DAllocationBacking(allocation)",
+        "allocation->Resource2DState==VioGpu2DResourceBackingAttached",
+        "allocation->Resource2DResetGeneration!=0",
+        "!transaction->Adapter->IsHardwareResetRequested()",
         "!transaction->TransferDataComplete",
+        "transaction->Adapter->IsHardwareResetRequested()",
     ):
         if fragment not in worker:
             fail(f"passive paging execution must validate the retained VidMm backing: {fragment}")
