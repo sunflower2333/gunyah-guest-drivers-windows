@@ -2259,10 +2259,10 @@ def check_legacy_runtime_callback_contract() -> None:
         "PAGED_CODE();",
         "miniportDeviceContext==NULL||acpiFlags==NULL",
         "*acpiFlags=0;",
-        "returnSTATUS_NOT_SUPPORTED;",
+        "returnSTATUS_SUCCESS;",
     ):
         if notify_acpi.count(fragment) != 1:
-            fail(f"legacy ACPI callback must fail closed after clearing flags: {fragment}")
+            fail(f"legacy ACPI callback must acknowledge after clearing flags: {fragment}")
 
     etw = canonical_code(function_body("VioGpuWddmControlEtwLogging", WDDM_DDI_CODE))
     for fragment in (

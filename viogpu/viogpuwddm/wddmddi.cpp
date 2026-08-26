@@ -3737,8 +3737,13 @@ _Use_decl_annotations_ NTSTATUS VioGpuWddmNotifyAcpiEvent(PVOID miniportDeviceCo
     {
         return STATUS_INVALID_PARAMETER;
     }
+
+    /* VirtIO-GPU has no ACPI hot-key or firmware notification channel.  The
+     * WDDM callback is nevertheless part of the legacy registration table;
+     * acknowledge a well-formed notification with no follow-up flags so
+     * Dxgkrnl does not treat an optional callback as a device failure. */
     *acpiFlags = 0;
-    return STATUS_NOT_SUPPORTED;
+    return STATUS_SUCCESS;
 }
 
 _Use_decl_annotations_ VOID VioGpuWddmControlEtwLogging(BOOLEAN enable, ULONG flags, UCHAR level)
