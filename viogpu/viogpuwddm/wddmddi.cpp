@@ -5075,6 +5075,13 @@ NTSTATUS BuildPfnEntries(_In_reads_(numberOfPages) const PFN_NUMBER *pfns,
             return STATUS_INVALID_PARAMETER;
         }
         ULONGLONG physicalAddress = static_cast<ULONGLONG>(pfn) << PAGE_SHIFT;
+        /* A VirtIO SG entry describes the whole page.  The largest representable
+         * PFN can still produce an address whose page end wraps UINT64; reject
+         * that record before it reaches the Host blob protocol. */
+        if (physicalAddress > MAXULONGLONG - (PAGE_SIZE - 1))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
         if (*entryCount != 0)
         {
             GPU_MEM_ENTRY *previous = &entries[*entryCount - 1];

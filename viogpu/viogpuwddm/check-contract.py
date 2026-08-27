@@ -3799,6 +3799,7 @@ def check_wddm_standard_paging() -> None:
     for fragment in (
         "static_cast<ULONGLONG>(pfn)>(MAXULONGLONG>>PAGE_SHIFT)",
         "ULONGLONGphysicalAddress=static_cast<ULONGLONG>(pfn)<<PAGE_SHIFT;",
+        "physicalAddress>MAXULONGLONG-(PAGE_SIZE-1)",
         "previous->addr+previous->length==physicalAddress",
         "entries[*entryCount].addr=physicalAddress;",
         "entries[*entryCount].length=PAGE_SIZE;",
