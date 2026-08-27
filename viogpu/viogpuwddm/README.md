@@ -138,15 +138,17 @@ The opt-in capability query also accepts the runtime's zero-length probe form
 and returns an empty capability payload for the explicitly recognized D3D11
 queries. Unknown query types remain `E_NOTIMPL`; the probe therefore cannot
 advertise a capability that the table does not define.
-For a D3D11 interface selection, the same opt-in build also publishes a
-deliberately sparse `p11DeviceFuncs` table for compute, indirect draw/dispatch,
-resource-min-LOD, relocation, command-list private sizing/creation/destruction,
-and the extended render-target binding shape. Command-list owners use the same
-opaque signature-checked lifetime helper as other DDI objects; execution still
-only records the callback and never submits work.
-These callbacks only validate and record call shapes; they do not allocate
-backing, emit commands, or advertise a D3D11 pipeline capability. The product
-build leaves this table untouched.
+For a D3D11 interface selection, the same opt-in build also publishes a complete
+guarded `p11DeviceFuncs` table. It mirrors the common D3D10 draw, state-binding,
+resource, map/unmap, query, lifetime, and capability callbacks, and adds the
+D3D11-specific resource/view/state descriptor wrappers plus compute,
+indirect draw/dispatch, resource-min-LOD, relocation, command-list private
+sizing/creation/destruction, and extended render-target binding shapes.
+Command-list owners use the same opaque signature-checked lifetime helper as
+other DDI objects; execution still only records the callback and never submits
+work. These callbacks only validate and record call shapes; they do not
+allocate backing, emit commands, or advertise a D3D11 pipeline capability. The
+product build leaves this table untouched.
 The same probe now covers hull/domain shader binding, tessellation shader
 object sizing/creation, unordered-access-view lifetime, UAV clear/bind, and
 structure-count copy, resource-conversion, and command-list execution callback

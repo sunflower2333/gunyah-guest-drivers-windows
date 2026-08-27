@@ -1596,6 +1596,119 @@ VOID APIENTRY ActivationCreateResource(D3D10DDI_HDEVICE device,
     state->RuntimeResource = runtimeResource;
 }
 
+/* D3D11 keeps the resource owner contract but widens the create descriptor.
+ * These wrappers intentionally validate only the common lifetime fields so
+ * the probe can exercise the D3D11 ABI without allocating a renderable BO. */
+SIZE_T APIENTRY ActivationCalcPrivateResourceSize11(D3D10DDI_HDEVICE device,
+                                                    const D3D11DDIARG_CREATERESOURCE *arguments)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    return sizeof(ACTIVATION_RESOURCE);
+}
+
+VOID APIENTRY ActivationCreateResource11(D3D10DDI_HDEVICE device,
+                                         const D3D11DDIARG_CREATERESOURCE *arguments,
+                                         D3D10DDI_HRESOURCE resource,
+                                         D3D10DDI_HRTRESOURCE runtimeResource)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments == nullptr || arguments->pMipInfoList == nullptr || arguments->MipLevels == 0 ||
+        arguments->ArraySize == 0 || resource.pDrvPrivate == nullptr || runtimeResource.handle == nullptr)
+    {
+        return;
+    }
+
+    ACTIVATION_RESOURCE *state = static_cast<ACTIVATION_RESOURCE *>(resource.pDrvPrivate);
+    state->Signature = ACTIVATION_RESOURCE_SIGNATURE;
+    state->RuntimeResource = runtimeResource;
+}
+
+SIZE_T APIENTRY ActivationCalcPrivateShaderResourceViewSize11(D3D10DDI_HDEVICE device,
+                                                              const D3D11DDIARG_CREATESHADERRESOURCEVIEW *arguments)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    return sizeof(ACTIVATION_OBJECT);
+}
+
+VOID APIENTRY ActivationCreateShaderResourceView11(D3D10DDI_HDEVICE device,
+                                                   const D3D11DDIARG_CREATESHADERRESOURCEVIEW *arguments,
+                                                   D3D10DDI_HSHADERRESOURCEVIEW view,
+                                                   D3D10DDI_HRTSHADERRESOURCEVIEW runtimeView)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(view.pDrvPrivate, runtimeView.handle, ACTIVATION_SHADER_VIEW_SIGNATURE);
+    }
+}
+
+SIZE_T APIENTRY ActivationCalcPrivateDepthStencilViewSize11(D3D10DDI_HDEVICE device,
+                                                            const D3D11DDIARG_CREATEDEPTHSTENCILVIEW *arguments)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    return sizeof(ACTIVATION_OBJECT);
+}
+
+VOID APIENTRY ActivationCreateDepthStencilView11(D3D10DDI_HDEVICE device,
+                                                 const D3D11DDIARG_CREATEDEPTHSTENCILVIEW *arguments,
+                                                 D3D10DDI_HDEPTHSTENCILVIEW view,
+                                                 D3D10DDI_HRTDEPTHSTENCILVIEW runtimeView)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(view.pDrvPrivate, runtimeView.handle, ACTIVATION_DEPTH_STENCIL_VIEW_SIGNATURE);
+    }
+}
+
+SIZE_T APIENTRY ActivationCalcPrivateBlendStateSize11(D3D10DDI_HDEVICE device, const D3D10_1_DDI_BLEND_DESC *arguments)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    return sizeof(ACTIVATION_OBJECT);
+}
+
+VOID APIENTRY ActivationCreateBlendState11(D3D10DDI_HDEVICE device,
+                                           const D3D10_1_DDI_BLEND_DESC *arguments,
+                                           D3D10DDI_HBLENDSTATE state,
+                                           D3D10DDI_HRTBLENDSTATE runtimeState)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(state.pDrvPrivate, runtimeState.handle, ACTIVATION_BLEND_STATE_SIGNATURE);
+    }
+}
+
+SIZE_T APIENTRY
+ActivationCalcPrivateGeometryShaderWithStreamOutput11(D3D10DDI_HDEVICE device,
+                                                      const D3D11DDIARG_CREATEGEOMETRYSHADERWITHSTREAMOUTPUT *arguments,
+                                                      const D3D10DDIARG_STAGE_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    UNREFERENCED_PARAMETER(signatures);
+    return sizeof(ACTIVATION_OBJECT);
+}
+
+VOID APIENTRY
+ActivationCreateGeometryShaderWithStreamOutput11(D3D10DDI_HDEVICE device,
+                                                 const D3D11DDIARG_CREATEGEOMETRYSHADERWITHSTREAMOUTPUT *arguments,
+                                                 D3D10DDI_HSHADER shader,
+                                                 D3D10DDI_HRTSHADER runtimeShader,
+                                                 const D3D10DDIARG_STAGE_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(signatures);
+    if (arguments != nullptr)
+    {
+        ActivationCreateShader(shader, runtimeShader);
+    }
+}
+
 VOID APIENTRY ActivationDestroyResource(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource)
 {
     UNREFERENCED_PARAMETER(device);
@@ -1918,16 +2031,120 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
     functions.pfnDestroyRasterizerState = ActivationDestroyRasterizerState;
     *arguments->pDeviceFuncs = functions;
 
-    /* The D3D11 runtime selects the union's p11DeviceFuncs member. Keep this
-     * table deliberately sparse: the capability response advertises no 3D
-     * pipeline, while these exact-signature callbacks let an ABI probe verify
-     * compute/indirect dispatch wiring without exposing a second renderer. */
+    /* The D3D11 runtime selects the union's p11DeviceFuncs member. Publish the
+     * complete guarded shape table so an ABI probe can exercise the common and
+     * D3D11-specific callback contracts without exposing a second renderer. */
     if (arguments->Interface == D3D11_0_DDI_INTERFACE_VERSION && arguments->p11DeviceFuncs != nullptr)
     {
         D3D11DDI_DEVICEFUNCS *functions11 = arguments->p11DeviceFuncs;
         ZeroMemory(functions11, sizeof(*functions11));
+
+        /* D3D11 repeats the common D3D10 callback surface in this table. Keep
+         * both tables shape-compatible so an ABI probe can exercise either
+         * interface without falling through a null function pointer. */
+        functions11->pfnDefaultConstantBufferUpdateSubresourceUP = ActivationDefaultConstantBufferUpdateSubresourceUP;
+        functions11->pfnVsSetConstantBuffers = ActivationVsSetConstantBuffers;
+        functions11->pfnPsSetShaderResources = ActivationPsSetShaderResources;
+        functions11->pfnPsSetShader = ActivationPsSetShader;
+        functions11->pfnPsSetSamplers = ActivationPsSetSamplers;
+        functions11->pfnVsSetShader = ActivationVsSetShader;
+        functions11->pfnDrawIndexed = ActivationDrawIndexed;
+        functions11->pfnDraw = ActivationDraw;
+        functions11->pfnDynamicIABufferMapNoOverwrite = ActivationResourceMap;
+        functions11->pfnDynamicIABufferUnmap = ActivationResourceUnmap;
+        functions11->pfnDynamicConstantBufferMapDiscard = ActivationResourceMap;
+        functions11->pfnDynamicIABufferMapDiscard = ActivationResourceMap;
+        functions11->pfnDynamicConstantBufferUnmap = ActivationResourceUnmap;
+        functions11->pfnPsSetConstantBuffers = ActivationPsSetConstantBuffers;
+        functions11->pfnIaSetInputLayout = ActivationIaSetInputLayout;
+        functions11->pfnIaSetVertexBuffers = ActivationIaSetVertexBuffers;
+        functions11->pfnIaSetIndexBuffer = ActivationIaSetIndexBuffer;
+        functions11->pfnDrawIndexedInstanced = ActivationDrawIndexedInstanced;
+        functions11->pfnDrawInstanced = ActivationDrawInstanced;
+        functions11->pfnDynamicResourceMapDiscard = ActivationResourceMap;
+        functions11->pfnDynamicResourceUnmap = ActivationResourceUnmap;
+        functions11->pfnGsSetConstantBuffers = ActivationGsSetConstantBuffers;
+        functions11->pfnGsSetShader = ActivationGsSetShader;
+        functions11->pfnIaSetTopology = ActivationIaSetTopology;
+        functions11->pfnStagingResourceMap = ActivationResourceMap;
+        functions11->pfnStagingResourceUnmap = ActivationResourceUnmap;
+        functions11->pfnVsSetShaderResources = ActivationVsSetShaderResources;
+        functions11->pfnVsSetSamplers = ActivationVsSetSamplers;
+        functions11->pfnGsSetShaderResources = ActivationGsSetShaderResources;
+        functions11->pfnGsSetSamplers = ActivationGsSetSamplers;
         functions11->pfnSetRenderTargets = ActivationSetRenderTargets11;
+        functions11->pfnShaderResourceViewReadAfterWriteHazard = ActivationShaderResourceViewReadAfterWriteHazard;
+        functions11->pfnResourceReadAfterWriteHazard = ActivationResourceReadAfterWriteHazard;
+        functions11->pfnSetBlendState = ActivationSetBlendState;
+        functions11->pfnSetDepthStencilState = ActivationSetDepthStencilState;
+        functions11->pfnSetRasterizerState = ActivationSetRasterizerState;
+        functions11->pfnQueryEnd = ActivationQueryEnd;
+        functions11->pfnQueryBegin = ActivationQueryBegin;
+        functions11->pfnResourceCopyRegion = ActivationResourceCopyRegion;
+        functions11->pfnResourceUpdateSubresourceUP = ActivationResourceUpdateSubresourceUP;
+        functions11->pfnSoSetTargets = ActivationSetStreamOutputTargets;
+        functions11->pfnDrawAuto = ActivationDrawAuto;
+        functions11->pfnSetViewports = ActivationSetViewports;
+        functions11->pfnSetScissorRects = ActivationSetScissorRects;
+        functions11->pfnClearRenderTargetView = ActivationClearRenderTargetView;
+        functions11->pfnClearDepthStencilView = ActivationClearDepthStencilView;
+        functions11->pfnSetPredication = ActivationSetPredication;
+        functions11->pfnQueryGetData = ActivationQueryGetData;
+        functions11->pfnFlush = ActivationFlush;
+        functions11->pfnGenMips = ActivationGenerateMips;
+        functions11->pfnResourceCopy = ActivationResourceCopy;
+        functions11->pfnResourceResolveSubresource = ActivationResolveSubresource;
+        functions11->pfnResourceMap = ActivationResourceMap;
+        functions11->pfnResourceUnmap = ActivationResourceUnmap;
+        functions11->pfnResourceIsStagingBusy = ActivationResourceIsStagingBusy;
         functions11->pfnRelocateDeviceFuncs = ActivationRelocateDeviceFuncs11;
+        functions11->pfnCalcPrivateResourceSize = ActivationCalcPrivateResourceSize11;
+        functions11->pfnCalcPrivateOpenedResourceSize = ActivationCalcPrivateOpenedResourceSize;
+        functions11->pfnCreateResource = ActivationCreateResource11;
+        functions11->pfnOpenResource = ActivationOpenResource;
+        functions11->pfnDestroyResource = ActivationDestroyResource;
+        functions11->pfnCalcPrivateShaderResourceViewSize = ActivationCalcPrivateShaderResourceViewSize11;
+        functions11->pfnCreateShaderResourceView = ActivationCreateShaderResourceView11;
+        functions11->pfnDestroyShaderResourceView = ActivationDestroyShaderResourceView;
+        functions11->pfnCalcPrivateRenderTargetViewSize = ActivationCalcPrivateRenderTargetViewSize;
+        functions11->pfnCreateRenderTargetView = ActivationCreateRenderTargetView;
+        functions11->pfnDestroyRenderTargetView = ActivationDestroyRenderTargetView;
+        functions11->pfnCalcPrivateDepthStencilViewSize = ActivationCalcPrivateDepthStencilViewSize11;
+        functions11->pfnCreateDepthStencilView = ActivationCreateDepthStencilView11;
+        functions11->pfnDestroyDepthStencilView = ActivationDestroyDepthStencilView;
+        functions11->pfnCalcPrivateElementLayoutSize = ActivationCalcPrivateElementLayoutSize;
+        functions11->pfnCreateElementLayout = ActivationCreateElementLayout;
+        functions11->pfnDestroyElementLayout = ActivationDestroyElementLayout;
+        functions11->pfnCalcPrivateBlendStateSize = ActivationCalcPrivateBlendStateSize11;
+        functions11->pfnCreateBlendState = ActivationCreateBlendState11;
+        functions11->pfnDestroyBlendState = ActivationDestroyBlendState;
+        functions11->pfnCalcPrivateDepthStencilStateSize = ActivationCalcPrivateDepthStencilStateSize;
+        functions11->pfnCreateDepthStencilState = ActivationCreateDepthStencilState;
+        functions11->pfnDestroyDepthStencilState = ActivationDestroyDepthStencilState;
+        functions11->pfnCalcPrivateRasterizerStateSize = ActivationCalcPrivateRasterizerStateSize;
+        functions11->pfnCreateRasterizerState = ActivationCreateRasterizerState;
+        functions11->pfnDestroyRasterizerState = ActivationDestroyRasterizerState;
+        functions11->pfnCalcPrivateShaderSize = ActivationCalcPrivateShaderSize;
+        functions11->pfnCreateVertexShader = ActivationCreateVertexShader;
+        functions11->pfnCreateGeometryShader = ActivationCreateGeometryShader;
+        functions11->pfnCreatePixelShader = ActivationCreatePixelShader;
+        functions11->pfnCalcPrivateGeometryShaderWithStreamOutput = ActivationCalcPrivateGeometryShaderWithStreamOutput11;
+        functions11->pfnCreateGeometryShaderWithStreamOutput = ActivationCreateGeometryShaderWithStreamOutput11;
+        functions11->pfnDestroyShader = ActivationDestroyShader;
+        functions11->pfnCalcPrivateSamplerSize = ActivationCalcPrivateSamplerSize;
+        functions11->pfnCreateSampler = ActivationCreateSampler;
+        functions11->pfnDestroySampler = ActivationDestroySampler;
+        functions11->pfnCalcPrivateQuerySize = ActivationCalcPrivateQuerySize;
+        functions11->pfnCreateQuery = ActivationCreateQuery;
+        functions11->pfnDestroyQuery = ActivationDestroyQuery;
+        functions11->pfnCheckFormatSupport = ActivationCheckFormatSupport;
+        functions11->pfnCheckMultisampleQualityLevels = ActivationCheckMultisampleQualityLevels;
+        functions11->pfnCheckCounterInfo = ActivationCheckCounterInfo;
+        functions11->pfnCheckCounter = ActivationCheckCounter;
+        functions11->pfnDestroyDevice = ActivationDestroyDevice;
+        functions11->pfnSetTextFilterSize = ActivationSetTextFilterSize;
+        functions11->pfnResourceConvert = ActivationResourceCopy;
+        functions11->pfnResourceConvertRegion = ActivationResourceCopyRegion;
         functions11->pfnVsSetShaderWithIfaces = ActivationVsSetShaderWithIfaces;
         functions11->pfnPsSetShaderWithIfaces = ActivationPsSetShaderWithIfaces;
         functions11->pfnGsSetShaderWithIfaces = ActivationGsSetShaderWithIfaces;
