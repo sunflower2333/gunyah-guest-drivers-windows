@@ -3583,8 +3583,7 @@ NTSTATUS ApplyRenderPrepatches(_Inout_ VIOGPU_WDDM_RENDER_COMMAND *header,
     for (UINT index = 0; index < header->AllocationReferenceCount; ++index)
     {
         VIOGPU_WDDM_ALLOCATION_REFERENCE *reference = &references[index];
-        if (reference->AllocationIndex >= allocationListSize ||
-            (reference->PatchOffset & (sizeof(ULONG) - 1)) != 0 ||
+        if (reference->AllocationIndex >= allocationListSize || (reference->PatchOffset & (sizeof(ULONG) - 1)) != 0 ||
             reference->PatchOffset > header->CommandStreamSize - sizeof(ULONGLONG))
         {
             return STATUS_INVALID_PARAMETER;
@@ -5267,8 +5266,7 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
                                _In_ UINT mdlOffset)
 {
     if (adapter == NULL || allocation == NULL || mdl == NULL || numberOfPages == 0 || MmGetMdlByteCount(mdl) == 0 ||
-        MmGetMdlByteOffset(mdl) != 0 ||
-        offsetInPages > (MAXULONGLONG >> PAGE_SHIFT) ||
+        MmGetMdlByteOffset(mdl) != 0 || offsetInPages > (MAXULONGLONG >> PAGE_SHIFT) ||
         numberOfPages - 1 > (MAXULONGLONG >> PAGE_SHIFT) - offsetInPages ||
         offsetInPages >= (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) ||
         numberOfPages > (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) - offsetInPages)
