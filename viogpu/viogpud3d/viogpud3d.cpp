@@ -120,13 +120,11 @@ VOID APIENTRY ActivationCheckFormatSupport(D3D10DDI_HDEVICE device, DXGI_FORMAT 
 VOID APIENTRY ActivationCheckMultisampleQualityLevels(D3D10DDI_HDEVICE device,
                                                       DXGI_FORMAT format,
                                                       UINT sampleCount,
-                                                      UINT flags,
                                                       UINT *qualityLevels)
 {
     UNREFERENCED_PARAMETER(device);
     UNREFERENCED_PARAMETER(format);
     UNREFERENCED_PARAMETER(sampleCount);
-    UNREFERENCED_PARAMETER(flags);
     if (qualityLevels != nullptr)
     {
         *qualityLevels = 0;
