@@ -7201,6 +7201,15 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
             KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
             return STATUS_DEVICE_BUSY;
         }
+        if (context->Owner != NULL || context->Generation != 0 || context->ResetGeneration != 0 ||
+            context->ContextId != 0 || context->VaStart != 0 || context->VaSize != 0 ||
+            context->SubmitQueueId != 0)
+        {
+            KeReleaseSpinLock(&context->BindingLock, oldIrql);
+            KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+            FailNativeContextAtAnyIrql();
+            return STATUS_INVALID_DEVICE_STATE;
+        }
         KeReleaseSpinLock(&context->BindingLock, oldIrql);
         *released = TRUE;
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);

@@ -6904,6 +6904,18 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     released_context = canonical_code(function_body("VioGpuAdapter::IsNativeContextReleased", VIOGPU_CODE))
     if destroy_context.count("context->AllocationReferences!=0") != 2:
         fail("context destroy must reject both live and reset-retired registrations with allocation references")
+    dead_state = destroy_context.find("if(objectState==VioGpuNativeContextDead&&context->Adapter==NULL&&!context->Registered)")
+    dead_state_guard = destroy_context.find(
+        "if(context->Owner!=NULL||context->Generation!=0||context->ResetGeneration!=0||context->ContextId!=0||"
+        "context->VaStart!=0||context->VaSize!=0||context->SubmitQueueId!=0)",
+        dead_state,
+    )
+    dead_state_failure = destroy_context.find("FailNativeContextAtAnyIrql();returnSTATUS_INVALID_DEVICE_STATE;", dead_state_guard)
+    dead_state_success = destroy_context.find("*released=TRUE;", dead_state_failure)
+    if min(dead_state, dead_state_guard, dead_state_failure, dead_state_success) < 0 or not (
+        dead_state < dead_state_guard < dead_state_failure < dead_state_success
+    ):
+        fail("dead Native Context destroy must prove every identity field is cleared before reporting release")
     if released_context.count("context->AllocationReferences==0") != 1:
         fail("context release proof must wait for every KMD allocation reference")
     range_register = canonical_code(function_body("RegisterNativeAllocationRange", WDDM_DDI_CODE))
