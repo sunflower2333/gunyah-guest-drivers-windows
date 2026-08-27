@@ -6911,6 +6911,15 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "range->Iova<=existingEnd&&existing->Iova<=rangeEnd"
     ) != 1:
         fail("native allocation range registration must reject overlapping context IOVA intervals")
+    for fragment in (
+        "existing->Registration!=registration",
+        "!existing->Linked",
+        "existing->Iova==0",
+        "existing->Length==0",
+        "existing->Iova>MAXULONGLONG-((ULONGLONG)existing->Length-1)",
+    ):
+        if range_register.count(fragment) != 1:
+            fail(f"native allocation range registration must reject malformed existing metadata: {fragment}")
     range_unregister = canonical_code(function_body("UnregisterNativeAllocationRange", WDDM_DDI_CODE))
     if range_unregister.count("RemoveEntryList(&range->Link)") != 1:
         fail("native allocation teardown must unregister its context IOVA range")

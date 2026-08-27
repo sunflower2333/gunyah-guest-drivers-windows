@@ -532,11 +532,17 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
                                                VioGpuNativeContextDead) == VioGpuNativeContextLive;
     if (valid)
     {
+        ULONGLONG rangeEnd = range->Iova + (ULONGLONG)range->Length - 1;
         for (PLIST_ENTRY entry = registration->AllocationRanges.Flink; entry != &registration->AllocationRanges;
              entry = entry->Flink)
         {
             VIOGPU_WDDM_ALLOCATION_RANGE *existing = CONTAINING_RECORD(entry, VIOGPU_WDDM_ALLOCATION_RANGE, Link);
-            ULONGLONG rangeEnd = range->Iova + (ULONGLONG)range->Length - 1;
+            if (existing->Registration != registration || !existing->Linked || existing->Iova == 0 ||
+                existing->Length == 0 || existing->Iova > MAXULONGLONG - ((ULONGLONG)existing->Length - 1))
+            {
+                valid = FALSE;
+                break;
+            }
             ULONGLONG existingEnd = existing->Iova + (ULONGLONG)existing->Length - 1;
             if (range->Iova <= existingEnd && existing->Iova <= rangeEnd)
             {
