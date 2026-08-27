@@ -55,7 +55,7 @@ VOID APIENTRY ActivationCreateResource(D3D10DDI_HDEVICE device,
 {
     UNREFERENCED_PARAMETER(device);
     if (arguments == nullptr || arguments->pMipInfoList == nullptr || arguments->MipLevels == 0 ||
-        arguments->ArraySize == 0 || resource.pDrvPrivate == nullptr || runtimeResource.pDrvPrivate == nullptr)
+        arguments->ArraySize == 0 || resource.pDrvPrivate == nullptr || runtimeResource.handle == nullptr)
     {
         return;
     }
@@ -74,7 +74,63 @@ VOID APIENTRY ActivationDestroyResource(D3D10DDI_HDEVICE device, D3D10DDI_HRESOU
         return;
     }
     state->Signature = 0;
-    state->RuntimeResource.pDrvPrivate = nullptr;
+    state->RuntimeResource.handle = nullptr;
+}
+
+/* Shared-resource opens use the same bounded owner as local creates.  The
+ * experiment records only the runtime identity; it does not import a shared
+ * allocation or make a cross-process handle usable by the product path. */
+SIZE_T APIENTRY ActivationCalcPrivateOpenedResourceSize(D3D10DDI_HDEVICE device,
+                                                        const D3D10DDIARG_OPENRESOURCE *arguments)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    return sizeof(ACTIVATION_RESOURCE);
+}
+
+VOID APIENTRY ActivationOpenResource(D3D10DDI_HDEVICE device,
+                                     const D3D10DDIARG_OPENRESOURCE *arguments,
+                                     D3D10DDI_HRESOURCE resource,
+                                     D3D10DDI_HRTRESOURCE runtimeResource)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments == nullptr || resource.pDrvPrivate == nullptr || runtimeResource.handle == nullptr)
+    {
+        return;
+    }
+
+    ACTIVATION_RESOURCE *state = static_cast<ACTIVATION_RESOURCE *>(resource.pDrvPrivate);
+    state->Signature = ACTIVATION_RESOURCE_SIGNATURE;
+    state->RuntimeResource = runtimeResource;
+}
+
+/* The activation shim advertises no renderable formats.  Returning an empty
+ * capability mask is a useful DDI query result and avoids handing the runtime
+ * an uninitialised output while the real Mesa Vulkan path remains separate. */
+VOID APIENTRY ActivationCheckFormatSupport(D3D10DDI_HDEVICE device, DXGI_FORMAT format, UINT *formatSupport)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(format);
+    if (formatSupport != nullptr)
+    {
+        *formatSupport = 0;
+    }
+}
+
+VOID APIENTRY ActivationCheckMultisampleQualityLevels(D3D10DDI_HDEVICE device,
+                                                      DXGI_FORMAT format,
+                                                      UINT sampleCount,
+                                                      UINT flags,
+                                                      UINT *qualityLevels)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(format);
+    UNREFERENCED_PARAMETER(sampleCount);
+    UNREFERENCED_PARAMETER(flags);
+    if (qualityLevels != nullptr)
+    {
+        *qualityLevels = 0;
+    }
 }
 #endif
 
@@ -108,8 +164,12 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
     D3D10DDI_DEVICEFUNCS functions = {};
     functions.pfnDestroyDevice = ActivationDestroyDevice;
     functions.pfnCalcPrivateResourceSize = ActivationCalcPrivateResourceSize;
+    functions.pfnCalcPrivateOpenedResourceSize = ActivationCalcPrivateOpenedResourceSize;
     functions.pfnCreateResource = ActivationCreateResource;
+    functions.pfnOpenResource = ActivationOpenResource;
     functions.pfnDestroyResource = ActivationDestroyResource;
+    functions.pfnCheckFormatSupport = ActivationCheckFormatSupport;
+    functions.pfnCheckMultisampleQualityLevels = ActivationCheckMultisampleQualityLevels;
     *arguments->pDeviceFuncs = functions;
     return S_OK;
 #else

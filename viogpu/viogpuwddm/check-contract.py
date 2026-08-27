@@ -1065,7 +1065,7 @@ def check_d3d_umd_shim_contract() -> None:
         fail("D3D UMD test resource lifecycle size gate is missing")
     resource_create = canonical_code(function_body("ActivationCreateResource", code))
     for fragment in (
-        "arguments==NULL||arguments->pMipInfoList==NULL||arguments->MipLevels==0||arguments->ArraySize==0||resource.pDrvPrivate==NULL||runtimeResource.pDrvPrivate==NULL",
+        "arguments==NULL||arguments->pMipInfoList==NULL||arguments->MipLevels==0||arguments->ArraySize==0||resource.pDrvPrivate==NULL||runtimeResource.handle==NULL",
         "state->Signature=ACTIVATION_RESOURCE_SIGNATURE;",
         "state->RuntimeResource=runtimeResource;",
     ):
@@ -1074,9 +1074,35 @@ def check_d3d_umd_shim_contract() -> None:
     resource_destroy = canonical_code(function_body("ActivationDestroyResource", code))
     if "state==NULL||state->Signature!=ACTIVATION_RESOURCE_SIGNATURE" not in resource_destroy:
         fail("D3D UMD test resource destroy must validate its private record")
-    for fragment in ("state->Signature=0;", "state->RuntimeResource.pDrvPrivate=NULL;"):
+    for fragment in ("state->Signature=0;", "state->RuntimeResource.handle=NULL;"):
         if fragment not in resource_destroy:
             fail(f"D3D UMD test resource destroy must clear its private record: {fragment}")
+    create_device_fragments = (
+        "functions.pfnCalcPrivateOpenedResourceSize=ActivationCalcPrivateOpenedResourceSize;",
+        "functions.pfnOpenResource=ActivationOpenResource;",
+        "functions.pfnCheckFormatSupport=ActivationCheckFormatSupport;",
+        "functions.pfnCheckMultisampleQualityLevels=ActivationCheckMultisampleQualityLevels;",
+    )
+    for fragment in create_device_fragments:
+        if fragment not in create_device:
+            fail(f"D3D UMD test device table is missing guarded callback: {fragment}")
+    opened_size = canonical_code(function_body("ActivationCalcPrivateOpenedResourceSize", code))
+    if "returnsizeof(ACTIVATION_RESOURCE);" not in opened_size:
+        fail("D3D UMD test opened-resource size gate is missing")
+    opened = canonical_code(function_body("ActivationOpenResource", code))
+    for fragment in (
+        "arguments==NULL||resource.pDrvPrivate==NULL||runtimeResource.handle==NULL",
+        "state->Signature=ACTIVATION_RESOURCE_SIGNATURE;",
+        "state->RuntimeResource=runtimeResource;",
+    ):
+        if fragment not in opened:
+            fail(f"D3D UMD test opened-resource lifecycle is missing: {fragment}")
+    format_support = canonical_code(function_body("ActivationCheckFormatSupport", code))
+    if "if(formatSupport!=NULL){*formatSupport=0;}" not in format_support:
+        fail("D3D UMD test format-support query must publish an empty capability mask")
+    multisample = canonical_code(function_body("ActivationCheckMultisampleQualityLevels", code))
+    if "if(qualityLevels!=NULL){*qualityLevels=0;}" not in multisample:
+        fail("D3D UMD test multisample query must publish zero quality levels")
     caps = canonical_code(function_body("ActivationGetCaps", code))
     for fragment in (
         "if(arguments->pData==NULL){returnE_INVALIDARG;}",
