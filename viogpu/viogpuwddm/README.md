@@ -131,6 +131,10 @@ Those callbacks only validate the DDI call shape and record the last callback;
 they do not execute shaders, mutate resources, synchronize, or submit GPU
 work. This is still a probe-time DDI table completion aid, not a D3D renderer
 and not an alternative to Mesa's Vulkan Native Context path.
+The opt-in capability query also accepts the runtime's zero-length probe form
+and returns an empty capability payload for the explicitly recognized D3D11
+queries. Unknown query types remain `E_NOTIMPL`; the probe therefore cannot
+advertise a capability that the table does not define.
 The default product build
 leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset
 as unsupported because neither a real D3D command contract nor an independent

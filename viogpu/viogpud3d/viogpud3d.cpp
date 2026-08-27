@@ -1200,6 +1200,13 @@ HRESULT APIENTRY ActivationGetCaps(D3D10DDI_HADAPTER adapter, const D3D10_2DDIAR
     /* The opt-in build exercises the capability-query ABI without advertising
      * a rendering feature.  Each recognized payload is zeroed only when the
      * runtime supplied its exact size; unknown requests stay explicit. */
+    /* D3D runtimes use a zero-sized call as a probe in a few interface
+     * negotiation paths.  There is no payload to initialize in that form;
+     * accept it, while still rejecting a missing buffer for non-zero data. */
+    if (arguments->DataSize == 0)
+    {
+        return arguments->pData == nullptr ? S_OK : E_INVALIDARG;
+    }
     if (arguments->pData == nullptr)
     {
         return E_INVALIDARG;

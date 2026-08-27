@@ -1265,6 +1265,7 @@ def check_d3d_umd_shim_contract() -> None:
         fail("D3D UMD test multisample query must publish zero quality levels")
     caps = canonical_code(function_body("ActivationGetCaps", code))
     for fragment in (
+        "if(arguments->DataSize==0){returnarguments->pData==NULL?S_OK:E_INVALIDARG;}",
         "if(arguments->pData==NULL){returnE_INVALIDARG;}",
         "switch(arguments->Type)",
         "caseD3D11DDICAPS_THREADING:",
