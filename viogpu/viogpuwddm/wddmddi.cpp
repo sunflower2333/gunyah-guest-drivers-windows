@@ -1125,8 +1125,11 @@ NTSTATUS AcquireRenderAllocationReferences(const VIOGPU_WDDM_RENDER_COMMAND *hea
             break;
         }
         VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(allocationList[reference->AllocationIndex].hDeviceSpecificAllocation);
-        VIOGPU_WDDM_ALLOCATION *allocation = deviceAllocation == NULL || deviceAllocation->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE ? NULL
-                                                                                                                                              : deviceAllocation->Allocation;
+        VIOGPU_WDDM_ALLOCATION *allocation =
+            deviceAllocation == NULL || deviceAllocation->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE ||
+                    deviceAllocation->Device != device || !IsOwnedAllocation(deviceAllocation->Allocation, device->Adapter)
+                ? NULL
+                : deviceAllocation->Allocation;
         NTSTATUS status = AcquireAllocationLifecycle(allocation);
         if (status == STATUS_SUCCESS)
         {
@@ -7283,7 +7286,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData = static_cast<VIOGPU_WDDM_KMD_DMA_PRIVATE *>(present->pDmaBufferPrivateData);
 
     if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Device == NULL ||
-        context->Device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE ||
+        context->Device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || context->Device->Adapter == NULL ||
         (context->Type != VioGpuWddmContextNative && context->Type != VioGpuWddmContextGdi) ||
         context->NodeOrdinal != 0 || context->EngineAffinity != 1)
     {
@@ -7299,7 +7302,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
             destinationOpen->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE ||
             sourceOpen->Device != context->Device || destinationOpen->Device != context->Device ||
             sourceOpen->Allocation == NULL || destinationOpen->Allocation == NULL || destinationOpen->ReadOnly ||
-            sourceOpen->Allocation == destinationOpen->Allocation)
+            sourceOpen->Allocation == destinationOpen->Allocation ||
+            !IsOwnedAllocation(sourceOpen->Allocation, context->Device->Adapter) ||
+            !IsOwnedAllocation(destinationOpen->Allocation, context->Device->Adapter))
         {
             status = STATUS_INVALID_HANDLE;
         }
