@@ -7013,6 +7013,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     for fragment in (
         "resource_id==MAXUINT",
         "resource_id!=blob_id",
+        "entries[index].addr==0",
         "entries[index].addr>MAXULONGLONG-(entries[index].length-1)",
     ):
         if create_blob.count(fragment) != 1:
