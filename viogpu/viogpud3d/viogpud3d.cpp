@@ -116,6 +116,8 @@ enum ACTIVATION_CALL : LONG
     ActivationCallCsSetUnorderedAccessViews,
     ActivationCallCopyStructureCount,
     ActivationCallCommandListExecute,
+    ActivationCallCheckDeferredContextHandleSizes,
+    ActivationCallCalcDeferredContextHandleSize,
 };
 
 VOID ActivationRecordDeviceCall(D3D10DDI_HDEVICE device, ACTIVATION_CALL call)
@@ -1105,6 +1107,30 @@ VOID APIENTRY ActivationCommandListExecute(D3D10DDI_HDEVICE device, D3D11DDI_HCO
     ActivationRecordDeviceCall(device, ActivationCallCommandListExecute);
 }
 
+VOID APIENTRY ActivationCheckDeferredContextHandleSizes(D3D10DDI_HDEVICE device,
+                                                        UINT handleSizeBytes,
+                                                        D3D11DDI_HANDLESIZE *handleSizes)
+{
+    /* The probe advertises no command-list capability. If the runtime still
+     * asks for this optional table, return an explicit empty array instead of
+     * leaving caller-visible handle metadata uninitialised. */
+    if (handleSizes != nullptr && handleSizeBytes != 0)
+    {
+        ZeroMemory(handleSizes, handleSizeBytes);
+    }
+    ActivationRecordDeviceCall(device, ActivationCallCheckDeferredContextHandleSizes);
+}
+
+SIZE_T APIENTRY ActivationCalcDeferredContextHandleSize(D3D10DDI_HDEVICE device,
+                                                        D3D11DDI_HANDLETYPE handleType,
+                                                        VOID *handleData)
+{
+    UNREFERENCED_PARAMETER(handleType);
+    UNREFERENCED_PARAMETER(handleData);
+    ActivationRecordDeviceCall(device, ActivationCallCalcDeferredContextHandleSize);
+    return 0;
+}
+
 VOID APIENTRY ActivationCreateComputeShader(D3D10DDI_HDEVICE device,
                                             const UINT *shaderCode,
                                             D3D10DDI_HSHADER shader,
@@ -1571,6 +1597,8 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
         functions11->pfnSetResourceMinLOD = ActivationSetResourceMinLOD;
         functions11->pfnCopyStructureCount = ActivationCopyStructureCount;
         functions11->pfnCommandListExecute = ActivationCommandListExecute;
+        functions11->pfnCheckDeferredContextHandleSizes = ActivationCheckDeferredContextHandleSizes;
+        functions11->pfnCalcDeferredContextHandleSize = ActivationCalcDeferredContextHandleSize;
     }
     return S_OK;
 #else

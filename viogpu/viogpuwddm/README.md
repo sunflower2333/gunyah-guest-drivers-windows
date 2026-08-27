@@ -151,6 +151,9 @@ shapes. UAV owners are opaque activation
 objects only; the callbacks do not inspect resource contents or create a
 shader-visible allocation. Product builds continue to leave every one of these
 optional D3D11 entries unset.
+Deferred-context handle-size queries are also handled by the probe with an
+explicit zero-sized response. The probe does not advertise command-list or
+deferred-context capabilities, so this response is diagnostic coverage only.
 The default product build
 leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset
 as unsupported because neither a real D3D command contract nor an independent

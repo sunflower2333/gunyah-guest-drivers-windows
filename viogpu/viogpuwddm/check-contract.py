@@ -1217,6 +1217,8 @@ def check_d3d_umd_shim_contract() -> None:
         "functions11->pfnSetResourceMinLOD=ActivationSetResourceMinLOD;",
         "functions11->pfnCopyStructureCount=ActivationCopyStructureCount;",
         "functions11->pfnCommandListExecute=ActivationCommandListExecute;",
+        "functions11->pfnCheckDeferredContextHandleSizes=ActivationCheckDeferredContextHandleSizes;",
+        "functions11->pfnCalcDeferredContextHandleSize=ActivationCalcDeferredContextHandleSize;",
     )
     for fragment in d3d11_fragments:
         if fragment not in create_device:
@@ -1294,6 +1296,8 @@ def check_d3d_umd_shim_contract() -> None:
         "ActivationCsSetUnorderedAccessViews",
         "ActivationCopyStructureCount",
         "ActivationCommandListExecute",
+        "ActivationCheckDeferredContextHandleSizes",
+        "ActivationCalcDeferredContextHandleSize",
         "ActivationCalcPrivateTessellationShaderSize",
         "ActivationCalcPrivateUnorderedAccessViewSize",
     ):
