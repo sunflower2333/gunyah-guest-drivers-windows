@@ -99,9 +99,8 @@ BOOLEAN IsOwnedAllocation(_In_ const VIOGPU_WDDM_ALLOCATION *allocation, _In_ co
     }
 
     const VIOGPU_WDDM_RESOURCE *resource = allocation->Resource;
-    return resource == NULL ||
-           (resource->Signature == VIOGPU_WDDM_RESOURCE_SIGNATURE && resource->Adapter == adapter &&
-            ReadResourceAllocationCount(resource) > 0);
+    return resource == NULL || (resource->Signature == VIOGPU_WDDM_RESOURCE_SIGNATURE && resource->Adapter == adapter &&
+                                ReadResourceAllocationCount(resource) > 0);
 }
 
 BOOLEAN ValidatePagingDmaPacket(_In_ const VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData,
@@ -1125,11 +1124,9 @@ NTSTATUS AcquireRenderAllocationReferences(const VIOGPU_WDDM_RENDER_COMMAND *hea
             break;
         }
         VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(allocationList[reference->AllocationIndex].hDeviceSpecificAllocation);
-        VIOGPU_WDDM_ALLOCATION *allocation =
-            deviceAllocation == NULL || deviceAllocation->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE ||
-                    deviceAllocation->Device != device || !IsOwnedAllocation(deviceAllocation->Allocation, device->Adapter)
-                ? NULL
-                : deviceAllocation->Allocation;
+        VIOGPU_WDDM_ALLOCATION *allocation = deviceAllocation == NULL || deviceAllocation->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE || deviceAllocation->Device != device || !IsOwnedAllocation(deviceAllocation->Allocation, device->Adapter)
+                                                                                                                                                 ? NULL
+                                                                                                                                                 : deviceAllocation->Allocation;
         NTSTATUS status = AcquireAllocationLifecycle(allocation);
         if (status == STATUS_SUCCESS)
         {
@@ -4461,8 +4458,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
 {
     VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(hDevice);
     if (device == NULL || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || openAllocation == NULL ||
-        device->Adapter == NULL ||
-        openAllocation->NumAllocations == 0 || openAllocation->pOpenAllocation == NULL ||
+        device->Adapter == NULL || openAllocation->NumAllocations == 0 || openAllocation->pOpenAllocation == NULL ||
         openAllocation->SubresourceIndex != 0 || (openAllocation->Flags.Value & ~3U) != 0 ||
         openAllocation->pPrivateDriverData != NULL || openAllocation->PrivateDriverSize != 0)
     {
@@ -4657,8 +4653,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
 {
     VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(hDevice);
     if (device == NULL || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || createContext == NULL ||
-        device->Adapter == NULL ||
-        KeGetCurrentIrql() != PASSIVE_LEVEL || createContext->NodeOrdinal != 0 || createContext->EngineAffinity != 1)
+        device->Adapter == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || createContext->NodeOrdinal != 0 ||
+        createContext->EngineAffinity != 1)
     {
         return STATUS_INVALID_PARAMETER;
     }
