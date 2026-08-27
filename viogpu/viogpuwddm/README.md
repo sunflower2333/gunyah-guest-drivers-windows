@@ -117,7 +117,9 @@ the existing Native Render validator from the `RenderKm` entry point, and the
 adapter-wide recovery path from `ResetEngine`.
 The UMD experiment publishes guarded device and resource lifetime callbacks;
 its resource owner only validates the DDI private handle and retains the
-runtime resource identity.  It has no shader, draw, or submit entry points.
+runtime resource identity.  The same opt-in table covers opened-resource
+sizing/creation plus explicit zero-capability format and multisample queries.
+It has no shader, draw, or submit entry points.
 The default product build
 leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset
 as unsupported because neither a real D3D command contract nor an independent
