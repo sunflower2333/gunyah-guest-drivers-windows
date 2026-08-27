@@ -41,8 +41,7 @@ VOID APIENTRY ActivationDestroyDevice(D3D10DDI_HDEVICE device)
 /* This resource owner is deliberately limited to the DDI lifetime contract.
  * It does not allocate video memory or expose a command entry point; the
  * production rendering path remains Mesa's Native Context Vulkan UMD. */
-SIZE_T APIENTRY ActivationCalcPrivateResourceSize(D3D10DDI_HDEVICE device,
-                                                  const D3D10DDIARG_CREATERESOURCE *arguments)
+SIZE_T APIENTRY ActivationCalcPrivateResourceSize(D3D10DDI_HDEVICE device, const D3D10DDIARG_CREATERESOURCE *arguments)
 {
     UNREFERENCED_PARAMETER(device);
     UNREFERENCED_PARAMETER(arguments);
