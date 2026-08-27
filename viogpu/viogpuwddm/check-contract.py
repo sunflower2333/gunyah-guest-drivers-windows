@@ -1223,6 +1223,30 @@ def check_d3d_umd_shim_contract() -> None:
     for callback in object_callbacks:
         if len(re.findall(rf"\b{callback}\s*\(", source)) != 1:
             fail(f"D3D UMD test object callback must have one implementation: {callback}")
+    for callback in (
+        "ActivationResourceMap",
+        "ActivationResourceUnmap",
+        "ActivationSetStreamOutputTargets",
+        "ActivationResolveSubresource",
+        "ActivationSetTextFilterSize",
+    ):
+        if len(re.findall(rf"\b{callback}\s*\(", source)) != 1:
+            fail(f"D3D UMD test shape callback must have one implementation: {callback}")
+    resource_map = canonical_code(function_body("ActivationResourceMap", code))
+    for fragment in (
+        "state==NULL||state->Signature!=ACTIVATION_RESOURCE_SIGNATURE",
+        "if(mappedResource!=NULL){ZeroMemory(mappedResource,sizeof(*mappedResource));}",
+        "ActivationRecordDeviceCall(device,ActivationCallResourceMap);",
+    ):
+        if fragment not in resource_map:
+            fail(f"D3D UMD test resource map callback is missing: {fragment}")
+    resource_unmap = canonical_code(function_body("ActivationResourceUnmap", code))
+    for fragment in (
+        "state==NULL||state->Signature!=ACTIVATION_RESOURCE_SIGNATURE",
+        "ActivationRecordDeviceCall(device,ActivationCallResourceUnmap);",
+    ):
+        if fragment not in resource_unmap:
+            fail(f"D3D UMD test resource unmap callback is missing: {fragment}")
     opened_size = canonical_code(function_body("ActivationCalcPrivateOpenedResourceSize", code))
     if "returnsizeof(ACTIVATION_RESOURCE);" not in opened_size:
         fail("D3D UMD test opened-resource size gate is missing")
