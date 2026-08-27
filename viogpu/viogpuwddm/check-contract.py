@@ -1114,8 +1114,108 @@ def check_d3d_umd_shim_contract() -> None:
     destroy_device = canonical_code(function_body("ActivationDestroyDevice", code))
     if "state==NULL||state->Signature!=ACTIVATION_DEVICE_SIGNATURE" not in destroy_device:
         fail("D3D UMD test lifecycle destroy must validate its private record")
-    if "state->Signature=0;" not in destroy_device:
-        fail("D3D UMD test lifecycle destroy must clear its private record")
+    for fragment in ("state->Signature=0;", "state->CallCount=0;", "state->LastCall=0;"):
+        if fragment not in destroy_device:
+            fail(f"D3D UMD test lifecycle destroy must clear its private record: {fragment}")
+    deferred_record = canonical_code(function_body("ActivationRecordDeferredContextCall", code))
+    for fragment in (
+        "state==NULL||state->Signature!=ACTIVATION_DEFERRED_CONTEXT_SIGNATURE",
+        "InterlockedExchange(&state->LastCall,static_cast<LONG>(call));",
+        "InterlockedIncrement(&state->CallCount);",
+    ):
+        if fragment not in deferred_record:
+            fail(f"D3D UMD test deferred-context call recorder is missing: {fragment}")
+    deferred_size = canonical_code(function_body("ActivationCalcPrivateDeferredContextSize", code))
+    for fragment in (
+        "arguments==NULL||arguments->Flags!=0",
+        "returnsizeof(ACTIVATION_DEFERRED_CONTEXT);",
+        "return0;",
+    ):
+        if fragment not in deferred_size:
+            fail(f"D3D UMD test deferred-context size gate is missing: {fragment}")
+    deferred_create = canonical_code(function_body("ActivationCreateDeferredContext", code))
+    for fragment in (
+        "arguments==NULL||arguments->Flags!=0||arguments->hDrvContext.pDrvPrivate==NULL",
+        "state->Signature=ACTIVATION_DEFERRED_CONTEXT_SIGNATURE;",
+        "state->RuntimeCoreLayer=arguments->hRTCoreLayer;",
+        "state->Flags=arguments->Flags;",
+        "state->CallCount=0;",
+        "state->LastCall=0;",
+        "if(arguments->p11ContextFuncs!=NULL)",
+        "functions->pfnCheckDeferredContextHandleSizes=ActivationCheckDeferredContextHandleSizes;",
+        "functions->pfnCalcDeferredContextHandleSize=ActivationCalcDeferredContextHandleSize;",
+        "functions->pfnCalcPrivateDeferredContextSize=ActivationCalcPrivateDeferredContextSize;",
+        "functions->pfnCreateDeferredContext=ActivationCreateDeferredContext;",
+        "functions->pfnAbandonCommandList=ActivationAbandonCommandList;",
+        "functions->pfnCalcPrivateCommandListSize=ActivationCalcPrivateCommandListSize;",
+        "functions->pfnCreateCommandList=ActivationCreateCommandList;",
+        "functions->pfnCommandListExecute=ActivationCommandListExecute;",
+        "functions->pfnDestroyCommandList=ActivationDestroyCommandList;",
+        "functions->pfnRecycleCommandList=ActivationRecycleCommandList;",
+        "functions->pfnRecycleCreateCommandList=ActivationRecycleCreateCommandList;",
+        "functions->pfnRecycleCreateDeferredContext=ActivationRecycleCreateDeferredContext;",
+        "functions->pfnRecycleDestroyCommandList=ActivationRecycleDestroyCommandList;",
+        "ActivationRecordDeviceCall(device,ActivationCallCreateDeferredContext);",
+    ):
+        if fragment not in deferred_create:
+            fail(f"D3D UMD test deferred-context creation is missing: {fragment}")
+    abandon = canonical_code(function_body("ActivationAbandonCommandList", code))
+    for fragment in (
+        "state==NULL||state->Signature!=ACTIVATION_DEFERRED_CONTEXT_SIGNATURE",
+        "state->Flags=0;",
+        "ActivationRecordDeferredContextCall(device,ActivationCallAbandonCommandList);",
+    ):
+        if fragment not in abandon:
+            fail(f"D3D UMD test deferred-context abandon is missing: {fragment}")
+    recycle_deferred = canonical_code(function_body("ActivationRecycleCreateDeferredContext", code))
+    for fragment in (
+        "arguments==NULL||arguments->Flags!=0||arguments->hDrvContext.pDrvPrivate==NULL",
+        "state->Signature=ACTIVATION_DEFERRED_CONTEXT_SIGNATURE;",
+        "state->RuntimeCoreLayer=arguments->hRTCoreLayer;",
+        "state->Flags=arguments->Flags;",
+        "state->CallCount=0;",
+        "state->LastCall=0;",
+        "ActivationRecordDeviceCall(device,ActivationCallRecycleCreateDeferredContext);",
+        "returnS_OK;",
+    ):
+        if fragment not in recycle_deferred:
+            fail(f"D3D UMD test deferred-context recycle-create is missing: {fragment}")
+    recycle_object = canonical_code(function_body("ActivationRecycleObject", code))
+    for fragment in (
+        "state==NULL||state->Signature!=signature",
+        "state->RuntimeHandle=NULL;",
+    ):
+        if fragment not in recycle_object:
+            fail(f"D3D UMD test recycle owner is missing: {fragment}")
+    recycle_command_list = canonical_code(function_body("ActivationRecycleCommandList", code))
+    if "ActivationRecycleObject(commandList.pDrvPrivate,ACTIVATION_COMMAND_LIST_SIGNATURE);" not in recycle_command_list:
+        fail("D3D UMD test command-list recycle must retain its private allocation")
+    recycle_create_command_list = canonical_code(function_body("ActivationRecycleCreateCommandList", code))
+    for fragment in (
+        "arguments==NULL||commandList.pDrvPrivate==NULL||runtimeCommandList.handle==NULL",
+        "ActivationInitializeObject(commandList.pDrvPrivate,runtimeCommandList.handle,ACTIVATION_COMMAND_LIST_SIGNATURE);",
+        "ActivationRecordDeviceCall(device,ActivationCallRecycleCreateCommandList);",
+        "returnS_OK;",
+    ):
+        if fragment not in recycle_create_command_list:
+            fail(f"D3D UMD test command-list recycle-create is missing: {fragment}")
+    recycle_destroy_command_list = canonical_code(function_body("ActivationRecycleDestroyCommandList", code))
+    if "ActivationRecycleObject(commandList.pDrvPrivate,ACTIVATION_COMMAND_LIST_SIGNATURE);" not in recycle_destroy_command_list:
+        fail("D3D UMD test command-list recycle-destroy must retain its private allocation")
+    handle_sizes = canonical_code(function_body("ActivationCheckDeferredContextHandleSizes", code))
+    for fragment in (
+        "if(handleSizeArray!=NULL){*handleSizeArray=0;}",
+        "ActivationRecordDeviceCall(device,ActivationCallCheckDeferredContextHandleSizes);",
+    ):
+        if fragment not in handle_sizes:
+            fail(f"D3D UMD test deferred handle-size query is missing: {fragment}")
+    handle_size = canonical_code(function_body("ActivationCalcDeferredContextHandleSize", code))
+    for fragment in (
+        "ActivationRecordDeviceCall(device,ActivationCallCalcDeferredContextHandleSize);",
+        "return0;",
+    ):
+        if fragment not in handle_size:
+            fail(f"D3D UMD test deferred handle-size calculation is missing: {fragment}")
     resource_size = canonical_code(function_body("ActivationCalcPrivateResourceSize", code))
     if "returnsizeof(ACTIVATION_RESOURCE);" not in resource_size:
         fail("D3D UMD test resource lifecycle size gate is missing")
@@ -1222,6 +1322,13 @@ def check_d3d_umd_shim_contract() -> None:
         "functions11->pfnDestroyCommandList=ActivationDestroyCommandList;",
         "functions11->pfnCheckDeferredContextHandleSizes=ActivationCheckDeferredContextHandleSizes;",
         "functions11->pfnCalcDeferredContextHandleSize=ActivationCalcDeferredContextHandleSize;",
+        "functions11->pfnCalcPrivateDeferredContextSize=ActivationCalcPrivateDeferredContextSize;",
+        "functions11->pfnCreateDeferredContext=ActivationCreateDeferredContext;",
+        "functions11->pfnAbandonCommandList=ActivationAbandonCommandList;",
+        "functions11->pfnRecycleCommandList=ActivationRecycleCommandList;",
+        "functions11->pfnRecycleCreateCommandList=ActivationRecycleCreateCommandList;",
+        "functions11->pfnRecycleCreateDeferredContext=ActivationRecycleCreateDeferredContext;",
+        "functions11->pfnRecycleDestroyCommandList=ActivationRecycleDestroyCommandList;",
     )
     for fragment in d3d11_fragments:
         if fragment not in create_device:
@@ -1307,8 +1414,10 @@ def check_d3d_umd_shim_contract() -> None:
         "ActivationCalcPrivateTessellationShaderSize",
         "ActivationCalcPrivateUnorderedAccessViewSize",
     ):
-        if len(re.findall(rf"\b{callback}\s*\(", source)) != 1:
-            fail(f"D3D UMD test shape callback must have one implementation: {callback}")
+        # Match the function body rather than every token occurrence: a few
+        # deferred-context callbacks are intentionally forward-declared before
+        # CreateDeferredContext wires their table.
+        function_body(callback, code)
     resource_map = canonical_code(function_body("ActivationResourceMap", code))
     for fragment in (
         "state==NULL||state->Signature!=ACTIVATION_RESOURCE_SIGNATURE",

@@ -30,6 +30,15 @@ struct ACTIVATION_QUERY
     D3D10DDI_HRTQUERY RuntimeQuery;
 };
 
+struct ACTIVATION_DEFERRED_CONTEXT
+{
+    ULONG Signature;
+    D3D10DDI_HRTCORELAYER RuntimeCoreLayer;
+    UINT Flags;
+    volatile LONG CallCount;
+    volatile LONG LastCall;
+};
+
 /* D3D creates state, view, and shader objects through a large family of
  * callbacks.  The opt-in probe gives each family an opaque owner so the
  * runtime can exercise allocation and teardown without entering a renderer.
@@ -44,6 +53,7 @@ struct ACTIVATION_OBJECT
 constexpr ULONG ACTIVATION_DEVICE_SIGNATURE = 0x56494F54UL;
 constexpr ULONG ACTIVATION_RESOURCE_SIGNATURE = 0x56494F52UL;
 constexpr ULONG ACTIVATION_QUERY_SIGNATURE = 0x56494F51UL;
+constexpr ULONG ACTIVATION_DEFERRED_CONTEXT_SIGNATURE = 0x56494443UL;
 constexpr ULONG ACTIVATION_ELEMENT_LAYOUT_SIGNATURE = 0x56494F45UL;
 constexpr ULONG ACTIVATION_SAMPLER_SIGNATURE = 0x56494F4DUL;
 constexpr ULONG ACTIVATION_SHADER_SIGNATURE = 0x56494F48UL;
@@ -121,12 +131,30 @@ enum ACTIVATION_CALL : LONG
     ActivationCallCalcDeferredContextHandleSize,
     ActivationCallCreateCommandList,
     ActivationCallDestroyCommandList,
+    ActivationCallCreateDeferredContext,
+    ActivationCallAbandonCommandList,
+    ActivationCallRecycleCreateDeferredContext,
+    ActivationCallRecycleCommandList,
+    ActivationCallRecycleCreateCommandList,
+    ActivationCallRecycleDestroyCommandList,
 };
 
 VOID ActivationRecordDeviceCall(D3D10DDI_HDEVICE device, ACTIVATION_CALL call)
 {
     ACTIVATION_DEVICE *state = static_cast<ACTIVATION_DEVICE *>(device.pDrvPrivate);
     if (state == nullptr || state->Signature != ACTIVATION_DEVICE_SIGNATURE)
+    {
+        return;
+    }
+
+    InterlockedExchange(&state->LastCall, static_cast<LONG>(call));
+    InterlockedIncrement(&state->CallCount);
+}
+
+VOID ActivationRecordDeferredContextCall(D3D10DDI_HDEVICE device, ACTIVATION_CALL call)
+{
+    ACTIVATION_DEFERRED_CONTEXT *state = static_cast<ACTIVATION_DEFERRED_CONTEXT *>(device.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_DEFERRED_CONTEXT_SIGNATURE)
     {
         return;
     }
@@ -163,6 +191,20 @@ VOID ActivationDestroyObject(PVOID privateData, ULONG signature)
 
     state->RuntimeHandle = nullptr;
     state->Signature = 0;
+}
+
+/* Recycling keeps the DDI handle's private allocation owned by the runtime;
+ * only the runtime identity is invalidated until a recycle-create callback
+ * installs the next identity. */
+VOID ActivationRecycleObject(PVOID privateData, ULONG signature)
+{
+    ACTIVATION_OBJECT *state = static_cast<ACTIVATION_OBJECT *>(privateData);
+    if (state == nullptr || state->Signature != signature)
+    {
+        return;
+    }
+
+    state->RuntimeHandle = nullptr;
 }
 
 SIZE_T ActivationObjectSize()
@@ -434,7 +476,10 @@ VOID APIENTRY ActivationDestroyDevice(D3D10DDI_HDEVICE device)
     {
         return;
     }
+
     state->Signature = 0;
+    state->CallCount = 0;
+    state->LastCall = 0;
 }
 
 /* The opt-in device has no queued GPU work.  Publishing an explicit flush
@@ -1113,6 +1158,26 @@ VOID APIENTRY ActivationCommandListExecute(D3D10DDI_HDEVICE device, D3D11DDI_HCO
     ActivationRecordDeviceCall(device, ActivationCallCommandListExecute);
 }
 
+VOID APIENTRY ActivationCheckDeferredContextHandleSizes(D3D10DDI_HDEVICE device,
+                                                        UINT *handleSizeArray,
+                                                        D3D11DDI_HANDLESIZE *handleSizes);
+SIZE_T APIENTRY ActivationCalcDeferredContextHandleSize(D3D10DDI_HDEVICE device,
+                                                        D3D11DDI_HANDLETYPE handleType,
+                                                        VOID *handleData);
+SIZE_T APIENTRY ActivationCalcPrivateDeferredContextSize(D3D10DDI_HDEVICE device,
+                                                         const D3D11DDIARG_CALCPRIVATEDEFERREDCONTEXTSIZE *arguments);
+VOID APIENTRY ActivationCreateDeferredContext(D3D10DDI_HDEVICE device,
+                                              const D3D11DDIARG_CREATEDEFERREDCONTEXT *arguments);
+VOID APIENTRY ActivationAbandonCommandList(D3D10DDI_HDEVICE device);
+HRESULT APIENTRY ActivationRecycleCreateDeferredContext(D3D10DDI_HDEVICE device,
+                                                        const D3D11DDIARG_CREATEDEFERREDCONTEXT *arguments);
+VOID APIENTRY ActivationRecycleCommandList(D3D10DDI_HDEVICE device, D3D11DDI_HCOMMANDLIST commandList);
+HRESULT APIENTRY ActivationRecycleCreateCommandList(D3D10DDI_HDEVICE device,
+                                                    const D3D11DDIARG_CREATECOMMANDLIST *arguments,
+                                                    D3D11DDI_HCOMMANDLIST commandList,
+                                                    D3D11DDI_HRTCOMMANDLIST runtimeCommandList);
+VOID APIENTRY ActivationRecycleDestroyCommandList(D3D10DDI_HDEVICE device, D3D11DDI_HCOMMANDLIST commandList);
+
 SIZE_T APIENTRY ActivationCalcPrivateCommandListSize(D3D10DDI_HDEVICE device,
                                                      const D3D11DDIARG_CREATECOMMANDLIST *arguments)
 {
@@ -1142,6 +1207,114 @@ VOID APIENTRY ActivationDestroyCommandList(D3D10DDI_HDEVICE device, D3D11DDI_HCO
     }
     ActivationDestroyObject(commandList.pDrvPrivate, ACTIVATION_COMMAND_LIST_SIGNATURE);
     ActivationRecordDeviceCall(device, ActivationCallDestroyCommandList);
+}
+
+SIZE_T APIENTRY ActivationCalcPrivateDeferredContextSize(D3D10DDI_HDEVICE device,
+                                                         const D3D11DDIARG_CALCPRIVATEDEFERREDCONTEXTSIZE *arguments)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments == nullptr || arguments->Flags != 0)
+    {
+        return 0;
+    }
+    return sizeof(ACTIVATION_DEFERRED_CONTEXT);
+}
+
+VOID APIENTRY ActivationCreateDeferredContext(D3D10DDI_HDEVICE device,
+                                              const D3D11DDIARG_CREATEDEFERREDCONTEXT *arguments)
+{
+    if (arguments == nullptr || arguments->Flags != 0 || arguments->hDrvContext.pDrvPrivate == nullptr)
+    {
+        return;
+    }
+
+    ACTIVATION_DEFERRED_CONTEXT *state = static_cast<ACTIVATION_DEFERRED_CONTEXT *>(arguments->hDrvContext.pDrvPrivate);
+    state->Signature = ACTIVATION_DEFERRED_CONTEXT_SIGNATURE;
+    state->RuntimeCoreLayer = arguments->hRTCoreLayer;
+    state->Flags = arguments->Flags;
+    state->CallCount = 0;
+    state->LastCall = 0;
+
+    /* A deferred context receives its own D3D11 table.  Populate only the
+     * command-list/lifetime callbacks that the guarded probe can exercise;
+     * product builds leave this entire family absent until a real command ABI
+     * exists. */
+    if (arguments->p11ContextFuncs != nullptr)
+    {
+        D3D11DDI_DEVICEFUNCS *functions = arguments->p11ContextFuncs;
+        functions->pfnCheckDeferredContextHandleSizes = ActivationCheckDeferredContextHandleSizes;
+        functions->pfnCalcDeferredContextHandleSize = ActivationCalcDeferredContextHandleSize;
+        functions->pfnCalcPrivateDeferredContextSize = ActivationCalcPrivateDeferredContextSize;
+        functions->pfnCreateDeferredContext = ActivationCreateDeferredContext;
+        functions->pfnAbandonCommandList = ActivationAbandonCommandList;
+        functions->pfnCalcPrivateCommandListSize = ActivationCalcPrivateCommandListSize;
+        functions->pfnCreateCommandList = ActivationCreateCommandList;
+        functions->pfnCommandListExecute = ActivationCommandListExecute;
+        functions->pfnDestroyCommandList = ActivationDestroyCommandList;
+        functions->pfnRecycleCommandList = ActivationRecycleCommandList;
+        functions->pfnRecycleCreateCommandList = ActivationRecycleCreateCommandList;
+        functions->pfnRecycleCreateDeferredContext = ActivationRecycleCreateDeferredContext;
+        functions->pfnRecycleDestroyCommandList = ActivationRecycleDestroyCommandList;
+    }
+    ActivationRecordDeviceCall(device, ActivationCallCreateDeferredContext);
+}
+
+VOID APIENTRY ActivationAbandonCommandList(D3D10DDI_HDEVICE device)
+{
+    ACTIVATION_DEFERRED_CONTEXT *state = static_cast<ACTIVATION_DEFERRED_CONTEXT *>(device.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_DEFERRED_CONTEXT_SIGNATURE)
+    {
+        return;
+    }
+
+    /* The activation probe has no recorded pipeline state. Clearing the
+     * context flags still models the runtime's abandon-to-clear transition. */
+    state->Flags = 0;
+    ActivationRecordDeferredContextCall(device, ActivationCallAbandonCommandList);
+}
+
+HRESULT APIENTRY ActivationRecycleCreateDeferredContext(D3D10DDI_HDEVICE device,
+                                                        const D3D11DDIARG_CREATEDEFERREDCONTEXT *arguments)
+{
+    if (arguments == nullptr || arguments->Flags != 0 || arguments->hDrvContext.pDrvPrivate == nullptr)
+    {
+        return E_INVALIDARG;
+    }
+
+    ACTIVATION_DEFERRED_CONTEXT *state = static_cast<ACTIVATION_DEFERRED_CONTEXT *>(arguments->hDrvContext.pDrvPrivate);
+    state->Signature = ACTIVATION_DEFERRED_CONTEXT_SIGNATURE;
+    state->RuntimeCoreLayer = arguments->hRTCoreLayer;
+    state->Flags = arguments->Flags;
+    state->CallCount = 0;
+    state->LastCall = 0;
+    ActivationRecordDeviceCall(device, ActivationCallRecycleCreateDeferredContext);
+    return S_OK;
+}
+
+VOID APIENTRY ActivationRecycleCommandList(D3D10DDI_HDEVICE device, D3D11DDI_HCOMMANDLIST commandList)
+{
+    ActivationRecycleObject(commandList.pDrvPrivate, ACTIVATION_COMMAND_LIST_SIGNATURE);
+    ActivationRecordDeviceCall(device, ActivationCallRecycleCommandList);
+}
+
+HRESULT APIENTRY ActivationRecycleCreateCommandList(D3D10DDI_HDEVICE device,
+                                                    const D3D11DDIARG_CREATECOMMANDLIST *arguments,
+                                                    D3D11DDI_HCOMMANDLIST commandList,
+                                                    D3D11DDI_HRTCOMMANDLIST runtimeCommandList)
+{
+    if (arguments == nullptr || commandList.pDrvPrivate == nullptr || runtimeCommandList.handle == nullptr)
+    {
+        return E_INVALIDARG;
+    }
+    ActivationInitializeObject(commandList.pDrvPrivate, runtimeCommandList.handle, ACTIVATION_COMMAND_LIST_SIGNATURE);
+    ActivationRecordDeviceCall(device, ActivationCallRecycleCreateCommandList);
+    return S_OK;
+}
+
+VOID APIENTRY ActivationRecycleDestroyCommandList(D3D10DDI_HDEVICE device, D3D11DDI_HCOMMANDLIST commandList)
+{
+    ActivationRecycleObject(commandList.pDrvPrivate, ACTIVATION_COMMAND_LIST_SIGNATURE);
+    ActivationRecordDeviceCall(device, ActivationCallRecycleDestroyCommandList);
 }
 
 VOID APIENTRY ActivationCheckDeferredContextHandleSizes(D3D10DDI_HDEVICE device,
@@ -1640,6 +1813,13 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
         functions11->pfnDestroyCommandList = ActivationDestroyCommandList;
         functions11->pfnCheckDeferredContextHandleSizes = ActivationCheckDeferredContextHandleSizes;
         functions11->pfnCalcDeferredContextHandleSize = ActivationCalcDeferredContextHandleSize;
+        functions11->pfnCalcPrivateDeferredContextSize = ActivationCalcPrivateDeferredContextSize;
+        functions11->pfnCreateDeferredContext = ActivationCreateDeferredContext;
+        functions11->pfnAbandonCommandList = ActivationAbandonCommandList;
+        functions11->pfnRecycleCommandList = ActivationRecycleCommandList;
+        functions11->pfnRecycleCreateCommandList = ActivationRecycleCreateCommandList;
+        functions11->pfnRecycleCreateDeferredContext = ActivationRecycleCreateDeferredContext;
+        functions11->pfnRecycleDestroyCommandList = ActivationRecycleDestroyCommandList;
     }
     return S_OK;
 #else

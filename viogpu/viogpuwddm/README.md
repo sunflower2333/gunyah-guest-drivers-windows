@@ -155,8 +155,11 @@ objects only; the callbacks do not inspect resource contents or create a
 shader-visible allocation. Product builds continue to leave every one of these
 optional D3D11 entries unset.
 Deferred-context handle-size queries are also handled by the probe with an
-explicit zero-sized response. The probe does not advertise command-list or
-deferred-context capabilities, so this response is diagnostic coverage only.
+explicit zero-sized response. Its guarded test table additionally exercises
+private deferred-context sizing, create/recycle/abandon callbacks, and command-
+list recycle ownership using a signature-checked opaque context record. The
+probe does not advertise command-list or deferred-context capabilities, so
+these callbacks remain diagnostic coverage only and never emit GPU work.
 The default product build
 leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset
 as unsupported because neither a real D3D command contract nor an independent
