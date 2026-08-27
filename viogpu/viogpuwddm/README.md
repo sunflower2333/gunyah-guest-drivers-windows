@@ -104,6 +104,26 @@ by the legacy loader; `CreateDevice` remains `E_NOTIMPL`. Actual 3D work is
 owned by Mesa's separate `vulkan_freedreno.dll` Native Context path. The shim
 deliberately has no `OpenAdapter12` export.
 
+The VirtIO cursor path also accepts the standard monochrome pointer form.  The
+miniport validates the dimensions and mask stride, converts the adjacent AND
+and XOR bitmaps to the existing A8R8G8B8 cursor resource, and sends the same
+`TRANSFER_TO_HOST_2D` update used by color pointers.  No additional cursor
+resource or Host protocol is required.
+
+`VIOGPU_WDDM_TEST_IMPLEMENTATIONS` is an opt-in compile experiment only.  A
+build may pass `/p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1` to exercise the existing
+Native Render validator from the `RenderKm` entry point and the adapter-wide
+recovery path from `ResetEngine`.  The default product build leaves RenderKm
+fail-closed and reports per-engine reset as unsupported because neither a real
+CDD kernel command packet nor an independent Host engine reset exists.  Do not
+install an experimental build in the VM or treat a successful compile as
+RenderKm or per-engine reset runtime support.
+
+The ARM64 workflow builds this experiment after the normal target with separate
+`objtest_win11_arm64/arm64/` output and intermediate directories.  The normal
+package and its MAP/PE checks therefore remain the product-build evidence; the
+experimental SYS is checked only for successful compilation/linkage.
+
 ## Native Context scope
 
 The current implementation extends the P1 transport-readiness work with a P2

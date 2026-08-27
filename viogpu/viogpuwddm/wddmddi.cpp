@@ -3815,8 +3815,16 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetPalette(CONST HANDLE hAdap
     {
         return STATUS_INVALID_PARAMETER;
     }
-    /* The miniport advertises only true-color scanout formats. */
-    return STATUS_NOT_SUPPORTED;
+    if (setPalette->VidPnSourceId != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* The miniport advertises only true-color scanout formats.  There is no
+     * indexed palette to program, but dxgkrnl may still issue this optional
+     * callback while it walks the VidPN.  Treat it as a successful no-op so
+     * the harmless query cannot abort modeset/adapter activation. */
+    return STATUS_SUCCESS;
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetScanLine(CONST HANDLE hAdapter, DXGKARG_GETSCANLINE *getScanLine)
@@ -3852,10 +3860,19 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRenderKm(CONST HANDLE hContex
     {
         return STATUS_INVALID_PARAMETER;
     }
+#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)
+    /* Compile-time experiment only.  This path is intentionally excluded
+     * from the product build because a real CDD RenderKm packet needs a
+     * separate command contract.  The Win8 DXGKARG_RENDER declaration has no
+     * mode flag, so the test bridge relies on the opt-in build switch and
+     * exercises the existing Native Render validator/queue path unchanged. */
+    return VioGpuWddmRender(hContext, render);
+#else
     /* PresentationCaps.SupportKernelModeCommandBuffer remains zero. CDD
      * commands are not Native Context MSM submits and must never enter the
      * Vulkan command parser. */
     return STATUS_ILLEGAL_INSTRUCTION;
+#endif
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter, CONST DXGKARG_ESCAPE *escape)
@@ -8459,11 +8476,19 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmResetEngine(CONST HANDLE hAda
         return STATUS_INVALID_PARAMETER;
     }
 
+#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)
+    /* Compile-time experiment only.  The Host exposes one queue, so this
+     * deliberately performs the adapter-wide recovery path and is never
+     * enabled in the product build as a claim of per-engine reset support. */
+    adapter->RequestHardwareResetAtAnyIrql();
+    return adapter->ResetFromTimeout();
+#else
     /* Native Context cannot cancel/reset one Host engine independently.  A
      * failed engine reset is the documented request for scheduler promotion
      * to the adapter-wide ResetFromTimeout/RestartFromTimeout path. */
     adapter->RequestHardwareResetAtAnyIrql();
     return STATUS_NOT_SUPPORTED;
+#endif
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmResetFromTimeout(CONST HANDLE hAdapter)

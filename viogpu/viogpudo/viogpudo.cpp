@@ -8633,12 +8633,6 @@ NTSTATUS VioGpuAdapter::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSet
               pSetPointerShape->XHot,
               pSetPointerShape->YHot));
 
-    if (pSetPointerShape->Flags.Monochrome)
-    {
-        VioGpuDbgBreak();
-        return STATUS_UNSUCCESSFUL;
-    }
-
     if (UpdateCursor(pSetPointerShape, pModeCur))
     {
         PGPU_UPDATE_CURSOR crsr;
@@ -9938,6 +9932,28 @@ BOOLEAN VioGpuAdapter::UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
                                     _In_ CONST CURRENT_MODE *pCurrentMode)
 {
     PAGED_CODE();
+
+    if (pSetPointerShape == NULL || pCurrentMode == NULL || pSetPointerShape->pPixels == NULL ||
+        pSetPointerShape->Width == 0 || pSetPointerShape->Height == 0 || pSetPointerShape->Width > POINTER_SIZE ||
+        pSetPointerShape->Height > POINTER_SIZE)
+    {
+        return FALSE;
+    }
+
+    const UINT maskPitch = (pSetPointerShape->Width + 7U) / 8U;
+    if (pSetPointerShape->Flags.Monochrome)
+    {
+        if (pSetPointerShape->Pitch < maskPitch ||
+            static_cast<SIZE_T>(pSetPointerShape->Pitch) > (MAXULONG_PTR / 2U) / pSetPointerShape->Height)
+        {
+            return FALSE;
+        }
+    }
+    else if (!pSetPointerShape->Flags.Color || pSetPointerShape->Pitch < pSetPointerShape->Width * 4U)
+    {
+        return FALSE;
+    }
+
     RECT Rect;
     Rect.left = 0;
     Rect.top = 0;
@@ -9961,26 +9977,38 @@ BOOLEAN VioGpuAdapter::UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
     DstBltInfo.Width = POINTER_SIZE;
     DstBltInfo.Height = POINTER_SIZE;
 
-    BLT_INFO SrcBltInfo;
-    SrcBltInfo.pBits = (PVOID)pSetPointerShape->pPixels;
-    SrcBltInfo.Pitch = pSetPointerShape->Pitch;
-    if (pSetPointerShape->Flags.Color)
+    if (pSetPointerShape->Flags.Monochrome)
     {
-        SrcBltInfo.BitsPerPel = BPPFromPixelFormat(D3DDDIFMT_A8R8G8B8);
+        RtlZeroMemory(m_pCursorBuf->GetVirtualAddress(), POINTER_SIZE * POINTER_SIZE * sizeof(ULONG));
+        const BYTE *andMask = static_cast<const BYTE *>(pSetPointerShape->pPixels);
+        const BYTE *xorMask = andMask + static_cast<SIZE_T>(pSetPointerShape->Pitch) * pSetPointerShape->Height;
+        ULONG *destination = static_cast<ULONG *>(m_pCursorBuf->GetVirtualAddress());
+        for (UINT y = 0; y < pSetPointerShape->Height; ++y)
+        {
+            const BYTE *andRow = andMask + static_cast<SIZE_T>(y) * pSetPointerShape->Pitch;
+            const BYTE *xorRow = xorMask + static_cast<SIZE_T>(y) * pSetPointerShape->Pitch;
+            for (UINT x = 0; x < pSetPointerShape->Width; ++x)
+            {
+                const BYTE andBit = (andRow[x >> 3] >> (7U - (x & 7U))) & 1U;
+                const BYTE xorBit = (xorRow[x >> 3] >> (7U - (x & 7U))) & 1U;
+                destination[y * POINTER_SIZE + x] = andBit == 0 ? (xorBit != 0 ? 0xFFFFFFFFU : 0xFF000000U) : 0U;
+            }
+        }
     }
     else
     {
-        VioGpuDbgBreak();
-        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s Invalid cursor color %d\n", __FUNCTION__, pSetPointerShape->Flags.Value));
-        return FALSE;
-    }
-    SrcBltInfo.Offset.x = 0;
-    SrcBltInfo.Offset.y = 0;
-    SrcBltInfo.Rotation = pCurrentMode->Rotation;
-    SrcBltInfo.Width = pSetPointerShape->Width;
-    SrcBltInfo.Height = pSetPointerShape->Height;
+        BLT_INFO SrcBltInfo;
+        SrcBltInfo.pBits = (PVOID)pSetPointerShape->pPixels;
+        SrcBltInfo.Pitch = pSetPointerShape->Pitch;
+        SrcBltInfo.BitsPerPel = BPPFromPixelFormat(D3DDDIFMT_A8R8G8B8);
+        SrcBltInfo.Offset.x = 0;
+        SrcBltInfo.Offset.y = 0;
+        SrcBltInfo.Rotation = pCurrentMode->Rotation;
+        SrcBltInfo.Width = pSetPointerShape->Width;
+        SrcBltInfo.Height = pSetPointerShape->Height;
 
-    BltBits(&DstBltInfo, &SrcBltInfo, &Rect);
+        BltBits(&DstBltInfo, &SrcBltInfo, &Rect);
+    }
 
     if (!m_CtrlQueue.TransferToHost2D(m_pCursorBuf->GetId(),
                                       0,

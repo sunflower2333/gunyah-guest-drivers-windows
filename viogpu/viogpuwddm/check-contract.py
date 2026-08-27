@@ -888,8 +888,24 @@ def check_arm64_workflow_contract() -> None:
         fail(f"full-miniport workflow driver projects must all target ARM64: {contract_platforms or ['none']}")
     if not product_platforms or set(product_platforms) != {"ARM64"}:
         fail(f"product workflow driver projects must all target ARM64: {product_platforms or ['none']}")
-    if sources["Native Context full-miniport"].count("/p:Platform=ARM64") != 1:
-        fail("the full WDDM contract target must be built explicitly for ARM64")
+    if sources["Native Context full-miniport"].count("/p:Platform=ARM64") != 2:
+        fail("the full WDDM contract and opt-in test targets must be built explicitly for ARM64")
+    experimental_workflow = sources["Native Context full-miniport"]
+    if experimental_workflow.count("Compile opt-in WDDM test implementations") != 1:
+        fail("the full WDDM workflow must compile the opt-in test implementations exactly once")
+    for fragment in (
+        "/p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1",
+        "/p:OutDir=\"$testOutDir\"",
+        "/p:IntDir=\"$testOutDir\"",
+        "$testOutDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objtest_win11_arm64/arm64/')",
+        "objtest_win11_arm64/arm64/",
+        "$normalUmd = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.dll'",
+        "normal ARM64 UMD is missing before the experimental build",
+        "Copy-Item -LiteralPath $normalUmd -Destination (Join-Path $testOutDir 'viogpud3d.dll') -Force",
+        "experimental WDDM build did not produce",
+    ):
+        if experimental_workflow.count(fragment) != 1:
+            fail(f"the opt-in WDDM workflow must isolate and verify its test output: {fragment}")
     for label, source in sources.items():
         if source.count("$reader.ReadUInt16() -ne 0xaa64") != 1:
             fail(f"{label} workflow must verify both Native Context PEs as ARM64")
@@ -2240,6 +2256,17 @@ def check_vidpn_mode_contract() -> None:
         if "returnSTATUS_NOT_IMPLEMENTED;" in pointer or not pointer.endswith("returnSTATUS_SUCCESS;"):
             fail(f"{method_name} must accept updates when hardware pointer support is not advertised")
 
+    update_cursor = canonical_code(function_body("VioGpuAdapter::UpdateCursor", VIOGPU_CODE))
+    for fragment in (
+        "pSetPointerShape==NULL||pCurrentMode==NULL||pSetPointerShape->pPixels==NULL",
+        "pSetPointerShape->Flags.Monochrome",
+        "RtlZeroMemory(m_pCursorBuf->GetVirtualAddress(),POINTER_SIZE*POINTER_SIZE*sizeof(ULONG));",
+        "constBYTE*xorMask=andMask+static_cast<SIZE_T>(pSetPointerShape->Pitch)*pSetPointerShape->Height;",
+        "destination[y*POINTER_SIZE+x]=andBit==0?(xorBit!=0?0xFFFFFFFF:0xFF000000):0;",
+    ):
+        if fragment not in update_cursor:
+            fail(f"UpdateCursor must convert bounded monochrome AND/XOR masks: {fragment}")
+
 
 def check_legacy_runtime_callback_contract() -> None:
     header = canonical_code(WDDM_DDI_HEADER_CODE)
@@ -2277,10 +2304,11 @@ def check_legacy_runtime_callback_contract() -> None:
     set_palette = canonical_code(function_body("VioGpuWddmSetPalette", WDDM_DDI_CODE))
     for fragment in (
         "hAdapter==NULL||setPalette==NULL",
-        "returnSTATUS_NOT_SUPPORTED;",
+        "setPalette->VidPnSourceId!=0",
+        "returnSTATUS_SUCCESS;",
     ):
         if set_palette.count(fragment) != 1:
-            fail(f"true-color-only palette callback must fail closed: {fragment}")
+            fail(f"true-color-only palette callback must validate the source and acknowledge the no-op: {fragment}")
 
     get_scan_line = canonical_code(function_body("VioGpuWddmGetScanLine", WDDM_DDI_CODE))
     for fragment in (
@@ -2335,6 +2363,14 @@ def check_legacy_runtime_callback_contract() -> None:
     ):
         if render_km.count(fragment) != 1:
             fail(f"kernel GDI command buffer callback must not enter the MSM parser: {fragment}")
+
+    if WDDM_DDI_SOURCE.count("#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)") != 2:
+        fail("experimental RenderKm/reset implementations must use one explicit opt-in macro")
+    if "return VioGpuWddmRender(hContext, render);" not in WDDM_DDI_SOURCE:
+        fail("RenderKm experiment must exercise the existing Native Render validator")
+    reset_experiment = canonical_code(function_body("VioGpuWddmResetEngine", WDDM_DDI_CODE))
+    if reset_experiment.count("returnadapter->ResetFromTimeout();") != 1:
+        fail("ResetEngine experiment must exercise adapter-wide recovery exactly once")
 
 
 def check_wddm_handle_ownership() -> None:
@@ -9582,6 +9618,22 @@ def check_project_safety(root: ET.Element) -> None:
     ):
         if definitions.count(required) != 1:
             fail(f"project must define {required} exactly once")
+
+    test_definition_groups = [
+        element
+        for element in root.findall(".//msbuild:ItemDefinitionGroup", NAMESPACE)
+        if element.attrib.get("Condition") == "'$(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)'=='1'"
+    ]
+    if len(test_definition_groups) != 1:
+        fail("project must contain exactly one opt-in WDDM test implementation property group")
+    test_definitions = [
+        (element.text or "")
+        for element in test_definition_groups[0].findall(
+            "msbuild:ClCompile/msbuild:PreprocessorDefinitions", NAMESPACE
+        )
+    ]
+    if len(test_definitions) != 1 or "VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1" not in test_definitions[0].split(";"):
+        fail("opt-in WDDM test implementation property group must define its macro exactly once")
 
     expected_interface = "DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WIN8"
     interface_definitions = [
