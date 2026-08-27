@@ -7793,6 +7793,68 @@ def check_native_guest_allocation_extent_math() -> None:
             fail(f"page-rounded logical extent must reject mismatched backing: {logical_size}, {backing_size}")
 
 
+def check_allocation_lifecycle_wait_status_contract() -> None:
+    """Every mutex wait must require the exact STATUS_SUCCESS result.
+
+    KeWaitForSingleObject can return a positive STATUS_TIMEOUT.  NT_SUCCESS
+    therefore cannot be used as the ownership test for these lifecycle
+    wrappers; accepting it would execute callback code without holding the
+    allocation mutex and could release an unowned mutex on the unwind path.
+    """
+
+    present_helper = canonical_code(function_body("AcquirePresentAllocationLifecycles", WDDM_DDI_CODE))
+    if present_helper.count("if(status!=STATUS_SUCCESS)") != 2 or present_helper.count(
+        "if(NT_SUCCESS(status)){status=STATUS_GRAPHICS_ALLOCATION_BUSY;}"
+    ) != 2:
+        fail("Present lifecycle waits must reject positive wait statuses and normalize them before returning")
+
+    exact_guards = (
+        ("ValidateCommandHeader", "allocationStatus=AcquireAllocationLifecycle(allocation);", "if(allocationStatus!=STATUS_SUCCESS)"),
+        ("ApplyRenderPrepatches", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
+        ("VioGpuWddmOpenAllocation", "status=AcquireAllocationLifecycle(allocation);", "if(status==STATUS_SUCCESS)"),
+        ("ExecutePagingTransaction", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
+        ("MapApertureAllocation", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
+        ("UnmapApertureAllocation", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
+        ("VioGpuWddmPatch", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
+        ("VioGpuWddmSetVidPnSourceAddress", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
+    )
+    for function_name, acquisition, guard in exact_guards:
+        body = canonical_code(function_body(function_name, WDDM_DDI_CODE))
+        call = body.find(acquisition)
+        guarded = body.find(guard, call + len(acquisition)) if call >= 0 else -1
+        if call < 0 or guarded < 0:
+            fail(f"{function_name} must test lifecycle acquisition with exact STATUS_SUCCESS")
+
+    software = canonical_code(function_body("BuildSoftwarePagingTransaction", WDDM_DDI_CODE))
+    for fragment in (
+        "BOOLEANlifecycleAcquired=status==STATUS_SUCCESS;",
+        "if(status==STATUS_SUCCESS)",
+    ):
+        if software.count(fragment) == 0:
+            fail(f"BuildSoftwarePagingTransaction must keep mutex ownership exact: {fragment}")
+
+    for function_name in ("ExecutePresentTransaction", "VioGpuWddmPresent"):
+        body = canonical_code(function_body(function_name, WDDM_DDI_CODE))
+        call = body.find("AcquirePresentAllocationLifecycles(")
+        if call < 0 or body.find("status!=STATUS_SUCCESS", call) < 0:
+            fail(f"{function_name} must reject a positive Present lifecycle wait status")
+
+    render_references = canonical_code(function_body("AcquireRenderAllocationReferences", WDDM_DDI_CODE))
+    call = render_references.find("NTSTATUSstatus=AcquireAllocationLifecycle(allocation);")
+    if call < 0:
+        fail("AcquireRenderAllocationReferences must acquire each allocation lifecycle")
+    if render_references.find("if(status==STATUS_SUCCESS)", call) < 0:
+        fail("AcquireRenderAllocationReferences must release the mutex only after exact acquisition")
+    if render_references.find("elseif(NT_SUCCESS(status)){status=STATUS_GRAPHICS_ALLOCATION_BUSY;}", call) < 0:
+        fail("AcquireRenderAllocationReferences must normalize a positive wait result")
+    if render_references.find("if(status!=STATUS_SUCCESS)", call) < 0:
+        fail("AcquireRenderAllocationReferences must reject any non-success lifecycle result")
+
+    software_return = canonical_code(function_body("BuildSoftwarePagingTransaction", WDDM_DDI_CODE))
+    if "returnstatus==STATUS_SUCCESS?STATUS_SUCCESS:STATUS_GRAPHICS_ALLOCATION_BUSY;" not in software_return:
+        fail("BuildSoftwarePagingTransaction must not convert a positive wait result into success")
+
+
 def check_wddm_context_lifetime() -> None:
     context_header = canonical_code(WDDM_DDI_HEADER_CODE)
     for required in (
@@ -10592,6 +10654,7 @@ def main() -> None:
     check_wddm_paging_transaction_gate()
     check_native_guest_allocation_extent_math()
     check_wddm_guest_allocation_lifecycle()
+    check_allocation_lifecycle_wait_status_contract()
     check_wddm_context_lifetime()
     check_wddm_submission_lifetime()
     check_dpc_completion_semantics()

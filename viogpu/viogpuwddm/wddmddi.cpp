@@ -791,8 +791,12 @@ NTSTATUS AcquirePresentAllocationLifecycles(VIOGPU_WDDM_ALLOCATION *source,
     VIOGPU_WDDM_ALLOCATION *first = sourceFirst ? source : destination;
     VIOGPU_WDDM_ALLOCATION *second = sourceFirst ? destination : source;
     NTSTATUS status = AcquireAllocationLifecycle(first);
-    if (!NT_SUCCESS(status))
+    if (status != STATUS_SUCCESS)
     {
+        if (NT_SUCCESS(status))
+        {
+            status = STATUS_GRAPHICS_ALLOCATION_BUSY;
+        }
         return status;
     }
     if (sourceFirst)
@@ -805,8 +809,12 @@ NTSTATUS AcquirePresentAllocationLifecycles(VIOGPU_WDDM_ALLOCATION *source,
     }
 
     status = AcquireAllocationLifecycle(second);
-    if (!NT_SUCCESS(status))
+    if (status != STATUS_SUCCESS)
     {
+        if (NT_SUCCESS(status))
+        {
+            status = STATUS_GRAPHICS_ALLOCATION_BUSY;
+        }
         return status;
     }
     if (sourceFirst)
@@ -1133,7 +1141,11 @@ NTSTATUS AcquireRenderAllocationReferences(const VIOGPU_WDDM_RENDER_COMMAND *hea
             status = AcquireAllocationSubmissionReference(allocation, device->Adapter);
             KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
         }
-        if (!NT_SUCCESS(status))
+        else if (NT_SUCCESS(status))
+        {
+            status = STATUS_GRAPHICS_ALLOCATION_BUSY;
+        }
+        if (status != STATUS_SUCCESS)
         {
             for (UINT rollback = 0; rollback < *acquiredCount; ++rollback)
             {
@@ -2736,7 +2748,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     BOOLEAN sourceLocked = FALSE;
     BOOLEAN destinationLocked = FALSE;
     NTSTATUS status = AcquirePresentAllocationLifecycles(source, destination, &sourceLocked, &destinationLocked);
-    if (!NT_SUCCESS(status))
+    if (status != STATUS_SUCCESS)
     {
         *failureStage = sourceLocked ? VioGpuWddmPresentExecuteDestinationLifecycle
                                      : VioGpuWddmPresentExecuteSourceLifecycle;
@@ -3438,7 +3450,7 @@ NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_RENDER_COMMAND *header,
 
         VIOGPU_WDDM_ALLOCATION *allocation = deviceAllocation->Allocation;
         NTSTATUS allocationStatus = AcquireAllocationLifecycle(allocation);
-        if (!NT_SUCCESS(allocationStatus))
+        if (allocationStatus != STATUS_SUCCESS)
         {
             return allocationStatus;
         }
@@ -3625,7 +3637,7 @@ NTSTATUS ApplyRenderPrepatches(_Inout_ VIOGPU_WDDM_RENDER_COMMAND *header,
         VIOGPU_WDDM_OPEN_ALLOCATION *openAllocation = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(allocationEntry->hDeviceSpecificAllocation);
         VIOGPU_WDDM_ALLOCATION *allocation = openAllocation == NULL ? NULL : openAllocation->Allocation;
         NTSTATUS status = AcquireAllocationLifecycle(allocation);
-        if (!NT_SUCCESS(status))
+        if (status != STATUS_SUCCESS)
         {
             return status;
         }
@@ -4519,7 +4531,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
             break;
         }
         status = AcquireAllocationLifecycle(allocation);
-        if (NT_SUCCESS(status))
+        if (status == STATUS_SUCCESS)
         {
             status = ReferenceAllocationOpen(allocation, device->Adapter);
             KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
@@ -5033,7 +5045,7 @@ NTSTATUS ExecutePagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transa
 
     VIOGPU_WDDM_ALLOCATION *allocation = transaction->Allocation;
     NTSTATUS status = AcquireAllocationLifecycle(allocation);
-    if (!NT_SUCCESS(status))
+    if (status != STATUS_SUCCESS)
     {
         return status;
     }
@@ -5340,7 +5352,7 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     }
 
     NTSTATUS status = AcquireAllocationLifecycle(allocation);
-    if (!NT_SUCCESS(status))
+    if (status != STATUS_SUCCESS)
     {
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
@@ -5596,7 +5608,7 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
     }
 
     NTSTATUS status = AcquireAllocationLifecycle(allocation);
-    if (!NT_SUCCESS(status))
+    if (status != STATUS_SUCCESS)
     {
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
@@ -5743,9 +5755,9 @@ NTSTATUS BuildSoftwarePagingTransaction(_In_ VioGpuDod *adapter,
     }
 
     NTSTATUS status = AcquireAllocationLifecycle(allocation);
-    BOOLEAN lifecycleAcquired = NT_SUCCESS(status);
+    BOOLEAN lifecycleAcquired = status == STATUS_SUCCESS;
     BOOLEAN nativeAllocation = FALSE;
-    if (NT_SUCCESS(status))
+    if (status == STATUS_SUCCESS)
     {
         nativeAllocation = IsNativeAllocation(allocation);
         if (!NT_SUCCESS(ValidateNativePlacement(allocation, segmentAddress, &placementOffset)))
@@ -5753,7 +5765,7 @@ NTSTATUS BuildSoftwarePagingTransaction(_In_ VioGpuDod *adapter,
             status = STATUS_INVALID_PARAMETER;
         }
     }
-    if (NT_SUCCESS(status) &&
+    if (status == STATUS_SUCCESS &&
         (allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE || allocation->Adapter != adapter ||
          !allocation->PlacementValid || allocation->PlacementOffset != placementOffset ||
          allocation->ApertureMdl == NULL || allocation->ApertureAddress == NULL ||
@@ -5765,7 +5777,7 @@ NTSTATUS BuildSoftwarePagingTransaction(_In_ VioGpuDod *adapter,
 
     BOOLEAN transfer = (packetFlags & (VioGpuWddmPagingFlagPageIn | VioGpuWddmPagingFlagPageOut)) != 0;
     BOOLEAN transferDataComplete = !transfer;
-    if (NT_SUCCESS(status) && transfer)
+    if (status == STATUS_SUCCESS && transfer)
     {
         PVOID systemAddress = NULL;
         status = ResolveTransferMdlAddress(transferMdl, mdlOffset, transferSize, &systemAddress);
@@ -5780,16 +5792,16 @@ NTSTATUS BuildSoftwarePagingTransaction(_In_ VioGpuDod *adapter,
         }
         transferDataComplete = NT_SUCCESS(status);
     }
-    else if (NT_SUCCESS(status) && (packetFlags & VioGpuWddmPagingFlagFill) != 0)
+    else if (status == STATUS_SUCCESS && (packetFlags & VioGpuWddmPagingFlagFill) != 0)
     {
         status = FillAperturePlacement(allocation, transferSize, fillPattern);
     }
 
-    if (NT_SUCCESS(status))
+    if (status == STATUS_SUCCESS)
     {
         status = AcquireAllocationSubmissionReference(allocation, adapter);
     }
-    if (NT_SUCCESS(status))
+    if (status == STATUS_SUCCESS)
     {
         PVOID dmaBuffer = pagingBuffer->pDmaBuffer;
         UINT dmaSize = pagingBuffer->DmaSize;
@@ -5866,7 +5878,7 @@ NTSTATUS BuildSoftwarePagingTransaction(_In_ VioGpuDod *adapter,
     {
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
     }
-    return NT_SUCCESS(status) ? STATUS_SUCCESS : STATUS_GRAPHICS_ALLOCATION_BUSY;
+    return status == STATUS_SUCCESS ? STATUS_SUCCESS : STATUS_GRAPHICS_ALLOCATION_BUSY;
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDLE hAdapter,
@@ -6940,11 +6952,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         VIOGPU_WDDM_ALLOCATION *destination = transaction == NULL ? NULL : transaction->Destination;
         BOOLEAN sourceLocked = FALSE;
         BOOLEAN destinationLocked = FALSE;
-        if (NT_SUCCESS(status))
+        if (status == STATUS_SUCCESS)
         {
             status = AcquirePresentAllocationLifecycles(source, destination, &sourceLocked, &destinationLocked);
         }
-        if (NT_SUCCESS(status))
+        if (status == STATUS_SUCCESS)
         {
             const D3DDDI_PATCHLOCATIONLIST *sourcePatch = &patchArguments->pPatchLocationList[patchArguments->PatchLocationListSubmissionStart];
             const D3DDDI_PATCHLOCATIONLIST *destinationPatch = sourcePatch + 1;
@@ -7031,7 +7043,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         {
             KeReleaseMutex(&source->LifecycleMutex, FALSE);
         }
-        if (!NT_SUCCESS(status) && transaction != NULL)
+        if (status != STATUS_SUCCESS && transaction != NULL)
         {
             LONG state = InterlockedCompareExchange(&transaction->State, 0, 0);
             if (state == VioGpuWddmPresentBuilt || state == VioGpuWddmPresentPatched)
@@ -7135,7 +7147,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
             VIOGPU_WDDM_OPEN_ALLOCATION *openAllocation = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(allocationEntry->hDeviceSpecificAllocation);
             VIOGPU_WDDM_ALLOCATION *allocation = reference->Allocation;
             status = AcquireAllocationLifecycle(allocation);
-            if (!NT_SUCCESS(status))
+            if (status != STATUS_SUCCESS)
             {
                 break;
             }
@@ -7374,7 +7386,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     if (NT_SUCCESS(status))
     {
         status = AcquirePresentAllocationLifecycles(source, destination, &sourceLocked, &destinationLocked);
-        if (!NT_SUCCESS(status))
+        if (status != STATUS_SUCCESS)
         {
             lateReason = sourceLocked ? VioGpuWddmPresentDiagnosticDestinationLifecycle
                                       : VioGpuWddmPresentDiagnosticSourceLifecycle;
@@ -8609,7 +8621,7 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
     }
 
     NTSTATUS status = AcquireAllocationLifecycle(allocation);
-    if (!NT_SUCCESS(status))
+    if (status != STATUS_SUCCESS)
     {
         return status;
     }
