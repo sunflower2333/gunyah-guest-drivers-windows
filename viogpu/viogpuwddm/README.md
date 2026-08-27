@@ -140,7 +140,10 @@ queries. Unknown query types remain `E_NOTIMPL`; the probe therefore cannot
 advertise a capability that the table does not define.
 For a D3D11 interface selection, the same opt-in build also publishes a
 deliberately sparse `p11DeviceFuncs` table for compute, indirect draw/dispatch,
-resource-min-LOD, relocation, and the extended render-target binding shape.
+resource-min-LOD, relocation, command-list private sizing/creation/destruction,
+and the extended render-target binding shape. Command-list owners use the same
+opaque signature-checked lifetime helper as other DDI objects; execution still
+only records the callback and never submits work.
 These callbacks only validate and record call shapes; they do not allocate
 backing, emit commands, or advertise a D3D11 pipeline capability. The product
 build leaves this table untouched.

@@ -54,6 +54,7 @@ constexpr ULONG ACTIVATION_BLEND_STATE_SIGNATURE = 0x56424C44UL;
 constexpr ULONG ACTIVATION_DEPTH_STENCIL_STATE_SIGNATURE = 0x56445353UL;
 constexpr ULONG ACTIVATION_RASTERIZER_STATE_SIGNATURE = 0x56525354UL;
 constexpr ULONG ACTIVATION_UNORDERED_ACCESS_VIEW_SIGNATURE = 0x56554156UL;
+constexpr ULONG ACTIVATION_COMMAND_LIST_SIGNATURE = 0x56434C53UL;
 
 enum ACTIVATION_CALL : LONG
 {
@@ -118,6 +119,8 @@ enum ACTIVATION_CALL : LONG
     ActivationCallCommandListExecute,
     ActivationCallCheckDeferredContextHandleSizes,
     ActivationCallCalcDeferredContextHandleSize,
+    ActivationCallCreateCommandList,
+    ActivationCallDestroyCommandList,
 };
 
 VOID ActivationRecordDeviceCall(D3D10DDI_HDEVICE device, ACTIVATION_CALL call)
@@ -1103,19 +1106,56 @@ VOID APIENTRY ActivationCopyStructureCount(D3D10DDI_HDEVICE device,
 
 VOID APIENTRY ActivationCommandListExecute(D3D10DDI_HDEVICE device, D3D11DDI_HCOMMANDLIST commandList)
 {
-    UNREFERENCED_PARAMETER(commandList);
+    if (!ActivationIsObject(commandList.pDrvPrivate, ACTIVATION_COMMAND_LIST_SIGNATURE))
+    {
+        return;
+    }
     ActivationRecordDeviceCall(device, ActivationCallCommandListExecute);
+}
+
+SIZE_T APIENTRY ActivationCalcPrivateCommandListSize(D3D10DDI_HDEVICE device,
+                                                     const D3D11DDIARG_CREATECOMMANDLIST *arguments)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    return ActivationObjectSize();
+}
+
+VOID APIENTRY ActivationCreateCommandList(D3D10DDI_HDEVICE device,
+                                          const D3D11DDIARG_CREATECOMMANDLIST *arguments,
+                                          D3D11DDI_HCOMMANDLIST commandList,
+                                          D3D11DDI_HRTCOMMANDLIST runtimeCommandList)
+{
+    if (arguments == nullptr || commandList.pDrvPrivate == nullptr || runtimeCommandList.handle == nullptr)
+    {
+        return;
+    }
+    ActivationInitializeObject(commandList.pDrvPrivate, runtimeCommandList.handle, ACTIVATION_COMMAND_LIST_SIGNATURE);
+    ActivationRecordDeviceCall(device, ActivationCallCreateCommandList);
+}
+
+VOID APIENTRY ActivationDestroyCommandList(D3D10DDI_HDEVICE device, D3D11DDI_HCOMMANDLIST commandList)
+{
+    if (!ActivationIsObject(commandList.pDrvPrivate, ACTIVATION_COMMAND_LIST_SIGNATURE))
+    {
+        return;
+    }
+    ActivationDestroyObject(commandList.pDrvPrivate, ACTIVATION_COMMAND_LIST_SIGNATURE);
+    ActivationRecordDeviceCall(device, ActivationCallDestroyCommandList);
 }
 
 VOID APIENTRY ActivationCheckDeferredContextHandleSizes(D3D10DDI_HDEVICE device,
                                                         UINT *handleSizeArray,
                                                         D3D11DDI_HANDLESIZE *handleSizes)
 {
-    /* The probe advertises no command-list capability. If the runtime still
-     * asks for this optional table, leave the caller-owned size metadata
-     * untouched because the WDK supplies no element count in this callback. */
-    UNREFERENCED_PARAMETER(handleSizeArray);
+    /* No deferred-context objects are advertised by this probe.  The D3D11
+     * runtime double-polls this callback, so always publish an empty list and
+     * never write the optional array. */
     UNREFERENCED_PARAMETER(handleSizes);
+    if (handleSizeArray != nullptr)
+    {
+        *handleSizeArray = 0;
+    }
     ActivationRecordDeviceCall(device, ActivationCallCheckDeferredContextHandleSizes);
 }
 
@@ -1595,6 +1635,9 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
         functions11->pfnSetResourceMinLOD = ActivationSetResourceMinLOD;
         functions11->pfnCopyStructureCount = ActivationCopyStructureCount;
         functions11->pfnCommandListExecute = ActivationCommandListExecute;
+        functions11->pfnCalcPrivateCommandListSize = ActivationCalcPrivateCommandListSize;
+        functions11->pfnCreateCommandList = ActivationCreateCommandList;
+        functions11->pfnDestroyCommandList = ActivationDestroyCommandList;
         functions11->pfnCheckDeferredContextHandleSizes = ActivationCheckDeferredContextHandleSizes;
         functions11->pfnCalcDeferredContextHandleSize = ActivationCalcDeferredContextHandleSize;
     }

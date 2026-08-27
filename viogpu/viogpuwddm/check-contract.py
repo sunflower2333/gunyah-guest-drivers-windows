@@ -1217,6 +1217,9 @@ def check_d3d_umd_shim_contract() -> None:
         "functions11->pfnSetResourceMinLOD=ActivationSetResourceMinLOD;",
         "functions11->pfnCopyStructureCount=ActivationCopyStructureCount;",
         "functions11->pfnCommandListExecute=ActivationCommandListExecute;",
+        "functions11->pfnCalcPrivateCommandListSize=ActivationCalcPrivateCommandListSize;",
+        "functions11->pfnCreateCommandList=ActivationCreateCommandList;",
+        "functions11->pfnDestroyCommandList=ActivationDestroyCommandList;",
         "functions11->pfnCheckDeferredContextHandleSizes=ActivationCheckDeferredContextHandleSizes;",
         "functions11->pfnCalcDeferredContextHandleSize=ActivationCalcDeferredContextHandleSize;",
     )
@@ -1265,6 +1268,8 @@ def check_d3d_umd_shim_contract() -> None:
         "ActivationCreateDomainShader",
         "ActivationCreateUnorderedAccessView",
         "ActivationDestroyUnorderedAccessView",
+        "ActivationCreateCommandList",
+        "ActivationDestroyCommandList",
     )
     for callback in object_callbacks:
         if len(re.findall(rf"\b{callback}\s*\(", source)) != 1:
@@ -1296,6 +1301,7 @@ def check_d3d_umd_shim_contract() -> None:
         "ActivationCsSetUnorderedAccessViews",
         "ActivationCopyStructureCount",
         "ActivationCommandListExecute",
+        "ActivationCalcPrivateCommandListSize",
         "ActivationCheckDeferredContextHandleSizes",
         "ActivationCalcDeferredContextHandleSize",
         "ActivationCalcPrivateTessellationShaderSize",
