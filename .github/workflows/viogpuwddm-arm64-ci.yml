@@ -159,16 +159,27 @@ jobs:
       - name: Compile opt-in WDDM test implementations
         shell: pwsh
         run: |
-          # This is a compile/link experiment for the guarded RenderKm and
-          # ResetEngine paths.  Keep its intermediate/output tree separate so
-          # it cannot overwrite the normal package inspected below.
+          # This is a compile/link experiment for the guarded UMD device
+          # lifecycle, RenderKm, and ResetEngine paths.  Keep every
+          # intermediate/output tree separate so it cannot overwrite the
+          # normal package inspected below.
+          $testUmdOutDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objtest_umd_win11_arm64/arm64/')
           $testOutDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objtest_win11_arm64/arm64/')
-          $normalUmd = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.dll'
-          if (-not (Test-Path -LiteralPath $normalUmd -PathType Leaf)) {
-            throw "normal ARM64 UMD is missing before the experimental build: $normalUmd"
-          }
+          New-Item -ItemType Directory -Path $testUmdOutDir -Force | Out-Null
           New-Item -ItemType Directory -Path $testOutDir -Force | Out-Null
-          Copy-Item -LiteralPath $normalUmd -Destination (Join-Path $testOutDir 'viogpud3d.dll') -Force
+          msbuild viogpu/viogpud3d/viogpud3d.vcxproj /m `
+            /p:Configuration="Win11 Release" /p:Platform=ARM64 `
+            /p:WindowsTargetPlatformVersion="$env:DROIDVM_KIT_VERSION" `
+            /p:ApiValidator_Enable=false `
+            /p:SpectreMitigation=false /p:SignMode=Off `
+            /p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1 `
+            /p:OutDir="$testUmdOutDir" /p:IntDir="$testUmdOutDir"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $testUmd = Join-Path $testUmdOutDir 'viogpud3d.dll'
+          if (-not (Test-Path -LiteralPath $testUmd -PathType Leaf)) {
+            throw "experimental UMD build did not produce $testUmd"
+          }
+          Copy-Item -LiteralPath $testUmd -Destination (Join-Path $testOutDir 'viogpud3d.dll') -Force
           msbuild viogpu/viogpuwddm/viogpuwddm.vcxproj /m `
             /p:Configuration="Win11 Release" /p:Platform=ARM64 `
             /p:WindowsTargetPlatformVersion="$env:DROIDVM_KIT_VERSION" `
@@ -181,6 +192,10 @@ jobs:
           if (-not (Test-Path -LiteralPath $testDriver -PathType Leaf)) {
             throw "experimental WDDM build did not produce $testDriver"
           }
+          if (-not (Test-Path -LiteralPath (Join-Path $testOutDir 'viogpud3d.dll') -PathType Leaf)) {
+            throw "experimental WDDM output is missing the matching UMD: $testOutDir"
+          }
+          Write-Host "experimental UMD DLL: $testUmd"
           Write-Host "experimental WDDM SYS: $testDriver"
 
       - name: Check registered full-miniport linkage

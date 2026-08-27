@@ -10,22 +10,61 @@ struct ACTIVATION_ADAPTER
     D3D10DDI_HRTADAPTER RuntimeAdapter;
 };
 
+struct ACTIVATION_DEVICE
+{
+    ULONG Signature;
+};
+
+constexpr ULONG ACTIVATION_DEVICE_SIGNATURE = 0x56494F54UL;
+
+/* The test device has no rendering entry points.  It only proves that the
+ * D3D runtime can allocate and tear down the private device record without
+ * handing an uninitialised function table to dxgkrnl. */
+VOID APIENTRY ActivationDestroyDevice(D3D10DDI_HDEVICE device)
+{
+    ACTIVATION_DEVICE *state = static_cast<ACTIVATION_DEVICE *>(device.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_DEVICE_SIGNATURE)
+    {
+        return;
+    }
+    state->Signature = 0;
+}
+
 /* A successful D3D adapter open is enough for dxgkrnl to complete legacy
- * adapter activation.  D3D device creation remains fail-closed because all
- * real command submission belongs to the Mesa Turnip Vulkan ICD. */
+ * adapter activation.  Product D3D device creation remains fail-closed because
+ * all real command submission belongs to the Mesa Turnip Vulkan ICD. */
 SIZE_T APIENTRY ActivationCalcPrivateDeviceSize(D3D10DDI_HADAPTER adapter,
                                                 const D3D10DDIARG_CALCPRIVATEDEVICESIZE *arguments)
 {
     UNREFERENCED_PARAMETER(adapter);
     UNREFERENCED_PARAMETER(arguments);
+#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)
+    return sizeof(ACTIVATION_DEVICE);
+#else
     return 0;
+#endif
 }
 
 HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_CREATEDEVICE *arguments)
 {
     UNREFERENCED_PARAMETER(adapter);
+#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)
+    if (arguments == nullptr || arguments->pDeviceFuncs == nullptr || arguments->hDrvDevice.pDrvPrivate == nullptr)
+    {
+        return E_INVALIDARG;
+    }
+
+    ACTIVATION_DEVICE *state = static_cast<ACTIVATION_DEVICE *>(arguments->hDrvDevice.pDrvPrivate);
+    state->Signature = ACTIVATION_DEVICE_SIGNATURE;
+
+    D3D10DDI_DEVICEFUNCS functions = {};
+    functions.pfnDestroyDevice = ActivationDestroyDevice;
+    *arguments->pDeviceFuncs = functions;
+    return S_OK;
+#else
     UNREFERENCED_PARAMETER(arguments);
     return E_NOTIMPL;
+#endif
 }
 
 HRESULT APIENTRY ActivationCloseAdapter(D3D10DDI_HADAPTER adapter)

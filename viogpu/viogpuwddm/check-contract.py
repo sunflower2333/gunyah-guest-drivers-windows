@@ -888,21 +888,25 @@ def check_arm64_workflow_contract() -> None:
         fail(f"full-miniport workflow driver projects must all target ARM64: {contract_platforms or ['none']}")
     if not product_platforms or set(product_platforms) != {"ARM64"}:
         fail(f"product workflow driver projects must all target ARM64: {product_platforms or ['none']}")
-    if sources["Native Context full-miniport"].count("/p:Platform=ARM64") != 2:
-        fail("the full WDDM contract and opt-in test targets must be built explicitly for ARM64")
+    if sources["Native Context full-miniport"].count("/p:Platform=ARM64") != 3:
+        fail("the full WDDM contract, UMD, and opt-in test targets must be built explicitly for ARM64")
     experimental_workflow = sources["Native Context full-miniport"]
     if experimental_workflow.count("Compile opt-in WDDM test implementations") != 1:
         fail("the full WDDM workflow must compile the opt-in test implementations exactly once")
+    if experimental_workflow.count("/p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1") != 2:
+        fail("the opt-in WDDM workflow must compile both guarded UMD and KMD implementations")
     for fragment in (
-        "/p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1",
         "/p:OutDir=\"$testOutDir\"",
         "/p:IntDir=\"$testOutDir\"",
+        "$testUmdOutDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objtest_umd_win11_arm64/arm64/')",
+        "objtest_umd_win11_arm64/arm64/",
+        "$testUmd = Join-Path $testUmdOutDir 'viogpud3d.dll'",
+        "experimental UMD build did not produce",
+        "Copy-Item -LiteralPath $testUmd -Destination (Join-Path $testOutDir 'viogpud3d.dll') -Force",
         "$testOutDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objtest_win11_arm64/arm64/')",
         "objtest_win11_arm64/arm64/",
-        "$normalUmd = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.dll'",
-        "normal ARM64 UMD is missing before the experimental build",
-        "Copy-Item -LiteralPath $normalUmd -Destination (Join-Path $testOutDir 'viogpud3d.dll') -Force",
         "experimental WDDM build did not produce",
+        "experimental WDDM output is missing the matching UMD",
     ):
         if experimental_workflow.count(fragment) != 1:
             fail(f"the opt-in WDDM workflow must isolate and verify its test output: {fragment}")
@@ -940,8 +944,8 @@ def check_arm64_workflow_contract() -> None:
         ".install_scripts/test-viogpu-native-present-diagnostics.ps1"
     ) != 1:
         fail("full-miniport workflow must execute the Native Present diagnostic decoder fixture")
-    if sources["Native Context full-miniport"].count("viogpu/viogpud3d/viogpud3d.vcxproj") != 1:
-        fail("the full WDDM contract workflow must build the ARM64 D3D UMD shim exactly once")
+    if sources["Native Context full-miniport"].count("viogpu/viogpud3d/viogpud3d.vcxproj") != 2:
+        fail("the full WDDM contract workflow must build the normal and opt-in ARM64 D3D UMD targets")
     if sources["product drivers"].count("viogpu/viogpud3d/viogpud3d.vcxproj") != 1:
         fail("the signed ARM64 product workflow must build the D3D UMD shim exactly once")
     if sources["product drivers"].count("viogpu/viogpuwddm/viogpuwddm.vcxproj") != 1:
@@ -1028,8 +1032,31 @@ def check_d3d_umd_shim_contract() -> None:
             fail(f"OpenAdapter10_2 must publish the activation adapter table: {fragment}")
     if "OpenAdapter12" in source:
         fail("legacy WDDMv1 D3D UMD shim must not imply D3D12 support")
-    if "returnE_NOTIMPL" not in canonical_code(function_body("ActivationCreateDevice", code)):
-        fail("activation-only D3D UMD must keep CreateDevice fail closed")
+    create_device = canonical_code(function_body("ActivationCreateDevice", code))
+    if "returnE_NOTIMPL" not in create_device:
+        fail("activation-only D3D UMD must keep the product CreateDevice path fail closed")
+    if source.count("#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)") != 2:
+        fail("D3D UMD test lifecycle must use one explicit opt-in macro for size and CreateDevice")
+    calc_private_device_size = canonical_code(function_body("ActivationCalcPrivateDeviceSize", code))
+    for fragment in (
+        "returnsizeof(ACTIVATION_DEVICE);",
+        "return0;",
+    ):
+        if fragment not in calc_private_device_size:
+            fail(f"D3D UMD test lifecycle size gate is missing: {fragment}")
+    for fragment in (
+        "arguments==NULL||arguments->pDeviceFuncs==NULL||arguments->hDrvDevice.pDrvPrivate==NULL",
+        "state->Signature=ACTIVATION_DEVICE_SIGNATURE;",
+        "functions.pfnDestroyDevice=ActivationDestroyDevice;",
+        "returnS_OK;",
+    ):
+        if fragment not in create_device:
+            fail(f"D3D UMD test lifecycle is missing guarded implementation fragment: {fragment}")
+    destroy_device = canonical_code(function_body("ActivationDestroyDevice", code))
+    if "state==NULL||state->Signature!=ACTIVATION_DEVICE_SIGNATURE" not in destroy_device:
+        fail("D3D UMD test lifecycle destroy must validate its private record")
+    if "state->Signature=0;" not in destroy_device:
+        fail("D3D UMD test lifecycle destroy must clear its private record")
     compact_umd = re.sub(r"\s+", "", code)
     if "HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(ACTIVATION_ADAPTER))" not in compact_umd:
         fail("activation adapter must use a bounded process-heap owner")
@@ -1064,6 +1091,21 @@ def check_d3d_umd_shim_contract() -> None:
     ]
     if configurations != ["Win11 Release|ARM64"]:
         fail(f"D3D UMD project must remain ARM64-only: {configurations or ['none']}")
+    test_definition_groups = [
+        element
+        for element in root.findall(".//msbuild:ItemDefinitionGroup", NAMESPACE)
+        if element.attrib.get("Condition") == "'$(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)'=='1'"
+    ]
+    if len(test_definition_groups) != 1:
+        fail("D3D UMD project must contain exactly one opt-in lifecycle test property group")
+    test_definitions = [
+        (element.text or "")
+        for element in test_definition_groups[0].findall(
+            "msbuild:ClCompile/msbuild:PreprocessorDefinitions", NAMESPACE
+        )
+    ]
+    if len(test_definitions) != 1 or "VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1" not in test_definitions[0].split(";"):
+        fail("D3D UMD lifecycle test property group must define its macro exactly once")
     scalar_contract = {
         "ConfigurationType": "DynamicLibrary",
         "PlatformToolset": "WindowsApplicationForDrivers10.0",

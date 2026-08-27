@@ -111,18 +111,23 @@ and XOR bitmaps to the existing A8R8G8B8 cursor resource, and sends the same
 resource or Host protocol is required.
 
 `VIOGPU_WDDM_TEST_IMPLEMENTATIONS` is an opt-in compile experiment only.  A
-build may pass `/p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1` to exercise the existing
-Native Render validator from the `RenderKm` entry point and the adapter-wide
-recovery path from `ResetEngine`.  The default product build leaves RenderKm
-fail-closed and reports per-engine reset as unsupported because neither a real
-CDD kernel command packet nor an independent Host engine reset exists.  Do not
-install an experimental build in the VM or treat a successful compile as
-RenderKm or per-engine reset runtime support.
+build may pass `/p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1` to exercise the minimal
+UMD device lifetime record, the existing Native Render validator from the
+`RenderKm` entry point, and the adapter-wide recovery path from `ResetEngine`.
+The UMD experiment only publishes a guarded `DestroyDevice` callback; it has no
+resource, shader, draw, or submit entry points.  The default product build
+leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset
+as unsupported because neither a real D3D command contract nor an independent
+Host engine reset exists.  Do not install an experimental build in the VM or
+treat a successful compile as D3D rendering, RenderKm, or per-engine reset
+runtime support.
 
 The ARM64 workflow builds this experiment after the normal target with separate
-`objtest_win11_arm64/arm64/` output and intermediate directories.  The normal
-package and its MAP/PE checks therefore remain the product-build evidence; the
-experimental SYS is checked only for successful compilation/linkage.
+`objtest_umd_win11_arm64/arm64/` and `objtest_win11_arm64/arm64/` output and
+intermediate directories.  The matching experimental UMD is copied into the
+experimental WDDM output.  The normal package and its MAP/PE checks therefore
+remain the product-build evidence; the experimental DLL/SYS are checked only
+for successful compilation/linkage.
 
 ## Native Context scope
 

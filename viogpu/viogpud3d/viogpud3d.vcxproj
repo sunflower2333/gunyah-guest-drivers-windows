@@ -50,6 +50,11 @@
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)'=='1'">
+    <ClCompile>
+      <PreprocessorDefinitions>VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="viogpud3d.cpp" />
   </ItemGroup>
