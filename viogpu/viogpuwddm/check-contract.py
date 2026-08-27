@@ -6998,7 +6998,20 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     if destroy_host.count("FailNativeContextAtAnyIrql();") < 1:
         fail("guest allocation teardown must quarantine unproven UNREF ownership: FailNativeContextAtAnyIrql();")
 
+    release_ownership = canonical_code(function_body("ReleaseAllocationHostOwnership", WDDM_DDI_CODE))
+    for fragment in (
+        "allocation==NULL||!IsNativeAllocation(allocation)",
+        "allocation->ResourceId<VIOGPU_NATIVE_RESOURCE_ID_START",
+        "allocation->ResourceId==MAXUINT",
+        "allocation->BlobId!=allocation->ResourceId",
+    ):
+        if fragment not in release_ownership:
+            fail(f"Host ownership release must reject an unpaired Native resource identity: {fragment}")
+
     create_blob = canonical_code(function_body("CtrlQueue::CreateNativeGuestBlob", QUEUE_CODE))
+    for fragment in ("resource_id==MAXUINT", "resource_id!=blob_id"):
+        if create_blob.count(fragment) != 1:
+            fail(f"guest blob creation must reject an unpaired or exhausted resource identity: {fragment}")
     blob_sequence = (
         create_blob.find("for(UINTindex=0;index<entry_count;++index)"),
         create_blob.find("entryBytes+=entries[index].length;"),
@@ -7027,6 +7040,9 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "!transaction->Adapter->IsHardwareResetRequested()",
         "!transaction->TransferDataComplete",
         "transaction->Adapter->IsHardwareResetRequested()",
+        "allocation->ResourceId>=VIOGPU_NATIVE_RESOURCE_ID_START",
+        "allocation->ResourceId!=MAXUINT",
+        "allocation->BlobId==allocation->ResourceId",
     ):
         if fragment not in worker:
             fail(f"passive paging execution must validate the retained VidMm backing: {fragment}")
@@ -8029,6 +8045,8 @@ def check_wddm_submission_lifetime() -> None:
         "allocation->HostState==VioGpuWddmAllocationHostLive",
         "allocation->PlacementValid",
         "allocation->BoundResetGeneration==nativeContext->ResetGeneration",
+        "allocation->ResourceId!=MAXUINT",
+        "allocation->BlobId==allocation->ResourceId",
         "allocationEntry->SegmentId==VIOGPU_WDDM_SEGMENT_ID",
         "static_cast<ULONGLONG>(allocationEntry->PhysicalAddress.QuadPart)==allocation->PlacementOffset",
         "allocation->PrivateData.RequestedIova<=MAXULONGLONG-reference->AllocationOffset",
@@ -8134,7 +8152,8 @@ def check_wddm_submission_lifetime() -> None:
         "allocation->ApertureMdl!=NULL",
         "allocation->ApertureAddress!=NULL",
         "allocation->ResourceId>=VIOGPU_NATIVE_RESOURCE_ID_START",
-        "allocation->BlobId!=0",
+        "allocation->ResourceId!=MAXUINT",
+        "allocation->BlobId==allocation->ResourceId",
         "allocation->BoundContextId==submission->ContextId",
         "allocation->BoundGeneration==submission->Generation",
         "allocation->BoundResetGeneration==submission->ResetGeneration",

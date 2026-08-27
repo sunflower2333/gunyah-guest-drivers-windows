@@ -1858,6 +1858,12 @@ NTSTATUS ReleaseAllocationHostOwnership(VIOGPU_WDDM_ALLOCATION *allocation,
                                         VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
                                         BOOLEAN snapshotAcquired)
 {
+    if (allocation == NULL || !IsNativeAllocation(allocation) ||
+        allocation->ResourceId < VIOGPU_NATIVE_RESOURCE_ID_START || allocation->ResourceId == MAXUINT ||
+        allocation->BlobId != allocation->ResourceId)
+    {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
     if (allocation->HostState == VioGpuWddmAllocationHostNone)
     {
         return STATUS_SUCCESS;
@@ -3611,7 +3617,8 @@ NTSTATUS ApplyRenderPrepatches(_Inout_ VIOGPU_WDDM_RENDER_COMMAND *header,
                         allocation->NativeContext == nativeContext->Registration &&
                         allocation->HostState == VioGpuWddmAllocationHostLive && allocation->PlacementValid &&
                         allocation->ApertureAddress != NULL &&
-                        allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START && allocation->BlobId != 0 &&
+                        allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START &&
+                        allocation->ResourceId != MAXUINT && allocation->BlobId == allocation->ResourceId &&
                         allocation->ContextId == nativeContext->ContextId &&
                         allocation->ContextGeneration == nativeContext->Generation &&
                         allocation->ContextResetGeneration == nativeContext->ResetGeneration &&
@@ -5028,7 +5035,8 @@ NTSTATUS ExecutePagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transa
     else if (valid)
     {
         valid = IsNativeAllocation(allocation) && allocation->HostState == VioGpuWddmAllocationHostLive &&
-                allocation->ContextId == transaction->ContextId &&
+                allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START && allocation->ResourceId != MAXUINT &&
+                allocation->BlobId == allocation->ResourceId && allocation->ContextId == transaction->ContextId &&
                 allocation->ContextGeneration == transaction->ContextGeneration &&
                 allocation->ContextResetGeneration == transaction->ResetGeneration &&
                 transaction->Adapter->IsNativeContextGenerationCurrent(transaction->ContextGeneration,
@@ -7115,7 +7123,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                             allocation->Adapter == adapter && !allocation->Destroying &&
                             allocation->HostState == VioGpuWddmAllocationHostLive && allocation->PlacementValid &&
                             allocation->ApertureMdl != NULL && allocation->ApertureAddress != NULL &&
-                            allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START && allocation->BlobId != 0 &&
+                            allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START &&
+                            allocation->ResourceId != MAXUINT && allocation->BlobId == allocation->ResourceId &&
                             allocation->ContextId == submission->ContextId &&
                             allocation->ContextGeneration == submission->Generation &&
                             allocation->ContextResetGeneration == submission->ResetGeneration &&

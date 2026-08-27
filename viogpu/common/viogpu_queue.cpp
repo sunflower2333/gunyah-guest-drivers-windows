@@ -1436,8 +1436,8 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeGuestBlob(UINT context_id,
     PAGED_CODE();
 
     const UINT validBlobFlags = VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE | VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE;
-    if (context_id == 0 || resource_id < VIOGPU_NATIVE_RESOURCE_ID_START || blob_id == 0 || size == 0 ||
-        size > MAXULONG || (size & (PAGE_SIZE - 1)) != 0 ||
+    if (context_id == 0 || resource_id < VIOGPU_NATIVE_RESOURCE_ID_START || resource_id == MAXUINT || blob_id == 0 ||
+        resource_id != blob_id || size == 0 || size > MAXULONG || (size & (PAGE_SIZE - 1)) != 0 ||
         (blob_flags & VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE) == 0 || (blob_flags & ~validBlobFlags) != 0 ||
         entries == NULL || entry_count == 0 || entry_count > VIOGPU_MAX_BACKING_ENTRIES ||
         entry_count > MAXULONG / sizeof(GPU_MEM_ENTRY) || !BeginSynchronousRequest())
