@@ -38,6 +38,39 @@ VOID APIENTRY ActivationDestroyDevice(D3D10DDI_HDEVICE device)
     state->Signature = 0;
 }
 
+/* The opt-in device has no queued GPU work.  Publishing an explicit flush
+ * callback keeps the DDI table complete for runtimes that issue a flush while
+ * probing the device, without pretending that a command stream was retired. */
+VOID APIENTRY ActivationFlush(D3D10DDI_HDEVICE device)
+{
+    UNREFERENCED_PARAMETER(device);
+}
+
+/* No resource hazard exists in the activation-only device: resource creation
+ * is a private lifetime probe and does not expose a renderable allocation. */
+VOID APIENTRY ActivationResourceReadAfterWriteHazard(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(resource);
+}
+
+VOID APIENTRY ActivationShaderResourceViewReadAfterWriteHazard(D3D10DDI_HDEVICE device,
+                                                               D3D10DDI_HSHADERRESOURCEVIEW view,
+                                                               D3D10DDI_HRESOURCE resource)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(view);
+    UNREFERENCED_PARAMETER(resource);
+}
+
+/* The test table is immutable after CreateDevice, so relocation is an
+ * intentional no-op rather than an uninitialised function pointer. */
+VOID APIENTRY ActivationRelocateDeviceFuncs(D3D10DDI_HDEVICE device, D3D10DDI_DEVICEFUNCS *functions)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(functions);
+}
+
 /* This resource owner is deliberately limited to the DDI lifetime contract.
  * It does not allocate video memory or expose a command entry point; the
  * production rendering path remains Mesa's Native Context Vulkan UMD. */
@@ -166,6 +199,10 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
     functions.pfnCreateResource = ActivationCreateResource;
     functions.pfnOpenResource = ActivationOpenResource;
     functions.pfnDestroyResource = ActivationDestroyResource;
+    functions.pfnFlush = ActivationFlush;
+    functions.pfnResourceReadAfterWriteHazard = ActivationResourceReadAfterWriteHazard;
+    functions.pfnShaderResourceViewReadAfterWriteHazard = ActivationShaderResourceViewReadAfterWriteHazard;
+    functions.pfnRelocateDeviceFuncs = ActivationRelocateDeviceFuncs;
     functions.pfnCheckFormatSupport = ActivationCheckFormatSupport;
     functions.pfnCheckMultisampleQualityLevels = ActivationCheckMultisampleQualityLevels;
     *arguments->pDeviceFuncs = functions;

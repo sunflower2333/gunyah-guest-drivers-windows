@@ -1051,6 +1051,10 @@ def check_d3d_umd_shim_contract() -> None:
         "functions.pfnCalcPrivateResourceSize=ActivationCalcPrivateResourceSize;",
         "functions.pfnCreateResource=ActivationCreateResource;",
         "functions.pfnDestroyResource=ActivationDestroyResource;",
+        "functions.pfnFlush=ActivationFlush;",
+        "functions.pfnResourceReadAfterWriteHazard=ActivationResourceReadAfterWriteHazard;",
+        "functions.pfnShaderResourceViewReadAfterWriteHazard=ActivationShaderResourceViewReadAfterWriteHazard;",
+        "functions.pfnRelocateDeviceFuncs=ActivationRelocateDeviceFuncs;",
         "returnS_OK;",
     ):
         if fragment not in create_device:
