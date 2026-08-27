@@ -1108,16 +1108,14 @@ VOID APIENTRY ActivationCommandListExecute(D3D10DDI_HDEVICE device, D3D11DDI_HCO
 }
 
 VOID APIENTRY ActivationCheckDeferredContextHandleSizes(D3D10DDI_HDEVICE device,
-                                                        UINT handleSizeBytes,
+                                                        UINT *handleSizeArray,
                                                         D3D11DDI_HANDLESIZE *handleSizes)
 {
     /* The probe advertises no command-list capability. If the runtime still
-     * asks for this optional table, return an explicit empty array instead of
-     * leaving caller-visible handle metadata uninitialised. */
-    if (handleSizes != nullptr && handleSizeBytes != 0)
-    {
-        ZeroMemory(handleSizes, handleSizeBytes);
-    }
+     * asks for this optional table, leave the caller-owned size metadata
+     * untouched because the WDK supplies no element count in this callback. */
+    UNREFERENCED_PARAMETER(handleSizeArray);
+    UNREFERENCED_PARAMETER(handleSizes);
     ActivationRecordDeviceCall(device, ActivationCallCheckDeferredContextHandleSizes);
 }
 
