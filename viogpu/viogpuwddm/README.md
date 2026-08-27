@@ -201,8 +201,9 @@ releasing objects. `CreateContext` accepts only the single-engine affinity mask
 and nonzero reset-generation token. Exact System and GDI context class flags are
 also accepted without private data; they do not create a Host Native Context. Native
 `Render` bounds command input to 64 KiB, copies command and patch inputs to
-nonpaged snapshots, validates their shared allocation identity, rejects writes
-through read-only opens and overlapping 8-byte patch slots, rechecks the reset
+nonpaged snapshots, validates their shared allocation identity, requires the
+packed MSM patch offsets to be four-byte aligned, rejects writes through
+read-only opens and overlapping 8-byte patch slots, rechecks the reset
 generation, and only then publishes its DMA output. UMD-selected patch slot IDs
 may be nonzero; reserved patch bits must be zero.
 
