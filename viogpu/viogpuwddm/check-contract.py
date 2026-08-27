@@ -6939,6 +6939,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         fail("guest-backed BO creation must bind GEM_NEW ownership before creating its guest-memory blob")
     for fragment in (
         "resourceId!=blobId",
+        "resourceId==MAXUINT",
         "backingSize>MAXULONG",
         "backingSize<PAGE_SIZE",
         "logicalSize>MAXULONGLONG-(PAGE_SIZE-1)",
@@ -6987,6 +6988,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         fail("guest allocation teardown cannot treat INVALID_RESOURCE_ID as released ownership")
     for fragment in (
         "if(result==VioGpuHostContextConfirmed)",
+        "resourceId==MAXUINT",
         "ReleaseNativeAllocationCount(snapshot->Owner)",
         "elseif(result==VioGpuHostContextUnknown||result==VioGpuHostContextRejected)",
         "returnVioGpuHostContextUnknown;",

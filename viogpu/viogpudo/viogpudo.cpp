@@ -6421,8 +6421,8 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         snapshot->Owner->ResetGeneration != snapshot->ResetGeneration ||
         snapshot->Owner->ContextId != snapshot->ContextId || ReadNativeAllocationCount(snapshot->Owner) == MAXLONG ||
         snapshot->ResetGeneration == 0 || snapshot->VaStart == 0 || snapshot->VaSize == 0 ||
-        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || blobId == 0 || resourceId != blobId || backingSize == 0 ||
-        logicalSize > backingSize || backingSize < PAGE_SIZE || backingSize > MAXULONG ||
+        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || resourceId == MAXUINT || blobId == 0 || resourceId != blobId ||
+        backingSize == 0 || logicalSize > backingSize || backingSize < PAGE_SIZE || backingSize > MAXULONG ||
         (backingSize & (PAGE_SIZE - 1)) != 0 || logicalAlignedSize != (ULONGLONG)backingSize ||
         (ULONGLONG)backingSize > snapshot->VaSize || requestedIova == 0 || (requestedIova & (PAGE_SIZE - 1)) != 0 ||
         requestedIova > MAXULONGLONG - (backingSize - 1) || entries == NULL || entryCount == 0 ||
@@ -6538,7 +6538,7 @@ VioGpuAdapter::DestroyNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNA
         snapshot->Owner->State != VioGpuNativeContextOwnerLive || snapshot->Owner->Generation != snapshot->Generation ||
         snapshot->Owner->ResetGeneration != snapshot->ResetGeneration ||
         snapshot->Owner->ContextId != snapshot->ContextId || ReadNativeAllocationCount(snapshot->Owner) == 0 ||
-        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || resourceId == MAXUINT || KeGetCurrentIrql() != PASSIVE_LEVEL ||
         !IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration))
     {
         return VioGpuHostContextNotSubmitted;
