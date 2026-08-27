@@ -127,6 +127,9 @@ query and counter outputs are cleared to report no timestamp, occlusion, or
 performance-counter capability. The opt-in table also records the common
 input-assembler, shader-binding, sampler, render-target, viewport, clear,
 resource-copy, update, and draw callback shapes in a private call counter.
+Resource map/unmap, stream-output target, and resolve-subresource callbacks
+also publish bounded shape-only behavior: valid resource owners are recorded,
+mapped output is zeroed, and no CPU pointer or GPU backing is exposed.
 Those callbacks only validate the DDI call shape and record the last callback;
 they do not execute shaders, mutate resources, synchronize, or submit GPU
 work. This is still a probe-time DDI table completion aid, not a D3D renderer

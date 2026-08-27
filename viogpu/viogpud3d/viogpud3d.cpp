@@ -92,6 +92,10 @@ enum ACTIVATION_CALL : LONG
     ActivationCallResourceUpdate,
     ActivationCallConstantBufferUpdate,
     ActivationCallGenerateMips,
+    ActivationCallResourceMap,
+    ActivationCallResourceUnmap,
+    ActivationCallSetStreamOutputTargets,
+    ActivationCallResourceResolve,
 };
 
 VOID ActivationRecordDeviceCall(D3D10DDI_HDEVICE device, ACTIVATION_CALL call)
@@ -783,6 +787,68 @@ VOID APIENTRY ActivationGenerateMips(D3D10DDI_HDEVICE device, D3D10DDI_HSHADERRE
     ActivationRecordDeviceCall(device, ActivationCallGenerateMips);
 }
 
+/* Mapping is deliberately a shape-only operation in the activation probe.
+ * There is no backing allocation to expose, but a zeroed output prevents the
+ * runtime from consuming uninitialised pointers or pitches during a probe. */
+VOID APIENTRY ActivationResourceMap(D3D10DDI_HDEVICE device,
+                                    D3D10DDI_HRESOURCE resource,
+                                    UINT subresource,
+                                    D3D10_DDI_MAP mapType,
+                                    UINT mapFlags,
+                                    D3D10DDI_MAPPED_SUBRESOURCE *mappedResource)
+{
+    UNREFERENCED_PARAMETER(subresource);
+    UNREFERENCED_PARAMETER(mapType);
+    UNREFERENCED_PARAMETER(mapFlags);
+    ACTIVATION_RESOURCE *state = static_cast<ACTIVATION_RESOURCE *>(resource.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_RESOURCE_SIGNATURE)
+    {
+        return;
+    }
+    if (mappedResource != nullptr)
+    {
+        ZeroMemory(mappedResource, sizeof(*mappedResource));
+    }
+    ActivationRecordDeviceCall(device, ActivationCallResourceMap);
+}
+
+VOID APIENTRY ActivationResourceUnmap(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource, UINT subresource)
+{
+    UNREFERENCED_PARAMETER(subresource);
+    ACTIVATION_RESOURCE *state = static_cast<ACTIVATION_RESOURCE *>(resource.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_RESOURCE_SIGNATURE)
+    {
+        return;
+    }
+    ActivationRecordDeviceCall(device, ActivationCallResourceUnmap);
+}
+
+VOID APIENTRY ActivationSetStreamOutputTargets(D3D10DDI_HDEVICE device,
+                                               UINT numberOfBuffers,
+                                               const D3D10DDI_HRESOURCE *resources,
+                                               const UINT *offsets)
+{
+    UNREFERENCED_PARAMETER(numberOfBuffers);
+    UNREFERENCED_PARAMETER(resources);
+    UNREFERENCED_PARAMETER(offsets);
+    ActivationRecordDeviceCall(device, ActivationCallSetStreamOutputTargets);
+}
+
+VOID APIENTRY ActivationResolveSubresource(D3D10DDI_HDEVICE device,
+                                           D3D10DDI_HRESOURCE destination,
+                                           UINT destinationSubresource,
+                                           D3D10DDI_HRESOURCE source,
+                                           UINT sourceSubresource,
+                                           DXGI_FORMAT format)
+{
+    UNREFERENCED_PARAMETER(destination);
+    UNREFERENCED_PARAMETER(destinationSubresource);
+    UNREFERENCED_PARAMETER(source);
+    UNREFERENCED_PARAMETER(sourceSubresource);
+    UNREFERENCED_PARAMETER(format);
+    ActivationRecordDeviceCall(device, ActivationCallResourceResolve);
+}
+
 /* No resource hazard exists in the activation-only device: resource creation
  * is a private lifetime probe and does not expose a renderable allocation. */
 VOID APIENTRY ActivationResourceReadAfterWriteHazard(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource)
@@ -1076,6 +1142,13 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
     functions.pfnIaSetIndexBuffer = ActivationIaSetIndexBuffer;
     functions.pfnDrawIndexedInstanced = ActivationDrawIndexedInstanced;
     functions.pfnDrawInstanced = ActivationDrawInstanced;
+    functions.pfnDynamicIABufferMapNoOverwrite = ActivationResourceMap;
+    functions.pfnDynamicIABufferUnmap = ActivationResourceUnmap;
+    functions.pfnDynamicConstantBufferMapDiscard = ActivationResourceMap;
+    functions.pfnDynamicIABufferMapDiscard = ActivationResourceMap;
+    functions.pfnDynamicConstantBufferUnmap = ActivationResourceUnmap;
+    functions.pfnDynamicResourceMapDiscard = ActivationResourceMap;
+    functions.pfnDynamicResourceUnmap = ActivationResourceUnmap;
     functions.pfnGsSetConstantBuffers = ActivationGsSetConstantBuffers;
     functions.pfnGsSetShader = ActivationGsSetShader;
     functions.pfnIaSetTopology = ActivationIaSetTopology;
@@ -1097,6 +1170,12 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
     functions.pfnSetPredication = ActivationSetPredication;
     functions.pfnGenMips = ActivationGenerateMips;
     functions.pfnResourceCopy = ActivationResourceCopy;
+    functions.pfnSoSetTargets = ActivationSetStreamOutputTargets;
+    functions.pfnResourceResolveSubresource = ActivationResolveSubresource;
+    functions.pfnResourceMap = ActivationResourceMap;
+    functions.pfnResourceUnmap = ActivationResourceUnmap;
+    functions.pfnStagingResourceMap = ActivationResourceMap;
+    functions.pfnStagingResourceUnmap = ActivationResourceUnmap;
     functions.pfnDestroyDevice = ActivationDestroyDevice;
     functions.pfnCalcPrivateResourceSize = ActivationCalcPrivateResourceSize;
     functions.pfnCalcPrivateOpenedResourceSize = ActivationCalcPrivateOpenedResourceSize;
