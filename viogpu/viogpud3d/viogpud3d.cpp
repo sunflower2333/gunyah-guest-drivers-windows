@@ -628,9 +628,9 @@ VOID APIENTRY ActivationCsSetShaderResources(D3D10DDI_HDEVICE device,
 }
 
 VOID APIENTRY ActivationCsSetSamplers(D3D10DDI_HDEVICE device,
-                                       UINT startSlot,
-                                       UINT numberOfSamplers,
-                                       const D3D10DDI_HSAMPLER *samplers)
+                                      UINT startSlot,
+                                      UINT numberOfSamplers,
+                                      const D3D10DDI_HSAMPLER *samplers)
 {
     UNREFERENCED_PARAMETER(startSlot);
     UNREFERENCED_PARAMETER(numberOfSamplers);
@@ -639,9 +639,9 @@ VOID APIENTRY ActivationCsSetSamplers(D3D10DDI_HDEVICE device,
 }
 
 VOID APIENTRY ActivationCsSetConstantBuffers(D3D10DDI_HDEVICE device,
-                                              UINT startSlot,
-                                              UINT numberOfBuffers,
-                                              const D3D10DDI_HRESOURCE *resources)
+                                             UINT startSlot,
+                                             UINT numberOfBuffers,
+                                             const D3D10DDI_HRESOURCE *resources)
 {
     UNREFERENCED_PARAMETER(startSlot);
     UNREFERENCED_PARAMETER(numberOfBuffers);
