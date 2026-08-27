@@ -1035,8 +1035,8 @@ def check_d3d_umd_shim_contract() -> None:
     create_device = canonical_code(function_body("ActivationCreateDevice", code))
     if "returnE_NOTIMPL" not in create_device:
         fail("activation-only D3D UMD must keep the product CreateDevice path fail closed")
-    if source.count("#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)") != 2:
-        fail("D3D UMD test lifecycle must use one explicit opt-in macro for size and CreateDevice")
+    if source.count("#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)") != 3:
+        fail("D3D UMD test lifecycle must use one explicit opt-in macro for its guarded code")
     calc_private_device_size = canonical_code(function_body("ActivationCalcPrivateDeviceSize", code))
     for fragment in (
         "returnsizeof(ACTIVATION_DEVICE);",

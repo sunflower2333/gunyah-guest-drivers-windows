@@ -10,6 +10,7 @@ struct ACTIVATION_ADAPTER
     D3D10DDI_HRTADAPTER RuntimeAdapter;
 };
 
+#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)
 struct ACTIVATION_DEVICE
 {
     ULONG Signature;
@@ -29,6 +30,7 @@ VOID APIENTRY ActivationDestroyDevice(D3D10DDI_HDEVICE device)
     }
     state->Signature = 0;
 }
+#endif
 
 /* A successful D3D adapter open is enough for dxgkrnl to complete legacy
  * adapter activation.  Product D3D device creation remains fail-closed because
