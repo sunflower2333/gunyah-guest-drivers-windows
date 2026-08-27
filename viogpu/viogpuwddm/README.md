@@ -144,6 +144,12 @@ resource-min-LOD, relocation, and the extended render-target binding shape.
 These callbacks only validate and record call shapes; they do not allocate
 backing, emit commands, or advertise a D3D11 pipeline capability. The product
 build leaves this table untouched.
+The same probe now covers hull/domain shader binding, tessellation shader
+object sizing/creation, unordered-access-view lifetime, UAV clear/bind, and
+structure-count copy callback shapes. UAV owners are opaque activation
+objects only; the callbacks do not inspect resource contents or create a
+shader-visible allocation. Product builds continue to leave every one of these
+optional D3D11 entries unset.
 The default product build
 leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset
 as unsupported because neither a real D3D command contract nor an independent

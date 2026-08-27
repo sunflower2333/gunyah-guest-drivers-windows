@@ -53,6 +53,7 @@ constexpr ULONG ACTIVATION_DEPTH_STENCIL_VIEW_SIGNATURE = 0x56445356UL;
 constexpr ULONG ACTIVATION_BLEND_STATE_SIGNATURE = 0x56424C44UL;
 constexpr ULONG ACTIVATION_DEPTH_STENCIL_STATE_SIGNATURE = 0x56445353UL;
 constexpr ULONG ACTIVATION_RASTERIZER_STATE_SIGNATURE = 0x56525354UL;
+constexpr ULONG ACTIVATION_UNORDERED_ACCESS_VIEW_SIGNATURE = 0x56554156UL;
 
 enum ACTIVATION_CALL : LONG
 {
@@ -102,6 +103,18 @@ enum ACTIVATION_CALL : LONG
     ActivationCallDrawIndexedInstancedIndirect,
     ActivationCallDrawInstancedIndirect,
     ActivationCallSetResourceMinLOD,
+    ActivationCallHsSetShaderResources,
+    ActivationCallHsSetShader,
+    ActivationCallHsSetSamplers,
+    ActivationCallHsSetConstantBuffers,
+    ActivationCallDsSetShaderResources,
+    ActivationCallDsSetShader,
+    ActivationCallDsSetSamplers,
+    ActivationCallDsSetConstantBuffers,
+    ActivationCallClearUnorderedAccessViewUint,
+    ActivationCallClearUnorderedAccessViewFloat,
+    ActivationCallCsSetUnorderedAccessViews,
+    ActivationCallCopyStructureCount,
 };
 
 VOID ActivationRecordDeviceCall(D3D10DDI_HDEVICE device, ACTIVATION_CALL call)
@@ -903,6 +916,188 @@ VOID APIENTRY ActivationSetResourceMinLOD(D3D10DDI_HDEVICE device, D3D10DDI_HRES
     ActivationRecordDeviceCall(device, ActivationCallSetResourceMinLOD);
 }
 
+SIZE_T APIENTRY ActivationCalcPrivateTessellationShaderSize(D3D10DDI_HDEVICE device,
+                                                            const UINT *shaderCode,
+                                                            const D3D11DDIARG_TESSELLATION_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(shaderCode);
+    UNREFERENCED_PARAMETER(signatures);
+    return ActivationObjectSize();
+}
+
+VOID APIENTRY ActivationCreateHullShader(D3D10DDI_HDEVICE device,
+                                         const UINT *shaderCode,
+                                         D3D10DDI_HSHADER shader,
+                                         D3D10DDI_HRTSHADER runtimeShader,
+                                         const D3D11DDIARG_TESSELLATION_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(signatures);
+    if (shaderCode != nullptr)
+    {
+        ActivationCreateShader(shader, runtimeShader);
+    }
+}
+
+VOID APIENTRY ActivationCreateDomainShader(D3D10DDI_HDEVICE device,
+                                           const UINT *shaderCode,
+                                           D3D10DDI_HSHADER shader,
+                                           D3D10DDI_HRTSHADER runtimeShader,
+                                           const D3D11DDIARG_TESSELLATION_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(signatures);
+    if (shaderCode != nullptr)
+    {
+        ActivationCreateShader(shader, runtimeShader);
+    }
+}
+
+VOID APIENTRY ActivationHsSetShaderResources(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numViews,
+                                             const D3D10DDI_HSHADERRESOURCEVIEW *views)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numViews);
+    UNREFERENCED_PARAMETER(views);
+    ActivationRecordDeviceCall(device, ActivationCallHsSetShaderResources);
+}
+
+VOID APIENTRY ActivationHsSetShader(D3D10DDI_HDEVICE device, D3D10DDI_HSHADER shader)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(shader.pDrvPrivate, ACTIVATION_SHADER_SIGNATURE));
+    ActivationRecordDeviceCall(device, ActivationCallHsSetShader);
+}
+
+VOID APIENTRY ActivationHsSetSamplers(D3D10DDI_HDEVICE device,
+                                      UINT startSlot,
+                                      UINT numSamplers,
+                                      const D3D10DDI_HSAMPLER *samplers)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numSamplers);
+    UNREFERENCED_PARAMETER(samplers);
+    ActivationRecordDeviceCall(device, ActivationCallHsSetSamplers);
+}
+
+VOID APIENTRY ActivationHsSetConstantBuffers(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numBuffers,
+                                             const D3D10DDI_HRESOURCE *buffers)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numBuffers);
+    UNREFERENCED_PARAMETER(buffers);
+    ActivationRecordDeviceCall(device, ActivationCallHsSetConstantBuffers);
+}
+
+VOID APIENTRY ActivationDsSetShaderResources(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numViews,
+                                             const D3D10DDI_HSHADERRESOURCEVIEW *views)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numViews);
+    UNREFERENCED_PARAMETER(views);
+    ActivationRecordDeviceCall(device, ActivationCallDsSetShaderResources);
+}
+
+VOID APIENTRY ActivationDsSetShader(D3D10DDI_HDEVICE device, D3D10DDI_HSHADER shader)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(shader.pDrvPrivate, ACTIVATION_SHADER_SIGNATURE));
+    ActivationRecordDeviceCall(device, ActivationCallDsSetShader);
+}
+
+VOID APIENTRY ActivationDsSetSamplers(D3D10DDI_HDEVICE device,
+                                      UINT startSlot,
+                                      UINT numSamplers,
+                                      const D3D10DDI_HSAMPLER *samplers)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numSamplers);
+    UNREFERENCED_PARAMETER(samplers);
+    ActivationRecordDeviceCall(device, ActivationCallDsSetSamplers);
+}
+
+VOID APIENTRY ActivationDsSetConstantBuffers(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numBuffers,
+                                             const D3D10DDI_HRESOURCE *buffers)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numBuffers);
+    UNREFERENCED_PARAMETER(buffers);
+    ActivationRecordDeviceCall(device, ActivationCallDsSetConstantBuffers);
+}
+
+SIZE_T APIENTRY ActivationCalcPrivateUnorderedAccessViewSize(D3D10DDI_HDEVICE device,
+                                                             const D3D11DDIARG_CREATEUNORDEREDACCESSVIEW *arguments)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    return ActivationObjectSize();
+}
+
+VOID APIENTRY ActivationCreateUnorderedAccessView(D3D10DDI_HDEVICE device,
+                                                  const D3D11DDIARG_CREATEUNORDEREDACCESSVIEW *arguments,
+                                                  D3D11DDI_HUNORDEREDACCESSVIEW view,
+                                                  D3D11DDI_HRTUNORDEREDACCESSVIEW runtimeView)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    ActivationInitializeObject(view.pDrvPrivate, runtimeView.handle, ACTIVATION_UNORDERED_ACCESS_VIEW_SIGNATURE);
+}
+
+VOID APIENTRY ActivationDestroyUnorderedAccessView(D3D10DDI_HDEVICE device, D3D11DDI_HUNORDEREDACCESSVIEW view)
+{
+    UNREFERENCED_PARAMETER(device);
+    ActivationDestroyObject(view.pDrvPrivate, ACTIVATION_UNORDERED_ACCESS_VIEW_SIGNATURE);
+}
+
+VOID APIENTRY ActivationClearUnorderedAccessViewUint(D3D10DDI_HDEVICE device,
+                                                     D3D11DDI_HUNORDEREDACCESSVIEW view,
+                                                     const UINT values[4])
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(view.pDrvPrivate, ACTIVATION_UNORDERED_ACCESS_VIEW_SIGNATURE));
+    UNREFERENCED_PARAMETER(values);
+    ActivationRecordDeviceCall(device, ActivationCallClearUnorderedAccessViewUint);
+}
+
+VOID APIENTRY ActivationClearUnorderedAccessViewFloat(D3D10DDI_HDEVICE device,
+                                                      D3D11DDI_HUNORDEREDACCESSVIEW view,
+                                                      const FLOAT values[4])
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(view.pDrvPrivate, ACTIVATION_UNORDERED_ACCESS_VIEW_SIGNATURE));
+    UNREFERENCED_PARAMETER(values);
+    ActivationRecordDeviceCall(device, ActivationCallClearUnorderedAccessViewFloat);
+}
+
+VOID APIENTRY ActivationCsSetUnorderedAccessViews(D3D10DDI_HDEVICE device,
+                                                  UINT startSlot,
+                                                  UINT numViews,
+                                                  const D3D11DDI_HUNORDEREDACCESSVIEW *views,
+                                                  const UINT *initialCounts)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numViews);
+    UNREFERENCED_PARAMETER(views);
+    UNREFERENCED_PARAMETER(initialCounts);
+    ActivationRecordDeviceCall(device, ActivationCallCsSetUnorderedAccessViews);
+}
+
+VOID APIENTRY ActivationCopyStructureCount(D3D10DDI_HDEVICE device,
+                                           D3D10DDI_HRESOURCE destination,
+                                           UINT destinationOffset,
+                                           D3D11DDI_HUNORDEREDACCESSVIEW source)
+{
+    UNREFERENCED_PARAMETER(destination);
+    UNREFERENCED_PARAMETER(destinationOffset);
+    UNREFERENCED_PARAMETER(ActivationIsObject(source.pDrvPrivate, ACTIVATION_UNORDERED_ACCESS_VIEW_SIGNATURE));
+    ActivationRecordDeviceCall(device, ActivationCallCopyStructureCount);
+}
+
 VOID APIENTRY ActivationCreateComputeShader(D3D10DDI_HDEVICE device,
                                             const UINT *shaderCode,
                                             D3D10DDI_HSHADER shader,
@@ -1343,11 +1538,29 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
         functions11->pfnCsSetShaderResources = ActivationPsSetShaderResources;
         functions11->pfnCsSetSamplers = ActivationPsSetSamplers;
         functions11->pfnCsSetConstantBuffers = ActivationPsSetConstantBuffers;
+        functions11->pfnHsSetShaderResources = ActivationHsSetShaderResources;
+        functions11->pfnHsSetShader = ActivationHsSetShader;
+        functions11->pfnHsSetSamplers = ActivationHsSetSamplers;
+        functions11->pfnHsSetConstantBuffers = ActivationHsSetConstantBuffers;
+        functions11->pfnDsSetShaderResources = ActivationDsSetShaderResources;
+        functions11->pfnDsSetShader = ActivationDsSetShader;
+        functions11->pfnDsSetSamplers = ActivationDsSetSamplers;
+        functions11->pfnDsSetConstantBuffers = ActivationDsSetConstantBuffers;
+        functions11->pfnCreateHullShader = ActivationCreateHullShader;
+        functions11->pfnCreateDomainShader = ActivationCreateDomainShader;
+        functions11->pfnCalcPrivateTessellationShaderSize = ActivationCalcPrivateTessellationShaderSize;
+        functions11->pfnCalcPrivateUnorderedAccessViewSize = ActivationCalcPrivateUnorderedAccessViewSize;
+        functions11->pfnCreateUnorderedAccessView = ActivationCreateUnorderedAccessView;
+        functions11->pfnDestroyUnorderedAccessView = ActivationDestroyUnorderedAccessView;
+        functions11->pfnClearUnorderedAccessViewUint = ActivationClearUnorderedAccessViewUint;
+        functions11->pfnClearUnorderedAccessViewFloat = ActivationClearUnorderedAccessViewFloat;
+        functions11->pfnCsSetUnorderedAccessViews = ActivationCsSetUnorderedAccessViews;
         functions11->pfnDispatch = ActivationDispatch;
         functions11->pfnDispatchIndirect = ActivationDispatchIndirect;
         functions11->pfnDrawIndexedInstancedIndirect = ActivationDrawIndexedInstancedIndirect;
         functions11->pfnDrawInstancedIndirect = ActivationDrawInstancedIndirect;
         functions11->pfnSetResourceMinLOD = ActivationSetResourceMinLOD;
+        functions11->pfnCopyStructureCount = ActivationCopyStructureCount;
     }
     return S_OK;
 #else

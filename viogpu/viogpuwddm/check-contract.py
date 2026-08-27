@@ -1191,11 +1191,29 @@ def check_d3d_umd_shim_contract() -> None:
         "functions11->pfnCsSetShaderResources=ActivationPsSetShaderResources;",
         "functions11->pfnCsSetSamplers=ActivationPsSetSamplers;",
         "functions11->pfnCsSetConstantBuffers=ActivationPsSetConstantBuffers;",
+        "functions11->pfnHsSetShaderResources=ActivationHsSetShaderResources;",
+        "functions11->pfnHsSetShader=ActivationHsSetShader;",
+        "functions11->pfnHsSetSamplers=ActivationHsSetSamplers;",
+        "functions11->pfnHsSetConstantBuffers=ActivationHsSetConstantBuffers;",
+        "functions11->pfnDsSetShaderResources=ActivationDsSetShaderResources;",
+        "functions11->pfnDsSetShader=ActivationDsSetShader;",
+        "functions11->pfnDsSetSamplers=ActivationDsSetSamplers;",
+        "functions11->pfnDsSetConstantBuffers=ActivationDsSetConstantBuffers;",
+        "functions11->pfnCreateHullShader=ActivationCreateHullShader;",
+        "functions11->pfnCreateDomainShader=ActivationCreateDomainShader;",
+        "functions11->pfnCalcPrivateTessellationShaderSize=ActivationCalcPrivateTessellationShaderSize;",
+        "functions11->pfnCalcPrivateUnorderedAccessViewSize=ActivationCalcPrivateUnorderedAccessViewSize;",
+        "functions11->pfnCreateUnorderedAccessView=ActivationCreateUnorderedAccessView;",
+        "functions11->pfnDestroyUnorderedAccessView=ActivationDestroyUnorderedAccessView;",
+        "functions11->pfnClearUnorderedAccessViewUint=ActivationClearUnorderedAccessViewUint;",
+        "functions11->pfnClearUnorderedAccessViewFloat=ActivationClearUnorderedAccessViewFloat;",
+        "functions11->pfnCsSetUnorderedAccessViews=ActivationCsSetUnorderedAccessViews;",
         "functions11->pfnDispatch=ActivationDispatch;",
         "functions11->pfnDispatchIndirect=ActivationDispatchIndirect;",
         "functions11->pfnDrawIndexedInstancedIndirect=ActivationDrawIndexedInstancedIndirect;",
         "functions11->pfnDrawInstancedIndirect=ActivationDrawInstancedIndirect;",
         "functions11->pfnSetResourceMinLOD=ActivationSetResourceMinLOD;",
+        "functions11->pfnCopyStructureCount=ActivationCopyStructureCount;",
     )
     for fragment in d3d11_fragments:
         if fragment not in create_device:
@@ -1238,6 +1256,10 @@ def check_d3d_umd_shim_contract() -> None:
         "ActivationDestroyDepthStencilState",
         "ActivationCreateRasterizerState",
         "ActivationDestroyRasterizerState",
+        "ActivationCreateHullShader",
+        "ActivationCreateDomainShader",
+        "ActivationCreateUnorderedAccessView",
+        "ActivationDestroyUnorderedAccessView",
     )
     for callback in object_callbacks:
         if len(re.findall(rf"\b{callback}\s*\(", source)) != 1:
@@ -1256,6 +1278,20 @@ def check_d3d_umd_shim_contract() -> None:
         "ActivationCreateComputeShader",
         "ActivationSetRenderTargets11",
         "ActivationRelocateDeviceFuncs11",
+        "ActivationHsSetShaderResources",
+        "ActivationHsSetShader",
+        "ActivationHsSetSamplers",
+        "ActivationHsSetConstantBuffers",
+        "ActivationDsSetShaderResources",
+        "ActivationDsSetShader",
+        "ActivationDsSetSamplers",
+        "ActivationDsSetConstantBuffers",
+        "ActivationClearUnorderedAccessViewUint",
+        "ActivationClearUnorderedAccessViewFloat",
+        "ActivationCsSetUnorderedAccessViews",
+        "ActivationCopyStructureCount",
+        "ActivationCalcPrivateTessellationShaderSize",
+        "ActivationCalcPrivateUnorderedAccessViewSize",
     ):
         if len(re.findall(rf"\b{callback}\s*\(", source)) != 1:
             fail(f"D3D UMD test shape callback must have one implementation: {callback}")
