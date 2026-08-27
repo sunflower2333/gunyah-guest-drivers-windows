@@ -1181,6 +1181,25 @@ def check_d3d_umd_shim_contract() -> None:
     for fragment in create_device_fragments:
         if fragment not in create_device:
             fail(f"D3D UMD test device table is missing guarded callback: {fragment}")
+    d3d11_fragments = (
+        "arguments->Interface==D3D11_0_DDI_INTERFACE_VERSION&&arguments->p11DeviceFuncs!=NULL",
+        "ZeroMemory(functions11,sizeof(*functions11));",
+        "functions11->pfnSetRenderTargets=ActivationSetRenderTargets11;",
+        "functions11->pfnRelocateDeviceFuncs=ActivationRelocateDeviceFuncs11;",
+        "functions11->pfnCreateComputeShader=ActivationCreateComputeShader;",
+        "functions11->pfnCsSetShader=ActivationPsSetShader;",
+        "functions11->pfnCsSetShaderResources=ActivationPsSetShaderResources;",
+        "functions11->pfnCsSetSamplers=ActivationPsSetSamplers;",
+        "functions11->pfnCsSetConstantBuffers=ActivationPsSetConstantBuffers;",
+        "functions11->pfnDispatch=ActivationDispatch;",
+        "functions11->pfnDispatchIndirect=ActivationDispatchIndirect;",
+        "functions11->pfnDrawIndexedInstancedIndirect=ActivationDrawIndexedInstancedIndirect;",
+        "functions11->pfnDrawInstancedIndirect=ActivationDrawInstancedIndirect;",
+        "functions11->pfnSetResourceMinLOD=ActivationSetResourceMinLOD;",
+    )
+    for fragment in d3d11_fragments:
+        if fragment not in create_device:
+            fail(f"D3D UMD test D3D11 table is missing guarded callback: {fragment}")
     object_helper = canonical_code(function_body("ActivationInitializeObject", code))
     for fragment in (
         "if(privateData==NULL||runtimeHandle==NULL){return;}",
@@ -1229,6 +1248,14 @@ def check_d3d_umd_shim_contract() -> None:
         "ActivationSetStreamOutputTargets",
         "ActivationResolveSubresource",
         "ActivationSetTextFilterSize",
+        "ActivationDispatch",
+        "ActivationDispatchIndirect",
+        "ActivationDrawIndexedInstancedIndirect",
+        "ActivationDrawInstancedIndirect",
+        "ActivationSetResourceMinLOD",
+        "ActivationCreateComputeShader",
+        "ActivationSetRenderTargets11",
+        "ActivationRelocateDeviceFuncs11",
     ):
         if len(re.findall(rf"\b{callback}\s*\(", source)) != 1:
             fail(f"D3D UMD test shape callback must have one implementation: {callback}")

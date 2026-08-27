@@ -138,6 +138,12 @@ The opt-in capability query also accepts the runtime's zero-length probe form
 and returns an empty capability payload for the explicitly recognized D3D11
 queries. Unknown query types remain `E_NOTIMPL`; the probe therefore cannot
 advertise a capability that the table does not define.
+For a D3D11 interface selection, the same opt-in build also publishes a
+deliberately sparse `p11DeviceFuncs` table for compute, indirect draw/dispatch,
+resource-min-LOD, relocation, and the extended render-target binding shape.
+These callbacks only validate and record call shapes; they do not allocate
+backing, emit commands, or advertise a D3D11 pipeline capability. The product
+build leaves this table untouched.
 The default product build
 leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset
 as unsupported because neither a real D3D command contract nor an independent

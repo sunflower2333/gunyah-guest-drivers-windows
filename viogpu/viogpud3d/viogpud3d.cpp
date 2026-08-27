@@ -97,6 +97,11 @@ enum ACTIVATION_CALL : LONG
     ActivationCallSetStreamOutputTargets,
     ActivationCallResourceResolve,
     ActivationCallSetTextFilterSize,
+    ActivationCallDispatch,
+    ActivationCallDispatchIndirect,
+    ActivationCallDrawIndexedInstancedIndirect,
+    ActivationCallDrawInstancedIndirect,
+    ActivationCallSetResourceMinLOD,
 };
 
 VOID ActivationRecordDeviceCall(D3D10DDI_HDEVICE device, ACTIVATION_CALL call)
@@ -859,6 +864,88 @@ VOID APIENTRY ActivationSetTextFilterSize(D3D10DDI_HDEVICE device, UINT width, U
     ActivationRecordDeviceCall(device, ActivationCallSetTextFilterSize);
 }
 
+/* D3D11's compute and indirect callbacks are present only in the opt-in
+ * activation probe. They record the call shape and never emit a command or
+ * touch a resource, so the probe cannot accidentally become a renderer. */
+VOID APIENTRY ActivationDispatch(D3D10DDI_HDEVICE device, UINT x, UINT y, UINT z)
+{
+    UNREFERENCED_PARAMETER(x);
+    UNREFERENCED_PARAMETER(y);
+    UNREFERENCED_PARAMETER(z);
+    ActivationRecordDeviceCall(device, ActivationCallDispatch);
+}
+
+VOID APIENTRY ActivationDispatchIndirect(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource, UINT offset)
+{
+    UNREFERENCED_PARAMETER(resource);
+    UNREFERENCED_PARAMETER(offset);
+    ActivationRecordDeviceCall(device, ActivationCallDispatchIndirect);
+}
+
+VOID APIENTRY ActivationDrawIndexedInstancedIndirect(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource, UINT offset)
+{
+    UNREFERENCED_PARAMETER(resource);
+    UNREFERENCED_PARAMETER(offset);
+    ActivationRecordDeviceCall(device, ActivationCallDrawIndexedInstancedIndirect);
+}
+
+VOID APIENTRY ActivationDrawInstancedIndirect(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource, UINT offset)
+{
+    UNREFERENCED_PARAMETER(resource);
+    UNREFERENCED_PARAMETER(offset);
+    ActivationRecordDeviceCall(device, ActivationCallDrawInstancedIndirect);
+}
+
+VOID APIENTRY ActivationSetResourceMinLOD(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource, FLOAT minLod)
+{
+    UNREFERENCED_PARAMETER(resource);
+    UNREFERENCED_PARAMETER(minLod);
+    ActivationRecordDeviceCall(device, ActivationCallSetResourceMinLOD);
+}
+
+VOID APIENTRY ActivationCreateComputeShader(D3D10DDI_HDEVICE device,
+                                            const UINT *shaderCode,
+                                            D3D10DDI_HSHADER shader,
+                                            D3D10DDI_HRTSHADER runtimeShader)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (shaderCode != nullptr)
+    {
+        ActivationCreateShader(shader, runtimeShader);
+    }
+}
+
+VOID APIENTRY ActivationSetRenderTargets11(D3D10DDI_HDEVICE device,
+                                           const D3D10DDI_HRENDERTARGETVIEW *renderTargetViews,
+                                           UINT numberOfViews,
+                                           UINT clearViews,
+                                           D3D10DDI_HDEPTHSTENCILVIEW depthStencilView,
+                                           const D3D11DDI_HUNORDEREDACCESSVIEW *unorderedAccessViews,
+                                           const UINT *uavInitialCounts,
+                                           UINT uavStartSlot,
+                                           UINT numberOfUavs,
+                                           UINT uavRangeStart,
+                                           UINT uavRangeSize)
+{
+    UNREFERENCED_PARAMETER(renderTargetViews);
+    UNREFERENCED_PARAMETER(numberOfViews);
+    UNREFERENCED_PARAMETER(clearViews);
+    UNREFERENCED_PARAMETER(depthStencilView);
+    UNREFERENCED_PARAMETER(unorderedAccessViews);
+    UNREFERENCED_PARAMETER(uavInitialCounts);
+    UNREFERENCED_PARAMETER(uavStartSlot);
+    UNREFERENCED_PARAMETER(numberOfUavs);
+    UNREFERENCED_PARAMETER(uavRangeStart);
+    UNREFERENCED_PARAMETER(uavRangeSize);
+    ActivationRecordDeviceCall(device, ActivationCallSetRenderTargets);
+}
+
+VOID APIENTRY ActivationRelocateDeviceFuncs11(D3D10DDI_HDEVICE device, D3D11DDI_DEVICEFUNCS *functions)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(functions);
+}
+
 /* No resource hazard exists in the activation-only device: resource creation
  * is a private lifetime probe and does not expose a renderable allocation. */
 VOID APIENTRY ActivationResourceReadAfterWriteHazard(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource)
@@ -1240,6 +1327,28 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
     functions.pfnCreateRasterizerState = ActivationCreateRasterizerState;
     functions.pfnDestroyRasterizerState = ActivationDestroyRasterizerState;
     *arguments->pDeviceFuncs = functions;
+
+    /* The D3D11 runtime selects the union's p11DeviceFuncs member. Keep this
+     * table deliberately sparse: the capability response advertises no 3D
+     * pipeline, while these exact-signature callbacks let an ABI probe verify
+     * compute/indirect dispatch wiring without exposing a second renderer. */
+    if (arguments->Interface == D3D11_0_DDI_INTERFACE_VERSION && arguments->p11DeviceFuncs != nullptr)
+    {
+        D3D11DDI_DEVICEFUNCS *functions11 = arguments->p11DeviceFuncs;
+        ZeroMemory(functions11, sizeof(*functions11));
+        functions11->pfnSetRenderTargets = ActivationSetRenderTargets11;
+        functions11->pfnRelocateDeviceFuncs = ActivationRelocateDeviceFuncs11;
+        functions11->pfnCreateComputeShader = ActivationCreateComputeShader;
+        functions11->pfnCsSetShader = ActivationPsSetShader;
+        functions11->pfnCsSetShaderResources = ActivationPsSetShaderResources;
+        functions11->pfnCsSetSamplers = ActivationPsSetSamplers;
+        functions11->pfnCsSetConstantBuffers = ActivationPsSetConstantBuffers;
+        functions11->pfnDispatch = ActivationDispatch;
+        functions11->pfnDispatchIndirect = ActivationDispatchIndirect;
+        functions11->pfnDrawIndexedInstancedIndirect = ActivationDrawIndexedInstancedIndirect;
+        functions11->pfnDrawInstancedIndirect = ActivationDrawInstancedIndirect;
+        functions11->pfnSetResourceMinLOD = ActivationSetResourceMinLOD;
+    }
     return S_OK;
 #else
     UNREFERENCED_PARAMETER(arguments);
