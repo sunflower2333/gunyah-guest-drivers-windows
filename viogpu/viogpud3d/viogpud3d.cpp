@@ -28,9 +28,312 @@ struct ACTIVATION_QUERY
     D3D10DDI_HRTQUERY RuntimeQuery;
 };
 
+/* D3D creates state, view, and shader objects through a large family of
+ * callbacks.  The opt-in probe gives each family an opaque owner so the
+ * runtime can exercise allocation and teardown without entering a renderer.
+ * The product UMD keeps these callbacks absent until a real command ABI is
+ * available. */
+struct ACTIVATION_OBJECT
+{
+    ULONG Signature;
+    PVOID RuntimeHandle;
+};
+
 constexpr ULONG ACTIVATION_DEVICE_SIGNATURE = 0x56494F54UL;
 constexpr ULONG ACTIVATION_RESOURCE_SIGNATURE = 0x56494F52UL;
 constexpr ULONG ACTIVATION_QUERY_SIGNATURE = 0x56494F51UL;
+constexpr ULONG ACTIVATION_ELEMENT_LAYOUT_SIGNATURE = 0x56494F45UL;
+constexpr ULONG ACTIVATION_SAMPLER_SIGNATURE = 0x56494F4DUL;
+constexpr ULONG ACTIVATION_SHADER_SIGNATURE = 0x56494F48UL;
+constexpr ULONG ACTIVATION_SHADER_VIEW_SIGNATURE = 0x56494F56UL;
+constexpr ULONG ACTIVATION_RENDER_TARGET_VIEW_SIGNATURE = 0x564F5254UL;
+constexpr ULONG ACTIVATION_DEPTH_STENCIL_VIEW_SIGNATURE = 0x56445356UL;
+constexpr ULONG ACTIVATION_BLEND_STATE_SIGNATURE = 0x56424C44UL;
+constexpr ULONG ACTIVATION_DEPTH_STENCIL_STATE_SIGNATURE = 0x56445353UL;
+constexpr ULONG ACTIVATION_RASTERIZER_STATE_SIGNATURE = 0x56525354UL;
+
+VOID ActivationInitializeObject(PVOID privateData, PVOID runtimeHandle, ULONG signature)
+{
+    if (privateData == nullptr || runtimeHandle == nullptr)
+    {
+        return;
+    }
+
+    ACTIVATION_OBJECT *state = static_cast<ACTIVATION_OBJECT *>(privateData);
+    state->Signature = signature;
+    state->RuntimeHandle = runtimeHandle;
+}
+
+VOID ActivationDestroyObject(PVOID privateData, ULONG signature)
+{
+    ACTIVATION_OBJECT *state = static_cast<ACTIVATION_OBJECT *>(privateData);
+    if (state == nullptr || state->Signature != signature)
+    {
+        return;
+    }
+
+    state->RuntimeHandle = nullptr;
+    state->Signature = 0;
+}
+
+SIZE_T ActivationObjectSize()
+{
+    return sizeof(ACTIVATION_OBJECT);
+}
+
+#define VIOGPU_ACTIVATION_OBJECT_CALC(name, argument_type)                                                             \
+    SIZE_T APIENTRY name(D3D10DDI_HDEVICE device, const argument_type *arguments)                                      \
+    {                                                                                                                  \
+        UNREFERENCED_PARAMETER(device);                                                                                \
+        UNREFERENCED_PARAMETER(arguments);                                                                             \
+        return ActivationObjectSize();                                                                                 \
+    }
+
+VIOGPU_ACTIVATION_OBJECT_CALC(ActivationCalcPrivateElementLayoutSize, D3D10DDIARG_CREATEELEMENTLAYOUT)
+VIOGPU_ACTIVATION_OBJECT_CALC(ActivationCalcPrivateSamplerSize, D3D10_DDI_SAMPLER_DESC)
+VIOGPU_ACTIVATION_OBJECT_CALC(ActivationCalcPrivateShaderResourceViewSize, D3D10DDIARG_CREATESHADERRESOURCEVIEW)
+VIOGPU_ACTIVATION_OBJECT_CALC(ActivationCalcPrivateRenderTargetViewSize, D3D10DDIARG_CREATERENDERTARGETVIEW)
+VIOGPU_ACTIVATION_OBJECT_CALC(ActivationCalcPrivateDepthStencilViewSize, D3D10DDIARG_CREATEDEPTHSTENCILVIEW)
+VIOGPU_ACTIVATION_OBJECT_CALC(ActivationCalcPrivateBlendStateSize, D3D10_DDI_BLEND_DESC)
+VIOGPU_ACTIVATION_OBJECT_CALC(ActivationCalcPrivateDepthStencilStateSize, D3D10_DDI_DEPTH_STENCIL_DESC)
+VIOGPU_ACTIVATION_OBJECT_CALC(ActivationCalcPrivateRasterizerStateSize, D3D10_DDI_RASTERIZER_DESC)
+
+SIZE_T APIENTRY ActivationCalcPrivateShaderSize(D3D10DDI_HDEVICE device,
+                                                const UINT *shaderCode,
+                                                const D3D10DDIARG_STAGE_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(shaderCode);
+    UNREFERENCED_PARAMETER(signatures);
+    return ActivationObjectSize();
+}
+
+SIZE_T APIENTRY
+ActivationCalcPrivateGeometryShaderWithStreamOutput(D3D10DDI_HDEVICE device,
+                                                    const D3D10DDIARG_CREATEGEOMETRYSHADERWITHSTREAMOUTPUT *arguments,
+                                                    const D3D10DDIARG_STAGE_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    UNREFERENCED_PARAMETER(signatures);
+    return ActivationObjectSize();
+}
+
+VOID APIENTRY ActivationCreateElementLayout(D3D10DDI_HDEVICE device,
+                                            const D3D10DDIARG_CREATEELEMENTLAYOUT *arguments,
+                                            D3D10DDI_HELEMENTLAYOUT elementLayout,
+                                            D3D10DDI_HRTELEMENTLAYOUT runtimeElementLayout)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(elementLayout.pDrvPrivate,
+                                   runtimeElementLayout.handle,
+                                   ACTIVATION_ELEMENT_LAYOUT_SIGNATURE);
+    }
+}
+
+VOID APIENTRY ActivationDestroyElementLayout(D3D10DDI_HDEVICE device, D3D10DDI_HELEMENTLAYOUT elementLayout)
+{
+    UNREFERENCED_PARAMETER(device);
+    ActivationDestroyObject(elementLayout.pDrvPrivate, ACTIVATION_ELEMENT_LAYOUT_SIGNATURE);
+}
+
+VOID APIENTRY ActivationCreateSampler(D3D10DDI_HDEVICE device,
+                                      const D3D10_DDI_SAMPLER_DESC *arguments,
+                                      D3D10DDI_HSAMPLER sampler,
+                                      D3D10DDI_HRTSAMPLER runtimeSampler)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(sampler.pDrvPrivate, runtimeSampler.handle, ACTIVATION_SAMPLER_SIGNATURE);
+    }
+}
+
+VOID APIENTRY ActivationDestroySampler(D3D10DDI_HDEVICE device, D3D10DDI_HSAMPLER sampler)
+{
+    UNREFERENCED_PARAMETER(device);
+    ActivationDestroyObject(sampler.pDrvPrivate, ACTIVATION_SAMPLER_SIGNATURE);
+}
+
+VOID ActivationCreateShader(D3D10DDI_HSHADER shader, D3D10DDI_HRTSHADER runtimeShader)
+{
+    ActivationInitializeObject(shader.pDrvPrivate, runtimeShader.handle, ACTIVATION_SHADER_SIGNATURE);
+}
+
+VOID APIENTRY ActivationCreateVertexShader(D3D10DDI_HDEVICE device,
+                                           const UINT *shaderCode,
+                                           D3D10DDI_HSHADER shader,
+                                           D3D10DDI_HRTSHADER runtimeShader,
+                                           const D3D10DDIARG_STAGE_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(signatures);
+    if (shaderCode != nullptr)
+    {
+        ActivationCreateShader(shader, runtimeShader);
+    }
+}
+
+VOID APIENTRY ActivationCreateGeometryShader(D3D10DDI_HDEVICE device,
+                                             const UINT *shaderCode,
+                                             D3D10DDI_HSHADER shader,
+                                             D3D10DDI_HRTSHADER runtimeShader,
+                                             const D3D10DDIARG_STAGE_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(signatures);
+    if (shaderCode != nullptr)
+    {
+        ActivationCreateShader(shader, runtimeShader);
+    }
+}
+
+VOID APIENTRY ActivationCreatePixelShader(D3D10DDI_HDEVICE device,
+                                          const UINT *shaderCode,
+                                          D3D10DDI_HSHADER shader,
+                                          D3D10DDI_HRTSHADER runtimeShader,
+                                          const D3D10DDIARG_STAGE_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(signatures);
+    if (shaderCode != nullptr)
+    {
+        ActivationCreateShader(shader, runtimeShader);
+    }
+}
+
+VOID APIENTRY
+ActivationCreateGeometryShaderWithStreamOutput(D3D10DDI_HDEVICE device,
+                                               const D3D10DDIARG_CREATEGEOMETRYSHADERWITHSTREAMOUTPUT *arguments,
+                                               D3D10DDI_HSHADER shader,
+                                               D3D10DDI_HRTSHADER runtimeShader,
+                                               const D3D10DDIARG_STAGE_IO_SIGNATURES *signatures)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(signatures);
+    if (arguments != nullptr)
+    {
+        ActivationCreateShader(shader, runtimeShader);
+    }
+}
+
+VOID APIENTRY ActivationDestroyShader(D3D10DDI_HDEVICE device, D3D10DDI_HSHADER shader)
+{
+    UNREFERENCED_PARAMETER(device);
+    ActivationDestroyObject(shader.pDrvPrivate, ACTIVATION_SHADER_SIGNATURE);
+}
+
+VOID APIENTRY ActivationCreateShaderResourceView(D3D10DDI_HDEVICE device,
+                                                 const D3D10DDIARG_CREATESHADERRESOURCEVIEW *arguments,
+                                                 D3D10DDI_HSHADERRESOURCEVIEW view,
+                                                 D3D10DDI_HRTSHADERRESOURCEVIEW runtimeView)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(view.pDrvPrivate, runtimeView.handle, ACTIVATION_SHADER_VIEW_SIGNATURE);
+    }
+}
+
+VOID APIENTRY ActivationDestroyShaderResourceView(D3D10DDI_HDEVICE device, D3D10DDI_HSHADERRESOURCEVIEW view)
+{
+    UNREFERENCED_PARAMETER(device);
+    ActivationDestroyObject(view.pDrvPrivate, ACTIVATION_SHADER_VIEW_SIGNATURE);
+}
+
+VOID APIENTRY ActivationCreateRenderTargetView(D3D10DDI_HDEVICE device,
+                                               const D3D10DDIARG_CREATERENDERTARGETVIEW *arguments,
+                                               D3D10DDI_HRENDERTARGETVIEW view,
+                                               D3D10DDI_HRTRENDERTARGETVIEW runtimeView)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(view.pDrvPrivate, runtimeView.handle, ACTIVATION_RENDER_TARGET_VIEW_SIGNATURE);
+    }
+}
+
+VOID APIENTRY ActivationDestroyRenderTargetView(D3D10DDI_HDEVICE device, D3D10DDI_HRENDERTARGETVIEW view)
+{
+    UNREFERENCED_PARAMETER(device);
+    ActivationDestroyObject(view.pDrvPrivate, ACTIVATION_RENDER_TARGET_VIEW_SIGNATURE);
+}
+
+VOID APIENTRY ActivationCreateDepthStencilView(D3D10DDI_HDEVICE device,
+                                               const D3D10DDIARG_CREATEDEPTHSTENCILVIEW *arguments,
+                                               D3D10DDI_HDEPTHSTENCILVIEW view,
+                                               D3D10DDI_HRTDEPTHSTENCILVIEW runtimeView)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(view.pDrvPrivate, runtimeView.handle, ACTIVATION_DEPTH_STENCIL_VIEW_SIGNATURE);
+    }
+}
+
+VOID APIENTRY ActivationDestroyDepthStencilView(D3D10DDI_HDEVICE device, D3D10DDI_HDEPTHSTENCILVIEW view)
+{
+    UNREFERENCED_PARAMETER(device);
+    ActivationDestroyObject(view.pDrvPrivate, ACTIVATION_DEPTH_STENCIL_VIEW_SIGNATURE);
+}
+
+VOID APIENTRY ActivationCreateBlendState(D3D10DDI_HDEVICE device,
+                                         const D3D10_DDI_BLEND_DESC *arguments,
+                                         D3D10DDI_HBLENDSTATE state,
+                                         D3D10DDI_HRTBLENDSTATE runtimeState)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(state.pDrvPrivate, runtimeState.handle, ACTIVATION_BLEND_STATE_SIGNATURE);
+    }
+}
+
+VOID APIENTRY ActivationDestroyBlendState(D3D10DDI_HDEVICE device, D3D10DDI_HBLENDSTATE state)
+{
+    UNREFERENCED_PARAMETER(device);
+    ActivationDestroyObject(state.pDrvPrivate, ACTIVATION_BLEND_STATE_SIGNATURE);
+}
+
+VOID APIENTRY ActivationCreateDepthStencilState(D3D10DDI_HDEVICE device,
+                                                const D3D10_DDI_DEPTH_STENCIL_DESC *arguments,
+                                                D3D10DDI_HDEPTHSTENCILSTATE state,
+                                                D3D10DDI_HRTDEPTHSTENCILSTATE runtimeState)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(state.pDrvPrivate, runtimeState.handle, ACTIVATION_DEPTH_STENCIL_STATE_SIGNATURE);
+    }
+}
+
+VOID APIENTRY ActivationDestroyDepthStencilState(D3D10DDI_HDEVICE device, D3D10DDI_HDEPTHSTENCILSTATE state)
+{
+    UNREFERENCED_PARAMETER(device);
+    ActivationDestroyObject(state.pDrvPrivate, ACTIVATION_DEPTH_STENCIL_STATE_SIGNATURE);
+}
+
+VOID APIENTRY ActivationCreateRasterizerState(D3D10DDI_HDEVICE device,
+                                              const D3D10_DDI_RASTERIZER_DESC *arguments,
+                                              D3D10DDI_HRASTERIZERSTATE state,
+                                              D3D10DDI_HRTRASTERIZERSTATE runtimeState)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments != nullptr)
+    {
+        ActivationInitializeObject(state.pDrvPrivate, runtimeState.handle, ACTIVATION_RASTERIZER_STATE_SIGNATURE);
+    }
+}
+
+VOID APIENTRY ActivationDestroyRasterizerState(D3D10DDI_HDEVICE device, D3D10DDI_HRASTERIZERSTATE state)
+{
+    UNREFERENCED_PARAMETER(device);
+    ActivationDestroyObject(state.pDrvPrivate, ACTIVATION_RASTERIZER_STATE_SIGNATURE);
+}
+
+#undef VIOGPU_ACTIVATION_OBJECT_CALC
 
 /* The test device has no rendering entry points.  It only proves that the
  * D3D runtime can allocate and tear down the private device record without
@@ -351,6 +654,37 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
     functions.pfnCheckCounter = ActivationCheckCounter;
     functions.pfnCheckFormatSupport = ActivationCheckFormatSupport;
     functions.pfnCheckMultisampleQualityLevels = ActivationCheckMultisampleQualityLevels;
+    functions.pfnCalcPrivateElementLayoutSize = ActivationCalcPrivateElementLayoutSize;
+    functions.pfnCreateElementLayout = ActivationCreateElementLayout;
+    functions.pfnDestroyElementLayout = ActivationDestroyElementLayout;
+    functions.pfnCalcPrivateSamplerSize = ActivationCalcPrivateSamplerSize;
+    functions.pfnCreateSampler = ActivationCreateSampler;
+    functions.pfnDestroySampler = ActivationDestroySampler;
+    functions.pfnCalcPrivateShaderSize = ActivationCalcPrivateShaderSize;
+    functions.pfnCreateVertexShader = ActivationCreateVertexShader;
+    functions.pfnCreateGeometryShader = ActivationCreateGeometryShader;
+    functions.pfnCreatePixelShader = ActivationCreatePixelShader;
+    functions.pfnCalcPrivateGeometryShaderWithStreamOutput = ActivationCalcPrivateGeometryShaderWithStreamOutput;
+    functions.pfnCreateGeometryShaderWithStreamOutput = ActivationCreateGeometryShaderWithStreamOutput;
+    functions.pfnDestroyShader = ActivationDestroyShader;
+    functions.pfnCalcPrivateShaderResourceViewSize = ActivationCalcPrivateShaderResourceViewSize;
+    functions.pfnCreateShaderResourceView = ActivationCreateShaderResourceView;
+    functions.pfnDestroyShaderResourceView = ActivationDestroyShaderResourceView;
+    functions.pfnCalcPrivateRenderTargetViewSize = ActivationCalcPrivateRenderTargetViewSize;
+    functions.pfnCreateRenderTargetView = ActivationCreateRenderTargetView;
+    functions.pfnDestroyRenderTargetView = ActivationDestroyRenderTargetView;
+    functions.pfnCalcPrivateDepthStencilViewSize = ActivationCalcPrivateDepthStencilViewSize;
+    functions.pfnCreateDepthStencilView = ActivationCreateDepthStencilView;
+    functions.pfnDestroyDepthStencilView = ActivationDestroyDepthStencilView;
+    functions.pfnCalcPrivateBlendStateSize = ActivationCalcPrivateBlendStateSize;
+    functions.pfnCreateBlendState = ActivationCreateBlendState;
+    functions.pfnDestroyBlendState = ActivationDestroyBlendState;
+    functions.pfnCalcPrivateDepthStencilStateSize = ActivationCalcPrivateDepthStencilStateSize;
+    functions.pfnCreateDepthStencilState = ActivationCreateDepthStencilState;
+    functions.pfnDestroyDepthStencilState = ActivationDestroyDepthStencilState;
+    functions.pfnCalcPrivateRasterizerStateSize = ActivationCalcPrivateRasterizerStateSize;
+    functions.pfnCreateRasterizerState = ActivationCreateRasterizerState;
+    functions.pfnDestroyRasterizerState = ActivationDestroyRasterizerState;
     *arguments->pDeviceFuncs = functions;
     return S_OK;
 #else

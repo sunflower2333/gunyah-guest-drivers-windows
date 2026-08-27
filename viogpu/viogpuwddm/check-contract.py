@@ -1095,10 +1095,83 @@ def check_d3d_umd_shim_contract() -> None:
         "functions.pfnCheckCounter=ActivationCheckCounter;",
         "functions.pfnCheckFormatSupport=ActivationCheckFormatSupport;",
         "functions.pfnCheckMultisampleQualityLevels=ActivationCheckMultisampleQualityLevels;",
+        "functions.pfnCalcPrivateElementLayoutSize=ActivationCalcPrivateElementLayoutSize;",
+        "functions.pfnCreateElementLayout=ActivationCreateElementLayout;",
+        "functions.pfnDestroyElementLayout=ActivationDestroyElementLayout;",
+        "functions.pfnCalcPrivateSamplerSize=ActivationCalcPrivateSamplerSize;",
+        "functions.pfnCreateSampler=ActivationCreateSampler;",
+        "functions.pfnDestroySampler=ActivationDestroySampler;",
+        "functions.pfnCalcPrivateShaderSize=ActivationCalcPrivateShaderSize;",
+        "functions.pfnCreateVertexShader=ActivationCreateVertexShader;",
+        "functions.pfnCreateGeometryShader=ActivationCreateGeometryShader;",
+        "functions.pfnCreatePixelShader=ActivationCreatePixelShader;",
+        "functions.pfnCalcPrivateGeometryShaderWithStreamOutput=ActivationCalcPrivateGeometryShaderWithStreamOutput;",
+        "functions.pfnCreateGeometryShaderWithStreamOutput=ActivationCreateGeometryShaderWithStreamOutput;",
+        "functions.pfnDestroyShader=ActivationDestroyShader;",
+        "functions.pfnCalcPrivateShaderResourceViewSize=ActivationCalcPrivateShaderResourceViewSize;",
+        "functions.pfnCreateShaderResourceView=ActivationCreateShaderResourceView;",
+        "functions.pfnDestroyShaderResourceView=ActivationDestroyShaderResourceView;",
+        "functions.pfnCalcPrivateRenderTargetViewSize=ActivationCalcPrivateRenderTargetViewSize;",
+        "functions.pfnCreateRenderTargetView=ActivationCreateRenderTargetView;",
+        "functions.pfnDestroyRenderTargetView=ActivationDestroyRenderTargetView;",
+        "functions.pfnCalcPrivateDepthStencilViewSize=ActivationCalcPrivateDepthStencilViewSize;",
+        "functions.pfnCreateDepthStencilView=ActivationCreateDepthStencilView;",
+        "functions.pfnDestroyDepthStencilView=ActivationDestroyDepthStencilView;",
+        "functions.pfnCalcPrivateBlendStateSize=ActivationCalcPrivateBlendStateSize;",
+        "functions.pfnCreateBlendState=ActivationCreateBlendState;",
+        "functions.pfnDestroyBlendState=ActivationDestroyBlendState;",
+        "functions.pfnCalcPrivateDepthStencilStateSize=ActivationCalcPrivateDepthStencilStateSize;",
+        "functions.pfnCreateDepthStencilState=ActivationCreateDepthStencilState;",
+        "functions.pfnDestroyDepthStencilState=ActivationDestroyDepthStencilState;",
+        "functions.pfnCalcPrivateRasterizerStateSize=ActivationCalcPrivateRasterizerStateSize;",
+        "functions.pfnCreateRasterizerState=ActivationCreateRasterizerState;",
+        "functions.pfnDestroyRasterizerState=ActivationDestroyRasterizerState;",
     )
     for fragment in create_device_fragments:
         if fragment not in create_device:
             fail(f"D3D UMD test device table is missing guarded callback: {fragment}")
+    object_helper = canonical_code(function_body("ActivationInitializeObject", code))
+    for fragment in (
+        "if(privateData==NULL||runtimeHandle==NULL){return;}",
+        "state->Signature=signature;",
+        "state->RuntimeHandle=runtimeHandle;",
+    ):
+        if fragment not in object_helper:
+            fail(f"D3D UMD test object initialization is missing: {fragment}")
+    object_destroy = canonical_code(function_body("ActivationDestroyObject", code))
+    for fragment in (
+        "state==NULL||state->Signature!=signature",
+        "state->RuntimeHandle=NULL;",
+        "state->Signature=0;",
+    ):
+        if fragment not in object_destroy:
+            fail(f"D3D UMD test object destruction is missing: {fragment}")
+    object_callbacks = (
+        "ActivationCreateElementLayout",
+        "ActivationDestroyElementLayout",
+        "ActivationCreateSampler",
+        "ActivationDestroySampler",
+        "ActivationCreateVertexShader",
+        "ActivationCreateGeometryShader",
+        "ActivationCreatePixelShader",
+        "ActivationCreateGeometryShaderWithStreamOutput",
+        "ActivationDestroyShader",
+        "ActivationCreateShaderResourceView",
+        "ActivationDestroyShaderResourceView",
+        "ActivationCreateRenderTargetView",
+        "ActivationDestroyRenderTargetView",
+        "ActivationCreateDepthStencilView",
+        "ActivationDestroyDepthStencilView",
+        "ActivationCreateBlendState",
+        "ActivationDestroyBlendState",
+        "ActivationCreateDepthStencilState",
+        "ActivationDestroyDepthStencilState",
+        "ActivationCreateRasterizerState",
+        "ActivationDestroyRasterizerState",
+    )
+    for callback in object_callbacks:
+        if len(re.findall(rf"\b{callback}\s*\(", source)) != 1:
+            fail(f"D3D UMD test object callback must have one implementation: {callback}")
     opened_size = canonical_code(function_body("ActivationCalcPrivateOpenedResourceSize", code))
     if "returnsizeof(ACTIVATION_RESOURCE);" not in opened_size:
         fail("D3D UMD test opened-resource size gate is missing")
