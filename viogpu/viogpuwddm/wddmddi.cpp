@@ -90,6 +90,20 @@ LONG ReadResourceAllocationCount(_In_ const VIOGPU_WDDM_RESOURCE *resource)
                             : InterlockedCompareExchange(const_cast<volatile LONG *>(&resource->AllocationCount), 0, 0);
 }
 
+BOOLEAN IsOwnedAllocation(_In_ const VIOGPU_WDDM_ALLOCATION *allocation, _In_ const VioGpuDod *adapter)
+{
+    if (allocation == NULL || adapter == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
+        allocation->Adapter != adapter)
+    {
+        return FALSE;
+    }
+
+    const VIOGPU_WDDM_RESOURCE *resource = allocation->Resource;
+    return resource == NULL ||
+           (resource->Signature == VIOGPU_WDDM_RESOURCE_SIGNATURE && resource->Adapter == adapter &&
+            ReadResourceAllocationCount(resource) > 0);
+}
+
 BOOLEAN ValidatePagingDmaPacket(_In_ const VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData,
                                 _In_ const VIOGPU_WDDM_PAGING_DMA_PACKET *packet)
 {
@@ -4240,7 +4254,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
     {
         VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
         if (allocation == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
-            allocation->Adapter != adapter)
+            allocation->Adapter != adapter || !IsOwnedAllocation(allocation, adapter))
         {
             return STATUS_INVALID_HANDLE;
         }
@@ -4558,7 +4572,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCloseAllocation(CONST HANDLE 
     {
         VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(closeAllocation->pOpenHandleList[index]);
         if (deviceAllocation == NULL || deviceAllocation->Signature != VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE ||
-            deviceAllocation->Device != device)
+            deviceAllocation->Device != device || !IsOwnedAllocation(deviceAllocation->Allocation, device->Adapter))
         {
             return STATUS_INVALID_HANDLE;
         }

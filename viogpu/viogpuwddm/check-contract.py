@@ -6224,8 +6224,14 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "DereferenceDevice(deviceAllocation->Device);"
     ) != 1:
         fail("CloseAllocation must reject duplicate handles and release each wrapper reference exactly once")
+    if close_allocation.count(
+        "deviceAllocation->Device!=device||!IsOwnedAllocation(deviceAllocation->Allocation,device->Adapter)"
+    ) != 1:
+        fail("CloseAllocation must validate the wrapped allocation and resource ownership before releasing it")
 
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
+    if destroy_allocation.count("!IsOwnedAllocation(allocation,adapter)") != 1:
+        fail("DestroyAllocation must validate allocation resource ownership before using the batch")
     detach_allocation = canonical_code(function_body("DetachAllocationNativeContext", WDDM_DDI_CODE))
     if (
         destroy_allocation.count("DetachAllocationNativeContext(allocation)") != 1
