@@ -14,6 +14,8 @@ struct ACTIVATION_ADAPTER
 struct ACTIVATION_DEVICE
 {
     ULONG Signature;
+    volatile LONG CallCount;
+    volatile LONG LastCall;
 };
 
 struct ACTIVATION_RESOURCE
@@ -51,6 +53,64 @@ constexpr ULONG ACTIVATION_DEPTH_STENCIL_VIEW_SIGNATURE = 0x56445356UL;
 constexpr ULONG ACTIVATION_BLEND_STATE_SIGNATURE = 0x56424C44UL;
 constexpr ULONG ACTIVATION_DEPTH_STENCIL_STATE_SIGNATURE = 0x56445353UL;
 constexpr ULONG ACTIVATION_RASTERIZER_STATE_SIGNATURE = 0x56525354UL;
+
+enum ACTIVATION_CALL : LONG
+{
+    ActivationCallFlush = 1,
+    ActivationCallDraw,
+    ActivationCallDrawIndexed,
+    ActivationCallDrawInstanced,
+    ActivationCallDrawIndexedInstanced,
+    ActivationCallDrawAuto,
+    ActivationCallIaSetInputLayout,
+    ActivationCallIaSetVertexBuffers,
+    ActivationCallIaSetIndexBuffer,
+    ActivationCallIaSetTopology,
+    ActivationCallVsSetShader,
+    ActivationCallPsSetShader,
+    ActivationCallGsSetShader,
+    ActivationCallVsSetConstantBuffers,
+    ActivationCallPsSetConstantBuffers,
+    ActivationCallGsSetConstantBuffers,
+    ActivationCallVsSetShaderResources,
+    ActivationCallPsSetShaderResources,
+    ActivationCallGsSetShaderResources,
+    ActivationCallVsSetSamplers,
+    ActivationCallPsSetSamplers,
+    ActivationCallGsSetSamplers,
+    ActivationCallSetRenderTargets,
+    ActivationCallSetBlendState,
+    ActivationCallSetDepthStencilState,
+    ActivationCallSetRasterizerState,
+    ActivationCallSetViewports,
+    ActivationCallSetScissorRects,
+    ActivationCallSetPredication,
+    ActivationCallClearRenderTarget,
+    ActivationCallClearDepthStencil,
+    ActivationCallResourceCopyRegion,
+    ActivationCallResourceCopy,
+    ActivationCallResourceUpdate,
+    ActivationCallConstantBufferUpdate,
+    ActivationCallGenerateMips,
+};
+
+VOID ActivationRecordDeviceCall(D3D10DDI_HDEVICE device, ACTIVATION_CALL call)
+{
+    ACTIVATION_DEVICE *state = static_cast<ACTIVATION_DEVICE *>(device.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_DEVICE_SIGNATURE)
+    {
+        return;
+    }
+
+    InterlockedExchange(&state->LastCall, static_cast<LONG>(call));
+    InterlockedIncrement(&state->CallCount);
+}
+
+BOOLEAN ActivationIsObject(PVOID privateData, ULONG signature)
+{
+    const ACTIVATION_OBJECT *state = static_cast<const ACTIVATION_OBJECT *>(privateData);
+    return state != nullptr && state->Signature == signature && state->RuntimeHandle != nullptr;
+}
 
 VOID ActivationInitializeObject(PVOID privateData, PVOID runtimeHandle, ULONG signature)
 {
@@ -353,7 +413,374 @@ VOID APIENTRY ActivationDestroyDevice(D3D10DDI_HDEVICE device)
  * probing the device, without pretending that a command stream was retired. */
 VOID APIENTRY ActivationFlush(D3D10DDI_HDEVICE device)
 {
-    UNREFERENCED_PARAMETER(device);
+    ActivationRecordDeviceCall(device, ActivationCallFlush);
+}
+
+/* These callbacks intentionally stop at DDI call-shape validation.  The
+ * activation shim must never turn them into a second command transport; the
+ * real renderer is Mesa Turnip's Vulkan UMD. */
+VOID APIENTRY ActivationDraw(D3D10DDI_HDEVICE device, UINT vertexCount, UINT startVertexLocation)
+{
+    UNREFERENCED_PARAMETER(vertexCount);
+    UNREFERENCED_PARAMETER(startVertexLocation);
+    ActivationRecordDeviceCall(device, ActivationCallDraw);
+}
+
+VOID APIENTRY ActivationDrawIndexed(D3D10DDI_HDEVICE device,
+                                    UINT indexCount,
+                                    UINT startIndexLocation,
+                                    INT baseVertexLocation)
+{
+    UNREFERENCED_PARAMETER(indexCount);
+    UNREFERENCED_PARAMETER(startIndexLocation);
+    UNREFERENCED_PARAMETER(baseVertexLocation);
+    ActivationRecordDeviceCall(device, ActivationCallDrawIndexed);
+}
+
+VOID APIENTRY ActivationDrawInstanced(D3D10DDI_HDEVICE device,
+                                      UINT vertexCountPerInstance,
+                                      UINT instanceCount,
+                                      UINT startVertexLocation,
+                                      UINT startInstanceLocation)
+{
+    UNREFERENCED_PARAMETER(vertexCountPerInstance);
+    UNREFERENCED_PARAMETER(instanceCount);
+    UNREFERENCED_PARAMETER(startVertexLocation);
+    UNREFERENCED_PARAMETER(startInstanceLocation);
+    ActivationRecordDeviceCall(device, ActivationCallDrawInstanced);
+}
+
+VOID APIENTRY ActivationDrawIndexedInstanced(D3D10DDI_HDEVICE device,
+                                             UINT indexCountPerInstance,
+                                             UINT instanceCount,
+                                             UINT startIndexLocation,
+                                             INT baseVertexLocation,
+                                             UINT startInstanceLocation)
+{
+    UNREFERENCED_PARAMETER(indexCountPerInstance);
+    UNREFERENCED_PARAMETER(instanceCount);
+    UNREFERENCED_PARAMETER(startIndexLocation);
+    UNREFERENCED_PARAMETER(baseVertexLocation);
+    UNREFERENCED_PARAMETER(startInstanceLocation);
+    ActivationRecordDeviceCall(device, ActivationCallDrawIndexedInstanced);
+}
+
+VOID APIENTRY ActivationDrawAuto(D3D10DDI_HDEVICE device)
+{
+    ActivationRecordDeviceCall(device, ActivationCallDrawAuto);
+}
+
+VOID APIENTRY ActivationIaSetInputLayout(D3D10DDI_HDEVICE device, D3D10DDI_HELEMENTLAYOUT layout)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(layout.pDrvPrivate, ACTIVATION_ELEMENT_LAYOUT_SIGNATURE));
+    ActivationRecordDeviceCall(device, ActivationCallIaSetInputLayout);
+}
+
+VOID APIENTRY ActivationIaSetVertexBuffers(D3D10DDI_HDEVICE device,
+                                           UINT startSlot,
+                                           UINT numberOfBuffers,
+                                           const D3D10DDI_HRESOURCE *resources,
+                                           const UINT *strides,
+                                           const UINT *offsets)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfBuffers);
+    UNREFERENCED_PARAMETER(resources);
+    UNREFERENCED_PARAMETER(strides);
+    UNREFERENCED_PARAMETER(offsets);
+    ActivationRecordDeviceCall(device, ActivationCallIaSetVertexBuffers);
+}
+
+VOID APIENTRY ActivationIaSetIndexBuffer(D3D10DDI_HDEVICE device,
+                                         D3D10DDI_HRESOURCE resource,
+                                         DXGI_FORMAT format,
+                                         UINT offset)
+{
+    UNREFERENCED_PARAMETER(resource);
+    UNREFERENCED_PARAMETER(format);
+    UNREFERENCED_PARAMETER(offset);
+    ActivationRecordDeviceCall(device, ActivationCallIaSetIndexBuffer);
+}
+
+VOID APIENTRY ActivationIaSetTopology(D3D10DDI_HDEVICE device, D3D10_DDI_PRIMITIVE_TOPOLOGY topology)
+{
+    UNREFERENCED_PARAMETER(topology);
+    ActivationRecordDeviceCall(device, ActivationCallIaSetTopology);
+}
+
+VOID APIENTRY ActivationVsSetShader(D3D10DDI_HDEVICE device, D3D10DDI_HSHADER shader)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(shader.pDrvPrivate, ACTIVATION_SHADER_SIGNATURE));
+    ActivationRecordDeviceCall(device, ActivationCallVsSetShader);
+}
+
+VOID APIENTRY ActivationPsSetShader(D3D10DDI_HDEVICE device, D3D10DDI_HSHADER shader)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(shader.pDrvPrivate, ACTIVATION_SHADER_SIGNATURE));
+    ActivationRecordDeviceCall(device, ActivationCallPsSetShader);
+}
+
+VOID APIENTRY ActivationGsSetShader(D3D10DDI_HDEVICE device, D3D10DDI_HSHADER shader)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(shader.pDrvPrivate, ACTIVATION_SHADER_SIGNATURE));
+    ActivationRecordDeviceCall(device, ActivationCallGsSetShader);
+}
+
+VOID APIENTRY ActivationVsSetConstantBuffers(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numberOfBuffers,
+                                             const D3D10DDI_HRESOURCE *resources)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfBuffers);
+    UNREFERENCED_PARAMETER(resources);
+    ActivationRecordDeviceCall(device, ActivationCallVsSetConstantBuffers);
+}
+
+VOID APIENTRY ActivationPsSetConstantBuffers(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numberOfBuffers,
+                                             const D3D10DDI_HRESOURCE *resources)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfBuffers);
+    UNREFERENCED_PARAMETER(resources);
+    ActivationRecordDeviceCall(device, ActivationCallPsSetConstantBuffers);
+}
+
+VOID APIENTRY ActivationGsSetConstantBuffers(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numberOfBuffers,
+                                             const D3D10DDI_HRESOURCE *resources)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfBuffers);
+    UNREFERENCED_PARAMETER(resources);
+    ActivationRecordDeviceCall(device, ActivationCallGsSetConstantBuffers);
+}
+
+VOID APIENTRY ActivationVsSetShaderResources(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numberOfViews,
+                                             const D3D10DDI_HSHADERRESOURCEVIEW *views)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfViews);
+    UNREFERENCED_PARAMETER(views);
+    ActivationRecordDeviceCall(device, ActivationCallVsSetShaderResources);
+}
+
+VOID APIENTRY ActivationPsSetShaderResources(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numberOfViews,
+                                             const D3D10DDI_HSHADERRESOURCEVIEW *views)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfViews);
+    UNREFERENCED_PARAMETER(views);
+    ActivationRecordDeviceCall(device, ActivationCallPsSetShaderResources);
+}
+
+VOID APIENTRY ActivationGsSetShaderResources(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numberOfViews,
+                                             const D3D10DDI_HSHADERRESOURCEVIEW *views)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfViews);
+    UNREFERENCED_PARAMETER(views);
+    ActivationRecordDeviceCall(device, ActivationCallGsSetShaderResources);
+}
+
+VOID APIENTRY ActivationVsSetSamplers(D3D10DDI_HDEVICE device,
+                                      UINT startSlot,
+                                      UINT numberOfSamplers,
+                                      const D3D10DDI_HSAMPLER *samplers)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfSamplers);
+    UNREFERENCED_PARAMETER(samplers);
+    ActivationRecordDeviceCall(device, ActivationCallVsSetSamplers);
+}
+
+VOID APIENTRY ActivationPsSetSamplers(D3D10DDI_HDEVICE device,
+                                      UINT startSlot,
+                                      UINT numberOfSamplers,
+                                      const D3D10DDI_HSAMPLER *samplers)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfSamplers);
+    UNREFERENCED_PARAMETER(samplers);
+    ActivationRecordDeviceCall(device, ActivationCallPsSetSamplers);
+}
+
+VOID APIENTRY ActivationGsSetSamplers(D3D10DDI_HDEVICE device,
+                                      UINT startSlot,
+                                      UINT numberOfSamplers,
+                                      const D3D10DDI_HSAMPLER *samplers)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfSamplers);
+    UNREFERENCED_PARAMETER(samplers);
+    ActivationRecordDeviceCall(device, ActivationCallGsSetSamplers);
+}
+
+VOID APIENTRY ActivationSetRenderTargets(D3D10DDI_HDEVICE device,
+                                         const D3D10DDI_HRENDERTARGETVIEW *renderTargetViews,
+                                         UINT numberOfViews,
+                                         UINT clearViews,
+                                         D3D10DDI_HDEPTHSTENCILVIEW depthStencilView)
+{
+    UNREFERENCED_PARAMETER(renderTargetViews);
+    UNREFERENCED_PARAMETER(numberOfViews);
+    UNREFERENCED_PARAMETER(clearViews);
+    UNREFERENCED_PARAMETER(depthStencilView);
+    ActivationRecordDeviceCall(device, ActivationCallSetRenderTargets);
+}
+
+VOID APIENTRY ActivationSetBlendState(D3D10DDI_HDEVICE device,
+                                      D3D10DDI_HBLENDSTATE blendState,
+                                      const FLOAT blendFactor[4],
+                                      UINT sampleMask)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(blendState.pDrvPrivate, ACTIVATION_BLEND_STATE_SIGNATURE));
+    UNREFERENCED_PARAMETER(blendFactor);
+    UNREFERENCED_PARAMETER(sampleMask);
+    ActivationRecordDeviceCall(device, ActivationCallSetBlendState);
+}
+
+VOID APIENTRY ActivationSetDepthStencilState(D3D10DDI_HDEVICE device,
+                                             D3D10DDI_HDEPTHSTENCILSTATE depthStencilState,
+                                             UINT stencilRef)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(depthStencilState.pDrvPrivate, ACTIVATION_DEPTH_STENCIL_STATE_SIGNATURE));
+    UNREFERENCED_PARAMETER(stencilRef);
+    ActivationRecordDeviceCall(device, ActivationCallSetDepthStencilState);
+}
+
+VOID APIENTRY ActivationSetRasterizerState(D3D10DDI_HDEVICE device, D3D10DDI_HRASTERIZERSTATE rasterizerState)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(rasterizerState.pDrvPrivate, ACTIVATION_RASTERIZER_STATE_SIGNATURE));
+    ActivationRecordDeviceCall(device, ActivationCallSetRasterizerState);
+}
+
+VOID APIENTRY ActivationSetViewports(D3D10DDI_HDEVICE device,
+                                     UINT numberOfViewports,
+                                     UINT clearViewports,
+                                     const D3D10_DDI_VIEWPORT *viewports)
+{
+    UNREFERENCED_PARAMETER(numberOfViewports);
+    UNREFERENCED_PARAMETER(clearViewports);
+    UNREFERENCED_PARAMETER(viewports);
+    ActivationRecordDeviceCall(device, ActivationCallSetViewports);
+}
+
+VOID APIENTRY ActivationSetScissorRects(D3D10DDI_HDEVICE device,
+                                        UINT numberOfRects,
+                                        UINT clearRects,
+                                        const D3D10_DDI_RECT *rects)
+{
+    UNREFERENCED_PARAMETER(numberOfRects);
+    UNREFERENCED_PARAMETER(clearRects);
+    UNREFERENCED_PARAMETER(rects);
+    ActivationRecordDeviceCall(device, ActivationCallSetScissorRects);
+}
+
+VOID APIENTRY ActivationSetPredication(D3D10DDI_HDEVICE device, D3D10DDI_HQUERY query, BOOL predicateValue)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(query.pDrvPrivate, ACTIVATION_QUERY_SIGNATURE));
+    UNREFERENCED_PARAMETER(predicateValue);
+    ActivationRecordDeviceCall(device, ActivationCallSetPredication);
+}
+
+VOID APIENTRY ActivationClearRenderTargetView(D3D10DDI_HDEVICE device,
+                                              D3D10DDI_HRENDERTARGETVIEW view,
+                                              FLOAT colorRGBA[4])
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(view.pDrvPrivate, ACTIVATION_RENDER_TARGET_VIEW_SIGNATURE));
+    UNREFERENCED_PARAMETER(colorRGBA);
+    ActivationRecordDeviceCall(device, ActivationCallClearRenderTarget);
+}
+
+VOID APIENTRY ActivationClearDepthStencilView(D3D10DDI_HDEVICE device,
+                                              D3D10DDI_HDEPTHSTENCILVIEW view,
+                                              UINT flags,
+                                              FLOAT depth,
+                                              UINT8 stencil)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(view.pDrvPrivate, ACTIVATION_DEPTH_STENCIL_VIEW_SIGNATURE));
+    UNREFERENCED_PARAMETER(flags);
+    UNREFERENCED_PARAMETER(depth);
+    UNREFERENCED_PARAMETER(stencil);
+    ActivationRecordDeviceCall(device, ActivationCallClearDepthStencil);
+}
+
+VOID APIENTRY ActivationResourceCopyRegion(D3D10DDI_HDEVICE device,
+                                           D3D10DDI_HRESOURCE destination,
+                                           UINT destinationSubresource,
+                                           UINT destinationX,
+                                           UINT destinationY,
+                                           UINT destinationZ,
+                                           D3D10DDI_HRESOURCE source,
+                                           UINT sourceSubresource,
+                                           const D3D10_DDI_BOX *sourceBox)
+{
+    UNREFERENCED_PARAMETER(destination);
+    UNREFERENCED_PARAMETER(destinationSubresource);
+    UNREFERENCED_PARAMETER(destinationX);
+    UNREFERENCED_PARAMETER(destinationY);
+    UNREFERENCED_PARAMETER(destinationZ);
+    UNREFERENCED_PARAMETER(source);
+    UNREFERENCED_PARAMETER(sourceSubresource);
+    UNREFERENCED_PARAMETER(sourceBox);
+    ActivationRecordDeviceCall(device, ActivationCallResourceCopyRegion);
+}
+
+VOID APIENTRY ActivationResourceCopy(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE destination, D3D10DDI_HRESOURCE source)
+{
+    UNREFERENCED_PARAMETER(destination);
+    UNREFERENCED_PARAMETER(source);
+    ActivationRecordDeviceCall(device, ActivationCallResourceCopy);
+}
+
+VOID APIENTRY ActivationResourceUpdateSubresourceUP(D3D10DDI_HDEVICE device,
+                                                    D3D10DDI_HRESOURCE destination,
+                                                    UINT destinationSubresource,
+                                                    const D3D10_DDI_BOX *destinationBox,
+                                                    const VOID *sourceData,
+                                                    UINT sourceRowPitch,
+                                                    UINT sourceDepthPitch)
+{
+    UNREFERENCED_PARAMETER(destination);
+    UNREFERENCED_PARAMETER(destinationSubresource);
+    UNREFERENCED_PARAMETER(destinationBox);
+    UNREFERENCED_PARAMETER(sourceData);
+    UNREFERENCED_PARAMETER(sourceRowPitch);
+    UNREFERENCED_PARAMETER(sourceDepthPitch);
+    ActivationRecordDeviceCall(device, ActivationCallResourceUpdate);
+}
+
+VOID APIENTRY ActivationDefaultConstantBufferUpdateSubresourceUP(D3D10DDI_HDEVICE device,
+                                                                 D3D10DDI_HRESOURCE destination,
+                                                                 UINT destinationSubresource,
+                                                                 const D3D10_DDI_BOX *destinationBox,
+                                                                 const VOID *sourceData,
+                                                                 UINT sourceRowPitch,
+                                                                 UINT sourceDepthPitch)
+{
+    UNREFERENCED_PARAMETER(destination);
+    UNREFERENCED_PARAMETER(destinationSubresource);
+    UNREFERENCED_PARAMETER(destinationBox);
+    UNREFERENCED_PARAMETER(sourceData);
+    UNREFERENCED_PARAMETER(sourceRowPitch);
+    UNREFERENCED_PARAMETER(sourceDepthPitch);
+    ActivationRecordDeviceCall(device, ActivationCallConstantBufferUpdate);
+}
+
+VOID APIENTRY ActivationGenerateMips(D3D10DDI_HDEVICE device, D3D10DDI_HSHADERRESOURCEVIEW view)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(view.pDrvPrivate, ACTIVATION_SHADER_VIEW_SIGNATURE));
+    ActivationRecordDeviceCall(device, ActivationCallGenerateMips);
 }
 
 /* No resource hazard exists in the activation-only device: resource creation
@@ -631,8 +1058,45 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
 
     ACTIVATION_DEVICE *state = static_cast<ACTIVATION_DEVICE *>(arguments->hDrvDevice.pDrvPrivate);
     state->Signature = ACTIVATION_DEVICE_SIGNATURE;
+    state->CallCount = 0;
+    state->LastCall = 0;
 
     D3D10DDI_DEVICEFUNCS functions = {};
+    functions.pfnDefaultConstantBufferUpdateSubresourceUP = ActivationDefaultConstantBufferUpdateSubresourceUP;
+    functions.pfnVsSetConstantBuffers = ActivationVsSetConstantBuffers;
+    functions.pfnPsSetShaderResources = ActivationPsSetShaderResources;
+    functions.pfnPsSetShader = ActivationPsSetShader;
+    functions.pfnPsSetSamplers = ActivationPsSetSamplers;
+    functions.pfnVsSetShader = ActivationVsSetShader;
+    functions.pfnDrawIndexed = ActivationDrawIndexed;
+    functions.pfnDraw = ActivationDraw;
+    functions.pfnPsSetConstantBuffers = ActivationPsSetConstantBuffers;
+    functions.pfnIaSetInputLayout = ActivationIaSetInputLayout;
+    functions.pfnIaSetVertexBuffers = ActivationIaSetVertexBuffers;
+    functions.pfnIaSetIndexBuffer = ActivationIaSetIndexBuffer;
+    functions.pfnDrawIndexedInstanced = ActivationDrawIndexedInstanced;
+    functions.pfnDrawInstanced = ActivationDrawInstanced;
+    functions.pfnGsSetConstantBuffers = ActivationGsSetConstantBuffers;
+    functions.pfnGsSetShader = ActivationGsSetShader;
+    functions.pfnIaSetTopology = ActivationIaSetTopology;
+    functions.pfnVsSetShaderResources = ActivationVsSetShaderResources;
+    functions.pfnVsSetSamplers = ActivationVsSetSamplers;
+    functions.pfnGsSetShaderResources = ActivationGsSetShaderResources;
+    functions.pfnGsSetSamplers = ActivationGsSetSamplers;
+    functions.pfnSetRenderTargets = ActivationSetRenderTargets;
+    functions.pfnSetBlendState = ActivationSetBlendState;
+    functions.pfnSetDepthStencilState = ActivationSetDepthStencilState;
+    functions.pfnSetRasterizerState = ActivationSetRasterizerState;
+    functions.pfnResourceCopyRegion = ActivationResourceCopyRegion;
+    functions.pfnResourceUpdateSubresourceUP = ActivationResourceUpdateSubresourceUP;
+    functions.pfnDrawAuto = ActivationDrawAuto;
+    functions.pfnSetViewports = ActivationSetViewports;
+    functions.pfnSetScissorRects = ActivationSetScissorRects;
+    functions.pfnClearRenderTargetView = ActivationClearRenderTargetView;
+    functions.pfnClearDepthStencilView = ActivationClearDepthStencilView;
+    functions.pfnSetPredication = ActivationSetPredication;
+    functions.pfnGenMips = ActivationGenerateMips;
+    functions.pfnResourceCopy = ActivationResourceCopy;
     functions.pfnDestroyDevice = ActivationDestroyDevice;
     functions.pfnCalcPrivateResourceSize = ActivationCalcPrivateResourceSize;
     functions.pfnCalcPrivateOpenedResourceSize = ActivationCalcPrivateOpenedResourceSize;

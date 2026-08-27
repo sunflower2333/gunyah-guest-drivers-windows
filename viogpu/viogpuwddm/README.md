@@ -124,9 +124,13 @@ layout, and fixed-function state objects, zero-capability format and
 multisample queries, and no-op flush, hazard, staging-busy, and function-table
 relocation callbacks. Query objects also have an explicit private owner, while
 query and counter outputs are cleared to report no timestamp, occlusion, or
-performance-counter capability. These callbacks complete probe-time DDI table
-initialization only; they do not synchronize or submit GPU work. It has no
-shader execution, draw, or submit entry points.
+performance-counter capability. The opt-in table also records the common
+input-assembler, shader-binding, sampler, render-target, viewport, clear,
+resource-copy, update, and draw callback shapes in a private call counter.
+Those callbacks only validate the DDI call shape and record the last callback;
+they do not execute shaders, mutate resources, synchronize, or submit GPU
+work. This is still a probe-time DDI table completion aid, not a D3D renderer
+and not an alternative to Mesa's Vulkan Native Context path.
 The default product build
 leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset
 as unsupported because neither a real D3D command contract nor an independent
