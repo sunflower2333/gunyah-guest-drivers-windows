@@ -108,11 +108,84 @@ HRESULT APIENTRY ActivationGetCaps(D3D10DDI_HADAPTER adapter, const D3D10_2DDIAR
     {
         return E_INVALIDARG;
     }
+#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)
+    /* The opt-in build exercises the capability-query ABI without advertising
+     * a rendering feature.  Each recognized payload is zeroed only when the
+     * runtime supplied its exact size; unknown requests stay explicit. */
+    if (arguments->pData == nullptr)
+    {
+        return E_INVALIDARG;
+    }
+
+    switch (arguments->Type)
+    {
+        case D3D11DDICAPS_THREADING:
+            if (arguments->DataSize != sizeof(D3D11DDI_THREADING_CAPS))
+            {
+                return E_INVALIDARG;
+            }
+            ZeroMemory(arguments->pData, arguments->DataSize);
+            static_cast<D3D11DDI_THREADING_CAPS *>(arguments->pData)->Caps = 0;
+            return S_OK;
+
+        case D3D11DDICAPS_3DPIPELINESUPPORT:
+            if (arguments->DataSize != sizeof(D3D11DDI_3DPIPELINESUPPORT_CAPS))
+            {
+                return E_INVALIDARG;
+            }
+            ZeroMemory(arguments->pData, arguments->DataSize);
+            static_cast<D3D11DDI_3DPIPELINESUPPORT_CAPS *>(arguments->pData)->Caps = 0;
+            return S_OK;
+
+        case D3D11DDICAPS_SHADER:
+            if (arguments->DataSize != sizeof(D3D11DDI_SHADER_CAPS))
+            {
+                return E_INVALIDARG;
+            }
+            ZeroMemory(arguments->pData, arguments->DataSize);
+            static_cast<D3D11DDI_SHADER_CAPS *>(arguments->pData)->Caps = 0;
+            return S_OK;
+
+        case D3D11_1DDICAPS_D3D11_OPTIONS:
+            if (arguments->DataSize != sizeof(D3D11_1DDI_D3D11_OPTIONS_DATA))
+            {
+                return E_INVALIDARG;
+            }
+            ZeroMemory(arguments->pData, arguments->DataSize);
+            static_cast<D3D11_1DDI_D3D11_OPTIONS_DATA *>(arguments->pData)->AssignDebugBinarySupport = FALSE;
+            static_cast<D3D11_1DDI_D3D11_OPTIONS_DATA *>(arguments->pData)->OutputMergerLogicOp = FALSE;
+            return S_OK;
+
+        case D3D11_1DDICAPS_ARCHITECTURE_INFO:
+            if (arguments->DataSize != sizeof(D3D11_1DDI_ARCHITECTURE_INFO_DATA))
+            {
+                return E_INVALIDARG;
+            }
+            ZeroMemory(arguments->pData, arguments->DataSize);
+            static_cast<D3D11_1DDI_ARCHITECTURE_INFO_DATA *>(arguments->pData)->TileBasedDeferredRenderer = FALSE;
+            return S_OK;
+
+        case D3D11_1DDICAPS_SHADER_MIN_PRECISION_SUPPORT:
+            if (arguments->DataSize != sizeof(D3D11_DDI_SHADER_MIN_PRECISION_SUPPORT_DATA))
+            {
+                return E_INVALIDARG;
+            }
+            ZeroMemory(arguments->pData, arguments->DataSize);
+            static_cast<D3D11_DDI_SHADER_MIN_PRECISION_SUPPORT_DATA *>(arguments->pData)->PixelShaderMinPrecision = 0;
+            static_cast<D3D11_DDI_SHADER_MIN_PRECISION_SUPPORT_DATA *>(arguments->pData)->AllOtherStagesMinPrecision =
+                                                                                                                0;
+            return S_OK;
+
+        default:
+            return E_NOTIMPL;
+    }
+#else
     if (arguments->pData != nullptr && arguments->DataSize != 0)
     {
         ZeroMemory(arguments->pData, arguments->DataSize);
     }
     return S_OK;
+#endif
 }
 
 HRESULT OpenAdapter10Common(D3D10DDIARG_OPENADAPTER *openData)

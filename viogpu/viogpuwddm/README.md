@@ -112,8 +112,9 @@ resource or Host protocol is required.
 
 `VIOGPU_WDDM_TEST_IMPLEMENTATIONS` is an opt-in compile experiment only.  A
 build may pass `/p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1` to exercise the minimal
-UMD device lifetime record, the existing Native Render validator from the
-`RenderKm` entry point, and the adapter-wide recovery path from `ResetEngine`.
+UMD device lifetime record, bounded D3D10/11 capability-payload negotiation,
+the existing Native Render validator from the `RenderKm` entry point, and the
+adapter-wide recovery path from `ResetEngine`.
 The UMD experiment only publishes a guarded `DestroyDevice` callback; it has no
 resource, shader, draw, or submit entry points.  The default product build
 leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset

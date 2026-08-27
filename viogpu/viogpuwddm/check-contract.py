@@ -1035,8 +1035,8 @@ def check_d3d_umd_shim_contract() -> None:
     create_device = canonical_code(function_body("ActivationCreateDevice", code))
     if "returnE_NOTIMPL" not in create_device:
         fail("activation-only D3D UMD must keep the product CreateDevice path fail closed")
-    if source.count("#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)") != 3:
-        fail("D3D UMD test lifecycle must use one explicit opt-in macro for its guarded code")
+    if source.count("#if defined(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)") != 4:
+        fail("D3D UMD test lifecycle/capability paths must use one explicit opt-in macro for each guarded block")
     calc_private_device_size = canonical_code(function_body("ActivationCalcPrivateDeviceSize", code))
     for fragment in (
         "returnsizeof(ACTIVATION_DEVICE);",
@@ -1057,6 +1057,21 @@ def check_d3d_umd_shim_contract() -> None:
         fail("D3D UMD test lifecycle destroy must validate its private record")
     if "state->Signature=0;" not in destroy_device:
         fail("D3D UMD test lifecycle destroy must clear its private record")
+    caps = canonical_code(function_body("ActivationGetCaps", code))
+    for fragment in (
+        "if(arguments->pData==NULL){returnE_INVALIDARG;}",
+        "switch(arguments->Type)",
+        "caseD3D11DDICAPS_THREADING:",
+        "caseD3D11DDICAPS_3DPIPELINESUPPORT:",
+        "caseD3D11DDICAPS_SHADER:",
+        "caseD3D11_1DDICAPS_D3D11_OPTIONS:",
+        "caseD3D11_1DDICAPS_ARCHITECTURE_INFO:",
+        "caseD3D11_1DDICAPS_SHADER_MIN_PRECISION_SUPPORT:",
+        "ZeroMemory(arguments->pData,arguments->DataSize);",
+        "default:returnE_NOTIMPL;",
+    ):
+        if fragment not in caps:
+            fail(f"opt-in D3D capability negotiation is missing: {fragment}")
     compact_umd = re.sub(r"\s+", "", code)
     if "HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(ACTIVATION_ADAPTER))" not in compact_umd:
         fail("activation adapter must use a bounded process-heap owner")
