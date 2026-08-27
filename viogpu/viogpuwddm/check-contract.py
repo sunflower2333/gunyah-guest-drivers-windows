@@ -1097,6 +1097,7 @@ def check_d3d_umd_shim_contract() -> None:
         "functions.pfnResourceUnmap=ActivationResourceUnmap;",
         "functions.pfnStagingResourceMap=ActivationResourceMap;",
         "functions.pfnStagingResourceUnmap=ActivationResourceUnmap;",
+        "functions.pfnSetTextFilterSize=ActivationSetTextFilterSize;",
         "functions.pfnDestroyDevice=ActivationDestroyDevice;",
         "functions.pfnCalcPrivateResourceSize=ActivationCalcPrivateResourceSize;",
         "functions.pfnCreateResource=ActivationCreateResource;",

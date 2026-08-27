@@ -96,6 +96,7 @@ enum ACTIVATION_CALL : LONG
     ActivationCallResourceUnmap,
     ActivationCallSetStreamOutputTargets,
     ActivationCallResourceResolve,
+    ActivationCallSetTextFilterSize,
 };
 
 VOID ActivationRecordDeviceCall(D3D10DDI_HDEVICE device, ACTIVATION_CALL call)
@@ -851,6 +852,13 @@ VOID APIENTRY ActivationResolveSubresource(D3D10DDI_HDEVICE device,
     ActivationRecordDeviceCall(device, ActivationCallResourceResolve);
 }
 
+VOID APIENTRY ActivationSetTextFilterSize(D3D10DDI_HDEVICE device, UINT width, UINT height)
+{
+    UNREFERENCED_PARAMETER(width);
+    UNREFERENCED_PARAMETER(height);
+    ActivationRecordDeviceCall(device, ActivationCallSetTextFilterSize);
+}
+
 /* No resource hazard exists in the activation-only device: resource creation
  * is a private lifetime probe and does not expose a renderable allocation. */
 VOID APIENTRY ActivationResourceReadAfterWriteHazard(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource)
@@ -1178,6 +1186,7 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
     functions.pfnResourceUnmap = ActivationResourceUnmap;
     functions.pfnStagingResourceMap = ActivationResourceMap;
     functions.pfnStagingResourceUnmap = ActivationResourceUnmap;
+    functions.pfnSetTextFilterSize = ActivationSetTextFilterSize;
     functions.pfnDestroyDevice = ActivationDestroyDevice;
     functions.pfnCalcPrivateResourceSize = ActivationCalcPrivateResourceSize;
     functions.pfnCalcPrivateOpenedResourceSize = ActivationCalcPrivateOpenedResourceSize;
