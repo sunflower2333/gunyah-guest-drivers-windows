@@ -5903,7 +5903,7 @@ UINT VioGpuAdapter::AllocateNativeContextIdLocked(void)
     PAGED_CODE();
 
     UINT contextId = m_NextNativeContextId;
-    if (contextId == 0)
+    if (contextId == 0 || contextId == MAXUINT)
     {
         return 0;
     }

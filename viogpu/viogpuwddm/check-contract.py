@@ -5338,6 +5338,11 @@ def check_native_context_ownership() -> None:
             fail(f"native resource ID allocation must remain inside the reserved high range: {fragment}")
     if canonical_code(VIOGPU_CODE).count("m_NextNativeResourceId=VIOGPU_NATIVE_RESOURCE_ID_START;") != 1:
         fail("native resource ID allocation must begin exactly at the reserved high-range boundary")
+    native_context_allocator = canonical_code(
+        function_body("VioGpuAdapter::AllocateNativeContextIdLocked", VIOGPU_CODE)
+    )
+    if native_context_allocator.count("if(contextId==0||contextId==MAXUINT){return0;}") != 1:
+        fail("native context ID allocation must reject the exhausted MAXUINT sentinel before incrementing")
 
     seed = canonical_code(
         function_body_with_parameters(
