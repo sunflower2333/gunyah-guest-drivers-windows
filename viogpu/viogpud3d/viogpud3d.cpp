@@ -825,10 +825,12 @@ VOID APIENTRY ActivationResourceUnmap(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURC
 
 VOID APIENTRY ActivationSetStreamOutputTargets(D3D10DDI_HDEVICE device,
                                                UINT numberOfBuffers,
+                                               UINT clearTargets,
                                                const D3D10DDI_HRESOURCE *resources,
                                                const UINT *offsets)
 {
     UNREFERENCED_PARAMETER(numberOfBuffers);
+    UNREFERENCED_PARAMETER(clearTargets);
     UNREFERENCED_PARAMETER(resources);
     UNREFERENCED_PARAMETER(offsets);
     ActivationRecordDeviceCall(device, ActivationCallSetStreamOutputTargets);
