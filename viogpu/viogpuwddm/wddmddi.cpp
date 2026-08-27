@@ -4495,10 +4495,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
 
         VIOGPU_WDDM_ALLOCATION *allocation = static_cast<VIOGPU_WDDM_ALLOCATION *>(dxgkInterface->DxgkCbGetHandleData(
                                                                                                             &getHandleData));
-        if (allocation == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
-            allocation->Adapter != device->Adapter ||
-            (allocation->Resource != NULL && (allocation->Resource->Signature != VIOGPU_WDDM_RESOURCE_SIGNATURE ||
-                                              allocation->Resource->Adapter != device->Adapter)))
+        if (!IsOwnedAllocation(allocation, device->Adapter))
         {
             status = STATUS_INVALID_HANDLE;
             break;
