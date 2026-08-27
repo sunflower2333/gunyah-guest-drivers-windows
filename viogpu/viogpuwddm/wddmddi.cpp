@@ -5267,6 +5267,7 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
                                _In_ UINT mdlOffset)
 {
     if (adapter == NULL || allocation == NULL || mdl == NULL || numberOfPages == 0 || MmGetMdlByteCount(mdl) == 0 ||
+        MmGetMdlByteOffset(mdl) != 0 ||
         offsetInPages > (MAXULONGLONG >> PAGE_SHIFT) ||
         numberOfPages - 1 > (MAXULONGLONG >> PAGE_SHIFT) - offsetInPages ||
         offsetInPages >= (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) ||

@@ -256,6 +256,8 @@ does not allocate or replace those pages. Before a partial unmap changes any
 PFN, the miniport retires the Host resource, releases that internal CPU mapping,
 and marks the affected pages with the `DummyPage` PFN. A later complete map
 recreates Host backing from the current PFN set.
+All aperture MDLs must describe whole pages (`ByteOffset == 0`) before their
+PFNs are admitted to the guest blob; byte-offset MDLs are rejected.
 
 Blob zero is independent of guest BO backing. The driver discovers VirtIO PCI
 shared-memory capability type 8, region id 1, validates its 64-bit offset and

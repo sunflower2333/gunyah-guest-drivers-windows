@@ -7016,6 +7016,10 @@ def check_wddm_guest_allocation_lifecycle() -> None:
        "CopyAperturePlacement(allocation," not in software_paging:
         fail("BuildPagingBuffer transfers must copy through the retained VidMm MDL mapping")
 
+    map_aperture = canonical_code(function_body("MapApertureAllocation", WDDM_DDI_CODE))
+    if "MmGetMdlByteOffset(mdl)!=0" not in map_aperture:
+        fail("aperture mapping must reject byte-offset MDLs before treating PFNs as page-aligned guest backing")
+
     private_matches = re.findall(
         r"\bstruct\s+VIOGPU_WDDM_KMD_DMA_PRIVATE\s*\{(.*?)\}\s*;",
         WDDM_DDI_HEADER_CODE,
