@@ -6236,6 +6236,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "reference->AllocationOffset+reference->Length<reference->AllocationOffset",
         "reference->AllocationOffset!=patch->AllocationOffset",
         "reference->PatchOffset!=patch->PatchOffset-header->CommandStreamOffset",
+        "(reference->PatchOffset&(sizeof(ULONG)-1))!=0",
         "patch->Reserved!=0",
         "deviceAllocation->Device!=device",
         "allocation->NativeContext==nativeContext->Registration",
@@ -7994,6 +7995,7 @@ def check_wddm_submission_lifetime() -> None:
         "allocationEntry->SegmentId==VIOGPU_WDDM_SEGMENT_ID",
         "static_cast<ULONGLONG>(allocationEntry->PhysicalAddress.QuadPart)==allocation->PlacementOffset",
         "allocation->PrivateData.RequestedIova<=MAXULONGLONG-reference->AllocationOffset",
+        "(reference->PatchOffset&(sizeof(ULONG)-1))!=0",
         "RtlCopyMemory(&bos[index].Handle,&resourceId,sizeof(resourceId));",
         "RtlCopyMemory(commandStream+reference->PatchOffset,&iova,sizeof(iova));",
     ):

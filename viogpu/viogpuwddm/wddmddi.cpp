@@ -3385,6 +3385,7 @@ NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_RENDER_COMMAND *header,
             patch->PatchOffset < header->CommandStreamOffset ||
             reference->AllocationOffset != patch->AllocationOffset ||
             reference->PatchOffset != patch->PatchOffset - header->CommandStreamOffset ||
+            (reference->PatchOffset & (sizeof(ULONG) - 1)) != 0 ||
             reference->PatchOffset > header->CommandStreamSize - sizeof(ULONGLONG) || patch->Reserved != 0 ||
             patch->DriverId != 0 || patch->SplitOffset != 0)
         {
@@ -3583,6 +3584,7 @@ NTSTATUS ApplyRenderPrepatches(_Inout_ VIOGPU_WDDM_RENDER_COMMAND *header,
     {
         VIOGPU_WDDM_ALLOCATION_REFERENCE *reference = &references[index];
         if (reference->AllocationIndex >= allocationListSize ||
+            (reference->PatchOffset & (sizeof(ULONG) - 1)) != 0 ||
             reference->PatchOffset > header->CommandStreamSize - sizeof(ULONGLONG))
         {
             return STATUS_INVALID_PARAMETER;
