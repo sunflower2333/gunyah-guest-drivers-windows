@@ -154,6 +154,11 @@ shapes. UAV owners are opaque activation
 objects only; the callbacks do not inspect resource contents or create a
 shader-visible allocation. Product builds continue to leave every one of these
 optional D3D11 entries unset.
+Shader stages with class interfaces are also covered by six guarded
+`*SetShaderWithIfaces` callbacks. They validate the opaque shader owner and
+require class-instance and interface-pointer arrays when instances are
+present, then only record the callback shape. No interface object or shader
+binding state is retained, and product builds leave these entries unset.
 Deferred-context handle-size queries are also handled by the probe with an
 explicit zero-sized response. Its guarded test table additionally exercises
 private deferred-context sizing, create/recycle/abandon callbacks, and command-

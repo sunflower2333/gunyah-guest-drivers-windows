@@ -1286,17 +1286,23 @@ def check_d3d_umd_shim_contract() -> None:
         "ZeroMemory(functions11,sizeof(*functions11));",
         "functions11->pfnSetRenderTargets=ActivationSetRenderTargets11;",
         "functions11->pfnRelocateDeviceFuncs=ActivationRelocateDeviceFuncs11;",
+        "functions11->pfnVsSetShaderWithIfaces=ActivationVsSetShaderWithIfaces;",
+        "functions11->pfnPsSetShaderWithIfaces=ActivationPsSetShaderWithIfaces;",
+        "functions11->pfnGsSetShaderWithIfaces=ActivationGsSetShaderWithIfaces;",
         "functions11->pfnCreateComputeShader=ActivationCreateComputeShader;",
-        "functions11->pfnCsSetShader=ActivationPsSetShader;",
-        "functions11->pfnCsSetShaderResources=ActivationPsSetShaderResources;",
-        "functions11->pfnCsSetSamplers=ActivationPsSetSamplers;",
-        "functions11->pfnCsSetConstantBuffers=ActivationPsSetConstantBuffers;",
+        "functions11->pfnCsSetShader=ActivationCsSetShader;",
+        "functions11->pfnCsSetShaderWithIfaces=ActivationCsSetShaderWithIfaces;",
+        "functions11->pfnCsSetShaderResources=ActivationCsSetShaderResources;",
+        "functions11->pfnCsSetSamplers=ActivationCsSetSamplers;",
+        "functions11->pfnCsSetConstantBuffers=ActivationCsSetConstantBuffers;",
         "functions11->pfnHsSetShaderResources=ActivationHsSetShaderResources;",
         "functions11->pfnHsSetShader=ActivationHsSetShader;",
+        "functions11->pfnHsSetShaderWithIfaces=ActivationHsSetShaderWithIfaces;",
         "functions11->pfnHsSetSamplers=ActivationHsSetSamplers;",
         "functions11->pfnHsSetConstantBuffers=ActivationHsSetConstantBuffers;",
         "functions11->pfnDsSetShaderResources=ActivationDsSetShaderResources;",
         "functions11->pfnDsSetShader=ActivationDsSetShader;",
+        "functions11->pfnDsSetShaderWithIfaces=ActivationDsSetShaderWithIfaces;",
         "functions11->pfnDsSetSamplers=ActivationDsSetSamplers;",
         "functions11->pfnDsSetConstantBuffers=ActivationDsSetConstantBuffers;",
         "functions11->pfnCreateHullShader=ActivationCreateHullShader;",
@@ -1393,6 +1399,10 @@ def check_d3d_umd_shim_contract() -> None:
         "ActivationDrawInstancedIndirect",
         "ActivationSetResourceMinLOD",
         "ActivationCreateComputeShader",
+        "ActivationCsSetShader",
+        "ActivationCsSetShaderResources",
+        "ActivationCsSetSamplers",
+        "ActivationCsSetConstantBuffers",
         "ActivationSetRenderTargets11",
         "ActivationRelocateDeviceFuncs11",
         "ActivationHsSetShaderResources",
@@ -1403,6 +1413,12 @@ def check_d3d_umd_shim_contract() -> None:
         "ActivationDsSetShader",
         "ActivationDsSetSamplers",
         "ActivationDsSetConstantBuffers",
+        "ActivationVsSetShaderWithIfaces",
+        "ActivationPsSetShaderWithIfaces",
+        "ActivationGsSetShaderWithIfaces",
+        "ActivationHsSetShaderWithIfaces",
+        "ActivationDsSetShaderWithIfaces",
+        "ActivationCsSetShaderWithIfaces",
         "ActivationClearUnorderedAccessViewUint",
         "ActivationClearUnorderedAccessViewFloat",
         "ActivationCsSetUnorderedAccessViews",
@@ -1418,6 +1434,25 @@ def check_d3d_umd_shim_contract() -> None:
         # deferred-context callbacks are intentionally forward-declared before
         # CreateDeferredContext wires their table.
         function_body(callback, code)
+    shader_with_ifaces = canonical_code(function_body("ActivationSetShaderWithIfaces", code))
+    for fragment in (
+        "!ActivationIsObject(shader.pDrvPrivate,ACTIVATION_SHADER_SIGNATURE)",
+        "classInstanceCount!=0&&(classInstances==NULL||interfacePointerData==NULL)",
+        "ActivationRecordDeviceCall(device,call);",
+    ):
+        if fragment not in shader_with_ifaces:
+            fail(f"D3D UMD test shader-with-interfaces validation is missing: {fragment}")
+    for callback, call in (
+        ("ActivationVsSetShaderWithIfaces", "ActivationCallVsSetShaderWithIfaces"),
+        ("ActivationPsSetShaderWithIfaces", "ActivationCallPsSetShaderWithIfaces"),
+        ("ActivationGsSetShaderWithIfaces", "ActivationCallGsSetShaderWithIfaces"),
+        ("ActivationHsSetShaderWithIfaces", "ActivationCallHsSetShaderWithIfaces"),
+        ("ActivationDsSetShaderWithIfaces", "ActivationCallDsSetShaderWithIfaces"),
+        ("ActivationCsSetShaderWithIfaces", "ActivationCallCsSetShaderWithIfaces"),
+    ):
+        callback_body = canonical_code(function_body(callback, code))
+        if f"ActivationSetShaderWithIfaces(device,shader,classInstanceCount,classInstances,interfacePointerData,{call});" not in callback_body:
+            fail(f"D3D UMD test shader-with-interfaces callback is not wired: {callback}")
     resource_map = canonical_code(function_body("ActivationResourceMap", code))
     for fragment in (
         "state==NULL||state->Signature!=ACTIVATION_RESOURCE_SIGNATURE",

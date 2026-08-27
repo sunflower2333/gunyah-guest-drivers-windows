@@ -81,6 +81,16 @@ enum ACTIVATION_CALL : LONG
     ActivationCallVsSetShader,
     ActivationCallPsSetShader,
     ActivationCallGsSetShader,
+    ActivationCallCsSetShader,
+    ActivationCallVsSetShaderWithIfaces,
+    ActivationCallPsSetShaderWithIfaces,
+    ActivationCallGsSetShaderWithIfaces,
+    ActivationCallHsSetShaderWithIfaces,
+    ActivationCallDsSetShaderWithIfaces,
+    ActivationCallCsSetShaderWithIfaces,
+    ActivationCallCsSetShaderResources,
+    ActivationCallCsSetSamplers,
+    ActivationCallCsSetConstantBuffers,
     ActivationCallVsSetConstantBuffers,
     ActivationCallPsSetConstantBuffers,
     ActivationCallGsSetConstantBuffers,
@@ -598,6 +608,147 @@ VOID APIENTRY ActivationGsSetShader(D3D10DDI_HDEVICE device, D3D10DDI_HSHADER sh
 {
     UNREFERENCED_PARAMETER(ActivationIsObject(shader.pDrvPrivate, ACTIVATION_SHADER_SIGNATURE));
     ActivationRecordDeviceCall(device, ActivationCallGsSetShader);
+}
+
+VOID APIENTRY ActivationCsSetShader(D3D10DDI_HDEVICE device, D3D10DDI_HSHADER shader)
+{
+    UNREFERENCED_PARAMETER(ActivationIsObject(shader.pDrvPrivate, ACTIVATION_SHADER_SIGNATURE));
+    ActivationRecordDeviceCall(device, ActivationCallCsSetShader);
+}
+
+VOID APIENTRY ActivationCsSetShaderResources(D3D10DDI_HDEVICE device,
+                                             UINT startSlot,
+                                             UINT numberOfViews,
+                                             const D3D10DDI_HSHADERRESOURCEVIEW *views)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfViews);
+    UNREFERENCED_PARAMETER(views);
+    ActivationRecordDeviceCall(device, ActivationCallCsSetShaderResources);
+}
+
+VOID APIENTRY ActivationCsSetSamplers(D3D10DDI_HDEVICE device,
+                                       UINT startSlot,
+                                       UINT numberOfSamplers,
+                                       const D3D10DDI_HSAMPLER *samplers)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfSamplers);
+    UNREFERENCED_PARAMETER(samplers);
+    ActivationRecordDeviceCall(device, ActivationCallCsSetSamplers);
+}
+
+VOID APIENTRY ActivationCsSetConstantBuffers(D3D10DDI_HDEVICE device,
+                                              UINT startSlot,
+                                              UINT numberOfBuffers,
+                                              const D3D10DDI_HRESOURCE *resources)
+{
+    UNREFERENCED_PARAMETER(startSlot);
+    UNREFERENCED_PARAMETER(numberOfBuffers);
+    UNREFERENCED_PARAMETER(resources);
+    ActivationRecordDeviceCall(device, ActivationCallCsSetConstantBuffers);
+}
+
+VOID ActivationSetShaderWithIfaces(D3D10DDI_HDEVICE device,
+                                   D3D10DDI_HSHADER shader,
+                                   UINT classInstanceCount,
+                                   const UINT *classInstances,
+                                   const D3D11DDIARG_POINTERDATA *interfacePointerData,
+                                   ACTIVATION_CALL call)
+{
+    if (!ActivationIsObject(shader.pDrvPrivate, ACTIVATION_SHADER_SIGNATURE) ||
+        (classInstanceCount != 0 && (classInstances == nullptr || interfacePointerData == nullptr)))
+    {
+        return;
+    }
+
+    UNREFERENCED_PARAMETER(classInstances);
+    UNREFERENCED_PARAMETER(interfacePointerData);
+    ActivationRecordDeviceCall(device, call);
+}
+
+VOID APIENTRY ActivationVsSetShaderWithIfaces(D3D10DDI_HDEVICE device,
+                                              D3D10DDI_HSHADER shader,
+                                              UINT classInstanceCount,
+                                              const UINT *classInstances,
+                                              const D3D11DDIARG_POINTERDATA *interfacePointerData)
+{
+    ActivationSetShaderWithIfaces(device,
+                                  shader,
+                                  classInstanceCount,
+                                  classInstances,
+                                  interfacePointerData,
+                                  ActivationCallVsSetShaderWithIfaces);
+}
+
+VOID APIENTRY ActivationPsSetShaderWithIfaces(D3D10DDI_HDEVICE device,
+                                              D3D10DDI_HSHADER shader,
+                                              UINT classInstanceCount,
+                                              const UINT *classInstances,
+                                              const D3D11DDIARG_POINTERDATA *interfacePointerData)
+{
+    ActivationSetShaderWithIfaces(device,
+                                  shader,
+                                  classInstanceCount,
+                                  classInstances,
+                                  interfacePointerData,
+                                  ActivationCallPsSetShaderWithIfaces);
+}
+
+VOID APIENTRY ActivationGsSetShaderWithIfaces(D3D10DDI_HDEVICE device,
+                                              D3D10DDI_HSHADER shader,
+                                              UINT classInstanceCount,
+                                              const UINT *classInstances,
+                                              const D3D11DDIARG_POINTERDATA *interfacePointerData)
+{
+    ActivationSetShaderWithIfaces(device,
+                                  shader,
+                                  classInstanceCount,
+                                  classInstances,
+                                  interfacePointerData,
+                                  ActivationCallGsSetShaderWithIfaces);
+}
+
+VOID APIENTRY ActivationHsSetShaderWithIfaces(D3D10DDI_HDEVICE device,
+                                              D3D10DDI_HSHADER shader,
+                                              UINT classInstanceCount,
+                                              const UINT *classInstances,
+                                              const D3D11DDIARG_POINTERDATA *interfacePointerData)
+{
+    ActivationSetShaderWithIfaces(device,
+                                  shader,
+                                  classInstanceCount,
+                                  classInstances,
+                                  interfacePointerData,
+                                  ActivationCallHsSetShaderWithIfaces);
+}
+
+VOID APIENTRY ActivationDsSetShaderWithIfaces(D3D10DDI_HDEVICE device,
+                                              D3D10DDI_HSHADER shader,
+                                              UINT classInstanceCount,
+                                              const UINT *classInstances,
+                                              const D3D11DDIARG_POINTERDATA *interfacePointerData)
+{
+    ActivationSetShaderWithIfaces(device,
+                                  shader,
+                                  classInstanceCount,
+                                  classInstances,
+                                  interfacePointerData,
+                                  ActivationCallDsSetShaderWithIfaces);
+}
+
+VOID APIENTRY ActivationCsSetShaderWithIfaces(D3D10DDI_HDEVICE device,
+                                              D3D10DDI_HSHADER shader,
+                                              UINT classInstanceCount,
+                                              const UINT *classInstances,
+                                              const D3D11DDIARG_POINTERDATA *interfacePointerData)
+{
+    ActivationSetShaderWithIfaces(device,
+                                  shader,
+                                  classInstanceCount,
+                                  classInstances,
+                                  interfacePointerData,
+                                  ActivationCallCsSetShaderWithIfaces);
 }
 
 VOID APIENTRY ActivationVsSetConstantBuffers(D3D10DDI_HDEVICE device,
@@ -1777,17 +1928,23 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
         ZeroMemory(functions11, sizeof(*functions11));
         functions11->pfnSetRenderTargets = ActivationSetRenderTargets11;
         functions11->pfnRelocateDeviceFuncs = ActivationRelocateDeviceFuncs11;
+        functions11->pfnVsSetShaderWithIfaces = ActivationVsSetShaderWithIfaces;
+        functions11->pfnPsSetShaderWithIfaces = ActivationPsSetShaderWithIfaces;
+        functions11->pfnGsSetShaderWithIfaces = ActivationGsSetShaderWithIfaces;
         functions11->pfnCreateComputeShader = ActivationCreateComputeShader;
-        functions11->pfnCsSetShader = ActivationPsSetShader;
-        functions11->pfnCsSetShaderResources = ActivationPsSetShaderResources;
-        functions11->pfnCsSetSamplers = ActivationPsSetSamplers;
-        functions11->pfnCsSetConstantBuffers = ActivationPsSetConstantBuffers;
+        functions11->pfnCsSetShader = ActivationCsSetShader;
+        functions11->pfnCsSetShaderWithIfaces = ActivationCsSetShaderWithIfaces;
+        functions11->pfnCsSetShaderResources = ActivationCsSetShaderResources;
+        functions11->pfnCsSetSamplers = ActivationCsSetSamplers;
+        functions11->pfnCsSetConstantBuffers = ActivationCsSetConstantBuffers;
         functions11->pfnHsSetShaderResources = ActivationHsSetShaderResources;
         functions11->pfnHsSetShader = ActivationHsSetShader;
+        functions11->pfnHsSetShaderWithIfaces = ActivationHsSetShaderWithIfaces;
         functions11->pfnHsSetSamplers = ActivationHsSetSamplers;
         functions11->pfnHsSetConstantBuffers = ActivationHsSetConstantBuffers;
         functions11->pfnDsSetShaderResources = ActivationDsSetShaderResources;
         functions11->pfnDsSetShader = ActivationDsSetShader;
+        functions11->pfnDsSetShaderWithIfaces = ActivationDsSetShaderWithIfaces;
         functions11->pfnDsSetSamplers = ActivationDsSetSamplers;
         functions11->pfnDsSetConstantBuffers = ActivationDsSetConstantBuffers;
         functions11->pfnCreateHullShader = ActivationCreateHullShader;
