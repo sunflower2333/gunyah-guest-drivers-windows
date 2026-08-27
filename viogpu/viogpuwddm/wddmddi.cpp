@@ -5089,6 +5089,36 @@ NTSTATUS BuildPfnEntries(_In_reads_(numberOfPages) const PFN_NUMBER *pfns,
     return STATUS_SUCCESS;
 }
 
+BOOLEAN ValidateAperturePageState(_In_ const VIOGPU_WDDM_ALLOCATION *allocation, _In_ BOOLEAN requireComplete)
+{
+    if (allocation == NULL || allocation->AperturePfns == NULL || allocation->ApertureMappedPages == NULL ||
+        allocation->AperturePageCount == 0 || allocation->ApertureMappedPageCount > allocation->AperturePageCount)
+    {
+        return FALSE;
+    }
+
+    SIZE_T observedMappedPages = 0;
+    for (SIZE_T page = 0; page < allocation->AperturePageCount; ++page)
+    {
+        UCHAR pageState = allocation->ApertureMappedPages[page];
+        PFN_NUMBER pfn = allocation->AperturePfns[page];
+        if (pageState > VioGpuWddmAperturePageDummy || static_cast<ULONGLONG>(pfn) > (MAXULONGLONG >> PAGE_SHIFT))
+        {
+            return FALSE;
+        }
+        if (pageState == VioGpuWddmAperturePageMapped)
+        {
+            ++observedMappedPages;
+        }
+    }
+
+    if (observedMappedPages != allocation->ApertureMappedPageCount)
+    {
+        return FALSE;
+    }
+    return !requireComplete || observedMappedPages == allocation->AperturePageCount;
+}
+
 NTSTATUS AllocateApertureBackingEntries(_In_ const VIOGPU_WDDM_ALLOCATION *allocation,
                                         _Outptr_result_buffer_(*entryCount) GPU_MEM_ENTRY **entries,
                                         _Out_ PUINT entryCount)
@@ -5101,7 +5131,7 @@ NTSTATUS AllocateApertureBackingEntries(_In_ const VIOGPU_WDDM_ALLOCATION *alloc
     *entryCount = 0;
     if (allocation->AperturePfns == NULL || allocation->ApertureMappedPages == NULL ||
         allocation->AperturePageCount == 0 || allocation->ApertureMappedPageCount != allocation->AperturePageCount ||
-        allocation->AperturePageCount > MAXUINT)
+        allocation->AperturePageCount > MAXUINT || !ValidateAperturePageState(allocation, TRUE))
     {
         return STATUS_INVALID_DEVICE_STATE;
     }
@@ -5201,7 +5231,8 @@ NTSTATUS EnsureApertureCpuMapping(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation)
 {
     if (allocation == NULL || allocation->AperturePfns == NULL || allocation->ApertureMappedPages == NULL ||
         allocation->AperturePageCount == 0 || allocation->ApertureMappedPageCount != allocation->AperturePageCount ||
-        allocation->BackingSize == 0 || allocation->BackingSize > MAXULONG)
+        allocation->BackingSize == 0 || allocation->BackingSize > MAXULONG ||
+        !ValidateAperturePageState(allocation, TRUE))
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -5556,7 +5587,7 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
         allocation->Destroying || !allocation->ApertureBaseValid || allocation->AperturePfns == NULL ||
         allocation->ApertureMappedPages == NULL || allocation->AperturePageCount == 0 ||
         allocation->ApertureMappedPageCount > allocation->AperturePageCount ||
-        allocationPage > allocation->AperturePageCount ||
+        !ValidateAperturePageState(allocation, FALSE) || allocationPage > allocation->AperturePageCount ||
         numberOfPages > allocation->AperturePageCount - allocationPage ||
         (nativeAllocation && allocation->HostState != VioGpuWddmAllocationHostNone && !snapshotAcquired &&
          !resetRetired))

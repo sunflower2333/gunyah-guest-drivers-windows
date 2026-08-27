@@ -3807,6 +3807,27 @@ def check_wddm_standard_paging() -> None:
         if fragment not in sg:
             fail(f"VidMm PFN backing must become bounded VirtIO SG entries: {fragment}")
 
+    page_state = canonical_code(
+        function_body_with_parameters(
+            "ValidateAperturePageState",
+            "_In_ const VIOGPU_WDDM_ALLOCATION *allocation, _In_ BOOLEAN requireComplete",
+            WDDM_DDI_CODE,
+        )
+    )
+    for fragment in (
+        "allocation->AperturePfns==NULL||allocation->ApertureMappedPages==NULL",
+        "allocation->ApertureMappedPageCount>allocation->AperturePageCount",
+        "pageState>VioGpuWddmAperturePageDummy",
+        "static_cast<ULONGLONG>(pfn)>(MAXULONGLONG>>PAGE_SHIFT)",
+        "observedMappedPages!=allocation->ApertureMappedPageCount",
+        "!requireComplete||observedMappedPages==allocation->AperturePageCount",
+    ):
+        if fragment not in page_state:
+            fail(f"aperture page-state validation must reject inconsistent PFN metadata: {fragment}")
+    if canonical_code(WDDM_DDI_CODE).count("ValidateAperturePageState(allocation,TRUE)") != 2 or \
+       canonical_code(WDDM_DDI_CODE).count("ValidateAperturePageState(allocation,FALSE)") != 1:
+        fail("full backing consumers and partial unmap must use the shared aperture page-state validator")
+
     allocate_sg = canonical_code(function_body("AllocateApertureBackingEntries", WDDM_DDI_CODE))
     for fragment in (
         "allocation->ApertureMappedPageCount!=allocation->AperturePageCount",

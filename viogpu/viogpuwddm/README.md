@@ -264,6 +264,9 @@ and marks the affected pages with the `DummyPage` PFN. A later complete map
 recreates Host backing from the current PFN set.
 All aperture MDLs must describe whole pages (`ByteOffset == 0`) before their
 PFNs are admitted to the guest blob; byte-offset MDLs are rejected.
+Before a complete PFN set is used for an SG table or synthetic CPU mapping,
+the miniport re-counts the page-state array and validates every PFN and state;
+partial unmap keeps the same validation in its retry path.
 
 Blob zero is independent of guest BO backing. The driver discovers VirtIO PCI
 shared-memory capability type 8, region id 1, validates its 64-bit offset and
