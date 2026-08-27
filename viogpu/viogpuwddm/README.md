@@ -207,6 +207,12 @@ read-only opens and overlapping 8-byte patch slots, rechecks the reset
 generation, and only then publishes its DMA output. UMD-selected patch slot IDs
 may be nonzero; reserved patch bits must be zero.
 
+VidMm aperture maps are accepted only from page-locked, zero-byte-offset MDLs.
+The KMD copies their PFNs into its retained page-state table and does not build
+guest SG entries from an unlocked or byte-shifted MDL.
+Paging transfers apply the same rule before obtaining a system address for a
+page-in or page-out copy.
+
 `Render` consumes every nonzero allocation-list `SegmentId` as prepatch input,
 validates its current placement and Native Context ownership, and writes the
 KMD-owned resource ID and requested IOVA while still returning the complete

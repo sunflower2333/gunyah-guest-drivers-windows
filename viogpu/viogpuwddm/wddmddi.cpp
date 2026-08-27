@@ -1906,7 +1906,7 @@ NTSTATUS ValidateNativePlacement(VIOGPU_WDDM_ALLOCATION *allocation, LARGE_INTEG
 NTSTATUS ResolveTransferMdlAddress(PMDL mdl, UINT mdlOffset, SIZE_T transferSize, PVOID *address)
 {
     if (mdl == NULL || address == NULL || transferSize == 0 || MmGetMdlByteOffset(mdl) != 0 ||
-        mdlOffset > (MAXULONG_PTR >> PAGE_SHIFT))
+        (mdl->MdlFlags & MDL_PAGES_LOCKED) == 0 || mdlOffset > (MAXULONG_PTR >> PAGE_SHIFT))
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -5266,7 +5266,8 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
                                _In_ UINT mdlOffset)
 {
     if (adapter == NULL || allocation == NULL || mdl == NULL || numberOfPages == 0 || MmGetMdlByteCount(mdl) == 0 ||
-        MmGetMdlByteOffset(mdl) != 0 || offsetInPages > (MAXULONGLONG >> PAGE_SHIFT) ||
+        MmGetMdlByteOffset(mdl) != 0 || (mdl->MdlFlags & MDL_PAGES_LOCKED) == 0 ||
+        offsetInPages > (MAXULONGLONG >> PAGE_SHIFT) ||
         numberOfPages - 1 > (MAXULONGLONG >> PAGE_SHIFT) - offsetInPages ||
         offsetInPages >= (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) ||
         numberOfPages > (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) - offsetInPages)
