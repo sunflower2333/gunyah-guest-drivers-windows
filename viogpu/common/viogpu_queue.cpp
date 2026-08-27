@@ -1449,7 +1449,8 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeGuestBlob(UINT context_id,
     for (UINT index = 0; index < entry_count; ++index)
     {
         if ((entries[index].addr & (PAGE_SIZE - 1)) != 0 || entries[index].length == 0 ||
-            (entries[index].length & (PAGE_SIZE - 1)) != 0 || entries[index].padding != 0 || entryBytes > size ||
+            (entries[index].length & (PAGE_SIZE - 1)) != 0 || entries[index].padding != 0 ||
+            entries[index].addr > MAXULONGLONG - (entries[index].length - 1) || entryBytes > size ||
             entries[index].length > size - entryBytes)
         {
             EndSynchronousRequest();

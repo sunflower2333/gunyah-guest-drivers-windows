@@ -7010,7 +7010,11 @@ def check_wddm_guest_allocation_lifecycle() -> None:
             fail(f"Host ownership release must reject an unpaired Native resource identity: {fragment}")
 
     create_blob = canonical_code(function_body("CtrlQueue::CreateNativeGuestBlob", QUEUE_CODE))
-    for fragment in ("resource_id==MAXUINT", "resource_id!=blob_id"):
+    for fragment in (
+        "resource_id==MAXUINT",
+        "resource_id!=blob_id",
+        "entries[index].addr>MAXULONGLONG-(entries[index].length-1)",
+    ):
         if create_blob.count(fragment) != 1:
             fail(f"guest blob creation must reject an unpaired or exhausted resource identity: {fragment}")
     blob_sequence = (
