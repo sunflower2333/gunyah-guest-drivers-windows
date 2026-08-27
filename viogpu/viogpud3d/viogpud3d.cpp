@@ -22,8 +22,15 @@ struct ACTIVATION_RESOURCE
     D3D10DDI_HRTRESOURCE RuntimeResource;
 };
 
+struct ACTIVATION_QUERY
+{
+    ULONG Signature;
+    D3D10DDI_HRTQUERY RuntimeQuery;
+};
+
 constexpr ULONG ACTIVATION_DEVICE_SIGNATURE = 0x56494F54UL;
 constexpr ULONG ACTIVATION_RESOURCE_SIGNATURE = 0x56494F52UL;
+constexpr ULONG ACTIVATION_QUERY_SIGNATURE = 0x56494F51UL;
 
 /* The test device has no rendering entry points.  It only proves that the
  * D3D runtime can allocate and tear down the private device record without
@@ -116,6 +123,128 @@ VOID APIENTRY ActivationDestroyResource(D3D10DDI_HDEVICE device, D3D10DDI_HRESOU
     }
     state->Signature = 0;
     state->RuntimeResource.handle = nullptr;
+}
+
+/* Queries are part of the D3D10 device table even when no timestamp or
+ * occlusion capability is advertised.  Keep their lifetime explicit so a
+ * probe cannot call through a null callback; this owner never queues work or
+ * fabricates a result. */
+SIZE_T APIENTRY ActivationCalcPrivateQuerySize(D3D10DDI_HDEVICE device, const D3D10DDIARG_CREATEQUERY *arguments)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    return sizeof(ACTIVATION_QUERY);
+}
+
+VOID APIENTRY ActivationCreateQuery(D3D10DDI_HDEVICE device,
+                                    const D3D10DDIARG_CREATEQUERY *arguments,
+                                    D3D10DDI_HQUERY query,
+                                    D3D10DDI_HRTQUERY runtimeQuery)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments == nullptr || query.pDrvPrivate == nullptr || runtimeQuery.handle == nullptr)
+    {
+        return;
+    }
+
+    ACTIVATION_QUERY *state = static_cast<ACTIVATION_QUERY *>(query.pDrvPrivate);
+    state->Signature = ACTIVATION_QUERY_SIGNATURE;
+    state->RuntimeQuery = runtimeQuery;
+}
+
+VOID APIENTRY ActivationDestroyQuery(D3D10DDI_HDEVICE device, D3D10DDI_HQUERY query)
+{
+    UNREFERENCED_PARAMETER(device);
+    ACTIVATION_QUERY *state = static_cast<ACTIVATION_QUERY *>(query.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_QUERY_SIGNATURE)
+    {
+        return;
+    }
+    state->Signature = 0;
+    state->RuntimeQuery.handle = nullptr;
+}
+
+VOID APIENTRY ActivationQueryBegin(D3D10DDI_HDEVICE device, D3D10DDI_HQUERY query)
+{
+    UNREFERENCED_PARAMETER(device);
+    ACTIVATION_QUERY *state = static_cast<ACTIVATION_QUERY *>(query.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_QUERY_SIGNATURE)
+    {
+        return;
+    }
+}
+
+VOID APIENTRY ActivationQueryEnd(D3D10DDI_HDEVICE device, D3D10DDI_HQUERY query)
+{
+    UNREFERENCED_PARAMETER(device);
+    ACTIVATION_QUERY *state = static_cast<ACTIVATION_QUERY *>(query.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_QUERY_SIGNATURE)
+    {
+        return;
+    }
+}
+
+VOID APIENTRY
+ActivationQueryGetData(D3D10DDI_HDEVICE device, D3D10DDI_HQUERY query, VOID *data, UINT dataSize, UINT flags)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(flags);
+    ACTIVATION_QUERY *state = static_cast<ACTIVATION_QUERY *>(query.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_QUERY_SIGNATURE)
+    {
+        return;
+    }
+    if (data != nullptr && dataSize != 0)
+    {
+        ZeroMemory(data, dataSize);
+    }
+}
+
+VOID APIENTRY ActivationCheckCounterInfo(D3D10DDI_HDEVICE device, D3D10DDI_COUNTER_INFO *counterInfo)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (counterInfo != nullptr)
+    {
+        ZeroMemory(counterInfo, sizeof(*counterInfo));
+    }
+}
+
+VOID APIENTRY ActivationCheckCounter(D3D10DDI_HDEVICE device,
+                                     D3D10DDI_QUERY query,
+                                     D3D10DDI_COUNTER_TYPE *counterType,
+                                     UINT *activeCounters,
+                                     LPSTR name,
+                                     UINT *nameLength,
+                                     LPSTR units,
+                                     UINT *unitsLength,
+                                     LPSTR description,
+                                     UINT *descriptionLength)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(query);
+    UNREFERENCED_PARAMETER(name);
+    UNREFERENCED_PARAMETER(units);
+    UNREFERENCED_PARAMETER(description);
+    if (counterType != nullptr)
+    {
+        *counterType = static_cast<D3D10DDI_COUNTER_TYPE>(0);
+    }
+    if (activeCounters != nullptr)
+    {
+        *activeCounters = 0;
+    }
+    if (nameLength != nullptr)
+    {
+        *nameLength = 0;
+    }
+    if (unitsLength != nullptr)
+    {
+        *unitsLength = 0;
+    }
+    if (descriptionLength != nullptr)
+    {
+        *descriptionLength = 0;
+    }
 }
 
 /* Shared-resource opens use the same bounded owner as local creates.  The
@@ -212,6 +341,14 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
     functions.pfnResourceIsStagingBusy = ActivationResourceIsStagingBusy;
     functions.pfnShaderResourceViewReadAfterWriteHazard = ActivationShaderResourceViewReadAfterWriteHazard;
     functions.pfnRelocateDeviceFuncs = ActivationRelocateDeviceFuncs;
+    functions.pfnCalcPrivateQuerySize = ActivationCalcPrivateQuerySize;
+    functions.pfnCreateQuery = ActivationCreateQuery;
+    functions.pfnDestroyQuery = ActivationDestroyQuery;
+    functions.pfnQueryBegin = ActivationQueryBegin;
+    functions.pfnQueryEnd = ActivationQueryEnd;
+    functions.pfnQueryGetData = ActivationQueryGetData;
+    functions.pfnCheckCounterInfo = ActivationCheckCounterInfo;
+    functions.pfnCheckCounter = ActivationCheckCounter;
     functions.pfnCheckFormatSupport = ActivationCheckFormatSupport;
     functions.pfnCheckMultisampleQualityLevels = ActivationCheckMultisampleQualityLevels;
     *arguments->pDeviceFuncs = functions;

@@ -1085,6 +1085,14 @@ def check_d3d_umd_shim_contract() -> None:
     create_device_fragments = (
         "functions.pfnCalcPrivateOpenedResourceSize=ActivationCalcPrivateOpenedResourceSize;",
         "functions.pfnOpenResource=ActivationOpenResource;",
+        "functions.pfnCalcPrivateQuerySize=ActivationCalcPrivateQuerySize;",
+        "functions.pfnCreateQuery=ActivationCreateQuery;",
+        "functions.pfnDestroyQuery=ActivationDestroyQuery;",
+        "functions.pfnQueryBegin=ActivationQueryBegin;",
+        "functions.pfnQueryEnd=ActivationQueryEnd;",
+        "functions.pfnQueryGetData=ActivationQueryGetData;",
+        "functions.pfnCheckCounterInfo=ActivationCheckCounterInfo;",
+        "functions.pfnCheckCounter=ActivationCheckCounter;",
         "functions.pfnCheckFormatSupport=ActivationCheckFormatSupport;",
         "functions.pfnCheckMultisampleQualityLevels=ActivationCheckMultisampleQualityLevels;",
     )
@@ -1102,6 +1110,43 @@ def check_d3d_umd_shim_contract() -> None:
     ):
         if fragment not in opened:
             fail(f"D3D UMD test opened-resource lifecycle is missing: {fragment}")
+    query_size = canonical_code(function_body("ActivationCalcPrivateQuerySize", code))
+    if "returnsizeof(ACTIVATION_QUERY);" not in query_size:
+        fail("D3D UMD test query lifecycle size gate is missing")
+    query_create = canonical_code(function_body("ActivationCreateQuery", code))
+    for fragment in (
+        "arguments==NULL||query.pDrvPrivate==NULL||runtimeQuery.handle==NULL",
+        "state->Signature=ACTIVATION_QUERY_SIGNATURE;",
+        "state->RuntimeQuery=runtimeQuery;",
+    ):
+        if fragment not in query_create:
+            fail(f"D3D UMD test query creation is missing: {fragment}")
+    query_destroy = canonical_code(function_body("ActivationDestroyQuery", code))
+    if "state==NULL||state->Signature!=ACTIVATION_QUERY_SIGNATURE" not in query_destroy:
+        fail("D3D UMD test query destroy must validate its private record")
+    for fragment in ("state->Signature=0;", "state->RuntimeQuery.handle=NULL;"):
+        if fragment not in query_destroy:
+            fail(f"D3D UMD test query destroy must clear its private record: {fragment}")
+    query_data = canonical_code(function_body("ActivationQueryGetData", code))
+    for callback in ("ActivationQueryBegin", "ActivationQueryEnd", "ActivationQueryGetData"):
+        callback_body = canonical_code(function_body(callback, code))
+        if "state==NULL||state->Signature!=ACTIVATION_QUERY_SIGNATURE" not in callback_body:
+            fail(f"D3D UMD test {callback} must validate its private query record")
+    if "if(data!=NULL&&dataSize!=0){ZeroMemory(data,dataSize);}" not in query_data:
+        fail("D3D UMD test query data callback must initialize optional output")
+    counter_info = canonical_code(function_body("ActivationCheckCounterInfo", code))
+    if "if(counterInfo!=NULL){ZeroMemory(counterInfo,sizeof(*counterInfo));}" not in counter_info:
+        fail("D3D UMD test counter info callback must initialize its output")
+    counter = canonical_code(function_body("ActivationCheckCounter", code))
+    for fragment in (
+        "if(counterType!=NULL){*counterType=static_cast<D3D10DDI_COUNTER_TYPE>(0);}",
+        "if(activeCounters!=NULL){*activeCounters=0;}",
+        "if(nameLength!=NULL){*nameLength=0;}",
+        "if(unitsLength!=NULL){*unitsLength=0;}",
+        "if(descriptionLength!=NULL){*descriptionLength=0;}",
+    ):
+        if fragment not in counter:
+            fail(f"D3D UMD test counter query must clear its output: {fragment}")
     format_support = canonical_code(function_body("ActivationCheckFormatSupport", code))
     if "if(formatSupport!=NULL){*formatSupport=0;}" not in format_support:
         fail("D3D UMD test format-support query must publish an empty capability mask")
