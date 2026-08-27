@@ -4461,6 +4461,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
 {
     VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(hDevice);
     if (device == NULL || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || openAllocation == NULL ||
+        device->Adapter == NULL ||
         openAllocation->NumAllocations == 0 || openAllocation->pOpenAllocation == NULL ||
         openAllocation->SubresourceIndex != 0 || (openAllocation->Flags.Value & ~3U) != 0 ||
         openAllocation->pPrivateDriverData != NULL || openAllocation->PrivateDriverSize != 0)
@@ -4656,6 +4657,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
 {
     VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(hDevice);
     if (device == NULL || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || createContext == NULL ||
+        device->Adapter == NULL ||
         KeGetCurrentIrql() != PASSIVE_LEVEL || createContext->NodeOrdinal != 0 || createContext->EngineAffinity != 1)
     {
         return STATUS_INVALID_PARAMETER;

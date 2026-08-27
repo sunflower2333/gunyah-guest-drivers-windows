@@ -2530,6 +2530,12 @@ def check_wddm_handle_ownership() -> None:
     create_context = canonical_code(function_body("VioGpuWddmCreateContext", WDDM_DDI_CODE))
     if "device==NULL||device->Signature!=VIOGPU_WDDM_DEVICE_SIGNATURE||createContext==NULL" not in create_context:
         fail("CreateContext must validate the WDDM device signature before dereferencing the handle")
+    if create_context.count("createContext==NULL||device->Adapter==NULL") != 1:
+        fail("CreateContext must reject a device handle with no adapter before entering the lifecycle")
+
+    open_allocation = canonical_code(function_body("VioGpuWddmOpenAllocation", WDDM_DDI_CODE))
+    if open_allocation.count("openAllocation==NULL||device->Adapter==NULL") != 1:
+        fail("OpenAllocation must reject a device handle with no adapter before querying dxgkrnl")
 
     describe = canonical_code(function_body("VioGpuWddmDescribeAllocation", WDDM_DDI_CODE))
     for fragment in (
