@@ -115,8 +115,10 @@ build may pass `/p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1` to exercise the minimal
 UMD device lifetime record, bounded D3D10/11 capability-payload negotiation,
 the existing Native Render validator from the `RenderKm` entry point, and the
 adapter-wide recovery path from `ResetEngine`.
-The UMD experiment only publishes a guarded `DestroyDevice` callback; it has no
-resource, shader, draw, or submit entry points.  The default product build
+The UMD experiment publishes guarded device and resource lifetime callbacks;
+its resource owner only validates the DDI private handle and retains the
+runtime resource identity.  It has no shader, draw, or submit entry points.
+The default product build
 leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset
 as unsupported because neither a real D3D command contract nor an independent
 Host engine reset exists.  Do not install an experimental build in the VM or

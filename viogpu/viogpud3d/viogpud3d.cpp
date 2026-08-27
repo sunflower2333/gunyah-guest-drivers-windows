@@ -16,7 +16,14 @@ struct ACTIVATION_DEVICE
     ULONG Signature;
 };
 
+struct ACTIVATION_RESOURCE
+{
+    ULONG Signature;
+    D3D10DDI_HRTRESOURCE RuntimeResource;
+};
+
 constexpr ULONG ACTIVATION_DEVICE_SIGNATURE = 0x56494F54UL;
+constexpr ULONG ACTIVATION_RESOURCE_SIGNATURE = 0x56494F52UL;
 
 /* The test device has no rendering entry points.  It only proves that the
  * D3D runtime can allocate and tear down the private device record without
@@ -29,6 +36,46 @@ VOID APIENTRY ActivationDestroyDevice(D3D10DDI_HDEVICE device)
         return;
     }
     state->Signature = 0;
+}
+
+/* This resource owner is deliberately limited to the DDI lifetime contract.
+ * It does not allocate video memory or expose a command entry point; the
+ * production rendering path remains Mesa's Native Context Vulkan UMD. */
+SIZE_T APIENTRY ActivationCalcPrivateResourceSize(D3D10DDI_HDEVICE device,
+                                                  const D3D10DDIARG_CREATERESOURCE *arguments)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(arguments);
+    return sizeof(ACTIVATION_RESOURCE);
+}
+
+VOID APIENTRY ActivationCreateResource(D3D10DDI_HDEVICE device,
+                                       const D3D10DDIARG_CREATERESOURCE *arguments,
+                                       D3D10DDI_HRESOURCE resource,
+                                       D3D10DDI_HRTRESOURCE runtimeResource)
+{
+    UNREFERENCED_PARAMETER(device);
+    if (arguments == nullptr || arguments->pMipInfoList == nullptr || arguments->MipLevels == 0 ||
+        arguments->ArraySize == 0 || resource.pDrvPrivate == nullptr || runtimeResource.pDrvPrivate == nullptr)
+    {
+        return;
+    }
+
+    ACTIVATION_RESOURCE *state = static_cast<ACTIVATION_RESOURCE *>(resource.pDrvPrivate);
+    state->Signature = ACTIVATION_RESOURCE_SIGNATURE;
+    state->RuntimeResource = runtimeResource;
+}
+
+VOID APIENTRY ActivationDestroyResource(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource)
+{
+    UNREFERENCED_PARAMETER(device);
+    ACTIVATION_RESOURCE *state = static_cast<ACTIVATION_RESOURCE *>(resource.pDrvPrivate);
+    if (state == nullptr || state->Signature != ACTIVATION_RESOURCE_SIGNATURE)
+    {
+        return;
+    }
+    state->Signature = 0;
+    state->RuntimeResource.pDrvPrivate = nullptr;
 }
 #endif
 
@@ -61,6 +108,9 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
 
     D3D10DDI_DEVICEFUNCS functions = {};
     functions.pfnDestroyDevice = ActivationDestroyDevice;
+    functions.pfnCalcPrivateResourceSize = ActivationCalcPrivateResourceSize;
+    functions.pfnCreateResource = ActivationCreateResource;
+    functions.pfnDestroyResource = ActivationDestroyResource;
     *arguments->pDeviceFuncs = functions;
     return S_OK;
 #else

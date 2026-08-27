@@ -159,9 +159,9 @@ jobs:
       - name: Compile opt-in WDDM test implementations
         shell: pwsh
         run: |
-          # This is a compile/link experiment for the guarded UMD device
-          # lifecycle/capability query, RenderKm, and ResetEngine paths.  Keep every
-          # intermediate/output tree separate so it cannot overwrite the
+          # This is a compile/link experiment for the guarded UMD device/resource
+          # lifecycle and capability query, RenderKm, and ResetEngine paths.  Keep
+          # every intermediate/output tree separate so it cannot overwrite the
           # normal package inspected below.
           $testUmdOutDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objtest_umd_win11_arm64/arm64/')
           $testOutDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objtest_win11_arm64/arm64/')

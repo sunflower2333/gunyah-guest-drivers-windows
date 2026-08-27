@@ -1048,6 +1048,9 @@ def check_d3d_umd_shim_contract() -> None:
         "arguments==NULL||arguments->pDeviceFuncs==NULL||arguments->hDrvDevice.pDrvPrivate==NULL",
         "state->Signature=ACTIVATION_DEVICE_SIGNATURE;",
         "functions.pfnDestroyDevice=ActivationDestroyDevice;",
+        "functions.pfnCalcPrivateResourceSize=ActivationCalcPrivateResourceSize;",
+        "functions.pfnCreateResource=ActivationCreateResource;",
+        "functions.pfnDestroyResource=ActivationDestroyResource;",
         "returnS_OK;",
     ):
         if fragment not in create_device:
@@ -1057,6 +1060,23 @@ def check_d3d_umd_shim_contract() -> None:
         fail("D3D UMD test lifecycle destroy must validate its private record")
     if "state->Signature=0;" not in destroy_device:
         fail("D3D UMD test lifecycle destroy must clear its private record")
+    resource_size = canonical_code(function_body("ActivationCalcPrivateResourceSize", code))
+    if "returnsizeof(ACTIVATION_RESOURCE);" not in resource_size:
+        fail("D3D UMD test resource lifecycle size gate is missing")
+    resource_create = canonical_code(function_body("ActivationCreateResource", code))
+    for fragment in (
+        "arguments==NULL||arguments->pMipInfoList==NULL||arguments->MipLevels==0||arguments->ArraySize==0||resource.pDrvPrivate==NULL||runtimeResource.pDrvPrivate==NULL",
+        "state->Signature=ACTIVATION_RESOURCE_SIGNATURE;",
+        "state->RuntimeResource=runtimeResource;",
+    ):
+        if fragment not in resource_create:
+            fail(f"D3D UMD test resource creation is missing guarded implementation fragment: {fragment}")
+    resource_destroy = canonical_code(function_body("ActivationDestroyResource", code))
+    if "state==NULL||state->Signature!=ACTIVATION_RESOURCE_SIGNATURE" not in resource_destroy:
+        fail("D3D UMD test resource destroy must validate its private record")
+    for fragment in ("state->Signature=0;", "state->RuntimeResource.pDrvPrivate=NULL;"):
+        if fragment not in resource_destroy:
+            fail(f"D3D UMD test resource destroy must clear its private record: {fragment}")
     caps = canonical_code(function_body("ActivationGetCaps", code))
     for fragment in (
         "if(arguments->pData==NULL){returnE_INVALIDARG;}",
