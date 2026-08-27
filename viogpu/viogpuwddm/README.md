@@ -119,9 +119,9 @@ The UMD experiment publishes guarded device and resource lifetime callbacks;
 its resource owner only validates the DDI private handle and retains the
 runtime resource identity.  The same opt-in table covers opened-resource
 sizing/creation, explicit zero-capability format and multisample queries, and
-no-op flush, hazard, and function-table relocation callbacks.  These callbacks
-complete probe-time DDI table initialization only; they do not synchronize or
-submit GPU work.  It has no shader, draw, or submit entry points.
+no-op flush, hazard, staging-busy, and function-table relocation callbacks.
+These callbacks complete probe-time DDI table initialization only; they do not
+synchronize or submit GPU work.  It has no shader, draw, or submit entry points.
 The default product build
 leaves UMD `CreateDevice` and RenderKm fail-closed and reports per-engine reset
 as unsupported because neither a real D3D command contract nor an independent

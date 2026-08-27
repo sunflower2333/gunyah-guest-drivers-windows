@@ -1053,6 +1053,7 @@ def check_d3d_umd_shim_contract() -> None:
         "functions.pfnDestroyResource=ActivationDestroyResource;",
         "functions.pfnFlush=ActivationFlush;",
         "functions.pfnResourceReadAfterWriteHazard=ActivationResourceReadAfterWriteHazard;",
+        "functions.pfnResourceIsStagingBusy=ActivationResourceIsStagingBusy;",
         "functions.pfnShaderResourceViewReadAfterWriteHazard=ActivationShaderResourceViewReadAfterWriteHazard;",
         "functions.pfnRelocateDeviceFuncs=ActivationRelocateDeviceFuncs;",
         "returnS_OK;",

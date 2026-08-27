@@ -54,6 +54,14 @@ VOID APIENTRY ActivationResourceReadAfterWriteHazard(D3D10DDI_HDEVICE device, D3
     UNREFERENCED_PARAMETER(resource);
 }
 
+BOOL APIENTRY ActivationResourceIsStagingBusy(D3D10DDI_HDEVICE device, D3D10DDI_HRESOURCE resource)
+{
+    UNREFERENCED_PARAMETER(device);
+    UNREFERENCED_PARAMETER(resource);
+    /* The probe device never queues work, so a valid staging owner is idle. */
+    return FALSE;
+}
+
 VOID APIENTRY ActivationShaderResourceViewReadAfterWriteHazard(D3D10DDI_HDEVICE device,
                                                                D3D10DDI_HSHADERRESOURCEVIEW view,
                                                                D3D10DDI_HRESOURCE resource)
@@ -201,6 +209,7 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
     functions.pfnDestroyResource = ActivationDestroyResource;
     functions.pfnFlush = ActivationFlush;
     functions.pfnResourceReadAfterWriteHazard = ActivationResourceReadAfterWriteHazard;
+    functions.pfnResourceIsStagingBusy = ActivationResourceIsStagingBusy;
     functions.pfnShaderResourceViewReadAfterWriteHazard = ActivationShaderResourceViewReadAfterWriteHazard;
     functions.pfnRelocateDeviceFuncs = ActivationRelocateDeviceFuncs;
     functions.pfnCheckFormatSupport = ActivationCheckFormatSupport;
