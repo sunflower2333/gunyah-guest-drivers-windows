@@ -115,6 +115,7 @@ enum ACTIVATION_CALL : LONG
     ActivationCallClearUnorderedAccessViewFloat,
     ActivationCallCsSetUnorderedAccessViews,
     ActivationCallCopyStructureCount,
+    ActivationCallCommandListExecute,
 };
 
 VOID ActivationRecordDeviceCall(D3D10DDI_HDEVICE device, ACTIVATION_CALL call)
@@ -1098,6 +1099,12 @@ VOID APIENTRY ActivationCopyStructureCount(D3D10DDI_HDEVICE device,
     ActivationRecordDeviceCall(device, ActivationCallCopyStructureCount);
 }
 
+VOID APIENTRY ActivationCommandListExecute(D3D10DDI_HDEVICE device, D3D11DDI_HCOMMANDLIST commandList)
+{
+    UNREFERENCED_PARAMETER(commandList);
+    ActivationRecordDeviceCall(device, ActivationCallCommandListExecute);
+}
+
 VOID APIENTRY ActivationCreateComputeShader(D3D10DDI_HDEVICE device,
                                             const UINT *shaderCode,
                                             D3D10DDI_HSHADER shader,
@@ -1555,12 +1562,15 @@ HRESULT APIENTRY ActivationCreateDevice(D3D10DDI_HADAPTER adapter, D3D10DDIARG_C
         functions11->pfnClearUnorderedAccessViewUint = ActivationClearUnorderedAccessViewUint;
         functions11->pfnClearUnorderedAccessViewFloat = ActivationClearUnorderedAccessViewFloat;
         functions11->pfnCsSetUnorderedAccessViews = ActivationCsSetUnorderedAccessViews;
+        functions11->pfnResourceConvert = ActivationResourceCopy;
+        functions11->pfnResourceConvertRegion = ActivationResourceCopyRegion;
         functions11->pfnDispatch = ActivationDispatch;
         functions11->pfnDispatchIndirect = ActivationDispatchIndirect;
         functions11->pfnDrawIndexedInstancedIndirect = ActivationDrawIndexedInstancedIndirect;
         functions11->pfnDrawInstancedIndirect = ActivationDrawInstancedIndirect;
         functions11->pfnSetResourceMinLOD = ActivationSetResourceMinLOD;
         functions11->pfnCopyStructureCount = ActivationCopyStructureCount;
+        functions11->pfnCommandListExecute = ActivationCommandListExecute;
     }
     return S_OK;
 #else

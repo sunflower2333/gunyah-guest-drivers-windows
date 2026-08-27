@@ -1208,12 +1208,15 @@ def check_d3d_umd_shim_contract() -> None:
         "functions11->pfnClearUnorderedAccessViewUint=ActivationClearUnorderedAccessViewUint;",
         "functions11->pfnClearUnorderedAccessViewFloat=ActivationClearUnorderedAccessViewFloat;",
         "functions11->pfnCsSetUnorderedAccessViews=ActivationCsSetUnorderedAccessViews;",
+        "functions11->pfnResourceConvert=ActivationResourceCopy;",
+        "functions11->pfnResourceConvertRegion=ActivationResourceCopyRegion;",
         "functions11->pfnDispatch=ActivationDispatch;",
         "functions11->pfnDispatchIndirect=ActivationDispatchIndirect;",
         "functions11->pfnDrawIndexedInstancedIndirect=ActivationDrawIndexedInstancedIndirect;",
         "functions11->pfnDrawInstancedIndirect=ActivationDrawInstancedIndirect;",
         "functions11->pfnSetResourceMinLOD=ActivationSetResourceMinLOD;",
         "functions11->pfnCopyStructureCount=ActivationCopyStructureCount;",
+        "functions11->pfnCommandListExecute=ActivationCommandListExecute;",
     )
     for fragment in d3d11_fragments:
         if fragment not in create_device:
@@ -1290,6 +1293,7 @@ def check_d3d_umd_shim_contract() -> None:
         "ActivationClearUnorderedAccessViewFloat",
         "ActivationCsSetUnorderedAccessViews",
         "ActivationCopyStructureCount",
+        "ActivationCommandListExecute",
         "ActivationCalcPrivateTessellationShaderSize",
         "ActivationCalcPrivateUnorderedAccessViewSize",
     ):
