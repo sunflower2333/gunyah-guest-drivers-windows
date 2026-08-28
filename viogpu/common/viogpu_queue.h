@@ -159,6 +159,73 @@ typedef struct viogpu_native_map_response_diagnostic
     viogpu_host_context_response_validation Validation;
 } VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC, *PVIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC;
 
+/* A GET_PARAM request crosses two independent interfaces: the outer VirtIO
+ * control queue and the inner DRM response window in blob-0.  Keep one
+ * diagnostic snapshot for both sides so a failed native-context bring-up can
+ * distinguish queue completion from a stale or inaccessible BAR response. */
+enum VIOGPU_NATIVE_CONTEXT_PARAMETER_PHASE : UINT
+{
+    VioGpuNativeContextParameterNotStarted = 0,
+    VioGpuNativeContextParameterPreconditions = 1,
+    VioGpuNativeContextParameterSeed = 2,
+    VioGpuNativeContextParameterSubmitted = 3,
+    VioGpuNativeContextParameterCopy = 4,
+    VioGpuNativeContextParameterValidated = 5,
+    VioGpuNativeContextParameterComplete = 6,
+};
+
+typedef struct viogpu_native_context_parameter_diagnostic
+{
+    UINT ContextId;
+    UINT Parameter;
+    UINT Sequence;
+    UINT RequestCommand;
+    UINT RequestLength;
+    UINT RequestResponseOffset;
+    UINT RequestIoctlCommand;
+    UINT RequestPipe;
+    UINT RequestParameter;
+    ULONGLONG RequestValue;
+    UINT RequestValueLength;
+    UINT RequestPadding;
+
+    UINT SeedAttempted;
+    UINT SeedWriteCompleted;
+    UINT SeedSharedSeqno;
+    UINT SeedSharedResponseOffset;
+    UINT SeedSharedAsyncError;
+    UINT SeedSharedGlobalFaults;
+
+    UINT SharedSeqno;
+    UINT SharedResponseOffset;
+    UINT SharedAsyncError;
+    UINT SharedGlobalFaults;
+    UINT CopyAttempted;
+    UINT CopyCompleted;
+
+    UINT InnerRet;
+    UINT InnerPipe;
+    UINT InnerParameter;
+    ULONGLONG InnerValue;
+    UINT InnerValueLength;
+    UINT InnerPadding;
+
+    UINT OuterResponseSize;
+    UINT OuterType;
+    UINT OuterFlags;
+    ULONGLONG OuterFenceId;
+    UINT OuterContextId;
+    UCHAR OuterRingIndex;
+    UCHAR OuterPadding[3];
+    BOOLEAN OuterSubmitted;
+    BOOLEAN OuterCompleted;
+    viogpu_host_context_response_validation OuterValidation;
+    VIOGPU_HOST_CONTEXT_RESULT SubmitResult;
+    viogpu_host_context_response_validation Validation;
+    VIOGPU_HOST_CONTEXT_RESULT Result;
+    UINT Phase;
+} VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC, *PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC;
+
 enum VIOGPU_2D_RESOURCE_STATE : LONG
 {
     VioGpu2DResourceNone = 0,
@@ -387,7 +454,11 @@ class CtrlQueue : public VioGpuQueue
     VIOGPU_HOST_CONTEXT_RESULT MapNativeControlBlob(UINT resource_id, ULONGLONG offset);
     VIOGPU_HOST_CONTEXT_RESULT UnmapNativeControlBlob(UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT UnrefNativeResource(UINT resource_id);
-    VIOGPU_HOST_CONTEXT_RESULT SubmitNativeControl(UINT context_id, const void *command, UINT command_size);
+    VIOGPU_HOST_CONTEXT_RESULT
+    SubmitNativeControl(UINT context_id,
+                        const void *command,
+                        UINT command_size,
+                        _Inout_opt_ PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic = NULL);
     VIOGPU_HOST_CONTEXT_RESULT CreateResource2DSynchronous(UINT resource_id, UINT format, UINT width, UINT height);
     VIOGPU_HOST_CONTEXT_RESULT AttachBackingSynchronous(UINT resource_id,
                                                         const GPU_MEM_ENTRY *entries,

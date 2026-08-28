@@ -1019,6 +1019,7 @@ class VioGpuDod
                                              _In_ DWORD detail);
     VOID RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC *diagnostic);
     VOID RecordNativeContextMapResponseDiagnostic(_In_ const VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC *diagnostic);
+    VOID RecordNativeContextParameterDiagnostic(_In_ const VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC *diagnostic);
     VOID RecordNativeContextMapMemoryDiagnostic(_In_ NTSTATUS status,
                                                 _In_ ULONGLONG physicalAddress,
                                                 _In_ ULONGLONG length,

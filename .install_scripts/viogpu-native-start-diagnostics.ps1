@@ -43,6 +43,62 @@ if ($queryDiagnosticPresent.Count -ne 0 -and $queryDiagnosticPresent.Count -ne $
     throw "Driver key '$driverKey' contains a partial QueryAdapterInfo diagnostic."
 }
 
+$parameterDiagnosticNames = @(
+    'NativeContextGetParamPhase',
+    'NativeContextGetParamContextId',
+    'NativeContextGetParamParameter',
+    'NativeContextGetParamSequence',
+    'NativeContextGetParamRequestCommand',
+    'NativeContextGetParamRequestLength',
+    'NativeContextGetParamRequestResponseOffset',
+    'NativeContextGetParamRequestIoctlCommand',
+    'NativeContextGetParamRequestPipe',
+    'NativeContextGetParamRequestParameter',
+    'NativeContextGetParamRequestValueLow',
+    'NativeContextGetParamRequestValueHigh',
+    'NativeContextGetParamRequestValueLength',
+    'NativeContextGetParamRequestPadding',
+    'NativeContextGetParamSeedAttempted',
+    'NativeContextGetParamSeedWriteCompleted',
+    'NativeContextGetParamSeedSharedSeqno',
+    'NativeContextGetParamSeedSharedResponseOffset',
+    'NativeContextGetParamSeedSharedAsyncError',
+    'NativeContextGetParamSeedSharedGlobalFaults',
+    'NativeContextGetParamSharedSeqno',
+    'NativeContextGetParamSharedResponseOffset',
+    'NativeContextGetParamSharedAsyncError',
+    'NativeContextGetParamSharedGlobalFaults',
+    'NativeContextGetParamCopyAttempted',
+    'NativeContextGetParamCopyCompleted',
+    'NativeContextGetParamInnerRet',
+    'NativeContextGetParamInnerPipe',
+    'NativeContextGetParamInnerParameter',
+    'NativeContextGetParamInnerValueLow',
+    'NativeContextGetParamInnerValueHigh',
+    'NativeContextGetParamInnerValueLength',
+    'NativeContextGetParamInnerPadding',
+    'NativeContextGetParamOuterResponseSize',
+    'NativeContextGetParamOuterType',
+    'NativeContextGetParamOuterFlags',
+    'NativeContextGetParamOuterFenceLow',
+    'NativeContextGetParamOuterFenceHigh',
+    'NativeContextGetParamOuterContextId',
+    'NativeContextGetParamOuterRingIndex',
+    'NativeContextGetParamOuterPadding',
+    'NativeContextGetParamOuterSubmitted',
+    'NativeContextGetParamOuterCompleted',
+    'NativeContextGetParamOuterValidation',
+    'NativeContextGetParamSubmitResult',
+    'NativeContextGetParamValidation',
+    'NativeContextGetParamResult'
+)
+$parameterDiagnosticPresent = @(
+    $parameterDiagnosticNames | Where-Object { $null -ne $diagnostic.PSObject.Properties[$_] }
+)
+if ($parameterDiagnosticPresent.Count -ne 0 -and $parameterDiagnosticPresent.Count -ne $parameterDiagnosticNames.Count) {
+    throw "Driver key '$driverKey' contains a partial GET_PARAM diagnostic."
+}
+
 $stageNames = @{
     0x0100 = 'Entered'
     0x0110 = 'Preconditions'
@@ -124,6 +180,13 @@ if ($queryDiagnosticPresent.Count -eq $queryDiagnosticNames.Count) {
     $queryInputSize = [uint64](ConvertTo-DwordValue $diagnostic.NativeQueryAdapterInfoInputSize)
     $queryOutputSize = [uint64](ConvertTo-DwordValue $diagnostic.NativeQueryAdapterInfoOutputSize)
 }
+$parameterSnapshot = $null
+if ($parameterDiagnosticPresent.Count -eq $parameterDiagnosticNames.Count) {
+    $parameterSnapshot = [ordered]@{}
+    foreach ($name in $parameterDiagnosticNames) {
+        $parameterSnapshot[$name] = ConvertTo-DwordValue $diagnostic.$name
+    }
+}
 $stageName = $stageNames[[int]$stage]
 if ([string]::IsNullOrWhiteSpace($stageName)) {
     $stageName = 'Unknown'
@@ -150,4 +213,5 @@ if ($stage -eq 0x0330 -or $stage -eq 0x0500 -or $stage -eq 0x0560) {
     NativeQueryAdapterInfoStatus = $queryStatus
     NativeQueryAdapterInfoInputSize = $queryInputSize
     NativeQueryAdapterInfoOutputSize = $queryOutputSize
+    NativeContextGetParam = $parameterSnapshot
 }

@@ -3900,11 +3900,17 @@ static BOOLEAN VioGpuResolveNativeControlWindow(_In_ const VIOGPU_NATIVE_CONTEXT
     return TRUE;
 }
 
-static BOOLEAN VioGpuSeedNativeControlResponse(_In_ VioGpuAdapter *adapter,
-                                               _Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner,
-                                               _In_ ULONG sequence,
-                                               _In_ ULONG responseSize)
+static BOOLEAN
+VioGpuSeedNativeControlResponse(_In_ VioGpuAdapter *adapter,
+                                _Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner,
+                                _In_ ULONG sequence,
+                                _In_ ULONG responseSize,
+                                _Inout_opt_ PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic = NULL)
 {
+    if (diagnostic != NULL)
+    {
+        diagnostic->SeedAttempted = 1;
+    }
     if (adapter == NULL || owner == NULL || sequence == 0 || responseSize < sizeof(MSM_CCMD_IOCTL_SIMPLE_RSP) ||
         KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
@@ -3914,24 +3920,49 @@ static BOOLEAN VioGpuSeedNativeControlResponse(_In_ VioGpuAdapter *adapter,
     PMSM_SHMEM shmem = NULL;
     PUCHAR response = NULL;
     ULONG responseCapacity = 0;
-    BOOLEAN valid = VioGpuResolveNativeControlWindow(owner, &shmem, &response, &responseCapacity) &&
-                    responseSize <= responseCapacity && VioGpuReadSharedU32(&shmem->base.seqno) != sequence;
+    BOOLEAN resolved = VioGpuResolveNativeControlWindow(owner, &shmem, &response, &responseCapacity);
+    if (!resolved)
+    {
+        return FALSE;
+    }
+    ULONG sharedSeqno = VioGpuReadSharedU32(&shmem->base.seqno);
+    ULONG sharedResponseOffset = VioGpuReadSharedU32(&shmem->base.rsp_mem_offset);
+    ULONG sharedAsyncError = VioGpuReadSharedU32(&shmem->async_error);
+    ULONG sharedGlobalFaults = VioGpuReadSharedU32(&shmem->global_faults);
+    if (diagnostic != NULL)
+    {
+        diagnostic->SeedSharedSeqno = sharedSeqno;
+        diagnostic->SeedSharedResponseOffset = sharedResponseOffset;
+        diagnostic->SeedSharedAsyncError = sharedAsyncError;
+        diagnostic->SeedSharedGlobalFaults = sharedGlobalFaults;
+    }
+    BOOLEAN valid = responseSize <= responseCapacity && sharedSeqno != sequence;
     if (valid)
     {
         RtlZeroMemory(response, responseSize);
         PMSM_CCMD_IOCTL_SIMPLE_RSP responseHeader = reinterpret_cast<PMSM_CCMD_IOCTL_SIMPLE_RSP>(response);
         VioGpuWriteSharedU32(reinterpret_cast<volatile ULONG *>(&responseHeader->ret), MAXLONG);
         VioGpuWriteSharedU32(reinterpret_cast<volatile ULONG *>(&responseHeader->hdr.len), responseSize);
+        if (diagnostic != NULL)
+        {
+            diagnostic->SeedWriteCompleted = 1;
+        }
     }
     return valid;
 }
 
-static BOOLEAN VioGpuCopyNativeControlResponse(_In_ VioGpuAdapter *adapter,
-                                               _In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner,
-                                               _In_ ULONG sequence,
-                                               _Out_ PVOID response,
-                                               _In_ ULONG responseSize)
+static BOOLEAN
+VioGpuCopyNativeControlResponse(_In_ VioGpuAdapter *adapter,
+                                _In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner,
+                                _In_ ULONG sequence,
+                                _Out_ PVOID response,
+                                _In_ ULONG responseSize,
+                                _Inout_opt_ PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic = NULL)
 {
+    if (diagnostic != NULL)
+    {
+        diagnostic->CopyAttempted = 1;
+    }
     if (adapter == NULL || owner == NULL || sequence == 0 || response == NULL ||
         responseSize < sizeof(MSM_CCMD_IOCTL_SIMPLE_RSP) || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
@@ -3942,24 +3973,51 @@ static BOOLEAN VioGpuCopyNativeControlResponse(_In_ VioGpuAdapter *adapter,
     PMSM_SHMEM shmem = NULL;
     PUCHAR sharedResponse = NULL;
     ULONG responseCapacity = 0;
-    BOOLEAN valid = VioGpuResolveNativeControlWindow(owner, &shmem, &sharedResponse, &responseCapacity) &&
-                    responseSize <= responseCapacity && VioGpuReadSharedU32(&shmem->base.seqno) == sequence;
+    BOOLEAN resolved = VioGpuResolveNativeControlWindow(owner, &shmem, &sharedResponse, &responseCapacity);
+    if (!resolved)
+    {
+        return FALSE;
+    }
+    ULONG sharedSeqno = VioGpuReadSharedU32(&shmem->base.seqno);
+    ULONG sharedResponseOffset = VioGpuReadSharedU32(&shmem->base.rsp_mem_offset);
+    ULONG sharedAsyncError = VioGpuReadSharedU32(&shmem->async_error);
+    ULONG sharedGlobalFaults = VioGpuReadSharedU32(&shmem->global_faults);
+    if (diagnostic != NULL)
+    {
+        diagnostic->SharedSeqno = sharedSeqno;
+        diagnostic->SharedResponseOffset = sharedResponseOffset;
+        diagnostic->SharedAsyncError = sharedAsyncError;
+        diagnostic->SharedGlobalFaults = sharedGlobalFaults;
+    }
+    BOOLEAN valid = responseSize <= responseCapacity && sharedSeqno == sequence;
     if (valid)
     {
         KeMemoryBarrier();
         RtlCopyMemory(response, sharedResponse, responseSize);
+        if (diagnostic != NULL)
+        {
+            diagnostic->CopyCompleted = 1;
+        }
         PVDRM_CCMD_RSP responseHeader = static_cast<PVDRM_CCMD_RSP>(response);
-        valid = responseHeader->len == responseSize && VioGpuReadSharedU32(&shmem->async_error) == 0 &&
-                VioGpuReadSharedU32(&shmem->global_faults) == 0;
+        sharedAsyncError = VioGpuReadSharedU32(&shmem->async_error);
+        sharedGlobalFaults = VioGpuReadSharedU32(&shmem->global_faults);
+        if (diagnostic != NULL)
+        {
+            diagnostic->SharedAsyncError = sharedAsyncError;
+            diagnostic->SharedGlobalFaults = sharedGlobalFaults;
+        }
+        valid = responseHeader->len == responseSize && sharedAsyncError == 0 && sharedGlobalFaults == 0;
     }
     return valid;
 }
 
-static BOOLEAN VioGpuConsumeNativeControlResponse(_In_ VioGpuAdapter *adapter,
-                                                  _In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner,
-                                                  _In_ ULONG sequence,
-                                                  _In_ ULONG parameter,
-                                                  _Out_ PULONGLONG value)
+static BOOLEAN
+VioGpuConsumeNativeControlResponse(_In_ VioGpuAdapter *adapter,
+                                   _In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner,
+                                   _In_ ULONG sequence,
+                                   _In_ ULONG parameter,
+                                   _Out_ PULONGLONG value,
+                                   _Inout_opt_ PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic = NULL)
 {
     if (value == NULL)
     {
@@ -3968,11 +4026,44 @@ static BOOLEAN VioGpuConsumeNativeControlResponse(_In_ VioGpuAdapter *adapter,
     *value = 0;
 
     MSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP response = {};
-    if (!VioGpuCopyNativeControlResponse(adapter, owner, sequence, &response, sizeof(response)) || response.ret != 0 ||
-        response.param.pipe != MSM_PIPE_3D0 || response.param.param != parameter || response.param.len != 0 ||
+    BOOLEAN copied = VioGpuCopyNativeControlResponse(adapter, owner, sequence, &response, sizeof(response), diagnostic);
+    if (diagnostic != NULL && copied)
+    {
+        diagnostic->InnerRet = static_cast<UINT>(response.ret);
+        diagnostic->InnerPipe = response.param.pipe;
+        diagnostic->InnerParameter = response.param.param;
+        diagnostic->InnerValue = response.param.value;
+        diagnostic->InnerValueLength = response.param.len;
+        diagnostic->InnerPadding = response.param.pad;
+    }
+    if (!copied)
+    {
+        if (diagnostic != NULL)
+        {
+            diagnostic->Validation = VioGpuHostResponseMalformed;
+        }
+        return FALSE;
+    }
+    if (response.ret != 0)
+    {
+        if (diagnostic != NULL)
+        {
+            diagnostic->Validation = VioGpuHostResponseRejected;
+        }
+        return FALSE;
+    }
+    if (response.param.pipe != MSM_PIPE_3D0 || response.param.param != parameter || response.param.len != 0 ||
         response.param.pad != 0)
     {
+        if (diagnostic != NULL)
+        {
+            diagnostic->Validation = VioGpuHostResponseMalformed;
+        }
         return FALSE;
+    }
+    if (diagnostic != NULL)
+    {
+        diagnostic->Validation = VioGpuHostResponseConfirmed;
     }
     *value = response.param.value;
     return TRUE;
@@ -4658,6 +4749,339 @@ VOID VioGpuDod::RecordNativeContextMapResponseDiagnostic(_In_ const VIOGPU_NATIV
                submitted,
                completed,
                validation);
+}
+
+VOID VioGpuDod::RecordNativeContextParameterDiagnostic(_In_ const VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC *diagnostic)
+{
+    PAGED_CODE();
+
+    if (diagnostic == NULL)
+    {
+        return;
+    }
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context GET_PARAM diagnostic: registry open failed, status=0x%08X\n",
+                   openStatus);
+        return;
+    }
+
+    DWORD contextId = diagnostic->ContextId;
+    DWORD parameter = diagnostic->Parameter;
+    DWORD sequence = diagnostic->Sequence;
+    DWORD requestCommand = diagnostic->RequestCommand;
+    DWORD requestLength = diagnostic->RequestLength;
+    DWORD requestResponseOffset = diagnostic->RequestResponseOffset;
+    DWORD requestIoctlCommand = diagnostic->RequestIoctlCommand;
+    DWORD requestPipe = diagnostic->RequestPipe;
+    DWORD requestParameter = diagnostic->RequestParameter;
+    DWORD requestValueLow = static_cast<DWORD>(diagnostic->RequestValue & 0xffffffffULL);
+    DWORD requestValueHigh = static_cast<DWORD>(diagnostic->RequestValue >> 32);
+    DWORD requestValueLength = diagnostic->RequestValueLength;
+    DWORD requestPadding = diagnostic->RequestPadding;
+    DWORD seedAttempted = diagnostic->SeedAttempted;
+    DWORD seedWriteCompleted = diagnostic->SeedWriteCompleted;
+    DWORD seedSharedSeqno = diagnostic->SeedSharedSeqno;
+    DWORD seedSharedResponseOffset = diagnostic->SeedSharedResponseOffset;
+    DWORD seedSharedAsyncError = diagnostic->SeedSharedAsyncError;
+    DWORD seedSharedGlobalFaults = diagnostic->SeedSharedGlobalFaults;
+    DWORD sharedSeqno = diagnostic->SharedSeqno;
+    DWORD sharedResponseOffset = diagnostic->SharedResponseOffset;
+    DWORD sharedAsyncError = diagnostic->SharedAsyncError;
+    DWORD sharedGlobalFaults = diagnostic->SharedGlobalFaults;
+    DWORD copyAttempted = diagnostic->CopyAttempted;
+    DWORD copyCompleted = diagnostic->CopyCompleted;
+    DWORD innerRet = diagnostic->InnerRet;
+    DWORD innerPipe = diagnostic->InnerPipe;
+    DWORD innerParameter = diagnostic->InnerParameter;
+    DWORD innerValueLow = static_cast<DWORD>(diagnostic->InnerValue & 0xffffffffULL);
+    DWORD innerValueHigh = static_cast<DWORD>(diagnostic->InnerValue >> 32);
+    DWORD innerValueLength = diagnostic->InnerValueLength;
+    DWORD innerPadding = diagnostic->InnerPadding;
+    DWORD outerResponseSize = diagnostic->OuterResponseSize;
+    DWORD outerType = diagnostic->OuterType;
+    DWORD outerFlags = diagnostic->OuterFlags;
+    DWORD outerFenceLow = static_cast<DWORD>(diagnostic->OuterFenceId & 0xffffffffULL);
+    DWORD outerFenceHigh = static_cast<DWORD>(diagnostic->OuterFenceId >> 32);
+    DWORD outerContextId = diagnostic->OuterContextId;
+    DWORD outerRingIndex = diagnostic->OuterRingIndex;
+    DWORD outerPadding = static_cast<DWORD>(diagnostic->OuterPadding[0]) |
+                         (static_cast<DWORD>(diagnostic->OuterPadding[1]) << 8) |
+                         (static_cast<DWORD>(diagnostic->OuterPadding[2]) << 16);
+    DWORD outerSubmitted = diagnostic->OuterSubmitted ? 1U : 0U;
+    DWORD outerCompleted = diagnostic->OuterCompleted ? 1U : 0U;
+    DWORD outerValidation = diagnostic->OuterValidation;
+    DWORD submitResult = diagnostic->SubmitResult;
+    DWORD validation = diagnostic->Validation;
+    DWORD result = diagnostic->Result;
+
+    struct DIAGNOSTIC_VALUE
+    {
+        PCWSTR Name;
+        DWORD Value;
+    };
+    // Keep every value as a literal registry name for offline readers.  The
+    // phase value below is the commit marker for this complete snapshot.
+    const DIAGNOSTIC_VALUE values[] = {
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamCon"
+                                                                                                         L"textId",
+                                                                                                         contextId},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamPar"
+                                                                                                         L"ameter",
+                                                                                                         parameter},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSeq"
+                                                                                                         L"uence",
+                                                                                                         sequence},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamReq"
+                                                                                                         L"uestCommand",
+                                                                                                         requestCommand},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamReq"
+                                                                                                         L"uestLength",
+                                                                                                         requestLength},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamReq"
+                                                                                                         L"uestResponse"
+                                                                                                         L"Offset",
+                                                                                                         requestResponseOffset},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamReq"
+                                                                                                         L"uestIoctlCom"
+                                                                                                         L"mand",
+                                                                                                         requestIoctlCommand},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamReq"
+                                                                                                         L"uestPipe",
+                                                                                                         requestPipe},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamReq"
+                                                                                                         L"uestParamete"
+                                                                                                         L"r",
+                                                                                                         requestParameter},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamReq"
+                                                                                                         L"uestValueLo"
+                                                                                                         L"w",
+                                                                                                         requestValueLow},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamReq"
+                                                                                                         L"uestValueHig"
+                                                                                                         L"h",
+                                                                                                         requestValueHigh},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamReq"
+                                                                                                         L"uestValueLen"
+                                                                                                         L"gth",
+                                                                                                         requestValueLength},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamReq"
+                                                                                                         L"uestPadding",
+                                                                                                         requestPadding},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSee"
+                                                                                                         L"dAttempted",
+                                                                                                         seedAttempted},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSee"
+                                                                                                         L"dWriteComple"
+                                                                                                         L"ted",
+                                                                                                         seedWriteCompleted},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSee"
+                                                                                                         L"dSharedSeqn"
+                                                                                                         L"o",
+                                                                                                         seedSharedSeqno},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSee"
+                                                                                                         L"dSharedRespo"
+                                                                                                         L"nseOffset",
+                                                                                                         seedSharedResponseOffset},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSee"
+                                                                                                         L"dSharedAsync"
+                                                                                                         L"Error",
+                                                                                                         seedSharedAsyncError},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSee"
+                                                                                                         L"dSharedGloba"
+                                                                                                         L"lFaults",
+                                                                                                         seedSharedGlobalFaults},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSha"
+                                                                                                         L"redSeqno",
+                                                                                                         sharedSeqno},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSha"
+                                                                                                         L"redResponseO"
+                                                                                                         L"ffset",
+                                                                                                         sharedResponseOffset},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSha"
+                                                                                                         L"redAsyncErro"
+                                                                                                         L"r",
+                                                                                                         sharedAsyncError},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSha"
+                                                                                                         L"redGlobalFau"
+                                                                                                         L"lts",
+                                                                                                         sharedGlobalFaults},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamCop"
+                                                                                                         L"yAttempted",
+                                                                                                         copyAttempted},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamCop"
+                                                                                                         L"yCompleted",
+                                                                                                         copyCompleted},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamInn"
+                                                                                                         L"erRet",
+                                                                                                         innerRet},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamInn"
+                                                                                                         L"erPipe",
+                                                                                                         innerPipe},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamInn"
+                                                                                                         L"erParameter",
+                                                                                                         innerParameter},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamInn"
+                                                                                                         L"erValueLow",
+                                                                                                         innerValueLow},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamInn"
+                                                                                                         L"erValueHigh",
+                                                                                                         innerValueHigh},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamInn"
+                                                                                                         L"erValueLengt"
+                                                                                                         L"h",
+                                                                                                         innerValueLength},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamInn"
+                                                                                                         L"erPadding",
+                                                                                                         innerPadding},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erResponseSi"
+                                                                                                         L"ze",
+                                                                                                         outerResponseSize},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erType",
+                                                                                                         outerType},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erFlags",
+                                                                                                         outerFlags},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erFenceLow",
+                                                                                                         outerFenceLow},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erFenceHigh",
+                                                                                                         outerFenceHigh},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erContextId",
+                                                                                                         outerContextId},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erRingIndex",
+                                                                                                         outerRingIndex},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erPadding",
+                                                                                                         outerPadding},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erSubmitted",
+                                                                                                         outerSubmitted},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erCompleted",
+                                                                                                         outerCompleted},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamOut"
+                                                                                                         L"erValidatio"
+                                                                                                         L"n",
+                                                                                                         outerValidation},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamSub"
+                                                                                                         L"mitResult",
+                                                                                                         submitResult},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamVal"
+                                                                                                         L"idation",
+                                                                                                         validation},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGetParamRes"
+                                                                                                         L"ult",
+                                                                                                         result},
+    };
+
+    DWORD zero = 0;
+    NTSTATUS markerClear = WriteRegistryDWORD(deviceKey, L"NativeContextGetParamPhase", &zero);
+    NTSTATUS writeStatus = markerClear;
+    for (UINT index = 0; index < ARRAYSIZE(values); ++index)
+    {
+        if (!NT_SUCCESS(writeStatus))
+        {
+            break;
+        }
+        DWORD value = values[index].Value;
+        writeStatus = WriteRegistryDWORD(deviceKey, values[index].Name, &value);
+    }
+    NTSTATUS markerWrite = STATUS_SUCCESS;
+    if (NT_SUCCESS(writeStatus))
+    {
+        DWORD phase = diagnostic->Phase;
+        markerWrite = WriteRegistryDWORD(deviceKey, L"NativeContextGetParamPhase", &phase);
+    }
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(writeStatus) || !NT_SUCCESS(markerWrite))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context GET_PARAM diagnostic: write failed, phase=%u status=0x%08X marker=0x%08X\n",
+                   diagnostic->Phase,
+                   writeStatus,
+                   markerWrite);
+        return;
+    }
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu native context GET_PARAM diagnostic: ctx=%u param=0x%X seq=%u phase=%u "
+               "submit=%u/%u result=%u shared=%u/%u faults=0x%X/0x%X inner=0x%X value=0x%016llX validation=%u "
+               "result=%u\n",
+               contextId,
+               parameter,
+               sequence,
+               diagnostic->Phase,
+               outerSubmitted,
+               outerCompleted,
+               submitResult,
+               sharedSeqno,
+               sharedResponseOffset,
+               sharedAsyncError,
+               sharedGlobalFaults,
+               innerRet,
+               diagnostic->InnerValue,
+               validation,
+               result);
 }
 
 VOID VioGpuDod::RecordNativeContextMapMemoryDiagnostic(_In_ NTSTATUS status,
@@ -6787,18 +7211,63 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::QueryNativeContextParameterLocked(_Ino
 {
     PAGED_CODE();
 
+    VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic = {};
+    diagnostic.Parameter = parameter;
+    diagnostic.Validation = VioGpuHostResponseUnclassified;
+    diagnostic.Result = VioGpuHostContextNotSubmitted;
+    if (owner != NULL)
+    {
+        diagnostic.ContextId = owner->ContextId;
+    }
+    if (m_pVioGpuDod != NULL)
+    {
+        diagnostic.Phase = VioGpuNativeContextParameterPreconditions;
+        m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
+    }
+
     if (owner == NULL || value == NULL || owner->ContextId == 0 || !owner->ControlResourceCreated ||
         !owner->ControlMapped || (parameter != MSM_PARAM_VA_START && parameter != MSM_PARAM_VA_SIZE) ||
         owner->LastControlSeqno == MAXULONG)
     {
+        diagnostic.Result = VioGpuHostContextNotSubmitted;
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
+        }
         return VioGpuHostContextNotSubmitted;
     }
     *value = 0;
 
     ULONG sequence = owner->LastControlSeqno + 1;
-    if (!VioGpuSeedNativeControlResponse(this, owner, sequence, sizeof(MSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP)))
+    diagnostic.ContextId = owner->ContextId;
+    diagnostic.Sequence = sequence;
+    diagnostic.RequestCommand = MSM_CCMD_IOCTL_SIMPLE;
+    diagnostic.RequestLength = sizeof(MSM_CCMD_IOCTL_SIMPLE_GET_PARAM_REQ);
+    diagnostic.RequestResponseOffset = 0;
+    diagnostic.RequestIoctlCommand = DRM_IOCTL_MSM_GET_PARAM;
+    diagnostic.RequestPipe = MSM_PIPE_3D0;
+    diagnostic.RequestParameter = parameter;
+    diagnostic.RequestValue = 0;
+    diagnostic.RequestValueLength = 0;
+    diagnostic.RequestPadding = 0;
+
+    if (m_pVioGpuDod != NULL)
     {
+        diagnostic.Phase = VioGpuNativeContextParameterSeed;
+        m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
+    }
+    if (!VioGpuSeedNativeControlResponse(this,
+                                         owner,
+                                         sequence,
+                                         sizeof(MSM_CCMD_IOCTL_SIMPLE_GET_PARAM_RSP),
+                                         &diagnostic))
+    {
+        diagnostic.Result = VioGpuHostContextUnknown;
         m_CtrlQueue.PoisonSynchronousRequests();
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
+        }
         return VioGpuHostContextUnknown;
     }
     owner->LastControlSeqno = sequence;
@@ -6812,15 +7281,46 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::QueryNativeContextParameterLocked(_Ino
     request.param.pipe = MSM_PIPE_3D0;
     request.param.param = parameter;
 
-    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SubmitNativeControl(owner->ContextId, &request, sizeof(request));
+    if (m_pVioGpuDod != NULL)
+    {
+        diagnostic.Phase = VioGpuNativeContextParameterSubmitted;
+        m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
+    }
+    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SubmitNativeControl(owner->ContextId,
+                                                                        &request,
+                                                                        sizeof(request),
+                                                                        &diagnostic);
     if (result != VioGpuHostContextConfirmed)
     {
+        diagnostic.Result = result;
+        diagnostic.Validation = diagnostic.OuterValidation;
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
+        }
         return result;
     }
-    if (!VioGpuConsumeNativeControlResponse(this, owner, sequence, parameter, value))
+    if (m_pVioGpuDod != NULL)
     {
+        diagnostic.Phase = VioGpuNativeContextParameterCopy;
+        m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
+    }
+    if (!VioGpuConsumeNativeControlResponse(this, owner, sequence, parameter, value, &diagnostic))
+    {
+        diagnostic.Result = VioGpuHostContextUnknown;
         m_CtrlQueue.PoisonSynchronousRequests();
+        if (m_pVioGpuDod != NULL)
+        {
+            diagnostic.Phase = VioGpuNativeContextParameterValidated;
+            m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
+        }
         return VioGpuHostContextUnknown;
+    }
+    diagnostic.Result = VioGpuHostContextConfirmed;
+    diagnostic.Phase = VioGpuNativeContextParameterComplete;
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
     }
     return VioGpuHostContextConfirmed;
 }
