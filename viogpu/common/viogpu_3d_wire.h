@@ -102,6 +102,7 @@ enum virtio_gpu_ctrl_type
 #define VIRTIO_GPU_DRM_WIRE_FORMAT_VERSION       VIRTGPU_DRM_WIRE_FORMAT_VERSION
 #define VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK   0x00ffU
 #define VIRTIO_GPU_CTRL_HDR_WIRE_SIZE            24U
+#define VIRTIO_GPU_MAP_INFO_RESPONSE_WIRE_SIZE   32U
 
 enum viogpu_host_context_response_validation
 {
@@ -157,6 +158,59 @@ VioGpuValidatePlainControlResponse(VIOGPU_WIRE_U32 response_size,
         return VioGpuHostResponseRejected;
     }
     return VioGpuHostResponseMalformed;
+}
+
+/* RESOURCE_MAP_BLOB has a 32-byte success response, while a host rejection is
+ * returned as the ordinary 24-byte control error header.  Keep this validator
+ * separate from the plain-header form so a short/oversized map response cannot
+ * be mistaken for a successful CTX_CREATE-style transaction. */
+static inline enum viogpu_host_context_response_validation VioGpuValidateMapInfoResponse(VIOGPU_WIRE_U32 response_size,
+                                                                                         VIOGPU_WIRE_U8 submitted,
+                                                                                         VIOGPU_WIRE_U8 completed,
+                                                                                         VIOGPU_WIRE_U32 type,
+                                                                                         VIOGPU_WIRE_U32 flags,
+                                                                                         VIOGPU_WIRE_U64 fence_id,
+                                                                                         VIOGPU_WIRE_U32 context_id,
+                                                                                         VIOGPU_WIRE_U8 ring_index,
+                                                                                         VIOGPU_WIRE_U8 padding0,
+                                                                                         VIOGPU_WIRE_U8 padding1,
+                                                                                         VIOGPU_WIRE_U8 padding2,
+                                                                                         VIOGPU_WIRE_U32 map_info,
+                                                                                         VIOGPU_WIRE_U32 map_padding)
+{
+    if (!submitted)
+    {
+        return VioGpuHostResponseNotSubmitted;
+    }
+    if (!completed)
+    {
+        return VioGpuHostResponseNotCompleted;
+    }
+    if (response_size < VIRTIO_GPU_CTRL_HDR_WIRE_SIZE)
+    {
+        return VioGpuHostResponseTooShort;
+    }
+
+    const VIOGPU_WIRE_U8 plain = flags == 0 && fence_id == 0 && context_id == 0 && ring_index == 0 && padding0 == 0 &&
+                                 padding1 == 0 && padding2 == 0;
+    if (response_size == VIRTIO_GPU_CTRL_HDR_WIRE_SIZE && plain && type >= VIRTIO_GPU_RESP_ERR_UNSPEC &&
+        type <= VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER)
+    {
+        return VioGpuHostResponseRejected;
+    }
+    if (response_size != VIRTIO_GPU_MAP_INFO_RESPONSE_WIRE_SIZE)
+    {
+        return VioGpuHostResponseWrongSize;
+    }
+    if (!plain || type != VIRTIO_GPU_RESP_OK_MAP_INFO)
+    {
+        return VioGpuHostResponseMalformed;
+    }
+    if (map_info != VIRTIO_GPU_MAP_CACHE_CACHED || map_padding != 0)
+    {
+        return VioGpuHostResponseMalformed;
+    }
+    return VioGpuHostResponseConfirmed;
 }
 
 #define MSM_BO_SCANOUT                  0x00000001U

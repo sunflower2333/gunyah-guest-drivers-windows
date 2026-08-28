@@ -58,7 +58,8 @@ class CPciResources
     CPciResources()
         : m_pDxgkInterface(nullptr), m_InterruptFlags(0), m_InterruptMessageCount(0),
           m_InterruptMessageCountKnown(FALSE), m_HostVisibleBar(MAXUINT), m_HostVisibleOffset(0), m_HostVisibleSize(0),
-          m_HostVisibleMappedVA(nullptr), m_HostVisibleMappedOffset(0), m_HostVisibleMappedSize(0)
+          m_HostVisibleMappedVA(nullptr), m_HostVisibleMappedPA(), m_HostVisibleMappedOffset(0),
+          m_HostVisibleMappedSize(0)
     {
     }
 
@@ -116,6 +117,9 @@ class CPciResources
 
     PVOID GetMappedAddress(UINT bar, ULONG uOffset);
     BOOLEAN QueryHostVisibleRegion(_Out_ PUINT bar, _Out_ PULONGLONG offset, _Out_ PULONGLONG size) const;
+    BOOLEAN QueryHostVisibleMapping(_Out_ PPHYSICAL_ADDRESS physicalAddress,
+                                    _Out_ PULONGLONG regionOffset,
+                                    _Out_ PULONGLONG size) const;
     NTSTATUS MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
                                    _In_ SIZE_T length,
                                    _Outptr_result_bytebuffer_(length) PVOID *address);
@@ -130,6 +134,7 @@ class CPciResources
     ULONGLONG m_HostVisibleOffset;
     ULONGLONG m_HostVisibleSize;
     PVOID m_HostVisibleMappedVA;
+    PHYSICAL_ADDRESS m_HostVisibleMappedPA;
     ULONGLONG m_HostVisibleMappedOffset;
     ULONGLONG m_HostVisibleMappedSize;
     CPciBar m_Bars[PCI_TYPE0_ADDRESSES];

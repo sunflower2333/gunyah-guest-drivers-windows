@@ -842,7 +842,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitSynchronousNoDataLocked(PGPU_VBUFFER
             PoisonSynchronousRequests();
         }
     }
-    else if (completed)
+    else
     {
         PoisonSynchronousRequests();
     }
@@ -1218,6 +1218,14 @@ void CtrlQueue::GetLastNativeContextResponseDiagnostic(_Out_ PVIOGPU_HOST_CONTEX
     }
 }
 
+void CtrlQueue::GetLastNativeMapResponseDiagnostic(_Out_ PVIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC diagnostic) const
+{
+    if (diagnostic != NULL)
+    {
+        RtlCopyMemory(diagnostic, &m_LastNativeMapResponseDiagnostic, sizeof(*diagnostic));
+    }
+}
+
 VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeContext(UINT context_id,
                                                           _Out_opt_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic)
 {
@@ -1535,6 +1543,11 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULO
 {
     PAGED_CODE();
 
+    VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC captured = {};
+    RtlZeroMemory(&m_LastNativeMapResponseDiagnostic, sizeof(m_LastNativeMapResponseDiagnostic));
+    captured.Validation = VioGpuHostResponseNotSubmitted;
+    RtlCopyMemory(&m_LastNativeMapResponseDiagnostic, &captured, sizeof(m_LastNativeMapResponseDiagnostic));
+
     if (resource_id == 0 || (offset & (PAGE_SIZE - 1)) != 0 || !BeginSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
@@ -1567,18 +1580,47 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULO
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
     BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    PGPU_CTRL_HDR header = reinterpret_cast<PGPU_CTRL_HDR>(&response->hdr);
+    captured.ResponseSize = vbuf->response_size;
+    captured.Submitted = submitted;
+    captured.Completed = completed;
+    if (completed && vbuf->response_size >= sizeof(GPU_CTRL_HDR) && header != NULL)
+    {
+        captured.Type = header->type;
+        captured.Flags = header->flags;
+        captured.FenceId = header->fence_id;
+        captured.ContextId = header->ctx_id;
+        captured.RingIndex = header->ring_idx;
+        RtlCopyMemory(captured.HeaderPadding, header->padding, sizeof(captured.HeaderPadding));
+    }
+    if (completed && vbuf->response_size >= sizeof(GPU_RESP_MAP_INFO))
+    {
+        captured.MapInfo = response->map_info;
+        captured.MapPadding = response->padding;
+    }
+    captured.Validation = VioGpuValidateMapInfoResponse(captured.ResponseSize,
+                                                        captured.Submitted,
+                                                        captured.Completed,
+                                                        captured.Type,
+                                                        captured.Flags,
+                                                        captured.FenceId,
+                                                        captured.ContextId,
+                                                        captured.RingIndex,
+                                                        captured.HeaderPadding[0],
+                                                        captured.HeaderPadding[1],
+                                                        captured.HeaderPadding[2],
+                                                        captured.MapInfo,
+                                                        captured.MapPadding);
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
-    if (!submitted)
+    if (captured.Validation == VioGpuHostResponseNotSubmitted)
     {
         result = VioGpuHostContextNotSubmitted;
     }
-    else if (completed && vbuf->response_size == sizeof(GPU_RESP_MAP_INFO) &&
-             IsPlainControlResponse(&response->hdr, VIRTIO_GPU_RESP_OK_MAP_INFO) &&
-             response->map_info == VIRTIO_GPU_MAP_CACHE_CACHED && response->padding == 0)
+    else if (captured.Validation == VioGpuHostResponseConfirmed)
     {
         result = VioGpuHostContextConfirmed;
     }
-    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) && IsPlainControlErrorResponse(&response->hdr))
+    else if (captured.Validation == VioGpuHostResponseRejected)
     {
         result = VioGpuHostContextRejected;
     }
@@ -1586,6 +1628,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULO
     {
         PoisonSynchronousRequests();
     }
+    RtlCopyMemory(&m_LastNativeMapResponseDiagnostic, &captured, sizeof(m_LastNativeMapResponseDiagnostic));
     if (releaseBuffer)
     {
         ReleaseBuffer(vbuf);

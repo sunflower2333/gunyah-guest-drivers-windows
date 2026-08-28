@@ -4548,6 +4548,224 @@ VOID VioGpuDod::RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HO
                validation);
 }
 
+VOID VioGpuDod::RecordNativeContextMapResponseDiagnostic(_In_ const VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC *diagnostic)
+{
+    PAGED_CODE();
+
+    if (diagnostic == NULL)
+    {
+        return;
+    }
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context map response diagnostic: registry open failed, status=0x%08X\n",
+                   openStatus);
+        return;
+    }
+
+    DWORD responseSize = diagnostic->ResponseSize;
+    DWORD type = diagnostic->Type;
+    DWORD flags = diagnostic->Flags;
+    DWORD fenceLow = static_cast<DWORD>(diagnostic->FenceId & 0xffffffffULL);
+    DWORD fenceHigh = static_cast<DWORD>(diagnostic->FenceId >> 32);
+    DWORD contextId = diagnostic->ContextId;
+    DWORD ringIndex = diagnostic->RingIndex;
+    DWORD headerPadding = static_cast<DWORD>(diagnostic->HeaderPadding[0]) |
+                          (static_cast<DWORD>(diagnostic->HeaderPadding[1]) << 8) |
+                          (static_cast<DWORD>(diagnostic->HeaderPadding[2]) << 16);
+    DWORD mapInfo = diagnostic->MapInfo;
+    DWORD mapPadding = diagnostic->MapPadding;
+    DWORD submitted = diagnostic->Submitted ? 1U : 0U;
+    DWORD completed = diagnostic->Completed ? 1U : 0U;
+    DWORD validation = diagnostic->Validation;
+
+    struct DIAGNOSTIC_VALUE
+    {
+        PCWSTR Name;
+        DWORD Value;
+    };
+    // The validation value is the final commit marker for this response snapshot.
+    // Keep the registry names as individual literals so offline readers and
+    // setup diagnostics can discover them without evaluating concatenations.
+    // clang-format off
+    const DIAGNOSTIC_VALUE values[] = {
+        {L"NativeContextCreateMapResponseSize", responseSize},
+        {L"NativeContextCreateMapResponseType", type},
+        {L"NativeContextCreateMapResponseFlags", flags},
+        {L"NativeContextCreateMapResponseFenceLow", fenceLow},
+        {L"NativeContextCreateMapResponseFenceHigh", fenceHigh},
+        {L"NativeContextCreateMapResponseContextId", contextId},
+        {L"NativeContextCreateMapResponseRingIndex", ringIndex},
+        {L"NativeContextCreateMapResponseHeaderPadding", headerPadding},
+        {L"NativeContextCreateMapResponseMapInfo", mapInfo},
+        {L"NativeContextCreateMapResponseMapPadding", mapPadding},
+        {L"NativeContextCreateMapResponseSubmitted", submitted},
+        {L"NativeContextCreateMapResponseCompleted", completed},
+        {L"NativeContextCreateMapResponseValidation", validation},
+    };
+
+    // clang-format on
+
+    // Invalidate the previous snapshot before publishing a new one.  Validation
+    // is written last and acts as the commit marker for all preceding fields.
+    DWORD zero = 0;
+    NTSTATUS markerClear = WriteRegistryDWORD(deviceKey, L"NativeContextCreateMapResponseValidation", &zero);
+    NTSTATUS writeStatus = markerClear;
+    for (UINT index = 0; index < ARRAYSIZE(values); ++index)
+    {
+        if (!NT_SUCCESS(writeStatus))
+        {
+            break;
+        }
+        DWORD value = values[index].Value;
+        NTSTATUS currentStatus = WriteRegistryDWORD(deviceKey, values[index].Name, &value);
+        if (!NT_SUCCESS(currentStatus))
+        {
+            writeStatus = currentStatus;
+            break;
+        }
+    }
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(writeStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context map response diagnostic: write failed, status=0x%08X\n",
+                   writeStatus);
+        return;
+    }
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu native context map response diagnostic: size=%u type=0x%08X flags=0x%08X "
+               "fence=0x%016llX ctx=%u ring=%u header_padding=0x%06X map_info=0x%08X "
+               "map_padding=0x%08X submitted=%u completed=%u validation=%u\n",
+               responseSize,
+               type,
+               flags,
+               diagnostic->FenceId,
+               contextId,
+               ringIndex,
+               headerPadding,
+               mapInfo,
+               mapPadding,
+               submitted,
+               completed,
+               validation);
+}
+
+VOID VioGpuDod::RecordNativeContextMapMemoryDiagnostic(_In_ NTSTATUS status,
+                                                       _In_ ULONGLONG physicalAddress,
+                                                       _In_ ULONGLONG length,
+                                                       _In_ UINT bar,
+                                                       _In_ ULONGLONG regionOffset,
+                                                       _In_ BOOLEAN attempted,
+                                                       _In_ BOOLEAN mapped)
+{
+    PAGED_CODE();
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context map memory diagnostic: registry open failed, status=0x%08X\n",
+                   openStatus);
+        return;
+    }
+
+    DWORD statusValue = static_cast<DWORD>(status);
+    DWORD physicalLow = static_cast<DWORD>(physicalAddress & 0xffffffffULL);
+    DWORD physicalHigh = static_cast<DWORD>(physicalAddress >> 32);
+    DWORD lengthLow = static_cast<DWORD>(length & 0xffffffffULL);
+    DWORD lengthHigh = static_cast<DWORD>(length >> 32);
+    DWORD barValue = bar;
+    DWORD offsetLow = static_cast<DWORD>(regionOffset & 0xffffffffULL);
+    DWORD offsetHigh = static_cast<DWORD>(regionOffset >> 32);
+    DWORD mappedValue = mapped ? 1U : 0U;
+    DWORD attemptedValue = attempted ? 1U : 0U;
+
+    // Clear the commit marker before writing the request/result fields.  A reader must not
+    // combine a new status with stale physical-address data from a previous context attempt.
+    DWORD zero = 0;
+    NTSTATUS markerClear = WriteRegistryDWORD(deviceKey, L"NativeContextCreateMapMemoryAttempted", &zero);
+    NTSTATUS writes[] = {
+                                                                                                        WriteRegistryDWORD(deviceKey,
+                                                                                                                           L"NativeContextCreateMapMemoryStatus",
+                                                                                                                           &statusValue),
+                                                                                                        WriteRegistryDWORD(deviceKey,
+                                                                                                                           L"NativeContextCreateMapMemoryPhysicalLow",
+                                                                                                                           &physicalLow),
+                                                                                                        WriteRegistryDWORD(deviceKey,
+                                                                                                                           L"NativeContextCreateMapMemoryPhysicalHigh",
+                                                                                                                           &physicalHigh),
+                                                                                                        WriteRegistryDWORD(deviceKey,
+                                                                                                                           L"NativeContextCreateMapMemoryLengthLow",
+                                                                                                                           &lengthLow),
+                                                                                                        WriteRegistryDWORD(deviceKey,
+                                                                                                                           L"NativeContextCreateMapMemoryLengthHigh",
+                                                                                                                           &lengthHigh),
+                                                                                                        WriteRegistryDWORD(deviceKey,
+                                                                                                                           L"NativeContextCreateMapMemoryBar",
+                                                                                                                           &barValue),
+                                                                                                        WriteRegistryDWORD(deviceKey,
+                                                                                                                           L"NativeContextCreateMapMemoryRegionOffsetLow",
+                                                                                                                           &offsetLow),
+                                                                                                        WriteRegistryDWORD(deviceKey,
+                                                                                                                           L"NativeContextCreateMapMemoryRegionOffsetHigh",
+                                                                                                                           &offsetHigh),
+                                                                                                        WriteRegistryDWORD(deviceKey,
+                                                                                                                           L"NativeContextCreateMapMemoryMapped",
+                                                                                                                           &mappedValue),
+    };
+    NTSTATUS markerWrite = STATUS_SUCCESS;
+    NTSTATUS writeFailure = markerClear;
+    BOOLEAN writesSucceeded = NT_SUCCESS(markerClear);
+    for (const NTSTATUS write : writes)
+    {
+        if (!NT_SUCCESS(write))
+        {
+            writesSucceeded = FALSE;
+            writeFailure = write;
+            break;
+        }
+    }
+    if (writesSucceeded)
+    {
+        markerWrite = WriteRegistryDWORD(deviceKey, L"NativeContextCreateMapMemoryAttempted", &attemptedValue);
+    }
+    ZwClose(deviceKey);
+
+    if (!writesSucceeded || !NT_SUCCESS(markerWrite))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context map memory diagnostic: write failed, status=0x%08X marker=0x%08X\n",
+                   status,
+                   !writesSucceeded ? writeFailure : markerWrite);
+        return;
+    }
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu native context map memory diagnostic: attempted=%u status=0x%08X "
+               "physical=0x%016llX length=0x%016llX bar=%u region_offset=0x%016llX mapped=%u\n",
+               attemptedValue,
+               statusValue,
+               physicalAddress,
+               length,
+               barValue,
+               regionOffset,
+               mappedValue);
+}
+
 VOID VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                        _In_ NTSTATUS status,
                                                        _In_ UINT inputDataSize,
@@ -7008,7 +7226,7 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
         else
         {
             owner->ControlBarOffset = controlOffset;
-            UINT hostVisibleBar = 0;
+            UINT hostVisibleBar = MAXUINT;
             ULONGLONG hostVisibleOffset = 0;
             ULONGLONG hostVisibleSize = 0;
             if (m_PciResources.QueryHostVisibleRegion(&hostVisibleBar, &hostVisibleOffset, &hostVisibleSize))
@@ -7018,6 +7236,12 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
                 owner->ControlHostVisibleSize = hostVisibleSize;
             }
             stageResult = m_CtrlQueue.MapNativeControlBlob(resourceId, controlOffset);
+            VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC mapResponse = {};
+            m_CtrlQueue.GetLastNativeMapResponseDiagnostic(&mapResponse);
+            if (m_pVioGpuDod != NULL)
+            {
+                m_pVioGpuDod->RecordNativeContextMapResponseDiagnostic(&mapResponse);
+            }
             DWORD controlMapDetail = static_cast<DWORD>(stageResult);
             if (stageResult == VioGpuHostContextConfirmed)
             {
@@ -7026,6 +7250,25 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
                                                                           VIOGPU_NATIVE_CONTROL_BLOB_SIZE,
                                                                           &controlAddress);
                 owner->ControlMapStatus = static_cast<ULONG>(mapStatus);
+                PHYSICAL_ADDRESS mappedPhysicalAddress = {};
+                ULONGLONG mappedRegionOffset = 0;
+                ULONGLONG mappedLength = 0;
+                BOOLEAN mappingKnown = NT_SUCCESS(mapStatus) && controlAddress != NULL &&
+                                       m_PciResources.QueryHostVisibleMapping(&mappedPhysicalAddress,
+                                                                              &mappedRegionOffset,
+                                                                              &mappedLength);
+                if (m_pVioGpuDod != NULL)
+                {
+                    m_pVioGpuDod->RecordNativeContextMapMemoryDiagnostic(mapStatus,
+                                                                         mappingKnown ? static_cast<ULONGLONG>(mappedPhysicalAddress.QuadPart)
+                                                                                      : 0,
+                                                                         mappingKnown ? mappedLength : 0,
+                                                                         hostVisibleBar,
+                                                                         mappingKnown ? mappedRegionOffset
+                                                                                      : controlOffset,
+                                                                         TRUE,
+                                                                         NT_SUCCESS(mapStatus) && controlAddress != NULL);
+                }
                 if (!NT_SUCCESS(mapStatus) || controlAddress == NULL)
                 {
                     controlMapDetail = static_cast<DWORD>(mapStatus);
@@ -7035,6 +7278,18 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
                 {
                     owner->ControlAddress = controlAddress;
                 }
+            }
+            else if (m_pVioGpuDod != NULL)
+            {
+                // A rejected host map never attempted DxgkCbMapMemory.  Clear the
+                // commit marker so a reader cannot reuse an earlier local BAR map.
+                m_pVioGpuDod->RecordNativeContextMapMemoryDiagnostic(STATUS_DEVICE_NOT_READY,
+                                                                     0,
+                                                                     0,
+                                                                     hostVisibleBar,
+                                                                     controlOffset,
+                                                                     FALSE,
+                                                                     FALSE);
             }
             if (m_pVioGpuDod != NULL)
             {

@@ -7,6 +7,9 @@ fails before execution if any opcode, `sizeof`, or `offsetof` changes.
 The fixture covers the DRM capset MSM payload, `vdrm_shmem`, request/response
 headers, all 11 MSM ccmd request/response prefixes, the optional arena-v2 run
 list, and the VirtIO-GPU commands and flags used to carry native-context data.
+The Windows endpoint also exercises the complete `RESOURCE_MAP_BLOB` response
+classifier, including the 32-byte cached success shape, ordinary 24-byte host
+errors, incomplete/short responses, and malformed map-info or padding fields.
 
 The Host capset container can be larger than the MSM payload because its union
 also contains other backends. The compared invariant is the MSM payload extent:

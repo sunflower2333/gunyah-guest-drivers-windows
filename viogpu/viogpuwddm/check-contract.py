@@ -5685,6 +5685,10 @@ def check_native_context_ownership() -> None:
     )
     if queue_header.count(expected_results) != 1:
         fail("Host context queue results must keep the four distinct ownership outcomes")
+    if queue_header.count("VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC") != 4:
+        fail("Host map response diagnostics must have one type declaration, storage, and getter surface")
+    if queue_header.count("GetLastNativeMapResponseDiagnostic") != 1:
+        fail("Host map response diagnostics must expose one const queue getter")
 
     create_queue = canonical_code(function_body("CtrlQueue::CreateNativeContext", QUEUE_CODE))
     destroy_queue = canonical_code(function_body("CtrlQueue::DestroyNativeContext", QUEUE_CODE))
@@ -5732,6 +5736,9 @@ def check_native_context_ownership() -> None:
         fail("Host destroy must leave every other submitted non-success response Unknown")
 
     wire_requirements = (
+        "#defineVIRTIO_GPU_MAP_INFO_RESPONSE_WIRE_SIZE32",
+        "VioGpuValidateMapInfoResponse(",
+        "map_info!=VIRTIO_GPU_MAP_CACHE_CACHED||map_padding!=0",
         "#defineMSM_PIPE_3D00x10",
         "#defineMSM_PARAM_VA_START0x0eU",
         "#defineMSM_PARAM_VA_SIZE0x0fU",
@@ -5780,11 +5787,24 @@ def check_native_context_ownership() -> None:
     map_blob = canonical_code(function_body("CtrlQueue::MapNativeControlBlob", QUEUE_CODE))
     for fragment in (
         "command->offset=offset;",
-        "response->map_info==VIRTIO_GPU_MAP_CACHE_CACHED",
-        "response->padding==0",
+        "VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTICcaptured={};",
+        "captured.ResponseSize=vbuf->response_size;",
+        "captured.MapInfo=response->map_info;",
+        "captured.MapPadding=response->padding;",
+        "captured.Validation=VioGpuValidateMapInfoResponse(",
+        "if(captured.Validation==VioGpuHostResponseNotSubmitted){result=VioGpuHostContextNotSubmitted;}",
+        "elseif(captured.Validation==VioGpuHostResponseConfirmed){result=VioGpuHostContextConfirmed;}",
+        "elseif(captured.Validation==VioGpuHostResponseRejected){result=VioGpuHostContextRejected;}",
+        "elseif(completed){PoisonSynchronousRequests();}",
     ):
         if map_blob.count(fragment) != 1:
-            fail(f"control blob map must use the caller-selected cached BAR slot: {fragment}")
+            fail(f"control blob map must retain and classify its complete host response: {fragment}")
+    if map_blob.count("RtlCopyMemory(&m_LastNativeMapResponseDiagnostic,&captured,sizeof(m_LastNativeMapResponseDiagnostic));") != 2:
+        fail("control blob map must initialize and publish one complete diagnostic snapshot")
+    if map_blob.find("captured.Validation=VioGpuValidateMapInfoResponse(") < map_blob.find(
+        "SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)"
+    ):
+        fail("control blob map must validate the response only after synchronous completion")
 
     resource_header = canonical_code(RESOURCE_HEADER_CODE)
     for fragment in ("ULONGmap_info;ULONGpadding;}GPU_RESP_MAP_INFO",):
@@ -5804,6 +5824,8 @@ def check_native_context_ownership() -> None:
     ):
         if native_header.count(field) != 1:
             fail(f"native owner must retain one control-resource field: {field}")
+    if native_header.count("VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC") != 1:
+        fail("native map diagnostics must be declared once on the DOD recorder surface")
     if native_header.count("UINTm_NextNativeResourceId;") != 1:
         fail("native control resources must use one adapter-owned high-range allocator")
 
@@ -6061,8 +6083,12 @@ def check_native_context_ownership() -> None:
         create.find("AllocateNativeControlSlotLocked(&controlOffset,&controlAddress)"),
         create.find("owner->ControlBarOffset=controlOffset;"),
         create.find("m_CtrlQueue.MapNativeControlBlob(resourceId,controlOffset)"),
+        create.find("m_CtrlQueue.GetLastNativeMapResponseDiagnostic(&mapResponse)"),
+        create.find("m_pVioGpuDod->RecordNativeContextMapResponseDiagnostic(&mapResponse)"),
         create.find("owner->ControlMapped=TRUE;"),
         create.find("m_PciResources.MapHostVisibleAddress(controlOffset,VIOGPU_NATIVE_CONTROL_BLOB_SIZE,&controlAddress)"),
+        create.find("m_PciResources.QueryHostVisibleMapping(&mappedPhysicalAddress,&mappedRegionOffset,&mappedLength)"),
+        create.find("m_pVioGpuDod->RecordNativeContextMapMemoryDiagnostic("),
         create.find("owner->ControlAddress=controlAddress;"),
         create.find("QueryNativeContextParameterLocked(owner,MSM_PARAM_VA_START,&vaStart)"),
         create.find("QueryNativeContextParameterLocked(owner,MSM_PARAM_VA_SIZE,&vaSize)"),
@@ -6074,6 +6100,8 @@ def check_native_context_ownership() -> None:
     )
     if min(creation_sequence) < 0 or list(creation_sequence) != sorted(creation_sequence):
         fail("native create must create/map blob-0, query both VA parameters, then publish the live registration")
+    if create.count("m_pVioGpuDod->RecordNativeContextMapMemoryDiagnostic(STATUS_DEVICE_NOT_READY,0,0,hostVisibleBar,controlOffset,FALSE,FALSE);") != 1:
+        fail("native create must invalidate stale BAR mapping diagnostics when the host map is rejected")
 
     map_slot = canonical_code(function_body("VioGpuAdapter::AllocateNativeControlSlotLocked", VIOGPU_CODE))
     for fragment in (
@@ -6168,6 +6196,79 @@ def check_native_context_ownership() -> None:
     )
     if destroy.count(failure_guard) != 1:
         fail("adapter destroy must fail the transport while retaining NotSubmitted or Unknown ownership")
+
+
+def check_native_map_diagnostics() -> None:
+    dod_header = canonical_code(VIOGPU_HEADER_SOURCE)
+    for fragment in (
+        "VOIDRecordNativeContextMapResponseDiagnostic(_In_constVIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC*diagnostic);",
+        "VOIDRecordNativeContextMapMemoryDiagnostic(_In_NTSTATUSstatus,_In_ULONGLONGphysicalAddress,_In_ULONGLONGlength,"
+        "_In_UINTbar,_In_ULONGLONGregionOffset,_In_BOOLEANattempted,_In_BOOLEANmapped);",
+    ):
+        if dod_header.count(fragment) != 1:
+            fail(f"DOD must expose one native map diagnostic recorder: {fragment}")
+
+    source = VIOGPU_SOURCE
+    response_names = (
+        "NativeContextCreateMapResponseSize",
+        "NativeContextCreateMapResponseType",
+        "NativeContextCreateMapResponseFlags",
+        "NativeContextCreateMapResponseFenceLow",
+        "NativeContextCreateMapResponseFenceHigh",
+        "NativeContextCreateMapResponseContextId",
+        "NativeContextCreateMapResponseRingIndex",
+        "NativeContextCreateMapResponseHeaderPadding",
+        "NativeContextCreateMapResponseMapInfo",
+        "NativeContextCreateMapResponseMapPadding",
+        "NativeContextCreateMapResponseSubmitted",
+        "NativeContextCreateMapResponseCompleted",
+    )
+    for name in response_names:
+        if source.count(f'L"{name}"') != 1:
+            fail(f"native map response diagnostic must write one {name} value")
+    if source.count('L"NativeContextCreateMapResponseValidation"') != 2:
+        fail("native map response validation must be cleared and then committed")
+
+    memory_names = (
+        "NativeContextCreateMapMemoryStatus",
+        "NativeContextCreateMapMemoryPhysicalLow",
+        "NativeContextCreateMapMemoryPhysicalHigh",
+        "NativeContextCreateMapMemoryLengthLow",
+        "NativeContextCreateMapMemoryLengthHigh",
+        "NativeContextCreateMapMemoryBar",
+        "NativeContextCreateMapMemoryRegionOffsetLow",
+        "NativeContextCreateMapMemoryRegionOffsetHigh",
+        "NativeContextCreateMapMemoryMapped",
+    )
+    for name in memory_names:
+        if source.count(f'L"{name}"') != 1:
+            fail(f"native map memory diagnostic must write one {name} value")
+    if source.count('L"NativeContextCreateMapMemoryAttempted"') != 2:
+        fail("native map memory attempted must be cleared and then committed")
+
+    response = canonical_code(function_body("VioGpuDod::RecordNativeContextMapResponseDiagnostic", VIOGPU_CODE))
+    response_sequence = (
+        response.find("NTSTATUSmarkerClear=WriteRegistryDWORD(deviceKey,L,&zero)"),
+        response.find("NTSTATUSwriteStatus=markerClear;"),
+        response.find("for(UINTindex=0;index<ARRAYSIZE(values);++index)"),
+        response.find("DWORDvalue=values[index].Value;"),
+        response.find("WriteRegistryDWORD(deviceKey,values[index].Name,&value)"),
+        response.find("ZwClose(deviceKey);"),
+    )
+    if min(response_sequence) < 0 or list(response_sequence) != sorted(response_sequence):
+        fail("native map response diagnostics must clear, publish, and close one ordered snapshot")
+
+    memory = canonical_code(function_body("VioGpuDod::RecordNativeContextMapMemoryDiagnostic", VIOGPU_CODE))
+    memory_sequence = (
+        memory.find("NTSTATUSmarkerClear=WriteRegistryDWORD(deviceKey,L,&zero)"),
+        memory.find("NTSTATUSwrites[]={"),
+        memory.find("BOOLEANwritesSucceeded=NT_SUCCESS(markerClear);"),
+        memory.find("for(constNTSTATUSwrite:writes)"),
+        memory.find("markerWrite=WriteRegistryDWORD(deviceKey,L,&attemptedValue)"),
+        memory.find("ZwClose(deviceKey);"),
+    )
+    if min(memory_sequence) < 0 or list(memory_sequence) != sorted(memory_sequence):
+        fail("native map memory diagnostics must commit the attempted marker after all fields")
 
 def check_wddm_private_abi(root: ET.Element) -> None:
     abi = canonical_code(WDDM_ABI_HEADER_CODE)
@@ -9565,6 +9666,7 @@ def check_pci_resource_lifetime() -> None:
         "ULONGLONGm_HostVisibleOffset;",
         "ULONGLONGm_HostVisibleSize;",
         "PVOIDm_HostVisibleMappedVA;",
+        "PHYSICAL_ADDRESSm_HostVisibleMappedPA;",
         "ULONGLONGm_HostVisibleMappedOffset;",
         "ULONGLONGm_HostVisibleMappedSize;",
     ):
@@ -9574,7 +9676,7 @@ def check_pci_resource_lifetime() -> None:
         "CPciResources():m_pDxgkInterface(NULL),m_InterruptFlags(0),"
         "m_InterruptMessageCount(0),m_InterruptMessageCountKnown(FALSE),"
         "m_HostVisibleBar(MAXUINT),m_HostVisibleOffset(0),m_HostVisibleSize(0),"
-        "m_HostVisibleMappedVA(NULL),m_HostVisibleMappedOffset(0),m_HostVisibleMappedSize(0){}"
+        "m_HostVisibleMappedVA(NULL),m_HostVisibleMappedPA(),m_HostVisibleMappedOffset(0),m_HostVisibleMappedSize(0){}"
     )
     getter = "ULONGGetInterruptMessageCount(){returnm_InterruptMessageCount;}"
     known_getter = "BOOLEANHasKnownInterruptMessageCount(){returnm_InterruptMessageCountKnown;}"
@@ -9625,6 +9727,7 @@ def check_pci_resource_lifetime() -> None:
     clear_host_offset = "m_HostVisibleOffset=0;"
     clear_host_size = "m_HostVisibleSize=0;"
     clear_host_mapped_va = "m_HostVisibleMappedVA=NULL;"
+    clear_host_mapped_pa = "m_HostVisibleMappedPA=PHYSICAL_ADDRESS();"
     clear_host_mapped_offset = "m_HostVisibleMappedOffset=0;"
     clear_host_mapped_size = "m_HostVisibleMappedSize=0;"
     clear_owner = "m_pDxgkInterface=NULL;"
@@ -9641,7 +9744,8 @@ def check_pci_resource_lifetime() -> None:
     host_offset_offset = close.find(clear_host_offset, host_bar_offset)
     host_size_offset = close.find(clear_host_size, host_offset_offset)
     host_mapped_va_offset = close.find(clear_host_mapped_va, host_size_offset)
-    host_mapped_offset_offset = close.find(clear_host_mapped_offset, host_mapped_va_offset)
+    host_mapped_pa_offset = close.find(clear_host_mapped_pa, host_mapped_va_offset)
+    host_mapped_offset_offset = close.find(clear_host_mapped_offset, host_mapped_pa_offset)
     host_mapped_size_offset = close.find(clear_host_mapped_size, host_mapped_offset_offset)
     owner_offset = close.find(clear_owner, host_mapped_size_offset)
     if min(
@@ -9657,6 +9761,7 @@ def check_pci_resource_lifetime() -> None:
         host_offset_offset,
         host_size_offset,
         host_mapped_va_offset,
+        host_mapped_pa_offset,
         host_mapped_offset_offset,
         host_mapped_size_offset,
         owner_offset,
@@ -9673,6 +9778,7 @@ def check_pci_resource_lifetime() -> None:
         < host_offset_offset
         < host_size_offset
         < host_mapped_va_offset
+        < host_mapped_pa_offset
         < host_mapped_offset_offset
         < host_mapped_size_offset
         < owner_offset
@@ -9688,6 +9794,7 @@ def check_pci_resource_lifetime() -> None:
         or close.count(clear_host_offset) != 1
         or close.count(clear_host_size) != 1
         or close.count(clear_host_mapped_va) != 2
+        or close.count(clear_host_mapped_pa) != 2
         or close.count(clear_host_mapped_offset) != 2
         or close.count(clear_host_mapped_size) != 2
         or close.count(clear_owner) != 1
@@ -9815,6 +9922,7 @@ def check_pci_resource_lifetime() -> None:
         "m_pDxgkInterface->DxgkCbMapMemory(m_pDxgkInterface->DeviceHandle",
         "MmNonCached",
         "m_HostVisibleMappedVA=mappedVA;",
+        "m_HostVisibleMappedPA=mappedPA;",
         "m_HostVisibleMappedOffset=regionOffset;",
         "m_HostVisibleMappedSize=mappedSize;",
         "*address=static_cast<PUCHAR>(m_HostVisibleMappedVA)+(regionOffset-m_HostVisibleMappedOffset);",
@@ -9824,6 +9932,18 @@ def check_pci_resource_lifetime() -> None:
     unmap_host_visible = canonical_code(function_body("CPciResources::UnmapHostVisibleAddress", PCI_CODE))
     if "DxgkCbUnmapMemory" in unmap_host_visible or "GetMappedVA()" in unmap_host_visible:
         fail("host-visible blob aliases must not independently unmap the suffix mapping")
+
+    query_host_visible = canonical_code(function_body("CPciResources::QueryHostVisibleMapping", PCI_CODE))
+    query_contract = (
+        "if(physicalAddress==NULL||regionOffset==NULL||size==NULL||m_HostVisibleMappedVA==NULL||"
+        "m_HostVisibleMappedSize==0){returnFALSE;}"
+        "*physicalAddress=m_HostVisibleMappedPA;"
+        "*regionOffset=m_HostVisibleMappedOffset;"
+        "*size=m_HostVisibleMappedSize;"
+        "returnTRUE;"
+    )
+    if query_host_visible != query_contract:
+        fail("host-visible mapping diagnostics must expose only the active suffix mapping")
 
     virtio_header = canonical_code(VIRTIO_HEADER_CODE)
     for fragment in (
@@ -10650,6 +10770,7 @@ def main() -> None:
     check_wddm_standard_primary_scanout()
     check_wddm_present_contract()
     check_native_context_ownership()
+    check_native_map_diagnostics()
     check_wddm_private_abi(root)
     check_wddm_paging_transaction_gate()
     check_native_guest_allocation_extent_math()

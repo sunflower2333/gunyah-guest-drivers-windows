@@ -392,6 +392,7 @@ NTSTATUS CPciResources::Close(void)
             return status;
         }
         m_HostVisibleMappedVA = nullptr;
+        m_HostVisibleMappedPA = PHYSICAL_ADDRESS();
         m_HostVisibleMappedOffset = 0;
         m_HostVisibleMappedSize = 0;
     }
@@ -420,6 +421,7 @@ NTSTATUS CPciResources::Close(void)
     m_HostVisibleOffset = 0;
     m_HostVisibleSize = 0;
     m_HostVisibleMappedVA = nullptr;
+    m_HostVisibleMappedPA = PHYSICAL_ADDRESS();
     m_HostVisibleMappedOffset = 0;
     m_HostVisibleMappedSize = 0;
     m_pDxgkInterface = nullptr;
@@ -667,6 +669,21 @@ BOOLEAN CPciResources::QueryHostVisibleRegion(_Out_ PUINT bar, _Out_ PULONGLONG 
     return TRUE;
 }
 
+BOOLEAN CPciResources::QueryHostVisibleMapping(_Out_ PPHYSICAL_ADDRESS physicalAddress,
+                                               _Out_ PULONGLONG regionOffset,
+                                               _Out_ PULONGLONG size) const
+{
+    if (physicalAddress == NULL || regionOffset == NULL || size == NULL || m_HostVisibleMappedVA == nullptr ||
+        m_HostVisibleMappedSize == 0)
+    {
+        return FALSE;
+    }
+    *physicalAddress = m_HostVisibleMappedPA;
+    *regionOffset = m_HostVisibleMappedOffset;
+    *size = m_HostVisibleMappedSize;
+    return TRUE;
+}
+
 NTSTATUS CPciResources::MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
                                               _In_ SIZE_T length,
                                               _Outptr_result_bytebuffer_(length) PVOID *address)
@@ -743,6 +760,7 @@ NTSTATUS CPciResources::MapHostVisibleAddress(_In_ ULONGLONG regionOffset,
             return NT_SUCCESS(status) ? STATUS_INSUFFICIENT_RESOURCES : status;
         }
         m_HostVisibleMappedVA = mappedVA;
+        m_HostVisibleMappedPA = mappedPA;
         m_HostVisibleMappedOffset = regionOffset;
         m_HostVisibleMappedSize = mappedSize;
     }

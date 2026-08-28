@@ -140,6 +140,25 @@ typedef struct viogpu_host_context_response_diagnostic
     viogpu_host_context_response_validation Validation;
 } VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC, *PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC;
 
+/* Captures the two possible RESOURCE_MAP_BLOB response shapes.  The map
+ * payload is kept separately from the control-header padding because crosvm's
+ * second payload word is a pool-offset extension for non-native resources. */
+typedef struct viogpu_native_map_response_diagnostic
+{
+    UINT ResponseSize;
+    UINT Type;
+    UINT Flags;
+    ULONGLONG FenceId;
+    UINT ContextId;
+    UCHAR RingIndex;
+    UCHAR HeaderPadding[3];
+    UINT MapInfo;
+    UINT MapPadding;
+    BOOLEAN Submitted;
+    BOOLEAN Completed;
+    viogpu_host_context_response_validation Validation;
+} VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC, *PVIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC;
+
 enum VIOGPU_2D_RESOURCE_STATE : LONG
 {
     VioGpu2DResourceNone = 0,
@@ -329,6 +348,7 @@ class CtrlQueue : public VioGpuQueue
         InitializeListHead(&m_NativeSubmitBacklog);
         m_NativeSubmitBacklogPoisoned = 0;
         RtlZeroMemory(&m_LastNativeContextResponseDiagnostic, sizeof(m_LastNativeContextResponseDiagnostic));
+        RtlZeroMemory(&m_LastNativeMapResponseDiagnostic, sizeof(m_LastNativeMapResponseDiagnostic));
     };
 
     PVOID AllocCmd(PGPU_VBUFFER *buf, int sz);
@@ -354,6 +374,7 @@ class CtrlQueue : public VioGpuQueue
     VIOGPU_HOST_CONTEXT_RESULT
     CreateNativeContext(UINT context_id, _Out_opt_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic = NULL);
     void GetLastNativeContextResponseDiagnostic(_Out_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic) const;
+    void GetLastNativeMapResponseDiagnostic(_Out_ PVIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC diagnostic) const;
     VIOGPU_HOST_CONTEXT_RESULT DestroyNativeContext(UINT context_id);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeControlBlob(UINT context_id, UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeGuestBlob(UINT context_id,
@@ -416,6 +437,7 @@ class CtrlQueue : public VioGpuQueue
     LIST_ENTRY m_NativeSubmitBacklog;
     volatile LONG m_NativeSubmitBacklogPoisoned;
     VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC m_LastNativeContextResponseDiagnostic;
+    VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC m_LastNativeMapResponseDiagnostic;
 };
 
 class CrsrQueue : public VioGpuQueue

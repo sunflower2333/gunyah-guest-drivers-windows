@@ -199,6 +199,109 @@ static int CheckWindowsControlResponseValidation()
                                               ValidateWindowsControlResponse(24, 1, 1, VIRTIO_GPU_CMD_CTX_CREATE));
     return failed != 0;
 }
+
+static enum viogpu_host_context_response_validation
+ValidateWindowsMapResponse(uint32_t response_size,
+                           uint8_t submitted,
+                           uint8_t completed,
+                           uint32_t type,
+                           uint32_t flags = 0,
+                           uint64_t fence_id = 0,
+                           uint32_t context_id = 0,
+                           uint8_t ring_index = 0,
+                           uint8_t padding0 = 0,
+                           uint8_t padding1 = 0,
+                           uint8_t padding2 = 0,
+                           uint32_t map_info = VIRTIO_GPU_MAP_CACHE_CACHED,
+                           uint32_t map_padding = 0)
+{
+    return VioGpuValidateMapInfoResponse(response_size,
+                                         submitted,
+                                         completed,
+                                         type,
+                                         flags,
+                                         fence_id,
+                                         context_id,
+                                         ring_index,
+                                         padding0,
+                                         padding1,
+                                         padding2,
+                                         map_info,
+                                         map_padding);
+}
+
+static int CheckWindowsMapResponseCase(size_t index,
+                                       enum viogpu_host_context_response_validation expected,
+                                       enum viogpu_host_context_response_validation actual)
+{
+    if (actual != expected)
+    {
+        fprintf(stderr, "map-response case %zu: expected %u, got %u\n", index, (unsigned)expected, (unsigned)actual);
+        return 1;
+    }
+    return 0;
+}
+
+static int CheckWindowsMapResponseValidation()
+{
+    size_t index = 0;
+    int failed = 0;
+    failed |= CheckWindowsMapResponseCase(index++,
+                                          VioGpuHostResponseNotSubmitted,
+                                          ValidateWindowsMapResponse(32, 0, 0, 0));
+    failed |= CheckWindowsMapResponseCase(index++,
+                                          VioGpuHostResponseNotCompleted,
+                                          ValidateWindowsMapResponse(32, 1, 0, 0));
+    failed |= CheckWindowsMapResponseCase(index++, VioGpuHostResponseTooShort, ValidateWindowsMapResponse(23, 1, 1, 0));
+    failed |= CheckWindowsMapResponseCase(index++,
+                                          VioGpuHostResponseWrongSize,
+                                          ValidateWindowsMapResponse(31, 1, 1, VIRTIO_GPU_RESP_OK_MAP_INFO));
+    failed |= CheckWindowsMapResponseCase(index++,
+                                          VioGpuHostResponseWrongSize,
+                                          ValidateWindowsMapResponse(33, 1, 1, VIRTIO_GPU_RESP_OK_MAP_INFO));
+    failed |= CheckWindowsMapResponseCase(index++,
+                                          VioGpuHostResponseConfirmed,
+                                          ValidateWindowsMapResponse(32, 1, 1, VIRTIO_GPU_RESP_OK_MAP_INFO));
+    failed |= CheckWindowsMapResponseCase(index++,
+                                          VioGpuHostResponseRejected,
+                                          ValidateWindowsMapResponse(24, 1, 1, VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID));
+    failed |= CheckWindowsMapResponseCase(index++,
+                                          VioGpuHostResponseMalformed,
+                                          ValidateWindowsMapResponse(32, 1, 1, VIRTIO_GPU_RESP_OK_MAP_INFO, 1));
+    failed |= CheckWindowsMapResponseCase(index++,
+                                          VioGpuHostResponseMalformed,
+                                          ValidateWindowsMapResponse(32, 1, 1, VIRTIO_GPU_RESP_OK_NODATA));
+    failed |= CheckWindowsMapResponseCase(index++,
+                                          VioGpuHostResponseMalformed,
+                                          ValidateWindowsMapResponse(32,
+                                                                     1,
+                                                                     1,
+                                                                     VIRTIO_GPU_RESP_OK_MAP_INFO,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     1));
+    failed |= CheckWindowsMapResponseCase(index++,
+                                          VioGpuHostResponseMalformed,
+                                          ValidateWindowsMapResponse(32,
+                                                                     1,
+                                                                     1,
+                                                                     VIRTIO_GPU_RESP_OK_MAP_INFO,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     0));
+    return failed != 0;
+}
 #endif
 
 int main()
@@ -227,6 +330,10 @@ int main()
 #undef ABI_STATIC_ASSERT
 #if defined(ABI_ENDPOINT_WINDOWS)
     if (CheckWindowsControlResponseValidation() != 0)
+    {
+        return 1;
+    }
+    if (CheckWindowsMapResponseValidation() != 0)
     {
         return 1;
     }
