@@ -160,9 +160,9 @@ typedef struct viogpu_native_map_response_diagnostic
 } VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC, *PVIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC;
 
 /* A GET_PARAM request crosses two independent interfaces: the outer VirtIO
- * control queue and the inner DRM response window in blob-0.  Keep one
+ * control queue and the inner DRM response window in blob-0.  Keep one small
  * diagnostic snapshot for both sides so a failed native-context bring-up can
- * distinguish queue completion from a stale or inaccessible BAR response. */
+ * distinguish a bad BAR window, stale shared memory, and queue completion. */
 enum VIOGPU_NATIVE_CONTEXT_PARAMETER_PHASE : UINT
 {
     VioGpuNativeContextParameterNotStarted = 0,
@@ -174,55 +174,73 @@ enum VIOGPU_NATIVE_CONTEXT_PARAMETER_PHASE : UINT
     VioGpuNativeContextParameterComplete = 6,
 };
 
+enum VIOGPU_NATIVE_CONTEXT_PARAMETER_WINDOW_STATUS : UINT
+{
+    VioGpuNativeContextParameterWindowNotChecked = 0,
+    VioGpuNativeContextParameterWindowInvalidOwner = 1,
+    VioGpuNativeContextParameterWindowInvalidResource = 2,
+    VioGpuNativeContextParameterWindowInvalidSize = 3,
+    VioGpuNativeContextParameterWindowInvalidOffset = 4,
+    VioGpuNativeContextParameterWindowInvalidAddress = 5,
+    VioGpuNativeContextParameterWindowInvalidResponseOffset = 6,
+    VioGpuNativeContextParameterWindowReady = 7,
+};
+
+enum VIOGPU_NATIVE_CONTEXT_PARAMETER_SEED_RESULT : UINT
+{
+    VioGpuNativeContextParameterSeedNotAttempted = 0,
+    VioGpuNativeContextParameterSeedInvalidArguments = 1,
+    VioGpuNativeContextParameterSeedWindowUnavailable = 2,
+    VioGpuNativeContextParameterSeedResponseOutOfBounds = 3,
+    VioGpuNativeContextParameterSeedSequenceBusy = 4,
+    VioGpuNativeContextParameterSeedWritten = 5,
+};
+
+enum VIOGPU_NATIVE_CONTEXT_PARAMETER_COPY_RESULT : UINT
+{
+    VioGpuNativeContextParameterCopyNotAttempted = 0,
+    VioGpuNativeContextParameterCopyInvalidArguments = 1,
+    VioGpuNativeContextParameterCopyWindowUnavailable = 2,
+    VioGpuNativeContextParameterCopySequenceMismatch = 3,
+    VioGpuNativeContextParameterCopyMalformedResponse = 4,
+    VioGpuNativeContextParameterCopyCompleted = 5,
+};
+
 typedef struct viogpu_native_context_parameter_diagnostic
 {
     UINT ContextId;
     UINT Parameter;
     UINT Sequence;
-    UINT RequestCommand;
-    UINT RequestLength;
-    UINT RequestResponseOffset;
-    UINT RequestIoctlCommand;
-    UINT RequestPipe;
-    UINT RequestParameter;
-    ULONGLONG RequestValue;
-    UINT RequestValueLength;
-    UINT RequestPadding;
-
-    UINT SeedAttempted;
-    UINT SeedWriteCompleted;
+    UINT PhysicalDeviceValid;
+    UINT RegistryOpenStatus;
+    UINT WindowStatus;
+    ULONGLONG ControlBarOffset;
+    ULONGLONG ControlAddress;
+    UINT ControlBlobSize;
+    UINT ResponseOffset;
+    UINT ResponseCapacity;
+    UINT SeedResult;
     UINT SeedSharedSeqno;
-    UINT SeedSharedResponseOffset;
-    UINT SeedSharedAsyncError;
-    UINT SeedSharedGlobalFaults;
-
     UINT SharedSeqno;
-    UINT SharedResponseOffset;
     UINT SharedAsyncError;
     UINT SharedGlobalFaults;
-    UINT CopyAttempted;
-    UINT CopyCompleted;
-
+    UINT OuterResponseSize;
+    UINT OuterType;
+    UINT OuterSubmitted;
+    UINT OuterCompleted;
+    UINT OuterValidation;
+    UINT SubmitResult;
+    UINT CopyResult;
+    UINT InnerResponseLength;
     UINT InnerRet;
     UINT InnerPipe;
     UINT InnerParameter;
     ULONGLONG InnerValue;
     UINT InnerValueLength;
     UINT InnerPadding;
-
-    UINT OuterResponseSize;
-    UINT OuterType;
-    UINT OuterFlags;
-    ULONGLONG OuterFenceId;
-    UINT OuterContextId;
-    UCHAR OuterRingIndex;
-    UCHAR OuterPadding[3];
-    BOOLEAN OuterSubmitted;
-    BOOLEAN OuterCompleted;
-    viogpu_host_context_response_validation OuterValidation;
-    VIOGPU_HOST_CONTEXT_RESULT SubmitResult;
     viogpu_host_context_response_validation Validation;
     VIOGPU_HOST_CONTEXT_RESULT Result;
+    UINT RegistryWriteStatus;
     UINT Phase;
 } VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC, *PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC;
 

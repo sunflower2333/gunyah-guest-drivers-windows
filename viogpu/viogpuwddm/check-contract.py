@@ -5919,10 +5919,11 @@ def check_native_context_ownership() -> None:
         fail("native response seed must install an invalid return sentinel before publishing the exact length")
     copy_sequence = (
         copy.find("ULONGsharedSeqno=VioGpuReadSharedU32(&shmem->base.seqno);"),
-        copy.find("BOOLEANvalid=responseSize<=responseCapacity&&sharedSeqno==sequence;"),
+        copy.find("if(responseSize>responseCapacity)"),
+        copy.find("if(sharedSeqno!=sequence)"),
         copy.find("KeMemoryBarrier();"),
         copy.find("RtlCopyMemory(response,sharedResponse,responseSize);"),
-        copy.find("responseHeader->len==responseSize"),
+        copy.find("if(responseHeader->len!=responseSize||sharedAsyncError!=0||sharedGlobalFaults!=0)"),
     )
     if min(copy_sequence) < 0 or list(copy_sequence) != sorted(copy_sequence):
         fail("native response copy must acquire seqno before copying and validating the response")
@@ -6277,7 +6278,7 @@ def check_native_map_diagnostics() -> None:
 
 
 def check_native_parameter_diagnostics() -> None:
-    """Keep GET_PARAM diagnostics complete and publish them with one marker."""
+    """Keep the bounded GET_PARAM diagnostic snapshot transactional."""
     queue_header = canonical_code(strip_cpp_comments_and_literals(QUEUE_HEADER_SOURCE))
     expected_phases = (
         "VioGpuNativeContextParameterNotStarted=0,"
@@ -6290,6 +6291,17 @@ def check_native_parameter_diagnostics() -> None:
     )
     if queue_header.count(expected_phases) != 1:
         fail("GET_PARAM diagnostics must keep one stable phase ABI")
+    for enum_fragment in (
+        "VioGpuNativeContextParameterWindowInvalidOwner=1,",
+        "VioGpuNativeContextParameterWindowInvalidResponseOffset=6,",
+        "VioGpuNativeContextParameterWindowReady=7,",
+        "VioGpuNativeContextParameterSeedResponseOutOfBounds=3,",
+        "VioGpuNativeContextParameterSeedWritten=5,",
+        "VioGpuNativeContextParameterCopySequenceMismatch=3,",
+        "VioGpuNativeContextParameterCopyCompleted=5,",
+    ):
+        if queue_header.count(enum_fragment) != 1:
+            fail(f"GET_PARAM diagnostics must keep one stable result ABI: {enum_fragment}")
 
     diagnostic_struct_match = re.search(
         r"typedef\s+struct\s+viogpu_native_context_parameter_diagnostic\s*\{(?P<body>.*?)\}\s*"
@@ -6300,51 +6312,40 @@ def check_native_parameter_diagnostics() -> None:
     if diagnostic_struct_match is None:
         fail("GET_PARAM diagnostic struct definition is missing")
     diagnostic_struct = diagnostic_struct_match.group("body")
-
     fields = (
         "ContextId",
         "Parameter",
         "Sequence",
-        "RequestCommand",
-        "RequestLength",
-        "RequestResponseOffset",
-        "RequestIoctlCommand",
-        "RequestPipe",
-        "RequestParameter",
-        "RequestValue",
-        "RequestValueLength",
-        "RequestPadding",
-        "SeedAttempted",
-        "SeedWriteCompleted",
+        "PhysicalDeviceValid",
+        "RegistryOpenStatus",
+        "WindowStatus",
+        "ControlBarOffset",
+        "ControlAddress",
+        "ControlBlobSize",
+        "ResponseOffset",
+        "ResponseCapacity",
+        "SeedResult",
         "SeedSharedSeqno",
-        "SeedSharedResponseOffset",
-        "SeedSharedAsyncError",
-        "SeedSharedGlobalFaults",
         "SharedSeqno",
-        "SharedResponseOffset",
         "SharedAsyncError",
         "SharedGlobalFaults",
-        "CopyAttempted",
-        "CopyCompleted",
+        "OuterResponseSize",
+        "OuterType",
+        "OuterSubmitted",
+        "OuterCompleted",
+        "OuterValidation",
+        "SubmitResult",
+        "CopyResult",
+        "InnerResponseLength",
         "InnerRet",
         "InnerPipe",
         "InnerParameter",
         "InnerValue",
         "InnerValueLength",
         "InnerPadding",
-        "OuterResponseSize",
-        "OuterType",
-        "OuterFlags",
-        "OuterFenceId",
-        "OuterContextId",
-        "OuterRingIndex",
-        "OuterPadding",
-        "OuterSubmitted",
-        "OuterCompleted",
-        "OuterValidation",
-        "SubmitResult",
         "Validation",
         "Result",
+        "RegistryWriteStatus",
         "Phase",
     )
     for field in fields:
@@ -6354,7 +6355,7 @@ def check_native_parameter_diagnostics() -> None:
     dod_header = canonical_code(VIOGPU_HEADER_SOURCE)
     declaration = (
         "VOIDRecordNativeContextParameterDiagnostic"
-        "(_In_constVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC*diagnostic);"
+        "(_Inout_PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTICdiagnostic);"
     )
     if dod_header.count(declaration) != 1:
         fail("DOD must expose exactly one GET_PARAM diagnostic recorder")
@@ -6365,28 +6366,29 @@ def check_native_parameter_diagnostics() -> None:
         "NativeContextGetParamContextId",
         "NativeContextGetParamParameter",
         "NativeContextGetParamSequence",
-        "NativeContextGetParamRequestCommand",
-        "NativeContextGetParamRequestLength",
-        "NativeContextGetParamRequestResponseOffset",
-        "NativeContextGetParamRequestIoctlCommand",
-        "NativeContextGetParamRequestPipe",
-        "NativeContextGetParamRequestParameter",
-        "NativeContextGetParamRequestValueLow",
-        "NativeContextGetParamRequestValueHigh",
-        "NativeContextGetParamRequestValueLength",
-        "NativeContextGetParamRequestPadding",
-        "NativeContextGetParamSeedAttempted",
-        "NativeContextGetParamSeedWriteCompleted",
+        "NativeContextGetParamPhysicalDevice",
+        "NativeContextGetParamRegistryOpenStatus",
+        "NativeContextGetParamWindowStatus",
+        "NativeContextGetParamControlBarOffsetLow",
+        "NativeContextGetParamControlBarOffsetHigh",
+        "NativeContextGetParamControlAddressLow",
+        "NativeContextGetParamControlAddressHigh",
+        "NativeContextGetParamControlBlobSize",
+        "NativeContextGetParamResponseOffset",
+        "NativeContextGetParamResponseCapacity",
+        "NativeContextGetParamSeedResult",
         "NativeContextGetParamSeedSharedSeqno",
-        "NativeContextGetParamSeedSharedResponseOffset",
-        "NativeContextGetParamSeedSharedAsyncError",
-        "NativeContextGetParamSeedSharedGlobalFaults",
         "NativeContextGetParamSharedSeqno",
-        "NativeContextGetParamSharedResponseOffset",
         "NativeContextGetParamSharedAsyncError",
         "NativeContextGetParamSharedGlobalFaults",
-        "NativeContextGetParamCopyAttempted",
-        "NativeContextGetParamCopyCompleted",
+        "NativeContextGetParamOuterResponseSize",
+        "NativeContextGetParamOuterType",
+        "NativeContextGetParamOuterSubmitted",
+        "NativeContextGetParamOuterCompleted",
+        "NativeContextGetParamOuterValidation",
+        "NativeContextGetParamSubmitResult",
+        "NativeContextGetParamCopyResult",
+        "NativeContextGetParamInnerResponseLength",
         "NativeContextGetParamInnerRet",
         "NativeContextGetParamInnerPipe",
         "NativeContextGetParamInnerParameter",
@@ -6394,20 +6396,9 @@ def check_native_parameter_diagnostics() -> None:
         "NativeContextGetParamInnerValueHigh",
         "NativeContextGetParamInnerValueLength",
         "NativeContextGetParamInnerPadding",
-        "NativeContextGetParamOuterResponseSize",
-        "NativeContextGetParamOuterType",
-        "NativeContextGetParamOuterFlags",
-        "NativeContextGetParamOuterFenceLow",
-        "NativeContextGetParamOuterFenceHigh",
-        "NativeContextGetParamOuterContextId",
-        "NativeContextGetParamOuterRingIndex",
-        "NativeContextGetParamOuterPadding",
-        "NativeContextGetParamOuterSubmitted",
-        "NativeContextGetParamOuterCompleted",
-        "NativeContextGetParamOuterValidation",
-        "NativeContextGetParamSubmitResult",
         "NativeContextGetParamValidation",
         "NativeContextGetParamResult",
+        "NativeContextGetParamWriteStatus",
     )
     literal_stream = "".join(re.findall(r'L\"([^\"\\]*(?:\\.[^\"\\]*)*)\"', recorder_source))
     for name in registry_names:
@@ -6426,6 +6417,12 @@ def check_native_parameter_diagnostics() -> None:
         fail("GET_PARAM diagnostic reader must consume every declared snapshot field")
     if reader.count("contains a partial GET_PARAM diagnostic") != 1:
         fail("GET_PARAM diagnostic reader must reject partial snapshots")
+    if reader.count("NativeContextGetParamCommitted = $parameterSnapshotCommitted") != 1:
+        fail("GET_PARAM diagnostic reader must expose commit state")
+    if reader.count("$parameterPhase -ge 1 -and $parameterPhase -le 6") != 1:
+        fail("GET_PARAM diagnostic reader must require a committed phase")
+    if reader.count("$parameterWriteStatus -eq 0") != 1:
+        fail("GET_PARAM diagnostic reader must reject registry-write failures")
     if reader.count("NativeContextGetParam = $parameterSnapshot") != 1:
         fail("GET_PARAM diagnostic reader must return one complete snapshot object")
 
@@ -6433,13 +6430,13 @@ def check_native_parameter_diagnostics() -> None:
         recorder.find("NTSTATUSmarkerClear=WriteRegistryDWORD(deviceKey,L,&zero)"),
         recorder.find("NTSTATUSwriteStatus=markerClear;"),
         recorder.find("for(UINTindex=0;index<ARRAYSIZE(values);++index)"),
-        recorder.find("writeStatus=WriteRegistryDWORD(deviceKey,values[index].Name,&value)"),
-        recorder.find("NTSTATUSmarkerWrite=STATUS_SUCCESS;"),
+        recorder.find("DWORDregistryWriteStatus=NT_SUCCESS(writeStatus)?"),
+        recorder.find("NTSTATUSstatusWrite=WriteRegistryDWORD(deviceKey,L,&registryWriteStatus)"),
         recorder.find("markerWrite=WriteRegistryDWORD(deviceKey,L,&phase)"),
         recorder.find("ZwClose(deviceKey);"),
     )
     if min(recorder_sequence) < 0 or list(recorder_sequence) != sorted(recorder_sequence):
-        fail("GET_PARAM diagnostics must clear, publish, commit, and close one ordered snapshot")
+        fail("GET_PARAM diagnostics must clear, publish, write status, commit, and close in order")
 
     submit = canonical_code(function_body("CtrlQueue::SubmitNativeControl", QUEUE_CODE))
     submit_sequence = (
@@ -6452,8 +6449,8 @@ def check_native_parameter_diagnostics() -> None:
     if min(submit_sequence) < 0 or list(submit_sequence) != sorted(submit_sequence):
         fail("GET_PARAM outer diagnostics must capture completion before buffer release and publish the result last")
     for fragment in (
-        "diagnostic->OuterSubmitted=submitted;",
-        "diagnostic->OuterCompleted=completed;",
+        "diagnostic->OuterSubmitted=submitted?1:0;",
+        "diagnostic->OuterCompleted=completed?1:0;",
         "diagnostic->OuterValidation=VioGpuValidatePlainControlResponse(",
     ):
         if submit.count(fragment) != 1:
@@ -6478,6 +6475,17 @@ def check_native_parameter_diagnostics() -> None:
         fail("GET_PARAM must classify seed and shared-response failures as unknown")
     if query.count("diagnostic.Result=VioGpuHostContextConfirmed;") != 1:
         fail("GET_PARAM must publish one confirmed result")
+
+    start = canonical_code(function_body("VioGpuDod::RecordNativeStartDiagnostic", VIOGPU_CODE))
+    invalidate_sequence = (
+        start.find("if(stage==VioGpuNativeStartEntered)"),
+        start.find("parameterPhaseInvalidateWrite=WriteRegistryDWORD(deviceKey,L,&parameterPhaseZero)"),
+        start.find("parameterWriteStatusInvalidateWrite=WriteRegistryDWORD(deviceKey,L,&parameterWriteStatus)"),
+    )
+    if min(invalidate_sequence) < 0 or list(invalidate_sequence) != sorted(invalidate_sequence):
+        fail("GET_PARAM diagnostics must be invalidated at the beginning of each native start")
+    if "!NT_SUCCESS(parameterPhaseInvalidateWrite)" not in start or "!NT_SUCCESS(parameterWriteStatusInvalidateWrite)" not in start:
+        fail("native start must surface GET_PARAM diagnostic invalidation failures")
 
 
 def check_wddm_private_abi(root: ET.Element) -> None:

@@ -1754,13 +1754,8 @@ CtrlQueue::SubmitNativeControl(UINT context_id,
     {
         diagnostic->OuterResponseSize = 0;
         diagnostic->OuterType = 0;
-        diagnostic->OuterFlags = 0;
-        diagnostic->OuterFenceId = 0;
-        diagnostic->OuterContextId = 0;
-        diagnostic->OuterRingIndex = 0;
-        RtlZeroMemory(diagnostic->OuterPadding, sizeof(diagnostic->OuterPadding));
-        diagnostic->OuterSubmitted = FALSE;
-        diagnostic->OuterCompleted = FALSE;
+        diagnostic->OuterSubmitted = 0;
+        diagnostic->OuterCompleted = 0;
         diagnostic->OuterValidation = VioGpuHostResponseNotSubmitted;
         diagnostic->SubmitResult = VioGpuHostContextNotSubmitted;
     }
@@ -1781,31 +1776,38 @@ CtrlQueue::SubmitNativeControl(UINT context_id,
     BOOLEAN submitted = FALSE;
     BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
+    UINT responseType = 0;
+    UINT responseFlags = 0;
+    ULONGLONG responseFenceId = 0;
+    UINT responseContextId = 0;
+    UCHAR responseRingIndex = 0;
+    UCHAR responsePadding[3] = {};
+    if (completed && vbuf->response_size >= sizeof(GPU_CTRL_HDR) && response != NULL)
+    {
+        responseType = response->type;
+        responseFlags = response->flags;
+        responseFenceId = response->fence_id;
+        responseContextId = response->ctx_id;
+        responseRingIndex = response->ring_idx;
+        RtlCopyMemory(responsePadding, response->padding, sizeof(responsePadding));
+    }
     if (diagnostic != NULL)
     {
         diagnostic->OuterResponseSize = vbuf->response_size;
-        diagnostic->OuterSubmitted = submitted;
-        diagnostic->OuterCompleted = completed;
-        if (completed && vbuf->response_size >= sizeof(GPU_CTRL_HDR) && response != NULL)
-        {
-            diagnostic->OuterType = response->type;
-            diagnostic->OuterFlags = response->flags;
-            diagnostic->OuterFenceId = response->fence_id;
-            diagnostic->OuterContextId = response->ctx_id;
-            diagnostic->OuterRingIndex = response->ring_idx;
-            RtlCopyMemory(diagnostic->OuterPadding, response->padding, sizeof(diagnostic->OuterPadding));
-        }
+        diagnostic->OuterType = responseType;
+        diagnostic->OuterSubmitted = submitted ? 1U : 0U;
+        diagnostic->OuterCompleted = completed ? 1U : 0U;
         diagnostic->OuterValidation = VioGpuValidatePlainControlResponse(diagnostic->OuterResponseSize,
-                                                                         diagnostic->OuterSubmitted,
-                                                                         diagnostic->OuterCompleted,
-                                                                         diagnostic->OuterType,
-                                                                         diagnostic->OuterFlags,
-                                                                         diagnostic->OuterFenceId,
-                                                                         diagnostic->OuterContextId,
-                                                                         diagnostic->OuterRingIndex,
-                                                                         diagnostic->OuterPadding[0],
-                                                                         diagnostic->OuterPadding[1],
-                                                                         diagnostic->OuterPadding[2],
+                                                                         submitted,
+                                                                         completed,
+                                                                         responseType,
+                                                                         responseFlags,
+                                                                         responseFenceId,
+                                                                         responseContextId,
+                                                                         responseRingIndex,
+                                                                         responsePadding[0],
+                                                                         responsePadding[1],
+                                                                         responsePadding[2],
                                                                          VIRTIO_GPU_RESP_OK_NODATA);
     }
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;

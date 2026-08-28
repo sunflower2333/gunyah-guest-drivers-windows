@@ -48,28 +48,29 @@ $parameterDiagnosticNames = @(
     'NativeContextGetParamContextId',
     'NativeContextGetParamParameter',
     'NativeContextGetParamSequence',
-    'NativeContextGetParamRequestCommand',
-    'NativeContextGetParamRequestLength',
-    'NativeContextGetParamRequestResponseOffset',
-    'NativeContextGetParamRequestIoctlCommand',
-    'NativeContextGetParamRequestPipe',
-    'NativeContextGetParamRequestParameter',
-    'NativeContextGetParamRequestValueLow',
-    'NativeContextGetParamRequestValueHigh',
-    'NativeContextGetParamRequestValueLength',
-    'NativeContextGetParamRequestPadding',
-    'NativeContextGetParamSeedAttempted',
-    'NativeContextGetParamSeedWriteCompleted',
+    'NativeContextGetParamPhysicalDevice',
+    'NativeContextGetParamRegistryOpenStatus',
+    'NativeContextGetParamWindowStatus',
+    'NativeContextGetParamControlBarOffsetLow',
+    'NativeContextGetParamControlBarOffsetHigh',
+    'NativeContextGetParamControlAddressLow',
+    'NativeContextGetParamControlAddressHigh',
+    'NativeContextGetParamControlBlobSize',
+    'NativeContextGetParamResponseOffset',
+    'NativeContextGetParamResponseCapacity',
+    'NativeContextGetParamSeedResult',
     'NativeContextGetParamSeedSharedSeqno',
-    'NativeContextGetParamSeedSharedResponseOffset',
-    'NativeContextGetParamSeedSharedAsyncError',
-    'NativeContextGetParamSeedSharedGlobalFaults',
     'NativeContextGetParamSharedSeqno',
-    'NativeContextGetParamSharedResponseOffset',
     'NativeContextGetParamSharedAsyncError',
     'NativeContextGetParamSharedGlobalFaults',
-    'NativeContextGetParamCopyAttempted',
-    'NativeContextGetParamCopyCompleted',
+    'NativeContextGetParamOuterResponseSize',
+    'NativeContextGetParamOuterType',
+    'NativeContextGetParamOuterSubmitted',
+    'NativeContextGetParamOuterCompleted',
+    'NativeContextGetParamOuterValidation',
+    'NativeContextGetParamSubmitResult',
+    'NativeContextGetParamCopyResult',
+    'NativeContextGetParamInnerResponseLength',
     'NativeContextGetParamInnerRet',
     'NativeContextGetParamInnerPipe',
     'NativeContextGetParamInnerParameter',
@@ -77,20 +78,9 @@ $parameterDiagnosticNames = @(
     'NativeContextGetParamInnerValueHigh',
     'NativeContextGetParamInnerValueLength',
     'NativeContextGetParamInnerPadding',
-    'NativeContextGetParamOuterResponseSize',
-    'NativeContextGetParamOuterType',
-    'NativeContextGetParamOuterFlags',
-    'NativeContextGetParamOuterFenceLow',
-    'NativeContextGetParamOuterFenceHigh',
-    'NativeContextGetParamOuterContextId',
-    'NativeContextGetParamOuterRingIndex',
-    'NativeContextGetParamOuterPadding',
-    'NativeContextGetParamOuterSubmitted',
-    'NativeContextGetParamOuterCompleted',
-    'NativeContextGetParamOuterValidation',
-    'NativeContextGetParamSubmitResult',
     'NativeContextGetParamValidation',
-    'NativeContextGetParamResult'
+    'NativeContextGetParamResult',
+    'NativeContextGetParamWriteStatus'
 )
 $parameterDiagnosticPresent = @(
     $parameterDiagnosticNames | Where-Object { $null -ne $diagnostic.PSObject.Properties[$_] }
@@ -181,7 +171,13 @@ if ($queryDiagnosticPresent.Count -eq $queryDiagnosticNames.Count) {
     $queryOutputSize = [uint64](ConvertTo-DwordValue $diagnostic.NativeQueryAdapterInfoOutputSize)
 }
 $parameterSnapshot = $null
+$parameterSnapshotCommitted = $false
 if ($parameterDiagnosticPresent.Count -eq $parameterDiagnosticNames.Count) {
+    [uint64]$parameterPhase = ConvertTo-DwordValue $diagnostic.NativeContextGetParamPhase
+    [uint64]$parameterWriteStatus = ConvertTo-DwordValue $diagnostic.NativeContextGetParamWriteStatus
+    $parameterSnapshotCommitted = $parameterPhase -ge 1 -and $parameterPhase -le 6 -and $parameterWriteStatus -eq 0
+}
+if ($parameterSnapshotCommitted) {
     $parameterSnapshot = [ordered]@{}
     foreach ($name in $parameterDiagnosticNames) {
         $parameterSnapshot[$name] = ConvertTo-DwordValue $diagnostic.$name
@@ -213,5 +209,6 @@ if ($stage -eq 0x0330 -or $stage -eq 0x0500 -or $stage -eq 0x0560) {
     NativeQueryAdapterInfoStatus = $queryStatus
     NativeQueryAdapterInfoInputSize = $queryInputSize
     NativeQueryAdapterInfoOutputSize = $queryOutputSize
+    NativeContextGetParamCommitted = $parameterSnapshotCommitted
     NativeContextGetParam = $parameterSnapshot
 }
