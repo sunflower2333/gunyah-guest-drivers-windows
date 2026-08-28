@@ -446,11 +446,17 @@ Patch and Cancel still use their supplied CPU DMA base for an exact
 pointer-plus-offset identity check.
 
 Paging packets are scheduler system commands and are never reported through
-`DXGK_INTERRUPT_DMA_FAULTED`. An empty paging packet is recorded and retired
-under one fence-tracker lock before the hardware-operation gate. A queued
-paging failure retires the already recorded system fence and requests an
-adapter reset; validation, operation-gate, queue, and cancellation failures use
-the same complete-then-reset policy. Render and Present retain the ordinary
+`DXGK_INTERRUPT_DMA_FAULTED`. An empty paging packet is recorded as a distinct
+software-pending fence before the hardware-operation gate, then requests the
+Dxgk DPC. The DPC changes software-pending entries to retired, drains only the
+contiguous retired prefix, synchronizes `DXGK_INTERRUPT_DMA_COMPLETED` to
+DIRQL, and finally calls `DxgkCbNotifyDpc`. It never calls the scheduler
+interrupt path from the `DxgkDdiSubmitCommand` stack. This separation is
+required because immediate paging completion can reenter VidSch while display
+teardown still owns its VidMm locks. A queued paging failure retires the
+already recorded system fence and requests an adapter reset; validation,
+operation-gate, queue, and cancellation failures use the same deferred
+complete-then-reset policy. Render and Present retain the ordinary
 client-submission fault path.
 
 Submission-fault recovery no longer trusts the callback identity as a

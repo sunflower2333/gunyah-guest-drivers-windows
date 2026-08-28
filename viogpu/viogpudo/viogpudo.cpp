@@ -984,14 +984,16 @@ void VioGpuDod::NotifyNativeSoftwareCompletion(_In_ UINT fenceId, _In_ UINT node
     NotifyNativeSubmissionCompletion(fenceId, nodeOrdinal, engineOrdinal, TRUE);
 }
 
-BOOLEAN VioGpuDod::CompleteNativeSoftwareSubmission(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal)
+BOOLEAN VioGpuDod::QueueNativeSoftwareSubmissionCompletion(_In_ UINT fenceId,
+                                                           _In_ UINT nodeOrdinal,
+                                                           _In_ UINT engineOrdinal)
 {
-    if (fenceId == 0 || nodeOrdinal != 0 || engineOrdinal != 0)
+    if (fenceId == 0 || nodeOrdinal != 0 || engineOrdinal != 0 || KeGetCurrentIrql() != DISPATCH_LEVEL ||
+        m_DxgkInterface.DxgkCbQueueDpc == NULL)
     {
         return FALSE;
     }
 
-    UINT completedFence = 0;
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
     UINT submitted = static_cast<UINT>(m_NativeSubmittedFence);
@@ -1010,26 +1012,56 @@ BOOLEAN VioGpuDod::CompleteNativeSoftwareSubmission(_In_ UINT fenceId, _In_ UINT
         UINT tail = (m_NativeFenceHead + m_NativeFenceCount) % VioGpuNativeFenceTrackerCapacity;
         NT_ASSERT(m_NativeFences[tail].State == VioGpuNativeFenceFree);
         m_NativeFences[tail].FenceId = fenceId;
-        m_NativeFences[tail].State = VioGpuNativeFenceRetired;
+        m_NativeFences[tail].State = VioGpuNativeFenceSoftwarePending;
         ++m_NativeFenceCount;
         InterlockedExchange(&m_NativeSubmittedFence, static_cast<LONG>(fenceId));
-        while (m_NativeFenceCount != 0 && m_NativeFences[m_NativeFenceHead].State == VioGpuNativeFenceRetired)
-        {
-            VIOGPU_NATIVE_FENCE_ENTRY *head = &m_NativeFences[m_NativeFenceHead];
-            completedFence = head->FenceId;
-            head->FenceId = 0;
-            head->State = VioGpuNativeFenceFree;
-            m_NativeFenceHead = (m_NativeFenceHead + 1) % VioGpuNativeFenceTrackerCapacity;
-            --m_NativeFenceCount;
-        }
-        if (completedFence != 0)
-        {
-            InterlockedExchange(&m_NativeCompletedFence, static_cast<LONG>(completedFence));
-        }
     }
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
 
-    return valid && NotifyNativeCompletedFence(completedFence, nodeOrdinal, engineOrdinal, TRUE);
+    if (valid)
+    {
+        /* A scheduler callback from inside SubmitCommand can reenter VidSch
+         * while its paging/display locks are still held.  Dxgk's DPC is the
+         * asynchronous completion boundary for software-only system work. */
+        m_DxgkInterface.DxgkCbQueueDpc(m_DxgkInterface.DeviceHandle);
+    }
+    return valid;
+}
+
+BOOLEAN VioGpuDod::DrainNativeSoftwareSubmissionCompletionsFromDpc(void)
+{
+    if (KeGetCurrentIrql() != DISPATCH_LEVEL)
+    {
+        return FALSE;
+    }
+
+    UINT completedFence = 0;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
+    for (UINT offset = 0; offset < m_NativeFenceCount; ++offset)
+    {
+        UINT index = (m_NativeFenceHead + offset) % VioGpuNativeFenceTrackerCapacity;
+        if (m_NativeFences[index].State == VioGpuNativeFenceSoftwarePending)
+        {
+            m_NativeFences[index].State = VioGpuNativeFenceRetired;
+        }
+    }
+    while (m_NativeFenceCount != 0 && m_NativeFences[m_NativeFenceHead].State == VioGpuNativeFenceRetired)
+    {
+        VIOGPU_NATIVE_FENCE_ENTRY *head = &m_NativeFences[m_NativeFenceHead];
+        completedFence = head->FenceId;
+        head->FenceId = 0;
+        head->State = VioGpuNativeFenceFree;
+        m_NativeFenceHead = (m_NativeFenceHead + 1) % VioGpuNativeFenceTrackerCapacity;
+        --m_NativeFenceCount;
+    }
+    if (completedFence != 0)
+    {
+        InterlockedExchange(&m_NativeCompletedFence, static_cast<LONG>(completedFence));
+    }
+    KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
+
+    return completedFence == 0 || NotifyNativeCompletedFence(completedFence, 0, 0, FALSE);
 }
 
 BOOLEAN VioGpuDod::CompleteNativeSystemSubmission(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal)
@@ -4256,6 +4288,10 @@ VOID VioGpuDod::DpcRoutine(VOID)
         ExReleaseRundownProtection(&m_HardwareOperations);
     }
 #if defined(VIOGPU_NATIVE_CONTEXT)
+    if (!DrainNativeSoftwareSubmissionCompletionsFromDpc())
+    {
+        RequestHardwareResetAtAnyIrql();
+    }
     if (InterlockedCompareExchange(&m_WddmDrainRequested, 0, 0) != 0)
     {
         QueueWddmSubmissionDrainWorker();

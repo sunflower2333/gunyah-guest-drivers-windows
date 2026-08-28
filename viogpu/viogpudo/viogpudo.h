@@ -244,6 +244,7 @@ enum VIOGPU_NATIVE_FENCE_STATE : LONG
 {
     VioGpuNativeFenceFree = 0,
     VioGpuNativeFencePending,
+    VioGpuNativeFenceSoftwarePending,
     VioGpuNativeFenceRetired,
 };
 
@@ -974,7 +975,8 @@ class VioGpuDod
                                                           _In_ NTSTATUS presentSubmitStatus = STATUS_SUCCESS,
                                                           _In_ DWORD presentSubmitDetail = 0);
     void NotifyNativeSoftwareCompletion(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal);
-    BOOLEAN CompleteNativeSoftwareSubmission(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal);
+    BOOLEAN QueueNativeSoftwareSubmissionCompletion(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal);
+    BOOLEAN DrainNativeSoftwareSubmissionCompletionsFromDpc(void);
     BOOLEAN CompleteNativeSystemSubmission(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal);
     BOOLEAN NotifyNativeCompletedFence(_In_ UINT completedFence,
                                        _In_ UINT nodeOrdinal,

@@ -462,11 +462,13 @@ def check_dod_reset_entrypoints() -> None:
     dpc_adapter = dpc.find("VioGpuAdapter*adapter=m_pHWDevice;", dpc_acquire)
     dpc_call = dpc.find("adapter->DpcRoutine(&m_DxgkInterface);", dpc_adapter)
     dpc_release = dpc.find("ExReleaseRundownProtection(&m_HardwareOperations);", dpc_call)
-    dpc_notify = dpc.find("m_DxgkInterface.DxgkCbNotifyDpc((HANDLE)m_DxgkInterface.DeviceHandle);", dpc_release)
+    dpc_software = dpc.find("if(!DrainNativeSoftwareSubmissionCompletionsFromDpc())", dpc_release)
+    dpc_reset = dpc.find("RequestHardwareResetAtAnyIrql();", dpc_software)
+    dpc_notify = dpc.find("m_DxgkInterface.DxgkCbNotifyDpc((HANDLE)m_DxgkInterface.DeviceHandle);", dpc_reset)
     if min(dpc_acquire, dpc_adapter, dpc_call, dpc_release, dpc_notify) < 0 or not (
-        dpc_acquire < dpc_adapter < dpc_call < dpc_release < dpc_notify
+        dpc_acquire < dpc_adapter < dpc_call < dpc_release < dpc_software < dpc_reset < dpc_notify
     ):
-        fail("DpcRoutine must hold hardware rundown across adapter access and notify DxgK after release")
+        fail("DpcRoutine must defer software fence retirement until after hardware dispatch and before notifying DxgK")
     if (
         dpc.count("ExAcquireRundownProtection(&m_HardwareOperations)") != 1
         or dpc.count("ExReleaseRundownProtection(&m_HardwareOperations);") != 1
@@ -7490,6 +7492,12 @@ def check_wddm_paging_transaction_gate() -> None:
         fail("generic paging retirement must unwind recognized records after full batch validation fails")
 
     passive_header = canonical_code(VIOGPU_HEADER_CODE)
+    deferred_fence_states = (
+        "enumVIOGPU_NATIVE_FENCE_STATE:LONG{VioGpuNativeFenceFree=0,VioGpuNativeFencePending,"
+        "VioGpuNativeFenceSoftwarePending,VioGpuNativeFenceRetired,};"
+    )
+    if passive_header.count(deferred_fence_states) != 1:
+        fail("native fence state must distinguish deferred software completion from Host-pending work")
     for fragment in (
         "volatileLONGState;",
         "volatileLONGRetired;",
@@ -7501,7 +7509,12 @@ def check_wddm_paging_transaction_gate() -> None:
         if fragment not in passive_header:
             fail(f"passive work ownership ABI must expose {fragment}")
     passive_queue = canonical_code(function_body("QueueNativePassiveWork", VIOGPU_CODE))
-    software_submission = canonical_code(function_body("CompleteNativeSoftwareSubmission", VIOGPU_CODE))
+    software_submission = canonical_code(
+        function_body("VioGpuDod::QueueNativeSoftwareSubmissionCompletion", VIOGPU_CODE)
+    )
+    software_drain = canonical_code(
+        function_body("VioGpuDod::DrainNativeSoftwareSubmissionCompletionsFromDpc", VIOGPU_CODE)
+    )
     system_submission = canonical_code(function_body("CompleteNativeSystemSubmission", VIOGPU_CODE))
     completed_fence = canonical_code(function_body("NotifyNativeCompletedFence", VIOGPU_CODE))
     passive_cancel = canonical_code(function_body("CancelNativePassiveWork", VIOGPU_CODE))
@@ -7538,24 +7551,50 @@ def check_wddm_paging_transaction_gate() -> None:
     if passive_queue.count("RecordNativeSubmissionFence(fenceId)") != 1 or \
        "RecordNativeSubmissionFence(" in software_submission or \
        "RecordNativeSubmissionFence(" in WDDM_DDI_CODE:
-        fail("passive work must reserve a pending fence while immediate completion updates the tracker atomically")
+        fail("passive work must reserve a hardware fence while deferred software completion owns its tracker insertion")
     require_order(
         software_submission,
         (
+            "KeGetCurrentIrql()!=DISPATCH_LEVEL",
+            "m_DxgkInterface.DxgkCbQueueDpc==NULL",
             "KeAcquireSpinLock(&m_NativeFenceLock,&oldIrql);",
             "m_NativeFenceCount<VioGpuNativeFenceTrackerCapacity",
             "static_cast<LONG>(fenceId-submitted)>0",
-            "m_NativeFences[tail].State=VioGpuNativeFenceRetired;",
+            "m_NativeFences[tail].State=VioGpuNativeFenceSoftwarePending;",
             "InterlockedExchange(&m_NativeSubmittedFence,static_cast<LONG>(fenceId));",
+            "KeReleaseSpinLock(&m_NativeFenceLock,oldIrql);",
+            "m_DxgkInterface.DxgkCbQueueDpc(m_DxgkInterface.DeviceHandle);",
+            "returnvalid;",
+        ),
+        "software completion must publish a pending fence before requesting the asynchronous Dxgk DPC",
+    )
+    if any(
+        fragment in software_submission
+        for fragment in (
+            "VioGpuNativeFenceRetired",
+            "NotifyNativeCompletedFence(",
+            "NotifyNativeSchedulerInterrupt(",
+            "DxgkCbSynchronizeExecution(",
+            "NotifyNativeSubmissionFault(",
+        )
+    ):
+        fail("SubmitCommand software completion must only publish SoftwarePending state and queue a DPC")
+    require_order(
+        software_drain,
+        (
+            "KeGetCurrentIrql()!=DISPATCH_LEVEL",
+            "KeAcquireSpinLock(&m_NativeFenceLock,&oldIrql);",
+            "m_NativeFences[index].State==VioGpuNativeFenceSoftwarePending",
+            "m_NativeFences[index].State=VioGpuNativeFenceRetired;",
             "m_NativeFences[m_NativeFenceHead].State==VioGpuNativeFenceRetired",
             "InterlockedExchange(&m_NativeCompletedFence,static_cast<LONG>(completedFence));",
             "KeReleaseSpinLock(&m_NativeFenceLock,oldIrql);",
-            "NotifyNativeCompletedFence(completedFence,nodeOrdinal,engineOrdinal,TRUE)",
+            "NotifyNativeCompletedFence(completedFence,0,0,FALSE)",
         ),
-        "immediate software completion must record and retire its scheduler fence under one tracker lock",
+        "the Dxgk DPC must retire software fences and publish only the contiguous completed prefix",
     )
-    if "NotifyNativeSubmissionFault(" in software_submission or "NotifyNativeSoftwareCompletion(" in software_submission:
-        fail("immediate system completion must never translate a tracker race into DMA_FAULTED")
+    if "DxgkCbQueueDpc(" in software_drain or "NotifyNativeSubmissionFault(" in software_drain:
+        fail("software fence DPC drain must neither recursively queue itself nor emit DMA_FAULTED")
     require_order(
         system_submission,
         (
@@ -9187,7 +9226,7 @@ def check_wddm_submission_lifetime() -> None:
         "submitCommand->Flags.Value==1",
         "submitCommand->DmaBufferSubmissionStartOffset==submitCommand->DmaBufferSubmissionEndOffset",
         "submitCommand->DmaBufferPrivateDataSubmissionStartOffset==submitCommand->DmaBufferPrivateDataSubmissionEndOffset",
-        "adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,submitCommand->NodeOrdinal,submitCommand->EngineOrdinal)",
+        "adapter->QueueNativeSoftwareSubmissionCompletion(submitCommand->SubmissionFenceId,submitCommand->NodeOrdinal,submitCommand->EngineOrdinal)",
         "adapter->RequestHardwareResetAtAnyIrql();",
         "returnSTATUS_SUCCESS;",
     ):
@@ -9203,7 +9242,7 @@ def check_wddm_submission_lifetime() -> None:
     validation_failure = validation_failure_blocks[0]
     for fragment in (
         "if(adapter!=NULL&&submitCommand!=NULL&&KeGetCurrentIrql()==DISPATCH_LEVEL&&pagingSubmission)",
-        "adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,submitCommand->NodeOrdinal,submitCommand->EngineOrdinal);",
+        "adapter->QueueNativeSoftwareSubmissionCompletion(submitCommand->SubmissionFenceId,submitCommand->NodeOrdinal,submitCommand->EngineOrdinal);",
         "adapter->RequestHardwareResetAtAnyIrql();",
         "returnSTATUS_SUCCESS;",
         "returnSTATUS_INVALID_PARAMETER;",
@@ -9228,7 +9267,7 @@ def check_wddm_submission_lifetime() -> None:
     for fragment in (
         "RetireUnsubmittedDmaOwner(adapter,submitCommand);",
         "if(pagingSubmission)",
-        "adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,submitCommand->NodeOrdinal,submitCommand->EngineOrdinal)",
+        "adapter->QueueNativeSoftwareSubmissionCompletion(submitCommand->SubmissionFenceId,submitCommand->NodeOrdinal,submitCommand->EngineOrdinal)",
         "adapter->RequestHardwareResetAtAnyIrql();",
         "else{adapter->NotifyNativeSubmissionFault(",
         "returnSTATUS_SUCCESS;",
@@ -9261,7 +9300,7 @@ def check_wddm_submission_lifetime() -> None:
         "ResolvePagingBatch(",
         "packet->ContextId!=0&&!adapter->IsNativeContextGenerationCurrent(packet->ContextGeneration,packet->ResetGeneration)",
         "adapter->QueueNativePassiveWork(&firstPrivate->Work,submitCommand->SubmissionFenceId)",
-        "adapter->CompleteNativeSoftwareSubmission(",
+        "adapter->QueueNativeSoftwareSubmissionCompletion(",
         "adapter->CompleteNativeSystemSubmission(",
         "adapter->RequestHardwareResetAtAnyIrql();",
     ):
@@ -9766,6 +9805,92 @@ def check_wddm_submission_lifetime() -> None:
         ),
         "teardown must detach software backlog links before buffer cancellation and queue backing close",
     )
+
+
+def check_deferred_software_fence_model() -> None:
+    """Exercise deterministic Host/software retirement interleavings."""
+
+    def run(steps: tuple[tuple[str, int], ...]) -> tuple[list[int], list[tuple[int, str]]]:
+        entries: list[list[object]] = []
+        notifications: list[int] = []
+        submitted = 0
+
+        def drain_prefix() -> None:
+            completed = 0
+            while entries and entries[0][1] == "retired":
+                completed = int(entries.pop(0)[0])
+            if completed != 0:
+                notifications.append(completed)
+
+        for operation, fence in steps:
+            if operation in ("host", "software"):
+                if fence == 0 or (submitted != 0 and fence - submitted <= 0):
+                    fail("deferred software fence model accepted a non-monotonic submission")
+                state = "host-pending" if operation == "host" else "software-pending"
+                entries.append([fence, state])
+                submitted = fence
+            elif operation == "dpc":
+                for entry in entries:
+                    if entry[1] == "software-pending":
+                        entry[1] = "retired"
+                drain_prefix()
+            elif operation == "complete-host":
+                matches = [entry for entry in entries if entry[0] == fence and entry[1] == "host-pending"]
+                if len(matches) != 1:
+                    fail("deferred software fence model lost Host completion ownership")
+                matches[0][1] = "retired"
+                drain_prefix()
+            else:
+                fail(f"deferred software fence model received an unknown operation: {operation}")
+
+        return notifications, [(int(entry[0]), str(entry[1])) for entry in entries]
+
+    cases = (
+        ("software-only", (("software", 1), ("dpc", 0)), [1], []),
+        (
+            "Host-before-software",
+            (("host", 1), ("software", 2), ("dpc", 0), ("complete-host", 1)),
+            [2],
+            [],
+        ),
+        (
+            "software-before-Host",
+            (("software", 1), ("host", 2), ("dpc", 0), ("complete-host", 2)),
+            [1, 2],
+            [],
+        ),
+        (
+            "two-software-behind-Host",
+            (
+                ("host", 1),
+                ("software", 2),
+                ("software", 3),
+                ("dpc", 0),
+                ("complete-host", 1),
+            ),
+            [3],
+            [],
+        ),
+        (
+            "software-around-Host",
+            (
+                ("software", 1),
+                ("host", 2),
+                ("software", 3),
+                ("dpc", 0),
+                ("complete-host", 2),
+            ),
+            [1, 3],
+            [],
+        ),
+    )
+    for name, steps, expected_notifications, expected_entries in cases:
+        notifications, entries = run(steps)
+        if notifications != expected_notifications or entries != expected_entries:
+            fail(
+                f"deferred software fence fake-dispatch case {name} produced "
+                f"notifications={notifications}, entries={entries}"
+            )
 
 
 def check_dpc_completion_semantics() -> None:
@@ -10997,6 +11122,7 @@ def main() -> None:
     check_allocation_lifecycle_wait_status_contract()
     check_wddm_context_lifetime()
     check_wddm_submission_lifetime()
+    check_deferred_software_fence_model()
     check_dpc_completion_semantics()
     check_segment_failure_semantics()
     check_pci_resource_lifetime()

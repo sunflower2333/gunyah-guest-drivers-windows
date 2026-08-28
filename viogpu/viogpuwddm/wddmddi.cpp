@@ -7700,9 +7700,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
         }
         if (adapter != NULL && submitCommand != NULL && KeGetCurrentIrql() == DISPATCH_LEVEL && pagingSubmission)
         {
-            adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,
-                                                      submitCommand->NodeOrdinal,
-                                                      submitCommand->EngineOrdinal);
+            adapter->QueueNativeSoftwareSubmissionCompletion(submitCommand->SubmissionFenceId,
+                                                             submitCommand->NodeOrdinal,
+                                                             submitCommand->EngineOrdinal);
             adapter->RequestHardwareResetAtAnyIrql();
             return STATUS_SUCCESS;
         }
@@ -7714,9 +7714,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                     submitCommand->DmaBufferPrivateDataSubmissionStartOffset == submitCommand->DmaBufferPrivateDataSubmissionEndOffset;
     if (emptyPagingSubmission)
     {
-        if (!adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,
-                                                       submitCommand->NodeOrdinal,
-                                                       submitCommand->EngineOrdinal))
+        if (!adapter->QueueNativeSoftwareSubmissionCompletion(submitCommand->SubmissionFenceId,
+                                                              submitCommand->NodeOrdinal,
+                                                              submitCommand->EngineOrdinal))
         {
             adapter->RequestHardwareResetAtAnyIrql();
         }
@@ -7728,9 +7728,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
         RetireUnsubmittedDmaOwner(adapter, submitCommand);
         if (pagingSubmission)
         {
-            adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,
-                                                      submitCommand->NodeOrdinal,
-                                                      submitCommand->EngineOrdinal);
+            adapter->QueueNativeSoftwareSubmissionCompletion(submitCommand->SubmissionFenceId,
+                                                             submitCommand->NodeOrdinal,
+                                                             submitCommand->EngineOrdinal);
             adapter->RequestHardwareResetAtAnyIrql();
         }
         else
@@ -7899,9 +7899,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
         {
             DereferenceDevice(device);
         }
-        adapter->CompleteNativeSoftwareSubmission(submitCommand->SubmissionFenceId,
-                                                  submitCommand->NodeOrdinal,
-                                                  submitCommand->EngineOrdinal);
+        adapter->QueueNativeSoftwareSubmissionCompletion(submitCommand->SubmissionFenceId,
+                                                         submitCommand->NodeOrdinal,
+                                                         submitCommand->EngineOrdinal);
         adapter->RequestHardwareResetAtAnyIrql();
         adapter->ReleaseNativeSubmissionOperation();
         return STATUS_SUCCESS;
