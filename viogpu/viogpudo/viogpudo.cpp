@@ -3874,11 +3874,12 @@ static VOID VioGpuWriteSharedU32(_Out_ volatile ULONG *value, _In_ ULONG newValu
     KeMemoryBarrier();
 }
 
-static BOOLEAN VioGpuResolveNativeControlWindow(_In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner,
-                                                _Out_ PMSM_SHMEM *shmem,
-                                                _Out_ PUCHAR *response,
-                                                _Out_ PULONG responseCapacity,
-                                                _Inout_opt_ PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic = NULL)
+static BOOLEAN
+VioGpuResolveNativeControlWindow(_In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner,
+                                 _Out_ PMSM_SHMEM *shmem,
+                                 _Out_ PUCHAR *response,
+                                 _Out_ PULONG responseCapacity,
+                                 _Inout_opt_ PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic = NULL)
 {
     if (diagnostic != NULL)
     {
@@ -4497,7 +4498,9 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
     if (stage == VioGpuNativeStartEntered)
     {
         DWORD parameterPhaseZero = 0;
-        parameterPhaseInvalidateWrite = WriteRegistryDWORD(deviceKey, L"NativeContextGetParamPhase", &parameterPhaseZero);
+        parameterPhaseInvalidateWrite = WriteRegistryDWORD(deviceKey,
+                                                           L"NativeContextGetParamPhase",
+                                                           &parameterPhaseZero);
         DWORD parameterWriteStatus = static_cast<DWORD>(parameterPhaseInvalidateWrite);
         parameterWriteStatusInvalidateWrite = WriteRegistryDWORD(deviceKey,
                                                                  L"NativeContextGetParamWriteStatus",
@@ -4883,15 +4886,18 @@ VOID VioGpuDod::RecordNativeContextParameterDiagnostic(_Inout_ PVIOGPU_NATIVE_CO
     const BOOLEAN physicalDeviceValid = m_pPhysicalDevice != NULL;
     diagnostic->PhysicalDeviceValid = physicalDeviceValid ? 1U : 0U;
     HANDLE deviceKey = NULL;
-    NTSTATUS openStatus = physicalDeviceValid
-                               ? IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey)
-                               : STATUS_INVALID_DEVICE_STATE;
+    NTSTATUS openStatus = physicalDeviceValid ? IoOpenDeviceRegistryKey(m_pPhysicalDevice,
+                                                                        PLUGPLAY_REGKEY_DRIVER,
+                                                                        KEY_SET_VALUE,
+                                                                        &deviceKey)
+                                              : STATUS_INVALID_DEVICE_STATE;
     diagnostic->RegistryOpenStatus = static_cast<UINT>(openStatus);
     if (!NT_SUCCESS(openStatus))
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
-                   "viogpu native context GET_PARAM diagnostic: registry open failed, physical_device=%u status=0x%08X\n",
+                   "viogpu native context GET_PARAM diagnostic: registry open failed, physical_device=%u "
+                   "status=0x%08X\n",
                    physicalDeviceValid ? 1U : 0U,
                    openStatus);
         return;
@@ -4939,6 +4945,7 @@ VOID VioGpuDod::RecordNativeContextParameterDiagnostic(_Inout_ PVIOGPU_NATIVE_CO
         DWORD Value;
     };
     // Keep the snapshot bounded and make the phase value the final commit marker.
+    // clang-format off
     const DIAGNOSTIC_VALUE values[] = {
         {L"NativeContextGetParamContextId", contextId},
         {L"NativeContextGetParamParameter", parameter},
@@ -4976,6 +4983,7 @@ VOID VioGpuDod::RecordNativeContextParameterDiagnostic(_Inout_ PVIOGPU_NATIVE_CO
         {L"NativeContextGetParamValidation", validation},
         {L"NativeContextGetParamResult", result},
     };
+    // clang-format on
 
     DWORD zero = 0;
     NTSTATUS markerClear = WriteRegistryDWORD(deviceKey, L"NativeContextGetParamPhase", &zero);
@@ -5007,7 +5015,8 @@ VOID VioGpuDod::RecordNativeContextParameterDiagnostic(_Inout_ PVIOGPU_NATIVE_CO
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
-                   "viogpu native context GET_PARAM diagnostic: write failed, phase=%u data=0x%08X status=0x%08X marker=0x%08X\n",
+                   "viogpu native context GET_PARAM diagnostic: write failed, phase=%u data=0x%08X status=0x%08X "
+                   "marker=0x%08X\n",
                    diagnostic->Phase,
                    writeStatus,
                    statusWrite,
