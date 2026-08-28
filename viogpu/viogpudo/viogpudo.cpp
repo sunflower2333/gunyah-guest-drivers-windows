@@ -7244,7 +7244,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::QueryNativeContextParameterLocked(_Ino
     if (result != VioGpuHostContextConfirmed)
     {
         diagnostic.Result = result;
-        diagnostic.Validation = diagnostic.OuterValidation;
+        diagnostic.Validation = static_cast<viogpu_host_context_response_validation>(diagnostic.OuterValidation);
         if (m_pVioGpuDod != NULL)
         {
             m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
