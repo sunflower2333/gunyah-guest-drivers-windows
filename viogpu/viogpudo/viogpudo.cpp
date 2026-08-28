@@ -3967,6 +3967,19 @@ VioGpuResolveNativeControlWindow(_In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner,
 
     PUCHAR blob = static_cast<PUCHAR>(owner->ControlAddress);
     PMSM_SHMEM shared = reinterpret_cast<PMSM_SHMEM>(blob);
+    // Capture the complete shared header before validating rsp_mem_offset.  A
+    // bad offset is itself useful evidence: the other header words tell us
+    // whether the BAR points at the host control page or at an unrelated
+    // zeroed page.
+    ULONG sharedSeqno = VioGpuReadSharedU32(&shared->base.seqno);
+    ULONG sharedAsyncError = VioGpuReadSharedU32(&shared->async_error);
+    ULONG sharedGlobalFaults = VioGpuReadSharedU32(&shared->global_faults);
+    if (diagnostic != NULL)
+    {
+        diagnostic->SharedSeqno = sharedSeqno;
+        diagnostic->SharedAsyncError = sharedAsyncError;
+        diagnostic->SharedGlobalFaults = sharedGlobalFaults;
+    }
     ULONG responseOffset = VioGpuReadSharedU32(&shared->base.rsp_mem_offset);
     ULONG responseCapacityValue = owner->ControlBlobSize - sizeof(MSM_SHMEM);
     if (diagnostic != NULL)
