@@ -4107,7 +4107,10 @@ VioGpuCopyNativeControlResponse(_In_ VioGpuAdapter *adapter,
         diagnostic->CopyResult = VioGpuNativeContextParameterCopyNotAttempted;
     }
     if (adapter == NULL || owner == NULL || sequence == 0 || response == NULL ||
-        responseSize < sizeof(MSM_CCMD_IOCTL_SIMPLE_RSP) || KeGetCurrentIrql() != PASSIVE_LEVEL)
+        responseSize < sizeof(MSM_CCMD_IOCTL_SIMPLE_RSP) ||
+        (responseSize & (sizeof(ULONG) - 1)) != 0 ||
+        (reinterpret_cast<ULONG_PTR>(response) & (sizeof(ULONG) - 1)) != 0 ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         if (diagnostic != NULL)
         {
@@ -4126,6 +4129,14 @@ VioGpuCopyNativeControlResponse(_In_ VioGpuAdapter *adapter,
         if (diagnostic != NULL)
         {
             diagnostic->CopyResult = VioGpuNativeContextParameterCopyWindowUnavailable;
+        }
+        return FALSE;
+    }
+    if ((reinterpret_cast<ULONG_PTR>(sharedResponse) & (sizeof(ULONG) - 1)) != 0)
+    {
+        if (diagnostic != NULL)
+        {
+            diagnostic->CopyResult = VioGpuNativeContextParameterCopyMalformedResponse;
         }
         return FALSE;
     }
@@ -4156,7 +4167,13 @@ VioGpuCopyNativeControlResponse(_In_ VioGpuAdapter *adapter,
     }
 
     KeMemoryBarrier();
-    RtlCopyMemory(response, sharedResponse, responseSize);
+    volatile const ULONG *sharedResponseWords = reinterpret_cast<volatile const ULONG *>(sharedResponse);
+    PULONG responseWords = static_cast<PULONG>(response);
+    ULONG responseWordCount = responseSize / sizeof(ULONG);
+    for (ULONG wordIndex = 0; wordIndex < responseWordCount; ++wordIndex)
+    {
+        responseWords[wordIndex] = VioGpuReadSharedU32(&sharedResponseWords[wordIndex]);
+    }
     PVDRM_CCMD_RSP responseHeader = static_cast<PVDRM_CCMD_RSP>(response);
     sharedAsyncError = VioGpuReadSharedU32(&shmem->async_error);
     sharedGlobalFaults = VioGpuReadSharedU32(&shmem->global_faults);

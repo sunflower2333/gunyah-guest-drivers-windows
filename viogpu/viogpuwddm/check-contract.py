@@ -5931,12 +5931,32 @@ def check_native_context_ownership() -> None:
     )
     if min(seed_order) < 0 or list(seed_order) != sorted(seed_order):
         fail("native response seed must install an invalid return sentinel before publishing the exact length")
+    if re.search(r"(?:RtlCopyMemory|RtlMoveMemory|memcpy|memmove)\([^;]*,sharedResponse[^;]*\)", copy):
+        fail("native response copy must not use a bulk read from the mapped BAR window")
+    for fragment in (
+        "(responseSize&(sizeof(ULONG)-1))!=0",
+        "(reinterpret_cast<ULONG_PTR>(response)&(sizeof(ULONG)-1))!=0",
+        "(reinterpret_cast<ULONG_PTR>(sharedResponse)&(sizeof(ULONG)-1))!=0",
+        "volatileconstULONG*sharedResponseWords=reinterpret_cast<volatileconstULONG*>(sharedResponse);",
+        "PULONGresponseWords=static_cast<PULONG>(response);",
+        "ULONGresponseWordCount=responseSize/sizeof(ULONG);",
+        "for(ULONGwordIndex=0;wordIndex<responseWordCount;++wordIndex){responseWords[wordIndex]=VioGpuReadSharedU32(&sharedResponseWords[wordIndex]);}",
+    ):
+        if copy.count(fragment) != 1:
+            fail(f"native response copy must use aligned scalar 32-bit BAR reads: {fragment}")
     copy_sequence = (
+        copy.find("(responseSize&(sizeof(ULONG)-1))!=0"),
+        copy.find("(reinterpret_cast<ULONG_PTR>(response)&(sizeof(ULONG)-1))!=0"),
+        copy.find("RtlZeroMemory(response,responseSize);"),
+        copy.find("(reinterpret_cast<ULONG_PTR>(sharedResponse)&(sizeof(ULONG)-1))!=0"),
         copy.find("ULONGsharedSeqno=VioGpuReadSharedU32(&shmem->base.seqno);"),
         copy.find("if(responseSize>responseCapacity)"),
         copy.find("if(sharedSeqno!=sequence)"),
         copy.find("KeMemoryBarrier();"),
-        copy.find("RtlCopyMemory(response,sharedResponse,responseSize);"),
+        copy.find("volatileconstULONG*sharedResponseWords=reinterpret_cast<volatileconstULONG*>(sharedResponse);"),
+        copy.find("PULONGresponseWords=static_cast<PULONG>(response);"),
+        copy.find("ULONGresponseWordCount=responseSize/sizeof(ULONG);"),
+        copy.find("for(ULONGwordIndex=0;wordIndex<responseWordCount;++wordIndex){responseWords[wordIndex]=VioGpuReadSharedU32(&sharedResponseWords[wordIndex]);}"),
         copy.find("if(responseHeader->len!=responseSize||sharedAsyncError!=0||sharedGlobalFaults!=0)"),
     )
     if min(copy_sequence) < 0 or list(copy_sequence) != sorted(copy_sequence):
