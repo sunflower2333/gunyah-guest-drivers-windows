@@ -6204,6 +6204,17 @@ def check_native_context_ownership() -> None:
         fail("native context release proof must require submit-queue identity to be cleared")
 
     destroy = canonical_code(function_body("VioGpuAdapter::DestroyNativeContext", VIOGPU_CODE))
+    for fragment in (
+        "BOOLEANliveContext=objectState==VioGpuNativeContextLive&&context->Adapter==this&&context->Registered&&",
+        "BOOLEANretryingDestroy=objectState==VioGpuNativeContextDestroying&&context->Adapter==this&&",
+        "!context->Registered&&owner!=NULL&&owner->Registration==context&&",
+        "owner->State==VioGpuNativeContextOwnerDestroying&&",
+        "if(!liveContext&&!retryingDestroy)",
+        "if(!retryingDestroy){InterlockedExchange(&context->State,VioGpuNativeContextDestroying);"
+        "context->Registered=FALSE;owner->State=VioGpuNativeContextOwnerDestroying;}",
+    ):
+        if destroy.count(fragment) != 1:
+            fail(f"adapter destroy must recognize exactly one retained partial-cleanup retry state: {fragment}")
     mark_destroying = destroy.find("owner->State=VioGpuNativeContextOwnerDestroying;")
     host_destroy = destroy.find("DestroyNativeContextHostObjectsLocked(owner)")
     if mark_destroying < 0 or host_destroy < 0 or mark_destroying > host_destroy:
@@ -6223,19 +6234,64 @@ def check_native_context_ownership() -> None:
         "returnVioGpuHostContextConfirmed;"
     ) != 1:
         fail("native teardown must retain ownership after every non-confirmed cleanup stage")
-    retire_guard = (
-        "if(destroyResult==VioGpuHostContextConfirmed||destroyResult==VioGpuHostContextRejected)"
-        "{RetireNativeContextOwnerLocked(owner);}"
-        "else{owner->Registration=NULL;}"
+
+    partial_cleanup_stages = (
+        (
+            "if(owner->SubmitQueueCreated)",
+            "CloseNativeSubmitQueueLocked(owner)",
+            "elseif(owner->SubmitQueueId!=0)",
+        ),
+        (
+            "if(owner->ControlMapped)",
+            "m_CtrlQueue.UnmapNativeControlBlob(owner->ControlResourceId)",
+            "owner->ControlMapped=FALSE;",
+        ),
+        (
+            "if(owner->ControlAddress!=NULL)",
+            "m_PciResources.UnmapHostVisibleAddress(owner->ControlAddress)",
+            "owner->ControlAddress=NULL;",
+        ),
+        (
+            "if(owner->ControlResourceCreated)",
+            "m_CtrlQueue.UnrefNativeResource(owner->ControlResourceId)",
+            "owner->ControlResourceCreated=FALSE;",
+        ),
+        (
+            "m_CtrlQueue.DestroyNativeContext(owner->ContextId)",
+            "if(result!=VioGpuHostContextConfirmed&&result!=VioGpuHostContextRejected)",
+            "owner->ContextId=0;",
+        ),
     )
-    if destroy.count(retire_guard) != 1:
-        fail("adapter destroy may retire only Confirmed or exact INVALID_CONTEXT_ID ownership")
-    failure_guard = (
+    for guard, operation, completion in partial_cleanup_stages:
+        guard_offset = cleanup.find(guard)
+        operation_offset = cleanup.find(operation, guard_offset)
+        completion_offset = cleanup.find(completion, operation_offset)
+        if min(guard_offset, operation_offset, completion_offset) < 0 or not (
+            guard_offset <= operation_offset < completion_offset
+        ):
+            fail(f"partial Native Context cleanup must guard and record each completed stage: {operation}")
+
+    close_queue = canonical_code(function_body("VioGpuAdapter::CloseNativeSubmitQueueLocked", VIOGPU_CODE))
+    close_response = close_queue.find("VioGpuCopyNativeControlResponse(")
+    close_created = close_queue.find("owner->SubmitQueueCreated=FALSE;", close_response)
+    close_id = close_queue.find("owner->SubmitQueueId=0;", close_created)
+    if min(close_response, close_created, close_id) < 0 or not close_response < close_created < close_id:
+        fail("submit-queue cleanup must retain its stage identity until confirmed completion")
+
+    uncertain_guard = destroy.find(
         "if(destroyResult!=VioGpuHostContextConfirmed&&destroyResult!=VioGpuHostContextRejected)"
-        "{FailNativeContextAtAnyIrql();"
     )
-    if destroy.count(failure_guard) != 1:
-        fail("adapter destroy must fail the transport while retaining NotSubmitted or Unknown ownership")
+    retry_status = destroy.find("status=STATUS_DEVICE_BUSY;", uncertain_guard)
+    retry_return = destroy.find("returnstatus;", retry_status)
+    retire_owner = destroy.find("RetireNativeContextOwnerLocked(owner);", retry_return)
+    clear_registration = destroy.find("context->Adapter=NULL;", retire_owner)
+    report_released = destroy.find("*released=TRUE;", clear_registration)
+    if min(uncertain_guard, retry_status, retry_return, retire_owner, clear_registration, report_released) < 0 or not (
+        uncertain_guard < retry_status < retry_return < retire_owner < clear_registration < report_released
+    ):
+        fail("adapter destroy must retain uncertain ownership and clear it only after confirmed Host absence")
+    if "owner->Registration=NULL;" in destroy:
+        fail("retryable Native Context teardown must not detach the retained owner from its registration")
 
 
 def check_native_map_diagnostics() -> None:

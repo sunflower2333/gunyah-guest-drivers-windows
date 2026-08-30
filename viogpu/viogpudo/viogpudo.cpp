@@ -8199,17 +8199,23 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
         return STATUS_SUCCESS;
     }
     VIOGPU_NATIVE_CONTEXT_OWNER *owner = context->Owner;
-    if (objectState != VioGpuNativeContextLive || context->Adapter != this || !context->Registered || owner == NULL ||
-        owner->Registration != context || owner->State != VioGpuNativeContextOwnerLive ||
-        owner->Generation != context->Generation || owner->ResetGeneration != context->ResetGeneration ||
-        owner->ContextId != context->ContextId
+    BOOLEAN liveContext = objectState == VioGpuNativeContextLive && context->Adapter == this && context->Registered &&
+                          owner != NULL && owner->Registration == context &&
+                          owner->State == VioGpuNativeContextOwnerLive && owner->Generation == context->Generation &&
+                          owner->ResetGeneration == context->ResetGeneration && owner->ContextId == context->ContextId;
 #if defined(VIOGPU_NATIVE_CONTEXT)
-        || !owner->ControlResourceCreated || !owner->ControlMapped || owner->ControlResourceId == 0 ||
-        owner->ControlBlobSize != VIOGPU_NATIVE_CONTROL_BLOB_SIZE || owner->ControlAddress == NULL ||
-        !owner->SubmitQueueCreated || owner->SubmitQueueId == 0 || context->SubmitQueueId != owner->SubmitQueueId ||
-        context->VaStart == 0 || context->VaSize == 0
+    liveContext = liveContext && owner->ControlResourceCreated && owner->ControlMapped &&
+                  owner->ControlResourceId != 0 && owner->ControlBlobSize == VIOGPU_NATIVE_CONTROL_BLOB_SIZE &&
+                  owner->ControlAddress != NULL && owner->SubmitQueueCreated && owner->SubmitQueueId != 0 &&
+                  context->SubmitQueueId == owner->SubmitQueueId && context->VaStart != 0 && context->VaSize != 0;
 #endif
-    )
+    BOOLEAN retryingDestroy = objectState == VioGpuNativeContextDestroying && context->Adapter == this &&
+                              !context->Registered && owner != NULL && owner->Registration == context &&
+                              owner->State == VioGpuNativeContextOwnerDestroying &&
+                              owner->Generation == context->Generation &&
+                              owner->ResetGeneration == context->ResetGeneration &&
+                              owner->ContextId == context->ContextId;
+    if (!liveContext && !retryingDestroy)
     {
         KeReleaseSpinLock(&context->BindingLock, oldIrql);
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
@@ -8228,9 +8234,12 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
 #if !defined(VIOGPU_NATIVE_CONTEXT)
     UINT contextId = context->ContextId;
 #endif
-    InterlockedExchange(&context->State, VioGpuNativeContextDestroying);
-    context->Registered = FALSE;
-    owner->State = VioGpuNativeContextOwnerDestroying;
+    if (!retryingDestroy)
+    {
+        InterlockedExchange(&context->State, VioGpuNativeContextDestroying);
+        context->Registered = FALSE;
+        owner->State = VioGpuNativeContextOwnerDestroying;
+    }
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
 
     LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
@@ -8252,14 +8261,17 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
         destroyResult = m_CtrlQueue.DestroyNativeContext(contextId);
 #endif
     }
-    if (destroyResult == VioGpuHostContextConfirmed || destroyResult == VioGpuHostContextRejected)
+    if (destroyResult != VioGpuHostContextConfirmed && destroyResult != VioGpuHostContextRejected)
     {
-        RetireNativeContextOwnerLocked(owner);
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu context destroy: Host cleanup incomplete; owner retained for retry\n");
+        status = STATUS_DEVICE_BUSY;
+        KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+        return status;
     }
-    else
-    {
-        owner->Registration = NULL;
-    }
+
+    RetireNativeContextOwnerLocked(owner);
     KeAcquireSpinLock(&context->BindingLock, &oldIrql);
     context->Adapter = NULL;
     context->Owner = NULL;
@@ -8272,14 +8284,6 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
     InterlockedExchange(&context->State, VioGpuNativeContextDead);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
     *released = TRUE;
-
-    if (destroyResult != VioGpuHostContextConfirmed && destroyResult != VioGpuHostContextRejected)
-    {
-        FailNativeContextAtAnyIrql();
-        DbgPrintEx(DPFLTR_DEFAULT_ID,
-                   DPFLTR_ERROR_LEVEL,
-                   "viogpu context destroy: Host ownership uncertain; transport failed closed\n");
-    }
     status = STATUS_SUCCESS;
     KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
     return status;
