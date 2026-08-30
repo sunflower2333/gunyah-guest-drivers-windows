@@ -4862,6 +4862,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                         _In_ BOOLEAN allocationDestroying,
                                                         _In_ DWORD allocationHostState,
                                                         _In_ UINT contextId,
+                                                        _In_ UINT resourceId,
+                                                        _In_ DWORD rangeCount,
                                                         _In_ ULONGLONG requestedIova,
                                                         _In_ ULONGLONG rangeIova,
                                                         _In_ SIZE_T rangeLength)
@@ -4895,6 +4897,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     ULONGLONG length = static_cast<ULONGLONG>(rangeLength);
     DWORD lengthLow = static_cast<DWORD>(length);
     DWORD lengthHigh = static_cast<DWORD>(length >> 32);
+    DWORD resourceIdValue = resourceId;
     struct VALUE_WRITE
     {
         PCWSTR Name;
@@ -4911,6 +4914,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
         {L"NativeContextAllocationDestroyAllocationDestroying", &destroyingValue},
         {L"NativeContextAllocationDestroyAllocationHostState", &allocationHostState},
         {L"NativeContextAllocationDestroyContextId", &contextIdValue},
+        {L"NativeContextAllocationDestroyResourceId", &resourceIdValue},
+        {L"NativeContextAllocationDestroyRangeCount", &rangeCount},
         {L"NativeContextAllocationDestroyRequestedIovaLow", &requestedLow},
         {L"NativeContextAllocationDestroyRequestedIovaHigh", &requestedHigh},
         {L"NativeContextAllocationDestroyRangeIovaLow", &rangeLow},

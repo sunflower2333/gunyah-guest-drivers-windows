@@ -513,6 +513,7 @@ VOID RecordNativeAllocationDestroyState(_In_ VioGpuDod *adapter,
     BOOLEAN rangeLinked = FALSE;
     DWORD registrationState = 0;
     DWORD registrationReferences = 0;
+    DWORD rangeCount = 0;
     ULONGLONG rangeIova = 0;
     SIZE_T rangeLength = 0;
     if (registration != NULL)
@@ -535,6 +536,11 @@ VOID RecordNativeAllocationDestroyState(_In_ VioGpuDod *adapter,
             rangeIova = range->Iova;
             rangeLength = range->Length;
         }
+        for (PLIST_ENTRY entry = registration->AllocationRanges.Flink; entry != &registration->AllocationRanges;
+             entry = entry->Flink)
+        {
+            ++rangeCount;
+        }
         KeReleaseSpinLock(&registration->BindingLock, oldIrql);
     }
 
@@ -549,6 +555,8 @@ VOID RecordNativeAllocationDestroyState(_In_ VioGpuDod *adapter,
                                                       allocation->Destroying,
                                                       allocation->HostState,
                                                       allocation->ContextId,
+                                                      allocation->ResourceId,
+                                                      rangeCount,
                                                       allocation->PrivateData.RequestedIova,
                                                       rangeIova,
                                                       rangeLength);

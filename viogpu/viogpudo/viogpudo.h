@@ -1052,6 +1052,8 @@ class VioGpuDod
                                                   _In_ BOOLEAN allocationDestroying,
                                                   _In_ DWORD allocationHostState,
                                                   _In_ UINT contextId,
+                                                  _In_ UINT resourceId,
+                                                  _In_ DWORD rangeCount,
                                                   _In_ ULONGLONG requestedIova,
                                                   _In_ ULONGLONG rangeIova,
                                                   _In_ SIZE_T rangeLength);
