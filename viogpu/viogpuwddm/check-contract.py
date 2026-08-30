@@ -5912,8 +5912,20 @@ def check_native_context_ownership() -> None:
             fail(f"native response {owner} must resolve exactly one mapped host-visible BAR window")
         if "KeWaitForSingleObject" in body or "SubmitNativeControl" in body or "PAGED_CODE" in body:
             fail(f"native response {owner} must remain non-waiting and nonpageable")
+    for bulk_clear in ("RtlZeroMemory(", "RtlFillMemory(", "memset("):
+        if bulk_clear in seed:
+            fail("native response seed must not use bulk memory operations on the mapped BAR window")
+    for fragment in (
+        "(responseSize&(sizeof(ULONG)-1))!=0",
+        "(reinterpret_cast<ULONG_PTR>(response)&(sizeof(ULONG)-1))!=0",
+        "volatileULONG*responseWords=reinterpret_cast<volatileULONG*>(response);",
+        "ULONGresponseWordCount=responseSize/sizeof(ULONG);",
+        "for(ULONGwordIndex=0;wordIndex<responseWordCount;++wordIndex){VioGpuWriteSharedU32(&responseWords[wordIndex],0);}",
+    ):
+        if seed.count(fragment) != 1:
+            fail(f"native response seed must use aligned volatile 32-bit BAR writes: {fragment}")
     seed_order = (
-        seed.find("RtlZeroMemory(response,responseSize);"),
+        seed.find("for(ULONGwordIndex=0;wordIndex<responseWordCount;++wordIndex)"),
         seed.find("VioGpuWriteSharedU32(reinterpret_cast<volatileULONG*>(&responseHeader->ret),MAXLONG);"),
         seed.find("VioGpuWriteSharedU32(reinterpret_cast<volatileULONG*>(&responseHeader->hdr.len),responseSize);"),
     )

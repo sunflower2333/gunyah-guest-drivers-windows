@@ -4019,7 +4019,7 @@ VioGpuSeedNativeControlResponse(_In_ VioGpuAdapter *adapter,
         diagnostic->SeedResult = VioGpuNativeContextParameterSeedNotAttempted;
     }
     if (adapter == NULL || owner == NULL || sequence == 0 || responseSize < sizeof(MSM_CCMD_IOCTL_SIMPLE_RSP) ||
-        KeGetCurrentIrql() != PASSIVE_LEVEL)
+        (responseSize & (sizeof(ULONG) - 1)) != 0 || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         if (diagnostic != NULL)
         {
@@ -4058,6 +4058,14 @@ VioGpuSeedNativeControlResponse(_In_ VioGpuAdapter *adapter,
         }
         return FALSE;
     }
+    if ((reinterpret_cast<ULONG_PTR>(response) & (sizeof(ULONG) - 1)) != 0)
+    {
+        if (diagnostic != NULL)
+        {
+            diagnostic->SeedResult = VioGpuNativeContextParameterSeedInvalidArguments;
+        }
+        return FALSE;
+    }
     if (sharedSeqno == sequence)
     {
         if (diagnostic != NULL)
@@ -4067,7 +4075,15 @@ VioGpuSeedNativeControlResponse(_In_ VioGpuAdapter *adapter,
         return FALSE;
     }
 
-    RtlZeroMemory(response, responseSize);
+    // This host-visible BAR window only supports naturally aligned scalar
+    // accesses. Keep each clear volatile so ARM64 cannot lower it to memset
+    // vector stores that may cross the response window at an unaligned address.
+    volatile ULONG *responseWords = reinterpret_cast<volatile ULONG *>(response);
+    ULONG responseWordCount = responseSize / sizeof(ULONG);
+    for (ULONG wordIndex = 0; wordIndex < responseWordCount; ++wordIndex)
+    {
+        VioGpuWriteSharedU32(&responseWords[wordIndex], 0);
+    }
     PMSM_CCMD_IOCTL_SIMPLE_RSP responseHeader = reinterpret_cast<PMSM_CCMD_IOCTL_SIMPLE_RSP>(response);
     VioGpuWriteSharedU32(reinterpret_cast<volatile ULONG *>(&responseHeader->ret), MAXLONG);
     VioGpuWriteSharedU32(reinterpret_cast<volatile ULONG *>(&responseHeader->hdr.len), responseSize);
