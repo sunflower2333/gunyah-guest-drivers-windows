@@ -589,6 +589,8 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
     range->Registration = allocation->NativeContext;
     range->Iova = allocation->PrivateData.RequestedIova;
     range->Length = allocation->BackingSize;
+    range->ResourceId = allocation->ResourceId;
+    range->ContextId = allocation->ContextId;
 
     VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration = allocation->NativeContext;
     KIRQL oldIrql;
@@ -596,6 +598,8 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
     DWORD rangeCount = 0;
     ULONGLONG collisionIova = 0;
     DWORD collisionLength = 0;
+    UINT collisionResourceId = 0;
+    UINT collisionContextId = 0;
     DWORD registrationState = 0;
     DWORD registrationReferences = 0;
     KeAcquireSpinLock(&registration->BindingLock, &oldIrql);
@@ -633,6 +637,8 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
                 rejectionReason = 3;
                 collisionIova = existing->Iova;
                 collisionLength = existing->Length > MAXULONG ? MAXULONG : static_cast<DWORD>(existing->Length);
+                collisionResourceId = existing->ResourceId;
+                collisionContextId = existing->ContextId;
                 valid = FALSE;
                 break;
             }
@@ -655,6 +661,8 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
                                                                         range->Iova,
                                                                         collisionIova,
                                                                         collisionLength,
+                                                                        collisionResourceId,
+                                                                        collisionContextId,
                                                                         registrationState,
                                                                         registrationReferences,
                                                                         allocation->Destroying,

@@ -1035,6 +1035,8 @@ class VioGpuDod
                                                _In_ ULONGLONG requestedIova,
                                                _In_ ULONGLONG collisionIova,
                                                _In_ DWORD collisionLength,
+                                               _In_ UINT collisionResourceId,
+                                               _In_ UINT collisionContextId,
                                                _In_ DWORD registrationState,
                                                _In_ DWORD registrationReferences,
                                                _In_ BOOLEAN allocationDestroying,

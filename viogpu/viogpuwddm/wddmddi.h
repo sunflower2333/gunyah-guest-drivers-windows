@@ -127,6 +127,8 @@ struct VIOGPU_WDDM_ALLOCATION_RANGE
     VIOGPU_NATIVE_CONTEXT_REGISTRATION *Registration;
     ULONGLONG Iova;
     SIZE_T Length;
+    UINT ResourceId;
+    UINT ContextId;
     BOOLEAN Linked;
 };
 
