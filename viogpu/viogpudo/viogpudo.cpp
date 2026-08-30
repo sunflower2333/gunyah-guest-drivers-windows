@@ -4879,6 +4879,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD contextRangeValue = contextRangePresent ? 1U : 0U;
     DWORD contextRangeLinkedValue = contextRangeLinked ? 1U : 0U;
     DWORD destroyingValue = allocationDestroying ? 1U : 0U;
+    DWORD contextIdValue = contextId;
     DWORD requestedLow = static_cast<DWORD>(requestedIova);
     DWORD requestedHigh = static_cast<DWORD>(requestedIova >> 32);
     DWORD rangeLow = static_cast<DWORD>(rangeIova);
@@ -4901,7 +4902,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
         {L"NativeContextAllocationDestroyRegistrationReferences", &registrationReferences},
         {L"NativeContextAllocationDestroyAllocationDestroying", &destroyingValue},
         {L"NativeContextAllocationDestroyAllocationHostState", &allocationHostState},
-        {L"NativeContextAllocationDestroyContextId", &contextId},
+        {L"NativeContextAllocationDestroyContextId", &contextIdValue},
         {L"NativeContextAllocationDestroyRequestedIovaLow", &requestedLow},
         {L"NativeContextAllocationDestroyRequestedIovaHigh", &requestedHigh},
         {L"NativeContextAllocationDestroyRangeIovaLow", &rangeLow},
