@@ -4107,10 +4107,8 @@ VioGpuCopyNativeControlResponse(_In_ VioGpuAdapter *adapter,
         diagnostic->CopyResult = VioGpuNativeContextParameterCopyNotAttempted;
     }
     if (adapter == NULL || owner == NULL || sequence == 0 || response == NULL ||
-        responseSize < sizeof(MSM_CCMD_IOCTL_SIMPLE_RSP) ||
-        (responseSize & (sizeof(ULONG) - 1)) != 0 ||
-        (reinterpret_cast<ULONG_PTR>(response) & (sizeof(ULONG) - 1)) != 0 ||
-        KeGetCurrentIrql() != PASSIVE_LEVEL)
+        responseSize < sizeof(MSM_CCMD_IOCTL_SIMPLE_RSP) || (responseSize & (sizeof(ULONG) - 1)) != 0 ||
+        (reinterpret_cast<ULONG_PTR>(response) & (sizeof(ULONG) - 1)) != 0 || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         if (diagnostic != NULL)
         {
