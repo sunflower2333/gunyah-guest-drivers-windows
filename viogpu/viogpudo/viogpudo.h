@@ -157,6 +157,16 @@ enum VIOGPU_NATIVE_CONTEXT_CREATE_STAGE : DWORD
     VioGpuNativeContextCreateComplete = 0x0FFF,
 };
 
+enum VIOGPU_NATIVE_ALLOCATION_DESTROY_STAGE : DWORD
+{
+    VioGpuNativeAllocationDestroyEntered = 0x0100,
+    VioGpuNativeAllocationDestroyLifecycle = 0x0110,
+    VioGpuNativeAllocationDestroyBegin = 0x0120,
+    VioGpuNativeAllocationDestroyHost = 0x0130,
+    VioGpuNativeAllocationDestroyDetach = 0x0140,
+    VioGpuNativeAllocationDestroyComplete = 0x0FFF,
+};
+
 struct VIOGPU_NATIVE_PRESENT_DIAGNOSTIC
 {
     DWORD ContextType;
@@ -1029,6 +1039,20 @@ class VioGpuDod
                                                _In_ DWORD registrationReferences,
                                                _In_ BOOLEAN allocationDestroying,
                                                _In_ DWORD allocationHostState);
+    VOID RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
+                                                  _In_ NTSTATUS status,
+                                                  _In_ DWORD detail,
+                                                  _In_ BOOLEAN nativeContextPresent,
+                                                  _In_ BOOLEAN contextRangePresent,
+                                                  _In_ BOOLEAN contextRangeLinked,
+                                                  _In_ DWORD registrationState,
+                                                  _In_ DWORD registrationReferences,
+                                                  _In_ BOOLEAN allocationDestroying,
+                                                  _In_ DWORD allocationHostState,
+                                                  _In_ UINT contextId,
+                                                  _In_ ULONGLONG requestedIova,
+                                                  _In_ ULONGLONG rangeIova,
+                                                  _In_ SIZE_T rangeLength);
     VOID RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC *diagnostic);
     VOID RecordNativeContextMapResponseDiagnostic(_In_ const VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC *diagnostic);
     VOID RecordNativeContextParameterDiagnostic(_Inout_ PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic);

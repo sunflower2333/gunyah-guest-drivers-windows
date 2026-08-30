@@ -4843,6 +4843,105 @@ VOID VioGpuDod::RecordNativeAllocationRangeDiagnostic(_In_ NTSTATUS status,
                reasonWrite);
 }
 
+VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
+                                                        _In_ NTSTATUS status,
+                                                        _In_ DWORD detail,
+                                                        _In_ BOOLEAN nativeContextPresent,
+                                                        _In_ BOOLEAN contextRangePresent,
+                                                        _In_ BOOLEAN contextRangeLinked,
+                                                        _In_ DWORD registrationState,
+                                                        _In_ DWORD registrationReferences,
+                                                        _In_ BOOLEAN allocationDestroying,
+                                                        _In_ DWORD allocationHostState,
+                                                        _In_ UINT contextId,
+                                                        _In_ ULONGLONG requestedIova,
+                                                        _In_ ULONGLONG rangeIova,
+                                                        _In_ SIZE_T rangeLength)
+{
+    PAGED_CODE();
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native allocation destroy diagnostic: registry open failed, stage=0x%04X "
+                   "status=0x%08X open=0x%08X\n",
+                   stage,
+                   static_cast<DWORD>(status),
+                   openStatus);
+        return;
+    }
+
+    DWORD statusValue = static_cast<DWORD>(status);
+    DWORD nativeContextValue = nativeContextPresent ? 1U : 0U;
+    DWORD contextRangeValue = contextRangePresent ? 1U : 0U;
+    DWORD contextRangeLinkedValue = contextRangeLinked ? 1U : 0U;
+    DWORD destroyingValue = allocationDestroying ? 1U : 0U;
+    DWORD requestedLow = static_cast<DWORD>(requestedIova);
+    DWORD requestedHigh = static_cast<DWORD>(requestedIova >> 32);
+    DWORD rangeLow = static_cast<DWORD>(rangeIova);
+    DWORD rangeHigh = static_cast<DWORD>(rangeIova >> 32);
+    ULONGLONG length = static_cast<ULONGLONG>(rangeLength);
+    DWORD lengthLow = static_cast<DWORD>(length);
+    DWORD lengthHigh = static_cast<DWORD>(length >> 32);
+    struct VALUE_WRITE
+    {
+        PCWSTR Name;
+        PDWORD Value;
+    } writes[] = {
+        {L"NativeContextAllocationDestroyStage", &stage},
+        {L"NativeContextAllocationDestroyStatus", &statusValue},
+        {L"NativeContextAllocationDestroyDetail", &detail},
+        {L"NativeContextAllocationDestroyNativeContextPresent", &nativeContextValue},
+        {L"NativeContextAllocationDestroyContextRangePresent", &contextRangeValue},
+        {L"NativeContextAllocationDestroyContextRangeLinked", &contextRangeLinkedValue},
+        {L"NativeContextAllocationDestroyRegistrationState", &registrationState},
+        {L"NativeContextAllocationDestroyRegistrationReferences", &registrationReferences},
+        {L"NativeContextAllocationDestroyAllocationDestroying", &destroyingValue},
+        {L"NativeContextAllocationDestroyAllocationHostState", &allocationHostState},
+        {L"NativeContextAllocationDestroyContextId", &contextId},
+        {L"NativeContextAllocationDestroyRequestedIovaLow", &requestedLow},
+        {L"NativeContextAllocationDestroyRequestedIovaHigh", &requestedHigh},
+        {L"NativeContextAllocationDestroyRangeIovaLow", &rangeLow},
+        {L"NativeContextAllocationDestroyRangeIovaHigh", &rangeHigh},
+        {L"NativeContextAllocationDestroyRangeLengthLow", &lengthLow},
+        {L"NativeContextAllocationDestroyRangeLengthHigh", &lengthHigh},
+    };
+    NTSTATUS writeStatus = STATUS_SUCCESS;
+    for (UINT index = 0; index < ARRAYSIZE(writes); ++index)
+    {
+        writeStatus = WriteRegistryDWORD(deviceKey, writes[index].Name, writes[index].Value);
+        if (!NT_SUCCESS(writeStatus))
+        {
+            break;
+        }
+    }
+    ZwClose(deviceKey);
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               NT_SUCCESS(writeStatus) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+               "viogpu native allocation destroy diagnostic: stage=0x%04X status=0x%08X detail=%u "
+               "native=%u range=%u/%u registration=%u/%u destroying=%u host=%u context=%u "
+               "requested=0x%llX range=0x%llX/%llu writes=0x%08X\n",
+               stage,
+               statusValue,
+               detail,
+               nativeContextValue,
+               contextRangeValue,
+               contextRangeLinkedValue,
+               registrationState,
+               registrationReferences,
+               destroyingValue,
+               allocationHostState,
+               contextId,
+               requestedIova,
+               rangeIova,
+               length,
+               writeStatus);
+}
+
 VOID VioGpuDod::RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC *diagnostic)
 {
     PAGED_CODE();
