@@ -534,31 +534,47 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
 
     VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration = allocation->NativeContext;
     KIRQL oldIrql;
+    DWORD rejectionReason = 0;
+    DWORD rangeCount = 0;
+    ULONGLONG collisionIova = 0;
+    DWORD collisionLength = 0;
+    DWORD registrationState = 0;
+    DWORD registrationReferences = 0;
     KeAcquireSpinLock(&registration->BindingLock, &oldIrql);
+    registrationState = static_cast<DWORD>(InterlockedCompareExchange(&registration->State,
+                                                                        VioGpuNativeContextDead,
+                                                                        VioGpuNativeContextDead));
+    registrationReferences = registration->AllocationReferences;
     BOOLEAN valid = registration->Adapter != NULL && registration->Adapter->GetVioGpu() == allocation->Adapter &&
                     registration->Owner != NULL && registration->Registered &&
                     registration->Generation == allocation->ContextGeneration &&
                     registration->ResetGeneration == allocation->ContextResetGeneration &&
-                    registration->ContextId == allocation->ContextId &&
-                    InterlockedCompareExchange(&registration->State,
-                                               VioGpuNativeContextDead,
-                                               VioGpuNativeContextDead) == VioGpuNativeContextLive;
+                    registration->ContextId == allocation->ContextId && registrationState == VioGpuNativeContextLive;
+    if (!valid)
+    {
+        rejectionReason = 1;
+    }
     if (valid)
     {
         ULONGLONG rangeEnd = range->Iova + (ULONGLONG)range->Length - 1;
         for (PLIST_ENTRY entry = registration->AllocationRanges.Flink; entry != &registration->AllocationRanges;
              entry = entry->Flink)
         {
+            ++rangeCount;
             VIOGPU_WDDM_ALLOCATION_RANGE *existing = CONTAINING_RECORD(entry, VIOGPU_WDDM_ALLOCATION_RANGE, Link);
             if (existing->Registration != registration || !existing->Linked || existing->Iova == 0 ||
                 existing->Length == 0 || existing->Iova > MAXULONGLONG - ((ULONGLONG)existing->Length - 1))
             {
+                rejectionReason = 2;
                 valid = FALSE;
                 break;
             }
             ULONGLONG existingEnd = existing->Iova + (ULONGLONG)existing->Length - 1;
             if (range->Iova <= existingEnd && existing->Iova <= rangeEnd)
             {
+                rejectionReason = 3;
+                collisionIova = existing->Iova;
+                collisionLength = existing->Length > MAXDWORD ? MAXDWORD : static_cast<DWORD>(existing->Length);
                 valid = FALSE;
                 break;
             }
@@ -573,6 +589,19 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
     KeReleaseSpinLock(&registration->BindingLock, oldIrql);
     if (!valid)
     {
+        if (allocation->Adapter != NULL)
+        {
+            allocation->Adapter->RecordNativeAllocationRangeDiagnostic(STATUS_DEVICE_BUSY,
+                                                                        rejectionReason,
+                                                                        rangeCount,
+                                                                        range->Iova,
+                                                                        collisionIova,
+                                                                        collisionLength,
+                                                                        registrationState,
+                                                                        registrationReferences,
+                                                                        allocation->Destroying,
+                                                                        allocation->HostState);
+        }
         delete range;
         return STATUS_DEVICE_BUSY;
     }

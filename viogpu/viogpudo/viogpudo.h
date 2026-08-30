@@ -1019,6 +1019,16 @@ class VioGpuDod
     VOID RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_CREATE_STAGE stage,
                                              _In_ NTSTATUS status,
                                              _In_ DWORD detail);
+    VOID RecordNativeAllocationRangeDiagnostic(_In_ NTSTATUS status,
+                                               _In_ DWORD reason,
+                                               _In_ DWORD rangeCount,
+                                               _In_ ULONGLONG requestedIova,
+                                               _In_ ULONGLONG collisionIova,
+                                               _In_ DWORD collisionLength,
+                                               _In_ DWORD registrationState,
+                                               _In_ DWORD registrationReferences,
+                                               _In_ BOOLEAN allocationDestroying,
+                                               _In_ DWORD allocationHostState);
     VOID RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC *diagnostic);
     VOID RecordNativeContextMapResponseDiagnostic(_In_ const VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC *diagnostic);
     VOID RecordNativeContextParameterDiagnostic(_Inout_ PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic);

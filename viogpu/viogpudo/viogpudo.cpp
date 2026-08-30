@@ -4767,6 +4767,82 @@ VOID VioGpuDod::RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_C
                detailValue);
 }
 
+VOID VioGpuDod::RecordNativeAllocationRangeDiagnostic(_In_ NTSTATUS status,
+                                                      _In_ DWORD reason,
+                                                      _In_ DWORD rangeCount,
+                                                      _In_ ULONGLONG requestedIova,
+                                                      _In_ ULONGLONG collisionIova,
+                                                      _In_ DWORD collisionLength,
+                                                      _In_ DWORD registrationState,
+                                                      _In_ DWORD registrationReferences,
+                                                      _In_ BOOLEAN allocationDestroying,
+                                                      _In_ DWORD allocationHostState)
+{
+    PAGED_CODE();
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native allocation range diagnostic: registry open failed, status=0x%08X open=0x%08X\n",
+                   status,
+                   openStatus);
+        return;
+    }
+
+    DWORD statusValue = static_cast<DWORD>(status);
+    DWORD requestedLow = static_cast<DWORD>(requestedIova);
+    DWORD requestedHigh = static_cast<DWORD>(requestedIova >> 32);
+    DWORD collisionLow = static_cast<DWORD>(collisionIova);
+    DWORD collisionHigh = static_cast<DWORD>(collisionIova >> 32);
+    DWORD destroying = allocationDestroying ? 1U : 0U;
+    NTSTATUS writes[11] = {};
+    writes[0] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeStatus", &statusValue);
+    writes[1] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeRequestedIovaLow", &requestedLow);
+    writes[2] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeRequestedIovaHigh", &requestedHigh);
+    writes[3] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeCollisionIovaLow", &collisionLow);
+    writes[4] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeCollisionIovaHigh", &collisionHigh);
+    writes[5] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeCollisionLength", &collisionLength);
+    writes[6] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeCount", &rangeCount);
+    writes[7] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeRegistrationState", &registrationState);
+    writes[8] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeRegistrationReferences", &registrationReferences);
+    writes[9] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeAllocationDestroying", &destroying);
+    writes[10] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeAllocationHostState", &allocationHostState);
+    DWORD reasonValue = reason;
+    NTSTATUS reasonWrite = STATUS_SUCCESS;
+    for (UINT index = 0; index < ARRAYSIZE(writes); ++index)
+    {
+        if (!NT_SUCCESS(writes[index]))
+        {
+            reasonWrite = writes[index];
+            break;
+        }
+    }
+    if (NT_SUCCESS(reasonWrite))
+    {
+        reasonWrite = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeReason", &reasonValue);
+    }
+    ZwClose(deviceKey);
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               NT_SUCCESS(reasonWrite) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+               "viogpu native allocation range diagnostic: status=0x%08X reason=%u ranges=%u "
+               "requested=0x%llX collision=0x%llX/%u registration=%u/%u destroying=%u host=%u writes=0x%08X\n",
+               statusValue,
+               reason,
+               rangeCount,
+               requestedIova,
+               collisionIova,
+               collisionLength,
+               registrationState,
+               registrationReferences,
+               destroying,
+               allocationHostState,
+               reasonWrite);
+}
+
 VOID VioGpuDod::RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC *diagnostic)
 {
     PAGED_CODE();
