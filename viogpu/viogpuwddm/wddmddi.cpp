@@ -574,7 +574,7 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
             {
                 rejectionReason = 3;
                 collisionIova = existing->Iova;
-                collisionLength = existing->Length > MAXDWORD ? MAXDWORD : static_cast<DWORD>(existing->Length);
+                collisionLength = existing->Length > MAXULONG ? MAXULONG : static_cast<DWORD>(existing->Length);
                 valid = FALSE;
                 break;
             }
