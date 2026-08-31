@@ -62,16 +62,18 @@ installed or run on the device.
 Source after `58181` also addresses the wrapper-side timing race exposed by that
 Host trace. `DxgkDdiDestroyContext` closes new submissions and waits for the
 context operation rundown, then gives transient queued, worker-owned, or
-Host-issued owners one shared one-second deadline to retire while VirtIO DPC
-dispatch remains enabled. It rescans ownership after short PASSIVE delays.
-Malformed or inconsistent ownership requests adapter reset, while a
-well-formed owner that reaches the deadline returns a retryable busy status
-without suppressing the completion dispatch needed by a later destroy retry.
-The full local Native Context contract, changed-range formatter, and
-wire/private ABI fixtures pass. The preceding source is ARM64-built and signed,
-but this deadline-policy change is not yet built, installed, or
-runtime-validated, so it is not evidence that the remaining lifecycle leak is
-fixed.
+Host-issued owners a context-scoped completion barrier while VirtIO DPC
+dispatch remains enabled. Every terminal submission-reference release wakes
+the destroy path and renews a one-second stall deadline. Since closing blocks
+new references, continued progress is finite; an owner that makes no progress
+for one second still returns a bounded retryable busy status. Malformed or
+inconsistent ownership requests adapter reset, while a well-formed stalled
+owner keeps completion dispatch enabled for a later destroy retry. The
+reset-suppression policy is ARM64-built and signed as package `58184`, but remains
+uninstalled. The progress-barrier change passes the local Native Context
+contract, changed-range formatter, and wire/private ABI fixtures; it is not yet
+ARM64 WDK-built, installed, or runtime-validated, so it is not evidence that
+the remaining lifecycle leak is fixed.
 
 The current Windows runtime evidence is narrower than those source contracts.
 Package `58030` reports the first classified Present rejection as

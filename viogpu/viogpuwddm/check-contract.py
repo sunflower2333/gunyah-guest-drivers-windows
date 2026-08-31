@@ -8715,40 +8715,50 @@ def check_wddm_context_lifetime() -> None:
     if destroy.count(destroy_sequence) != 1:
         fail("DestroyContext must release its device reservation only after context destruction is proven safe")
 
-    drain_delay = canonical_code(
-        function_body_with_parameters("DelayContextSubmissionDrain", "_In_ ULONGLONG deadline", WDDM_DDI_CODE)
+    drain_wait = canonical_code(
+        function_body_with_parameters(
+            "WaitForContextSubmissionProgress",
+            "_In_ VIOGPU_WDDM_CONTEXT *context, _Inout_ ULONGLONG *stallDeadline",
+            WDDM_DDI_CODE,
+        )
     )
     for fragment in (
+        "context==NULL||stallDeadline==NULL||KeGetCurrentIrql()!=PASSIVE_LEVEL",
         "ULONGLONGnow=KeQueryInterruptTime();",
-        "if(now>=deadline||KeGetCurrentIrql()!=PASSIVE_LEVEL){returnFALSE;}",
-        "remaining<VIOGPU_WDDM_CONTEXT_DESTROY_RETRY_100NS?remaining:"
-        "VIOGPU_WDDM_CONTEXT_DESTROY_RETRY_100NS",
-        "KeDelayExecutionThread(KernelMode,FALSE,&delay)",
+        "delay.QuadPart=now>=*stallDeadline?0:-static_cast<LONGLONG>(*stallDeadline-now);",
+        "KeWaitForSingleObject(&context->SubmissionProgressEvent,Executive,KernelMode,FALSE,&delay);",
+        "if(status!=STATUS_SUCCESS){returnFALSE;}",
+        "*stallDeadline=KeQueryInterruptTime()+VIOGPU_WDDM_CONTEXT_DESTROY_STALL_TIMEOUT_100NS;",
     ):
-        if drain_delay.count(fragment) != 1:
-            fail(f"context submission drain must use one bounded PASSIVE retry delay: {fragment}")
+        if drain_wait.count(fragment) != 1:
+            fail(f"context submission drain must use one bounded progress wait: {fragment}")
+    if "KeDelayExecutionThread" in drain_wait or "NT_SUCCESS(status)" in drain_wait:
+        fail("context submission drain must wait on its event and accept only exact wait success")
     if canonical_code(WDDM_DDI_CODE).count(
-        "VIOGPU_WDDM_CONTEXT_DESTROY_DRAIN_TIMEOUT_100NS=10ULL*1000*1000"
+        "VIOGPU_WDDM_CONTEXT_DESTROY_STALL_TIMEOUT_100NS=10ULL*1000*1000"
     ) != 1:
-        fail("context destroy must define one one-second submission-drain deadline")
+        fail("context destroy must define one one-second no-progress deadline")
 
-    drain_deadline = destroy.find(
-        "ULONGLONGsubmissionDrainDeadline=KeQueryInterruptTime()+"
-        "VIOGPU_WDDM_CONTEXT_DESTROY_DRAIN_TIMEOUT_100NS;"
+    stall_deadline = destroy.find(
+        "ULONGLONGsubmissionStallDeadline=KeQueryInterruptTime()+"
+        "VIOGPU_WDDM_CONTEXT_DESTROY_STALL_TIMEOUT_100NS;"
     )
     pending_retry = destroy.find(
         "if((asynchronous||submissionReferences!=0)&&"
-        "DelayContextSubmissionDrain(submissionDrainDeadline)){continue;}"
+        "WaitForContextSubmissionProgress(context,&submissionStallDeadline)){continue;}"
     )
     pending_invariant = destroy.find(
         "BOOLEANinvariantFailure=(empty&&submissionReferences!=0)||(!empty&&!asynchronous);",
         pending_retry,
     )
     pending_reset = destroy.find("if(invariantFailure){adapter->RequestHardwareResetAtAnyIrql();}", pending_invariant)
-    owner_retry = destroy.find("if(DelayContextSubmissionDrain(submissionDrainDeadline)){continue;}", pending_reset)
+    owner_retry = destroy.find(
+        "if(WaitForContextSubmissionProgress(context,&submissionStallDeadline)){continue;}",
+        pending_reset,
+    )
     owner_busy = destroy.find("returnSTATUS_GRAPHICS_ALLOCATION_BUSY;", owner_retry)
-    if min(drain_deadline, pending_retry, pending_invariant, pending_reset, owner_retry, owner_busy) < 0 or not (
-        drain_deadline < pending_retry < pending_invariant < pending_reset < owner_retry < owner_busy
+    if min(stall_deadline, pending_retry, pending_invariant, pending_reset, owner_retry, owner_busy) < 0 or not (
+        stall_deadline < pending_retry < pending_invariant < pending_reset < owner_retry < owner_busy
     ):
         fail("DestroyContext must preserve completion dispatch for well-formed owners after the bounded deadline")
     if "adapter->RequestHardwareResetAtAnyIrql();" in destroy[owner_retry:owner_busy]:
@@ -8867,6 +8877,7 @@ def check_wddm_submission_lifetime() -> None:
         "KSPIN_LOCKSubmissionLock;",
         "volatileLONGSubmissionReferences;",
         "BOOLEANSubmissionClosing;",
+        "KEVENTSubmissionProgressEvent;",
         "LIST_ENTRYPendingSubmissions;",
         "UINTUmdFenceHead;",
         "UINTUmdFenceCount;",
@@ -8949,6 +8960,7 @@ def check_wddm_submission_lifetime() -> None:
             "KeInitializeSpinLock(&context->SubmissionLock);",
             "context->SubmissionReferences=0;",
             "context->SubmissionClosing=FALSE;",
+            "KeInitializeEvent(&context->SubmissionProgressEvent,SynchronizationEvent,FALSE);",
             "InitializeListHead(&context->PendingSubmissions);",
         ),
         "CreateContext must initialize submission ownership before Host context creation",
@@ -8959,8 +8971,35 @@ def check_wddm_submission_lifetime() -> None:
         "++context->SubmissionReferences;"
     ) != 1:
         fail("Render context ownership must reject closing and increment exactly once")
+    release_context = canonical_code(function_body("ReleaseContextSubmissionReference", WDDM_DDI_CODE))
+    require_order(
+        release_context,
+        (
+            "KeAcquireSpinLock(&context->SubmissionLock,&oldIrql);",
+            "BOOLEANreleased=context->SubmissionReferences!=0;",
+            "--context->SubmissionReferences;",
+            "signalProgress=context->SubmissionClosing;",
+            "KeReleaseSpinLock(&context->SubmissionLock,oldIrql);",
+            "KeSetEvent(&context->SubmissionProgressEvent,IO_NO_INCREMENT,FALSE);",
+        ),
+        "terminal submission release must publish context teardown progress after dropping the lock",
+    )
+    if release_context.count(
+        "if(signalProgress){KeSetEvent(&context->SubmissionProgressEvent,IO_NO_INCREMENT,FALSE);}"
+    ) != 1:
+        fail("terminal submission release must signal exactly one context progress event")
     begin_context = canonical_code(function_body("BeginContextSubmissionRundown", WDDM_DDI_CODE))
+    require_order(
+        begin_context,
+        (
+            "context->SubmissionClosing=TRUE;",
+            "KeClearEvent(&context->SubmissionProgressEvent);",
+            "KeReleaseSpinLock(&context->SubmissionLock,oldIrql);",
+        ),
+        "context rundown must close publication and clear stale progress under the submission lock",
+    )
     if begin_context.count("context->SubmissionClosing=TRUE;") != 1 or \
+       begin_context.count("KeClearEvent(&context->SubmissionProgressEvent);") != 1 or \
        "context->SubmissionReferences" in begin_context or \
        "STATUS_GRAPHICS_ALLOCATION_BUSY" in begin_context:
         fail("context destruction must close publication before the DestroyContext owner drains live submissions")

@@ -31,8 +31,7 @@ const UINT VIOGPU_WDDM_PATCH_LIST_SIZE = VioGpuWddmSubmissionAllocationLimit;
 const UINT VIOGPU_WDDM_PRESENT_RECTS_PER_PASS = 256;
 const LONG VIOGPU_WDDM_DEVICE_CLOSING = static_cast<LONG>(0x80000000UL);
 const LONG VIOGPU_WDDM_DEVICE_REFERENCE_MASK = 0x7FFFFFFF;
-const ULONGLONG VIOGPU_WDDM_CONTEXT_DESTROY_DRAIN_TIMEOUT_100NS = 10ULL * 1000 * 1000;
-const ULONGLONG VIOGPU_WDDM_CONTEXT_DESTROY_RETRY_100NS = 10ULL * 1000;
+const ULONGLONG VIOGPU_WDDM_CONTEXT_DESTROY_STALL_TIMEOUT_100NS = 10ULL * 1000 * 1000;
 
 enum VIOGPU_WDDM_APERTURE_PAGE_STATE : UCHAR
 {
@@ -995,11 +994,17 @@ BOOLEAN ReleaseContextSubmissionReference(VIOGPU_WDDM_CONTEXT *context)
     KIRQL oldIrql;
     KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
     BOOLEAN released = context->SubmissionReferences != 0;
+    BOOLEAN signalProgress = FALSE;
     if (released)
     {
         --context->SubmissionReferences;
+        signalProgress = context->SubmissionClosing;
     }
     KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
+    if (signalProgress)
+    {
+        KeSetEvent(&context->SubmissionProgressEvent, IO_NO_INCREMENT, FALSE);
+    }
     return released;
 }
 
@@ -1140,24 +1145,29 @@ NTSTATUS BeginContextSubmissionRundown(VIOGPU_WDDM_CONTEXT *context)
     else
     {
         context->SubmissionClosing = TRUE;
+        KeClearEvent(&context->SubmissionProgressEvent);
     }
     KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
     return status;
 }
 
-BOOLEAN DelayContextSubmissionDrain(_In_ ULONGLONG deadline)
+BOOLEAN WaitForContextSubmissionProgress(_In_ VIOGPU_WDDM_CONTEXT *context, _Inout_ ULONGLONG *stallDeadline)
 {
-    ULONGLONG now = KeQueryInterruptTime();
-    if (now >= deadline || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    if (context == NULL || stallDeadline == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         return FALSE;
     }
 
-    ULONGLONG remaining = deadline - now;
+    ULONGLONG now = KeQueryInterruptTime();
     LARGE_INTEGER delay;
-    delay.QuadPart = -static_cast<LONGLONG>(remaining < VIOGPU_WDDM_CONTEXT_DESTROY_RETRY_100NS ? remaining
-                                                                                                : VIOGPU_WDDM_CONTEXT_DESTROY_RETRY_100NS);
-    return NT_SUCCESS(KeDelayExecutionThread(KernelMode, FALSE, &delay));
+    delay.QuadPart = now >= *stallDeadline ? 0 : -static_cast<LONGLONG>(*stallDeadline - now);
+    NTSTATUS status = KeWaitForSingleObject(&context->SubmissionProgressEvent, Executive, KernelMode, FALSE, &delay);
+    if (status != STATUS_SUCCESS)
+    {
+        return FALSE;
+    }
+    *stallDeadline = KeQueryInterruptTime() + VIOGPU_WDDM_CONTEXT_DESTROY_STALL_TIMEOUT_100NS;
+    return TRUE;
 }
 
 NTSTATUS AcquireAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *allocation, VioGpuDod *adapter)
@@ -4916,6 +4926,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
     KeInitializeSpinLock(&context->SubmissionLock);
     context->SubmissionReferences = 0;
     context->SubmissionClosing = FALSE;
+    KeInitializeEvent(&context->SubmissionProgressEvent, SynchronizationEvent, FALSE);
     context->UmdFenceHead = 0;
     context->UmdFenceCount = 0;
     RtlZeroMemory(context->UmdFences, sizeof(context->UmdFences));
@@ -5036,7 +5047,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         return STATUS_DEVICE_NOT_READY;
     }
 
-    ULONGLONG submissionDrainDeadline = KeQueryInterruptTime() + VIOGPU_WDDM_CONTEXT_DESTROY_DRAIN_TIMEOUT_100NS;
+    ULONGLONG submissionStallDeadline = KeQueryInterruptTime() + VIOGPU_WDDM_CONTEXT_DESTROY_STALL_TIMEOUT_100NS;
     for (;;)
     {
         VIOGPU_WDDM_CONTEXT_SUBMISSION_KIND kind = VioGpuWddmContextSubmissionRender;
@@ -5134,7 +5145,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         {
             if (!empty || asynchronous || submissionReferences != 0)
             {
-                if ((asynchronous || submissionReferences != 0) && DelayContextSubmissionDrain(submissionDrainDeadline))
+                if ((asynchronous || submissionReferences != 0) &&
+                    WaitForContextSubmissionProgress(context, &submissionStallDeadline))
                 {
                     continue;
                 }
@@ -5207,7 +5219,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         }
         if (!retired)
         {
-            if (DelayContextSubmissionDrain(submissionDrainDeadline))
+            if (WaitForContextSubmissionProgress(context, &submissionStallDeadline))
             {
                 continue;
             }

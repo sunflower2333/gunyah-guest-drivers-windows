@@ -272,6 +272,7 @@ struct VIOGPU_WDDM_CONTEXT
     KSPIN_LOCK SubmissionLock;
     volatile LONG SubmissionReferences;
     BOOLEAN SubmissionClosing;
+    KEVENT SubmissionProgressEvent;
     LIST_ENTRY PendingSubmissions;
     UINT UmdFenceHead;
     UINT UmdFenceCount;
