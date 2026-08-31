@@ -8978,16 +8978,20 @@ def check_wddm_submission_lifetime() -> None:
             "KeAcquireSpinLock(&context->SubmissionLock,&oldIrql);",
             "BOOLEANreleased=context->SubmissionReferences!=0;",
             "--context->SubmissionReferences;",
-            "signalProgress=context->SubmissionClosing;",
-            "KeReleaseSpinLock(&context->SubmissionLock,oldIrql);",
+            "if(context->SubmissionClosing){",
             "KeSetEvent(&context->SubmissionProgressEvent,IO_NO_INCREMENT,FALSE);",
+            "KeReleaseSpinLock(&context->SubmissionLock,oldIrql);",
         ),
-        "terminal submission release must publish context teardown progress after dropping the lock",
+        "terminal submission release must publish teardown progress before exposing its final reference drop",
     )
     if release_context.count(
-        "if(signalProgress){KeSetEvent(&context->SubmissionProgressEvent,IO_NO_INCREMENT,FALSE);}"
+        "if(context->SubmissionClosing){KeSetEvent(&context->SubmissionProgressEvent,IO_NO_INCREMENT,FALSE);}"
     ) != 1:
         fail("terminal submission release must signal exactly one context progress event")
+    release_unlock_fragment = "KeReleaseSpinLock(&context->SubmissionLock,oldIrql);"
+    release_unlock = release_context.find(release_unlock_fragment)
+    if release_unlock < 0 or "context->" in release_context[release_unlock + len(release_unlock_fragment):]:
+        fail("terminal submission release must not touch context storage after dropping its final reference lock")
     begin_context = canonical_code(function_body("BeginContextSubmissionRundown", WDDM_DDI_CODE))
     require_order(
         begin_context,

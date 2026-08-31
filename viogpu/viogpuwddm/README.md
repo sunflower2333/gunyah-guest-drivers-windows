@@ -64,16 +64,18 @@ Host trace. `DxgkDdiDestroyContext` closes new submissions and waits for the
 context operation rundown, then gives transient queued, worker-owned, or
 Host-issued owners a context-scoped completion barrier while VirtIO DPC
 dispatch remains enabled. Every terminal submission-reference release wakes
-the destroy path and renews a one-second stall deadline. Since closing blocks
-new references, continued progress is finite; an owner that makes no progress
-for one second still returns a bounded retryable busy status. Malformed or
-inconsistent ownership requests adapter reset, while a well-formed stalled
-owner keeps completion dispatch enabled for a later destroy retry. The
-reset-suppression policy is ARM64-built and signed as package `58184`, but remains
-uninstalled. The progress-barrier change passes the local Native Context
-contract, changed-range formatter, and wire/private ABI fixtures; it is not yet
-ARM64 WDK-built, installed, or runtime-validated, so it is not evidence that
-the remaining lifecycle leak is fixed.
+the destroy path and renews a one-second stall deadline. A post-close release
+signals the embedded event while the submission lock still protects the context;
+dropping that lock is its final context access, so destroy cannot observe the
+last reference and free the event before signaling completes. Since closing
+blocks new references, continued progress is finite; an owner that makes no
+progress for one second still returns a bounded retryable busy status. Malformed
+or inconsistent ownership requests adapter reset, while a well-formed stalled
+owner keeps completion dispatch enabled for a later destroy retry. Package
+`58185` ARM64-builds and signs the original progress barrier but predates this
+final-release lifetime ordering and remains uninstalled; do not deploy it. The
+current ordering still requires a newer ARM64 build and device-runtime teardown
+evidence before it can support a claim that the lifecycle leak is fixed.
 
 The current Windows runtime evidence is narrower than those source contracts.
 Package `58030` reports the first classified Present rejection as

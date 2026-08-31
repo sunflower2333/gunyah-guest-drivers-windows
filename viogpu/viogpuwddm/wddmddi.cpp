@@ -994,17 +994,16 @@ BOOLEAN ReleaseContextSubmissionReference(VIOGPU_WDDM_CONTEXT *context)
     KIRQL oldIrql;
     KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
     BOOLEAN released = context->SubmissionReferences != 0;
-    BOOLEAN signalProgress = FALSE;
     if (released)
     {
         --context->SubmissionReferences;
-        signalProgress = context->SubmissionClosing;
+        if (context->SubmissionClosing)
+        {
+            // Releasing the spin lock must be this owner's final context access.
+            KeSetEvent(&context->SubmissionProgressEvent, IO_NO_INCREMENT, FALSE);
+        }
     }
     KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
-    if (signalProgress)
-    {
-        KeSetEvent(&context->SubmissionProgressEvent, IO_NO_INCREMENT, FALSE);
-    }
     return released;
 }
 
