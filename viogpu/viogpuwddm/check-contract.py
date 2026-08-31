@@ -8740,13 +8740,21 @@ def check_wddm_context_lifetime() -> None:
         "if((asynchronous||submissionReferences!=0)&&"
         "DelayContextSubmissionDrain(submissionDrainDeadline)){continue;}"
     )
-    pending_reset = destroy.find("adapter->RequestHardwareResetAtAnyIrql();", pending_retry)
+    pending_invariant = destroy.find(
+        "BOOLEANinvariantFailure=(empty&&submissionReferences!=0)||(!empty&&!asynchronous);",
+        pending_retry,
+    )
+    pending_reset = destroy.find("if(invariantFailure){adapter->RequestHardwareResetAtAnyIrql();}", pending_invariant)
     owner_retry = destroy.find("if(DelayContextSubmissionDrain(submissionDrainDeadline)){continue;}", pending_reset)
-    owner_reset = destroy.find("adapter->RequestHardwareResetAtAnyIrql();", owner_retry)
-    if min(drain_deadline, pending_retry, pending_reset, owner_retry, owner_reset) < 0 or not (
-        drain_deadline < pending_retry < pending_reset < owner_retry < owner_reset
+    owner_busy = destroy.find("returnSTATUS_GRAPHICS_ALLOCATION_BUSY;", owner_retry)
+    if min(drain_deadline, pending_retry, pending_invariant, pending_reset, owner_retry, owner_busy) < 0 or not (
+        drain_deadline < pending_retry < pending_invariant < pending_reset < owner_retry < owner_busy
     ):
-        fail("DestroyContext must drain transient owners before requesting reset at the bounded deadline")
+        fail("DestroyContext must preserve completion dispatch for well-formed owners after the bounded deadline")
+    if "adapter->RequestHardwareResetAtAnyIrql();" in destroy[owner_retry:owner_busy]:
+        fail("DestroyContext must not suppress completion dispatch for a well-formed owner at the deadline")
+    if destroy.count("adapter->RequestHardwareResetAtAnyIrql();") != 2:
+        fail("DestroyContext must request reset only for malformed or inconsistent pending ownership")
 
     for owner_type, reference_call in (
         ("Render", "ReferenceRenderSubmission(submission)"),

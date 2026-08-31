@@ -5138,7 +5138,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
                 {
                     continue;
                 }
-                adapter->RequestHardwareResetAtAnyIrql();
+                BOOLEAN invariantFailure = (empty && submissionReferences != 0) || (!empty && !asynchronous);
+                if (invariantFailure)
+                {
+                    adapter->RequestHardwareResetAtAnyIrql();
+                }
 #if defined(VIOGPU_NATIVE_CONTEXT)
                 RecordWddmNativeContextDestroyDiagnostic(context,
                                                          VioGpuNativeContextDestroyBusy,
@@ -5207,7 +5211,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
             {
                 continue;
             }
-            adapter->RequestHardwareResetAtAnyIrql();
+            // Keep completion dispatch live so a later destroy retry can observe terminal retirement.
 #if defined(VIOGPU_NATIVE_CONTEXT)
             RecordWddmNativeContextDestroyDiagnostic(context,
                                                      VioGpuNativeContextDestroyBusy,

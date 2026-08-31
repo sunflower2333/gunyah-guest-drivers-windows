@@ -63,10 +63,13 @@ Source after `58181` also addresses the wrapper-side timing race exposed by that
 Host trace. `DxgkDdiDestroyContext` closes new submissions and waits for the
 context operation rundown, then gives transient queued, worker-owned, or
 Host-issued owners one shared one-second deadline to retire while VirtIO DPC
-dispatch remains enabled. It rescans ownership after short PASSIVE delays and
-requests adapter reset only for malformed ownership or deadline expiry. The
-full local Native Context contract, changed-range formatter, and wire/private
-ABI fixtures pass. This source is not yet ARM64-built, signed, installed, or
+dispatch remains enabled. It rescans ownership after short PASSIVE delays.
+Malformed or inconsistent ownership requests adapter reset, while a
+well-formed owner that reaches the deadline returns a retryable busy status
+without suppressing the completion dispatch needed by a later destroy retry.
+The full local Native Context contract, changed-range formatter, and
+wire/private ABI fixtures pass. The preceding source is ARM64-built and signed,
+but this deadline-policy change is not yet built, installed, or
 runtime-validated, so it is not evidence that the remaining lifecycle leak is
 fixed.
 
