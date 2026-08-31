@@ -8715,6 +8715,39 @@ def check_wddm_context_lifetime() -> None:
     if destroy.count(destroy_sequence) != 1:
         fail("DestroyContext must release its device reservation only after context destruction is proven safe")
 
+    drain_delay = canonical_code(
+        function_body_with_parameters("DelayContextSubmissionDrain", "_In_ ULONGLONG deadline", WDDM_DDI_CODE)
+    )
+    for fragment in (
+        "ULONGLONGnow=KeQueryInterruptTime();",
+        "if(now>=deadline||KeGetCurrentIrql()!=PASSIVE_LEVEL){returnFALSE;}",
+        "remaining<VIOGPU_WDDM_CONTEXT_DESTROY_RETRY_100NS?remaining:"
+        "VIOGPU_WDDM_CONTEXT_DESTROY_RETRY_100NS",
+        "KeDelayExecutionThread(KernelMode,FALSE,&delay)",
+    ):
+        if drain_delay.count(fragment) != 1:
+            fail(f"context submission drain must use one bounded PASSIVE retry delay: {fragment}")
+    if canonical_code(WDDM_DDI_CODE).count(
+        "VIOGPU_WDDM_CONTEXT_DESTROY_DRAIN_TIMEOUT_100NS=10ULL*1000*1000"
+    ) != 1:
+        fail("context destroy must define one one-second submission-drain deadline")
+
+    drain_deadline = destroy.find(
+        "ULONGLONGsubmissionDrainDeadline=KeQueryInterruptTime()+"
+        "VIOGPU_WDDM_CONTEXT_DESTROY_DRAIN_TIMEOUT_100NS;"
+    )
+    pending_retry = destroy.find(
+        "if((asynchronous||submissionReferences!=0)&&"
+        "DelayContextSubmissionDrain(submissionDrainDeadline)){continue;}"
+    )
+    pending_reset = destroy.find("adapter->RequestHardwareResetAtAnyIrql();", pending_retry)
+    owner_retry = destroy.find("if(DelayContextSubmissionDrain(submissionDrainDeadline)){continue;}", pending_reset)
+    owner_reset = destroy.find("adapter->RequestHardwareResetAtAnyIrql();", owner_retry)
+    if min(drain_deadline, pending_retry, pending_reset, owner_retry, owner_reset) < 0 or not (
+        drain_deadline < pending_retry < pending_reset < owner_retry < owner_reset
+    ):
+        fail("DestroyContext must drain transient owners before requesting reset at the bounded deadline")
+
     snapshot = function_body("VioGpuAdapter::AcquireNativeContextSnapshot", VIOGPU_CODE)
     snapshot_compact = canonical_code(snapshot)
     irql_guard = snapshot_compact.find("KeGetCurrentIrql()!=PASSIVE_LEVEL")

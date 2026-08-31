@@ -31,6 +31,8 @@ const UINT VIOGPU_WDDM_PATCH_LIST_SIZE = VioGpuWddmSubmissionAllocationLimit;
 const UINT VIOGPU_WDDM_PRESENT_RECTS_PER_PASS = 256;
 const LONG VIOGPU_WDDM_DEVICE_CLOSING = static_cast<LONG>(0x80000000UL);
 const LONG VIOGPU_WDDM_DEVICE_REFERENCE_MASK = 0x7FFFFFFF;
+const ULONGLONG VIOGPU_WDDM_CONTEXT_DESTROY_DRAIN_TIMEOUT_100NS = 10ULL * 1000 * 1000;
+const ULONGLONG VIOGPU_WDDM_CONTEXT_DESTROY_RETRY_100NS = 10ULL * 1000;
 
 enum VIOGPU_WDDM_APERTURE_PAGE_STATE : UCHAR
 {
@@ -1141,6 +1143,21 @@ NTSTATUS BeginContextSubmissionRundown(VIOGPU_WDDM_CONTEXT *context)
     }
     KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
     return status;
+}
+
+BOOLEAN DelayContextSubmissionDrain(_In_ ULONGLONG deadline)
+{
+    ULONGLONG now = KeQueryInterruptTime();
+    if (now >= deadline || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return FALSE;
+    }
+
+    ULONGLONG remaining = deadline - now;
+    LARGE_INTEGER delay;
+    delay.QuadPart = -static_cast<LONGLONG>(remaining < VIOGPU_WDDM_CONTEXT_DESTROY_RETRY_100NS ? remaining
+                                                                                                : VIOGPU_WDDM_CONTEXT_DESTROY_RETRY_100NS);
+    return NT_SUCCESS(KeDelayExecutionThread(KernelMode, FALSE, &delay));
 }
 
 NTSTATUS AcquireAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *allocation, VioGpuDod *adapter)
@@ -5019,6 +5036,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         return STATUS_DEVICE_NOT_READY;
     }
 
+    ULONGLONG submissionDrainDeadline = KeQueryInterruptTime() + VIOGPU_WDDM_CONTEXT_DESTROY_DRAIN_TIMEOUT_100NS;
     for (;;)
     {
         VIOGPU_WDDM_CONTEXT_SUBMISSION_KIND kind = VioGpuWddmContextSubmissionRender;
@@ -5108,6 +5126,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         {
             if (!empty || asynchronous || submissionReferences != 0)
             {
+                if ((asynchronous || submissionReferences != 0) && DelayContextSubmissionDrain(submissionDrainDeadline))
+                {
+                    continue;
+                }
                 adapter->RequestHardwareResetAtAnyIrql();
 #if defined(VIOGPU_NATIVE_CONTEXT)
                 RecordWddmNativeContextDestroyDiagnostic(context,
@@ -5173,6 +5195,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         }
         if (!retired)
         {
+            if (DelayContextSubmissionDrain(submissionDrainDeadline))
+            {
+                continue;
+            }
             adapter->RequestHardwareResetAtAnyIrql();
 #if defined(VIOGPU_NATIVE_CONTEXT)
             RecordWddmNativeContextDestroyDiagnostic(context,

@@ -50,15 +50,25 @@ and passed CP_NOP submit, fence completion, and query. Package `58180` plus the
 ID-bearing Host trace completed one bounded Vulkan lifecycle process and
 reported Adreno 830. Host teardown completed for context 1, but context 2 never
 reached the Host `rutabaga context destroy begin` boundary. The current source
-therefore adds wrapper and adapter destroy snapshots for rundown, busy returns,
-Host cleanup, retirement, retry, and final release. Snapshot registry writes are
+adds wrapper and adapter destroy snapshots for rundown, busy returns, Host
+cleanup, retirement, retry, and final release. Snapshot registry writes are
 serialized through a passive mutex, invalidate the selected slot stage before
 writing its payload, and publish the final stage last as the commit marker. The
 read-only decoder is
 `.install_scripts/viogpu-native-context-destroy-diagnostics.ps1`. This
-diagnostic source is not yet ARM64-built, signed, installed, or
-validated on the device; it is not evidence that the remaining lifecycle leak
-is fixed.
+diagnostic is ARM64-built and signed as package `58181`, but it has not been
+installed or run on the device.
+
+Source after `58181` also addresses the wrapper-side timing race exposed by that
+Host trace. `DxgkDdiDestroyContext` closes new submissions and waits for the
+context operation rundown, then gives transient queued, worker-owned, or
+Host-issued owners one shared one-second deadline to retire while VirtIO DPC
+dispatch remains enabled. It rescans ownership after short PASSIVE delays and
+requests adapter reset only for malformed ownership or deadline expiry. The
+full local Native Context contract, changed-range formatter, and wire/private
+ABI fixtures pass. This source is not yet ARM64-built, signed, installed, or
+runtime-validated, so it is not evidence that the remaining lifecycle leak is
+fixed.
 
 The current Windows runtime evidence is narrower than those source contracts.
 Package `58030` reports the first classified Present rejection as
