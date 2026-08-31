@@ -99,18 +99,22 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # Driver 版號 = 100.6.101.<58000 + 自 versioning epoch 起的 commit 數>。
-          # 維持第三段 101，第四段從 58000 往上長（每 commit +1），epoch 之後第一個 build = 58001，
-          # 故永遠 > 現役 100.6.101.58000。16-bit 上限 65535 → 約 7500 次 build 餘裕；接近上限再開新 epoch。
-          # versioning epoch is the exact source revision of the installed
-          # 100.6.101.58000 Native Context package. Every product revision
-          # after it must rank above that package for deterministic PnP upgrade.
-          $epoch = 'cd6097248fe17b459b8587021799bd071f0f029f'
+          # Driver version = 100.6.101.<58180 + commits after the exact 58180 source>.
+          # The branch was rebased after the earlier version epoch, so require
+          # this installed source to remain an ancestor before counting. The
+          # first descendant build is 58181. The 16-bit limit leaves 7354
+          # revisions before another explicit epoch is required.
+          $epoch = '00c0fd0217cd25ef61581f498dbcb5f40516d4f6'
+          $epochMinor = 58180
+          & git merge-base --is-ancestor $epoch HEAD
+          if ($LASTEXITCODE -ne 0) {
+            throw "driver version epoch $epoch is not an ancestor of HEAD"
+          }
           $n = (& git rev-list --count "$epoch..HEAD" | Out-String).Trim()
           if (-not ($n -match '^[1-9][0-9]*$')) {
             throw "invalid driver version distance from $epoch to HEAD: '$n'"
           }
-          $minor = 58000 + [int]$n
+          $minor = $epochMinor + [int]$n
           if ($minor -gt 65535) { throw "driver minor $minor exceeds 65535; start a new version epoch" }
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -168,8 +172,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -le 58000) {
-            throw "Native Context product version must rank above installed 100.6.101.58000"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -le 58180) {
+            throw "Native Context product version must rank above installed 100.6.101.58180"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw

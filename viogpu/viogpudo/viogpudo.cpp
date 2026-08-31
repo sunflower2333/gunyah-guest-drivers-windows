@@ -163,6 +163,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativeSubmissionFaultPresentSubmitStage = 0;
     m_NativeSubmissionFaultPresentSubmitStatus = 0;
     m_NativeSubmissionFaultPresentSubmitDetail = 0;
+    m_NativeContextDestroyAttempt = 0;
+    KeInitializeMutex(&m_NativeContextDestroyDiagnosticMutex, 0);
     m_NativeFenceHead = 0;
     m_NativeFenceCount = 0;
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
@@ -4767,6 +4769,144 @@ VOID VioGpuDod::RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_C
                detailValue);
 }
 
+VOID VioGpuDod::RecordNativeContextDestroyDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_DESTROY_STAGE stage,
+                                                     _In_ NTSTATUS status,
+                                                     _In_ DWORD detail,
+                                                     _In_ DWORD hostResult,
+                                                     _In_ UINT contextId,
+                                                     _In_ DWORD contextState,
+                                                     _In_ DWORD ownerState,
+                                                     _In_ BOOLEAN released,
+                                                     _In_ BOOLEAN retrying,
+                                                     _In_ BOOLEAN ownerRetained)
+{
+    PAGED_CODE();
+
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -10LL * 1000 * 1000;
+    NTSTATUS mutexStatus = KeWaitForSingleObject(&m_NativeContextDestroyDiagnosticMutex,
+                                                 Executive,
+                                                 KernelMode,
+                                                 FALSE,
+                                                 &timeout);
+    if (mutexStatus != STATUS_SUCCESS)
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context destroy diagnostic: mutex wait failed, stage=0x%04X "
+                   "status=0x%08X wait=0x%08X\n",
+                   static_cast<DWORD>(stage),
+                   static_cast<DWORD>(status),
+                   mutexStatus);
+        return;
+    }
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        KeReleaseMutex(&m_NativeContextDestroyDiagnosticMutex, FALSE);
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu native context destroy diagnostic: registry open failed, stage=0x%04X "
+                   "status=0x%08X open=0x%08X\n",
+                   static_cast<DWORD>(stage),
+                   static_cast<DWORD>(status),
+                   openStatus);
+        return;
+    }
+
+    DWORD attemptValue = static_cast<DWORD>(InterlockedIncrement(&m_NativeContextDestroyAttempt));
+    DWORD invalidStageValue = 0;
+    DWORD stageValue = static_cast<DWORD>(stage);
+    DWORD statusValue = static_cast<DWORD>(status);
+    DWORD contextIdValue = contextId;
+    DWORD releasedValue = released ? 1U : 0U;
+    DWORD retryingValue = retrying ? 1U : 0U;
+    DWORD ownerRetainedValue = ownerRetained ? 1U : 0U;
+    // Range formatting over-aligns these parallel local tables.
+    // clang-format off
+    PCWSTR valueSuffixes[] = {
+        L"Attempt",
+        L"Status",
+        L"Detail",
+        L"HostResult",
+        L"ContextId",
+        L"ContextState",
+        L"OwnerState",
+        L"Released",
+        L"Retrying",
+        L"OwnerRetained",
+    };
+    PDWORD values[] = {
+        &attemptValue,
+        &statusValue,
+        &detail,
+        &hostResult,
+        &contextIdValue,
+        &contextState,
+        &ownerState,
+        &releasedValue,
+        &retryingValue,
+        &ownerRetainedValue,
+    };
+    // clang-format on
+    static_assert(ARRAYSIZE(valueSuffixes) == ARRAYSIZE(values), "destroy diagnostic value table mismatch");
+    DWORD slot = contextId % VioGpuNativeContextDestroyDiagnosticSlotCount;
+    DECLARE_UNICODE_STRING_SIZE(slotStageName, 96);
+    NTSTATUS writeStatus = RtlUnicodeStringPrintf(&slotStageName, L"NativeContextDestroySlot%02uStage", slot);
+    if (NT_SUCCESS(writeStatus))
+    {
+        writeStatus = WriteRegistryDWORD(deviceKey, slotStageName.Buffer, &invalidStageValue);
+    }
+    for (UINT index = 0; index < ARRAYSIZE(valueSuffixes); ++index)
+    {
+        if (!NT_SUCCESS(writeStatus))
+        {
+            break;
+        }
+        DECLARE_UNICODE_STRING_SIZE(slotValueName, 96);
+        writeStatus = RtlUnicodeStringPrintf(&slotValueName,
+                                             L"NativeContextDestroySlot%02u%ws",
+                                             slot,
+                                             valueSuffixes[index]);
+        if (NT_SUCCESS(writeStatus))
+        {
+            writeStatus = WriteRegistryDWORD(deviceKey, slotValueName.Buffer, values[index]);
+        }
+        if (!NT_SUCCESS(writeStatus))
+        {
+            break;
+        }
+    }
+    if (NT_SUCCESS(writeStatus))
+    {
+        // Stage is the commit marker for the rest of this context slot.
+        writeStatus = WriteRegistryDWORD(deviceKey, slotStageName.Buffer, &stageValue);
+    }
+    ZwClose(deviceKey);
+    KeReleaseMutex(&m_NativeContextDestroyDiagnosticMutex, FALSE);
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               NT_SUCCESS(writeStatus) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
+               "viogpu native context destroy diagnostic: attempt=%u stage=0x%04X status=0x%08X "
+               "detail=0x%08X host=%u context=%u slot=%u state=%u owner=%u released=%u retrying=%u retained=%u "
+               "write=0x%08X\n",
+               attemptValue,
+               stageValue,
+               statusValue,
+               detail,
+               hostResult,
+               contextId,
+               slot,
+               contextState,
+               ownerState,
+               releasedValue,
+               retryingValue,
+               ownerRetainedValue,
+               writeStatus);
+}
+
 VOID VioGpuDod::RecordNativeAllocationRangeDiagnostic(_In_ NTSTATUS status,
                                                       _In_ DWORD reason,
                                                       _In_ DWORD rangeCount,
@@ -8165,12 +8305,60 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
     }
     *released = FALSE;
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    UINT initialContextId = 0;
+    DWORD initialContextState = VioGpuNativeContextDead;
+    DWORD initialOwnerState = VioGpuNativeContextOwnerCreating;
+    BOOLEAN initialOwnerRetained = FALSE;
+    KIRQL diagnosticIrql;
+    KeAcquireSpinLock(&context->BindingLock, &diagnosticIrql);
+    initialContextId = context->ContextId;
+    initialContextState = static_cast<DWORD>(InterlockedCompareExchange(&context->State,
+                                                                        VioGpuNativeContextDead,
+                                                                        VioGpuNativeContextDead));
+    if (context->Owner != NULL)
+    {
+        initialOwnerState = static_cast<DWORD>(context->Owner->State);
+        initialOwnerRetained = TRUE;
+    }
+    KeReleaseSpinLock(&context->BindingLock, diagnosticIrql);
+
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyEntered,
+                                                           STATUS_PENDING,
+                                                           0,
+                                                           VioGpuHostContextUnknown,
+                                                           initialContextId,
+                                                           initialContextState,
+                                                           initialOwnerState,
+                                                           FALSE,
+                                                           FALSE,
+                                                           initialOwnerRetained);
+    }
+#endif
+
     LARGE_INTEGER timeout;
     timeout.QuadPart = -10LL * 10 * 1000 * 1000;
     NTSTATUS status = KeWaitForSingleObject(&m_NativeContextLifecycleMutex, Executive, KernelMode, FALSE, &timeout);
     if (status != STATUS_SUCCESS)
     {
         FailNativeContextAtAnyIrql();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyRundown,
+                                                               status,
+                                                               0,
+                                                               VioGpuHostContextUnknown,
+                                                               initialContextId,
+                                                               initialContextState,
+                                                               initialOwnerState,
+                                                               FALSE,
+                                                               FALSE,
+                                                               initialOwnerRetained);
+        }
+#endif
         return status;
     }
 
@@ -8181,21 +8369,74 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
     {
         if (context->AllocationReferences != 0 || !IsListEmpty(&context->AllocationRanges))
         {
+            UINT contextId = context->ContextId;
+            DWORD ownerState = context->Owner == NULL ? VioGpuNativeContextOwnerCreating
+                                                      : static_cast<DWORD>(context->Owner->State);
+            BOOLEAN ownerRetained = context->Owner != NULL;
             KeReleaseSpinLock(&context->BindingLock, oldIrql);
             KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+            if (m_pVioGpuDod != NULL)
+            {
+                m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyBusy,
+                                                                   STATUS_DEVICE_BUSY,
+                                                                   1,
+                                                                   VioGpuHostContextUnknown,
+                                                                   contextId,
+                                                                   static_cast<DWORD>(objectState),
+                                                                   ownerState,
+                                                                   FALSE,
+                                                                   FALSE,
+                                                                   ownerRetained);
+            }
+#endif
             return STATUS_DEVICE_BUSY;
         }
         if (context->Owner != NULL || context->Generation != 0 || context->ResetGeneration != 0 ||
             context->ContextId != 0 || context->VaStart != 0 || context->VaSize != 0 || context->SubmitQueueId != 0)
         {
+            UINT contextId = context->ContextId;
+            DWORD ownerState = context->Owner == NULL ? VioGpuNativeContextOwnerCreating
+                                                      : static_cast<DWORD>(context->Owner->State);
+            BOOLEAN ownerRetained = context->Owner != NULL;
             KeReleaseSpinLock(&context->BindingLock, oldIrql);
             KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
             FailNativeContextAtAnyIrql();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+            if (m_pVioGpuDod != NULL)
+            {
+                m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyBusy,
+                                                                   STATUS_INVALID_DEVICE_STATE,
+                                                                   2,
+                                                                   VioGpuHostContextUnknown,
+                                                                   contextId,
+                                                                   static_cast<DWORD>(objectState),
+                                                                   ownerState,
+                                                                   FALSE,
+                                                                   FALSE,
+                                                                   ownerRetained);
+            }
+#endif
             return STATUS_INVALID_DEVICE_STATE;
         }
         KeReleaseSpinLock(&context->BindingLock, oldIrql);
         *released = TRUE;
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyComplete,
+                                                               STATUS_SUCCESS,
+                                                               0,
+                                                               VioGpuHostContextConfirmed,
+                                                               0,
+                                                               VioGpuNativeContextDead,
+                                                               VioGpuNativeContextOwnerCreating,
+                                                               TRUE,
+                                                               FALSE,
+                                                               FALSE);
+        }
+#endif
         return STATUS_SUCCESS;
     }
     VIOGPU_NATIVE_CONTEXT_OWNER *owner = context->Owner;
@@ -8217,20 +8458,57 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
                               owner->ContextId == context->ContextId;
     if (!liveContext && !retryingDestroy)
     {
+        UINT contextId = context->ContextId;
+        DWORD ownerState = owner == NULL ? VioGpuNativeContextOwnerCreating : static_cast<DWORD>(owner->State);
+        BOOLEAN ownerRetained = owner != NULL;
         KeReleaseSpinLock(&context->BindingLock, oldIrql);
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyBusy,
+                                                               STATUS_INVALID_HANDLE,
+                                                               3,
+                                                               VioGpuHostContextUnknown,
+                                                               contextId,
+                                                               static_cast<DWORD>(objectState),
+                                                               ownerState,
+                                                               FALSE,
+                                                               FALSE,
+                                                               ownerRetained);
+        }
+#endif
         return STATUS_INVALID_HANDLE;
     }
     if (ReadNativeAllocationCount(owner) != 0 || context->AllocationReferences != 0 ||
         !IsListEmpty(&context->AllocationRanges))
     {
+        UINT contextId = context->ContextId;
+        DWORD ownerState = owner == NULL ? VioGpuNativeContextOwnerCreating : static_cast<DWORD>(owner->State);
+        BOOLEAN ownerRetained = owner != NULL;
         KeReleaseSpinLock(&context->BindingLock, oldIrql);
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyBusy,
+                                                               STATUS_DEVICE_BUSY,
+                                                               4,
+                                                               VioGpuHostContextUnknown,
+                                                               contextId,
+                                                               static_cast<DWORD>(objectState),
+                                                               ownerState,
+                                                               FALSE,
+                                                               retryingDestroy,
+                                                               ownerRetained);
+        }
+#endif
         return STATUS_DEVICE_BUSY;
     }
 
     LONG contextGeneration = context->Generation;
     ULONGLONG contextResetGeneration = context->ResetGeneration;
+    UINT diagnosticContextId = context->ContextId;
 #if !defined(VIOGPU_NATIVE_CONTEXT)
     UINT contextId = context->ContextId;
 #endif
@@ -8241,6 +8519,22 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
         owner->State = VioGpuNativeContextOwnerDestroying;
     }
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
+
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyMarked,
+                                                           STATUS_PENDING,
+                                                           0,
+                                                           VioGpuHostContextUnknown,
+                                                           diagnosticContextId,
+                                                           VioGpuNativeContextDestroying,
+                                                           VioGpuNativeContextOwnerDestroying,
+                                                           FALSE,
+                                                           retryingDestroy,
+                                                           TRUE);
+    }
+#endif
 
     LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
     BOOLEAN current = contextGeneration == generation && contextResetGeneration != 0 &&
@@ -8253,6 +8547,21 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
                       m_CtrlQueue.IsSynchronousRequestsHealthy();
 
     VIOGPU_HOST_CONTEXT_RESULT destroyResult = VioGpuHostContextUnknown;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostBegin,
+                                                           STATUS_PENDING,
+                                                           current ? 1U : 0U,
+                                                           VioGpuHostContextUnknown,
+                                                           diagnosticContextId,
+                                                           VioGpuNativeContextDestroying,
+                                                           VioGpuNativeContextOwnerDestroying,
+                                                           FALSE,
+                                                           retryingDestroy,
+                                                           TRUE);
+    }
+#endif
     if (current)
     {
 #if defined(VIOGPU_NATIVE_CONTEXT)
@@ -8268,10 +8577,55 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
                    "viogpu context destroy: Host cleanup incomplete; owner retained for retry\n");
         status = STATUS_DEVICE_BUSY;
         KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostResult,
+                                                               status,
+                                                               0,
+                                                               static_cast<DWORD>(destroyResult),
+                                                               diagnosticContextId,
+                                                               VioGpuNativeContextDestroying,
+                                                               VioGpuNativeContextOwnerDestroying,
+                                                               FALSE,
+                                                               retryingDestroy,
+                                                               TRUE);
+        }
+#endif
         return status;
     }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostResult,
+                                                           STATUS_SUCCESS,
+                                                           0,
+                                                           static_cast<DWORD>(destroyResult),
+                                                           diagnosticContextId,
+                                                           VioGpuNativeContextDestroying,
+                                                           VioGpuNativeContextOwnerDestroying,
+                                                           FALSE,
+                                                           retryingDestroy,
+                                                           TRUE);
+    }
+#endif
     RetireNativeContextOwnerLocked(owner);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyRetired,
+                                                           STATUS_SUCCESS,
+                                                           0,
+                                                           static_cast<DWORD>(destroyResult),
+                                                           diagnosticContextId,
+                                                           VioGpuNativeContextDestroying,
+                                                           VioGpuNativeContextOwnerDestroying,
+                                                           FALSE,
+                                                           retryingDestroy,
+                                                           FALSE);
+    }
+#endif
     KeAcquireSpinLock(&context->BindingLock, &oldIrql);
     context->Adapter = NULL;
     context->Owner = NULL;
@@ -8286,6 +8640,21 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
     *released = TRUE;
     status = STATUS_SUCCESS;
     KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyComplete,
+                                                           status,
+                                                           0,
+                                                           static_cast<DWORD>(destroyResult),
+                                                           diagnosticContextId,
+                                                           VioGpuNativeContextDead,
+                                                           VioGpuNativeContextOwnerDestroying,
+                                                           TRUE,
+                                                           retryingDestroy,
+                                                           FALSE);
+    }
+#endif
     return status;
 }
 

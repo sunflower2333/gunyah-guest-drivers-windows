@@ -22,8 +22,11 @@ current source extends the same first-fault transaction with the pre-worker
 Present Submit stage, original status, and stage-specific detail. Reset
 state/caller provenance remains a separate, optional transaction published
 only if the reset call returns. Package `58030` passed the ARM64
-compile/link/package gates and a guarded load, but the new Submit-stage
-diagnostic source has not. Successful 2D display,
+compile/link/package gates and a guarded load. A fresh current-source package,
+`100.6.101.58170`, also passed the ARM64 compile/link/MAP/INF/sign/package
+workflow and contains the Submit-stage diagnostic. Neither package has
+completed the required current-source device validation. Successful 2D
+display,
 KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
 
 - `DriverEntry` calls the single `DxgkInitialize` registration helper.
@@ -40,6 +43,22 @@ KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
 - Native ring-1 fence retirement and reset-generation/TDR source contracts are
   wired. Hardware preemption, per-engine reset, smooth rotation, and driver
   color conversion are explicitly not advertised.
+
+Later device evidence supersedes the activation-only snapshot above. Signed
+package `100.6.101.58179` completed three 10,000-iteration KMT lifecycle phases
+and passed CP_NOP submit, fence completion, and query. Package `58180` plus the
+ID-bearing Host trace completed one bounded Vulkan lifecycle process and
+reported Adreno 830. Host teardown completed for context 1, but context 2 never
+reached the Host `rutabaga context destroy begin` boundary. The current source
+therefore adds wrapper and adapter destroy snapshots for rundown, busy returns,
+Host cleanup, retirement, retry, and final release. Snapshot registry writes are
+serialized through a passive mutex, invalidate the selected slot stage before
+writing its payload, and publish the final stage last as the commit marker. The
+read-only decoder is
+`.install_scripts/viogpu-native-context-destroy-diagnostics.ps1`. This
+diagnostic source is not yet ARM64-built, signed, installed, or
+validated on the device; it is not evidence that the remaining lifecycle leak
+is fixed.
 
 The current Windows runtime evidence is narrower than those source contracts.
 Package `58030` reports the first classified Present rejection as

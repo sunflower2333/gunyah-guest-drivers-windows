@@ -7,6 +7,8 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - ".install_scripts/test-viogpu-native-context-destroy-diagnostics.ps1"
+      - ".install_scripts/viogpu-native-context-destroy-diagnostics.ps1"
       - "viogpu/common/**"
       - "viogpu/shared/viogpu_wddm_abi.h"
       - "viogpu/tests/native-context-wire/**"
@@ -24,6 +26,8 @@ on:
   push:
     branches: [ master, viogpu-wddm3.1 ]
     paths:
+      - ".install_scripts/test-viogpu-native-context-destroy-diagnostics.ps1"
+      - ".install_scripts/viogpu-native-context-destroy-diagnostics.ps1"
       - "viogpu/common/**"
       - "viogpu/shared/viogpu_wddm_abi.h"
       - "viogpu/tests/native-context-wire/**"
@@ -97,6 +101,8 @@ jobs:
           $scripts = @(
             '.install_scripts/viogpu-native-start-diagnostics.ps1',
             '.install_scripts/viogpu-native-present-diagnostics.ps1',
+            '.install_scripts/viogpu-native-context-destroy-diagnostics.ps1',
+            '.install_scripts/test-viogpu-native-context-destroy-diagnostics.ps1',
             '.install_scripts/install-viogpu-58085.ps1'
           )
           foreach ($script in $scripts) {
@@ -115,6 +121,10 @@ jobs:
       - name: Exercise Native Present diagnostic decoder
         shell: pwsh
         run: .install_scripts/test-viogpu-native-present-diagnostics.ps1
+
+      - name: Exercise Native Context destroy diagnostic decoder
+        shell: pwsh
+        run: .install_scripts/test-viogpu-native-context-destroy-diagnostics.ps1
 
       - name: Build shared dependencies and guest drivers
         shell: pwsh

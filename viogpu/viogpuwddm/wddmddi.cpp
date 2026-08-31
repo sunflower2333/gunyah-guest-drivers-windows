@@ -4938,6 +4938,47 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
     return STATUS_SUCCESS;
 }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+static VOID RecordWddmNativeContextDestroyDiagnostic(_In_ VIOGPU_WDDM_CONTEXT *context,
+                                                     _In_ VIOGPU_NATIVE_CONTEXT_DESTROY_STAGE stage,
+                                                     _In_ NTSTATUS status,
+                                                     _In_ DWORD detail)
+{
+    if (context == NULL || context->Type != VioGpuWddmContextNative || context->Device == NULL ||
+        context->Device->Adapter == NULL)
+    {
+        return;
+    }
+
+    UINT contextId = 0;
+    DWORD contextState = VioGpuNativeContextDead;
+    DWORD ownerState = VioGpuNativeContextOwnerCreating;
+    BOOLEAN ownerRetained = FALSE;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->NativeContext.BindingLock, &oldIrql);
+    contextId = context->NativeContext.ContextId;
+    contextState = static_cast<DWORD>(InterlockedCompareExchange(&context->NativeContext.State,
+                                                                 VioGpuNativeContextDead,
+                                                                 VioGpuNativeContextDead));
+    if (context->NativeContext.Owner != NULL)
+    {
+        ownerState = static_cast<DWORD>(context->NativeContext.Owner->State);
+        ownerRetained = TRUE;
+    }
+    KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
+    context->Device->Adapter->RecordNativeContextDestroyDiagnostic(stage,
+                                                                   status,
+                                                                   detail,
+                                                                   VioGpuHostContextUnknown,
+                                                                   contextId,
+                                                                   contextState,
+                                                                   ownerState,
+                                                                   FALSE,
+                                                                   FALSE,
+                                                                   ownerRetained);
+}
+#endif
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE hContext)
 {
     VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(hContext);
@@ -4946,9 +4987,16 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         return STATUS_INVALID_HANDLE;
     }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    RecordWddmNativeContextDestroyDiagnostic(context, VioGpuNativeContextDestroyEntered, STATUS_PENDING, 0);
+#endif
+
     NTSTATUS submissionStatus = BeginContextSubmissionRundown(context);
     if (!NT_SUCCESS(submissionStatus))
     {
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        RecordWddmNativeContextDestroyDiagnostic(context, VioGpuNativeContextDestroyRundown, submissionStatus, 0);
+#endif
         return submissionStatus;
     }
 
@@ -4962,6 +5010,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
     VioGpuDod *adapter = context->Device == NULL ? NULL : context->Device->Adapter;
     if (adapter == NULL)
     {
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        RecordWddmNativeContextDestroyDiagnostic(context,
+                                                 VioGpuNativeContextDestroyAdapter,
+                                                 STATUS_DEVICE_NOT_READY,
+                                                 0);
+#endif
         return STATUS_DEVICE_NOT_READY;
     }
 
@@ -5042,6 +5096,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         if (malformed || (owner != NULL && !referenced))
         {
             adapter->RequestHardwareResetAtAnyIrql();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+            RecordWddmNativeContextDestroyDiagnostic(context,
+                                                     VioGpuNativeContextDestroyBusy,
+                                                     STATUS_GRAPHICS_ALLOCATION_BUSY,
+                                                     malformed ? 1U : 2U);
+#endif
             return STATUS_GRAPHICS_ALLOCATION_BUSY;
         }
         if (owner == NULL)
@@ -5049,6 +5109,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
             if (!empty || asynchronous || submissionReferences != 0)
             {
                 adapter->RequestHardwareResetAtAnyIrql();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+                RecordWddmNativeContextDestroyDiagnostic(context,
+                                                         VioGpuNativeContextDestroyBusy,
+                                                         STATUS_GRAPHICS_ALLOCATION_BUSY,
+                                                         !empty ? 3U : (asynchronous ? 4U : 5U));
+#endif
                 return STATUS_GRAPHICS_ALLOCATION_BUSY;
             }
             break;
@@ -5108,6 +5174,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         if (!retired)
         {
             adapter->RequestHardwareResetAtAnyIrql();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+            RecordWddmNativeContextDestroyDiagnostic(context,
+                                                     VioGpuNativeContextDestroyBusy,
+                                                     STATUS_GRAPHICS_ALLOCATION_BUSY,
+                                                     6U);
+#endif
             return STATUS_GRAPHICS_ALLOCATION_BUSY;
         }
     }

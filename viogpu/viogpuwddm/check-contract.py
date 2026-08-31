@@ -56,6 +56,12 @@ PRESENT_DIAGNOSTIC_SCRIPT_PATH = (
 PRESENT_DIAGNOSTIC_TEST_PATH = (
     PROJECT_DIR.parent.parent / ".install_scripts" / "test-viogpu-native-present-diagnostics.ps1"
 ).resolve()
+CONTEXT_DESTROY_DIAGNOSTIC_SCRIPT_PATH = (
+    PROJECT_DIR.parent.parent / ".install_scripts" / "viogpu-native-context-destroy-diagnostics.ps1"
+).resolve()
+CONTEXT_DESTROY_DIAGNOSTIC_TEST_PATH = (
+    PROJECT_DIR.parent.parent / ".install_scripts" / "test-viogpu-native-context-destroy-diagnostics.ps1"
+).resolve()
 
 
 def strip_cpp_comments_and_literals(source: str) -> str:
@@ -977,10 +983,13 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$epoch = 'cd6097248fe17b459b8587021799bd071f0f029f'",
+        "$epoch = '00c0fd0217cd25ef61581f498dbcb5f40516d4f6'",
+        "$epochMinor = 58180",
+        "git merge-base --is-ancestor $epoch HEAD",
         'git rev-list --count "$epoch..HEAD"',
+        "$minor = $epochMinor + [int]$n",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -le 58000",
+        "[int]$env:DROIDVM_DRIVER_MINOR -le 58180",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -6294,6 +6303,217 @@ def check_native_context_ownership() -> None:
         fail("retryable Native Context teardown must not detach the retained owner from its registration")
 
 
+def check_native_context_destroy_diagnostics() -> None:
+    expected_stages = {
+        "VioGpuNativeContextDestroyEntered": 0x0100,
+        "VioGpuNativeContextDestroyRundown": 0x0110,
+        "VioGpuNativeContextDestroyBusy": 0x0120,
+        "VioGpuNativeContextDestroyAdapter": 0x0130,
+        "VioGpuNativeContextDestroyMarked": 0x0140,
+        "VioGpuNativeContextDestroyHostBegin": 0x0200,
+        "VioGpuNativeContextDestroyHostResult": 0x0210,
+        "VioGpuNativeContextDestroyRetired": 0x0300,
+        "VioGpuNativeContextDestroyComplete": 0x0FFF,
+    }
+    observed_stages = {
+        name: int(value, 16)
+        for name, value in re.findall(
+            r"\b(VioGpuNativeContextDestroy[A-Za-z0-9]+)\s*=\s*(0x[0-9A-Fa-f]+)\s*,",
+            VIOGPU_HEADER_SOURCE,
+        )
+    }
+    if observed_stages != expected_stages:
+        fail(f"native Context destroy diagnostic stage ABI drifted: {observed_stages}")
+    if len(set(observed_stages.values())) != len(observed_stages):
+        fail("native Context destroy diagnostic stage values must remain unique")
+    for stage in expected_stages:
+        if len(re.findall(rf"\b{stage}\b", VIOGPU_SOURCE + WDDM_DDI_SOURCE + VIOGPU_HEADER_SOURCE)) < 2:
+            fail(f"native Context destroy diagnostic stage is defined but not recorded: {stage}")
+
+    declaration = canonical_code(VIOGPU_HEADER_SOURCE)
+    expected_declaration = (
+        "VOIDRecordNativeContextDestroyDiagnostic(_In_VIOGPU_NATIVE_CONTEXT_DESTROY_STAGEstage,_In_NTSTATUSstatus,"
+        "_In_DWORDdetail,_In_DWORDhostResult,_In_UINTcontextId,_In_DWORDcontextState,_In_DWORDownerState,"
+        "_In_BOOLEANreleased,_In_BOOLEANretrying,_In_BOOLEANownerRetained);"
+    )
+    if declaration.count(expected_declaration) != 1:
+        fail("DOD must declare exactly one Native Context destroy diagnostic recorder")
+    if declaration.count("KMUTEXm_NativeContextDestroyDiagnosticMutex;") != 1:
+        fail("DOD must own exactly one passive Native Context destroy diagnostic mutex")
+    if declaration.count("VioGpuNativeContextDestroyDiagnosticSlotCount=64") != 1:
+        fail("Native Context destroy diagnostics must retain exactly 64 bounded context slots")
+
+    constructor = canonical_code(function_body("VioGpuDod::VioGpuDod", VIOGPU_SOURCE))
+    if constructor.count("KeInitializeMutex(&m_NativeContextDestroyDiagnosticMutex,0);") != 1:
+        fail("DOD must initialize the Native Context destroy diagnostic mutex exactly once")
+
+    recorder = canonical_code(function_body("VioGpuDod::RecordNativeContextDestroyDiagnostic", VIOGPU_SOURCE))
+    if "IoOpenDeviceRegistryKey(m_pPhysicalDevice,PLUGPLAY_REGKEY_DRIVER,KEY_SET_VALUE,&deviceKey)" not in recorder:
+        fail("Native Context destroy diagnostics must persist on the device driver registry key")
+    value_suffixes = (
+        "Attempt",
+        "Status",
+        "Detail",
+        "HostResult",
+        "ContextId",
+        "ContextState",
+        "OwnerState",
+        "Released",
+        "Retrying",
+        "OwnerRetained",
+    )
+    for value_suffix in value_suffixes:
+        if recorder.count(f'L"{value_suffix}"') != 1:
+            fail(f"Native Context destroy diagnostics must write exactly one {value_suffix} slot value")
+    for fragment in (
+        "DWORDslot=contextId%VioGpuNativeContextDestroyDiagnosticSlotCount;",
+        "static_assert(ARRAYSIZE(valueSuffixes)==ARRAYSIZE(values)",
+        'RtlUnicodeStringPrintf(&slotValueName,L"NativeContextDestroySlot%02u%ws",slot,valueSuffixes[index])',
+        "WriteRegistryDWORD(deviceKey,slotValueName.Buffer,values[index])",
+        'RtlUnicodeStringPrintf(&slotStageName,L"NativeContextDestroySlot%02uStage",slot)',
+    ):
+        if recorder.count(canonical_code(fragment)) != 1:
+            fail(f"Native Context destroy diagnostics must use one bounded slot formatter: {fragment}")
+    stage_write = recorder.find("WriteRegistryDWORD(deviceKey,slotStageName.Buffer,&stageValue)")
+    stage_invalidate = recorder.find("WriteRegistryDWORD(deviceKey,slotStageName.Buffer,&invalidStageValue)")
+    payload_write = recorder.find("WriteRegistryDWORD(deviceKey,slotValueName.Buffer,values[index])")
+    if (
+        min(stage_invalidate, payload_write, stage_write) < 0
+        or not stage_invalidate < payload_write < stage_write
+        or recorder.count("WriteRegistryDWORD(deviceKey,slotStageName.Buffer,&invalidStageValue)") != 1
+        or recorder.count("WriteRegistryDWORD(deviceKey,slotStageName.Buffer,&stageValue)") != 1
+    ):
+        fail("Native Context destroy slot must invalidate its stage before payload and publish the final stage last")
+    if recorder.count("ZwClose(deviceKey)") != 1 or "InterlockedIncrement(&m_NativeContextDestroyAttempt)" not in recorder:
+        fail("Native Context destroy diagnostics must close the key and number every attempt")
+    require_order(
+        recorder,
+        (
+            "KeWaitForSingleObject(&m_NativeContextDestroyDiagnosticMutex",
+            "IoOpenDeviceRegistryKey(m_pPhysicalDevice,PLUGPLAY_REGKEY_DRIVER,KEY_SET_VALUE,&deviceKey)",
+            "WriteRegistryDWORD(deviceKey,slotStageName.Buffer,&invalidStageValue)",
+            "WriteRegistryDWORD(deviceKey,slotValueName.Buffer,values[index])",
+            "WriteRegistryDWORD(deviceKey,slotStageName.Buffer,&stageValue)",
+            "ZwClose(deviceKey)",
+        ),
+        "Native Context destroy registry snapshots must be serialized through the stage commit",
+    )
+    diagnostic_release = "KeReleaseMutex(&m_NativeContextDestroyDiagnosticMutex,FALSE)"
+    open_key = recorder.find(
+        "IoOpenDeviceRegistryKey(m_pPhysicalDevice,PLUGPLAY_REGKEY_DRIVER,KEY_SET_VALUE,&deviceKey)"
+    )
+    failure_release = recorder.find(diagnostic_release, open_key)
+    close_key = recorder.find("ZwClose(deviceKey)")
+    success_release = recorder.find(diagnostic_release, close_key)
+    if (
+        recorder.count(diagnostic_release) != 2
+        or min(open_key, failure_release, stage_write, close_key, success_release) < 0
+        or not open_key < failure_release < stage_write < close_key < success_release
+    ):
+        fail("Native Context destroy diagnostics must release serialization after open failure and registry close")
+    if (
+        "DWORDcontextIdValue=contextId;" not in recorder
+        or recorder.count("&contextIdValue") != 1
+        or re.search(r"&contextId(?:,|\})", recorder)
+    ):
+        fail("Native Context destroy diagnostics must convert UINT context IDs to a DWORD registry value")
+
+    destroy = canonical_code(function_body("VioGpuAdapter::DestroyNativeContext", VIOGPU_CODE))
+    require_order(
+        destroy,
+        (
+            "KeAcquireSpinLock(&context->BindingLock,&diagnosticIrql)",
+            "initialContextId=context->ContextId;",
+            "initialContextState=static_cast<DWORD>(InterlockedCompareExchange(&context->State",
+            "initialOwnerState=static_cast<DWORD>(context->Owner->State);",
+            "KeReleaseSpinLock(&context->BindingLock,diagnosticIrql)",
+            "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyEntered",
+            "KeWaitForSingleObject(&m_NativeContextLifecycleMutex",
+            "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyRundown",
+        ),
+        "adapter destroy must snapshot early ownership under the binding lock before diagnostics",
+    )
+    for fragment in (
+        "VioGpuNativeContextDestroyEntered,STATUS_PENDING,0,VioGpuHostContextUnknown,initialContextId,"
+        "initialContextState,initialOwnerState,FALSE,FALSE,initialOwnerRetained",
+        "VioGpuNativeContextDestroyRundown,status,0,VioGpuHostContextUnknown,initialContextId,"
+        "initialContextState,initialOwnerState,FALSE,FALSE,initialOwnerRetained",
+    ):
+        if fragment not in destroy:
+            fail("adapter early destroy diagnostics must use only the locked scalar snapshot")
+    for fragment in (
+        "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyEntered",
+        "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyMarked",
+        "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostBegin",
+        "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostResult",
+        "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyRetired",
+        "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyComplete",
+        "retryingDestroy",
+        "static_cast<DWORD>(destroyResult)",
+        "ownerRetained",
+        "*released=TRUE;",
+    ):
+        if fragment not in destroy:
+            fail(f"adapter destroy diagnostic is missing required ownership evidence: {fragment}")
+    destroy_sequence_start = destroy.find(
+        "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyMarked"
+    )
+    if destroy_sequence_start < 0:
+        fail("adapter destroy diagnostics are missing the mark stage")
+    require_order(
+        destroy[destroy_sequence_start:],
+        (
+            "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyMarked",
+            "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostBegin",
+            "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostResult",
+            "RetireNativeContextOwnerLocked(owner);",
+            "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyRetired",
+            "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyComplete",
+        ),
+        "adapter destroy diagnostics must publish mark, Host result, retirement, and release in order",
+    )
+    wddm_destroy = canonical_code(function_body("VioGpuWddmDestroyContext", WDDM_DDI_CODE))
+    require_order(
+        wddm_destroy,
+        (
+            "RecordWddmNativeContextDestroyDiagnostic(context,VioGpuNativeContextDestroyEntered",
+            "BeginContextSubmissionRundown(context)",
+            "RecordWddmNativeContextDestroyDiagnostic(context,VioGpuNativeContextDestroyBusy",
+        ),
+        "WDDM destroy diagnostics must record entry before an early busy return",
+    )
+    for path in (CONTEXT_DESTROY_DIAGNOSTIC_SCRIPT_PATH, CONTEXT_DESTROY_DIAGNOSTIC_TEST_PATH):
+        if not path.is_file():
+            fail(f"Native Context destroy diagnostic fixture is missing: {path}")
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"\b(?:Set-ItemProperty|New-ItemProperty|Remove-ItemProperty|pnputil|devcon)\b", source, re.IGNORECASE):
+            fail("Native Context destroy diagnostic decoder/fixture must remain read-only")
+    decoder = CONTEXT_DESTROY_DIAGNOSTIC_SCRIPT_PATH.read_text(encoding="utf-8")
+    for value_suffix in value_suffixes + ("Stage",):
+        if decoder.count(f"Get-DiagnosticValue '{value_suffix}'") != 1:
+            fail(f"Native Context destroy decoder must read exactly one {value_suffix} slot value")
+    for fragment in (
+        "[Parameter(Mandatory = $true)]",
+        "[uint32]$ContextId",
+        "$slot = [uint32]($ContextId % 64)",
+        "$valuePrefix = 'NativeContextDestroySlot{0:D2}' -f $slot",
+        "$storedContextId = ConvertTo-DwordValue (Get-DiagnosticValue 'ContextId')",
+        "if ($storedContextId -ne $ContextId)",
+        "$name = $Names[(Format-Dword $number)]",
+        "[switch]$RejectUnknown",
+        "Stage = Decode-Value $stage $stageNames 'Stage' -RejectUnknown",
+        "Slot = $slot",
+        "ContextId = $storedContextId",
+    ):
+        if decoder.count(fragment) != 1:
+            fail(f"Native Context destroy decoder must validate one exact bounded slot: {fragment}")
+    fixture = CONTEXT_DESTROY_DIAGNOSTIC_TEST_PATH.read_text(encoding="utf-8")
+    if "-ContextId 66" not in fixture or "accepted a colliding context slot" not in fixture:
+        fail("Native Context destroy decoder fixture must reject a modulo slot collision")
+    if "NativeContextDestroySlot02Stage'] = 0" not in fixture or "accepted an uncommitted slot" not in fixture:
+        fail("Native Context destroy decoder fixture must reject an uncommitted slot")
+
+
 def check_native_map_diagnostics() -> None:
     dod_header = canonical_code(VIOGPU_HEADER_SOURCE)
     for fragment in (
@@ -7873,10 +8093,11 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "context->VaStart!=0||context->VaSize!=0||context->SubmitQueueId!=0)",
         dead_state,
     )
-    dead_state_failure = destroy_context.find("FailNativeContextAtAnyIrql();returnSTATUS_INVALID_DEVICE_STATE;", dead_state_guard)
-    dead_state_success = destroy_context.find("*released=TRUE;", dead_state_failure)
-    if min(dead_state, dead_state_guard, dead_state_failure, dead_state_success) < 0 or not (
-        dead_state < dead_state_guard < dead_state_failure < dead_state_success
+    dead_state_failure = destroy_context.find("FailNativeContextAtAnyIrql();", dead_state_guard)
+    dead_state_return = destroy_context.find("returnSTATUS_INVALID_DEVICE_STATE;", dead_state_failure)
+    dead_state_success = destroy_context.find("*released=TRUE;", dead_state_return)
+    if min(dead_state, dead_state_guard, dead_state_failure, dead_state_return, dead_state_success) < 0 or not (
+        dead_state < dead_state_guard < dead_state_failure < dead_state_return < dead_state_success
     ):
         fail("dead Native Context destroy must prove every identity field is cleared before reporting release")
     if released_context.count("context->AllocationReferences==0") != 1:
@@ -11201,6 +11422,7 @@ def main() -> None:
     check_wddm_standard_primary_scanout()
     check_wddm_present_contract()
     check_native_context_ownership()
+    check_native_context_destroy_diagnostics()
     check_native_map_diagnostics()
     check_native_parameter_diagnostics()
     check_wddm_private_abi(root)

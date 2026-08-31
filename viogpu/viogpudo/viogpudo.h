@@ -93,6 +93,7 @@ enum VIOGPU_NATIVE_START_DETAIL : DWORD
 enum : UINT
 {
     VioGpuNativeFenceTrackerCapacity = 4096,
+    VioGpuNativeContextDestroyDiagnosticSlotCount = 64,
 };
 
 enum VIOGPU_NATIVE_START_STAGE : DWORD
@@ -155,6 +156,19 @@ enum VIOGPU_NATIVE_CONTEXT_CREATE_STAGE : DWORD
     VioGpuNativeContextCreateSubmitQueue = 0x0250,
     VioGpuNativeContextCreateCurrent = 0x0300,
     VioGpuNativeContextCreateComplete = 0x0FFF,
+};
+
+enum VIOGPU_NATIVE_CONTEXT_DESTROY_STAGE : DWORD
+{
+    VioGpuNativeContextDestroyEntered = 0x0100,
+    VioGpuNativeContextDestroyRundown = 0x0110,
+    VioGpuNativeContextDestroyBusy = 0x0120,
+    VioGpuNativeContextDestroyAdapter = 0x0130,
+    VioGpuNativeContextDestroyMarked = 0x0140,
+    VioGpuNativeContextDestroyHostBegin = 0x0200,
+    VioGpuNativeContextDestroyHostResult = 0x0210,
+    VioGpuNativeContextDestroyRetired = 0x0300,
+    VioGpuNativeContextDestroyComplete = 0x0FFF,
 };
 
 enum VIOGPU_NATIVE_ALLOCATION_DESTROY_STAGE : DWORD
@@ -735,6 +749,8 @@ class VioGpuDod
     volatile LONG m_NativeSubmissionFaultPresentSubmitStage;
     volatile LONG m_NativeSubmissionFaultPresentSubmitStatus;
     volatile LONG m_NativeSubmissionFaultPresentSubmitDetail;
+    volatile LONG m_NativeContextDestroyAttempt;
+    KMUTEX m_NativeContextDestroyDiagnosticMutex;
     KSPIN_LOCK m_NativeFenceLock;
     UINT m_NativeFenceHead;
     UINT m_NativeFenceCount;
@@ -1029,6 +1045,16 @@ class VioGpuDod
     VOID RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_CREATE_STAGE stage,
                                              _In_ NTSTATUS status,
                                              _In_ DWORD detail);
+    VOID RecordNativeContextDestroyDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_DESTROY_STAGE stage,
+                                              _In_ NTSTATUS status,
+                                              _In_ DWORD detail,
+                                              _In_ DWORD hostResult,
+                                              _In_ UINT contextId,
+                                              _In_ DWORD contextState,
+                                              _In_ DWORD ownerState,
+                                              _In_ BOOLEAN released,
+                                              _In_ BOOLEAN retrying,
+                                              _In_ BOOLEAN ownerRetained);
     VOID RecordNativeAllocationRangeDiagnostic(_In_ NTSTATUS status,
                                                _In_ DWORD reason,
                                                _In_ DWORD rangeCount,
