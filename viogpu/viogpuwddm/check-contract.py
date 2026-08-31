@@ -8748,6 +8748,22 @@ def check_wddm_context_lifetime() -> None:
     ):
         fail("DestroyContext must drain transient owners before requesting reset at the bounded deadline")
 
+    for owner_type, reference_call in (
+        ("Render", "ReferenceRenderSubmission(submission)"),
+        ("Present", "ReferencePresentTransaction(transaction)"),
+    ):
+        reference_failure = canonical_code(
+            f"if(!{reference_call}){{referenceFailed=TRUE;break;}}"
+        )
+        if destroy.count(reference_failure) != 1:
+            fail(f"DestroyContext must fail closed when a linked {owner_type} owner cannot be referenced")
+    if (
+        destroy.count("BOOLEANreferenceFailed=FALSE;") != 1
+        or destroy.count("if(malformed||referenceFailed)") != 1
+        or "owner=referenced?" in destroy
+    ):
+        fail("DestroyContext must distinguish pending-owner reference failure from an empty submission list")
+
     snapshot = function_body("VioGpuAdapter::AcquireNativeContextSnapshot", VIOGPU_CODE)
     snapshot_compact = canonical_code(snapshot)
     irql_guard = snapshot_compact.find("KeGetCurrentIrql()!=PASSIVE_LEVEL")

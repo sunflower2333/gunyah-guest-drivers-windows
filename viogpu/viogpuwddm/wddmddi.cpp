@@ -5042,7 +5042,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         VIOGPU_WDDM_CONTEXT_SUBMISSION_KIND kind = VioGpuWddmContextSubmissionRender;
         PVOID owner = NULL;
         LONG ownerState = 0;
-        BOOLEAN referenced = FALSE;
+        BOOLEAN referenceFailed = FALSE;
         BOOLEAN asynchronous = FALSE;
         BOOLEAN malformed = FALSE;
 
@@ -5066,8 +5066,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
                 if (state == VioGpuWddmSubmissionPrepared || state == VioGpuWddmSubmissionPatched ||
                     state == VioGpuWddmSubmissionEngineQueued)
                 {
-                    referenced = ReferenceRenderSubmission(submission);
-                    owner = referenced ? submission : NULL;
+                    if (!ReferenceRenderSubmission(submission))
+                    {
+                        referenceFailed = TRUE;
+                        break;
+                    }
+                    owner = submission;
                     ownerState = state;
                     kind = entry->Kind;
                     break;
@@ -5089,8 +5093,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
                 if (state == VioGpuWddmPresentBuilt || state == VioGpuWddmPresentPatched ||
                     state == VioGpuWddmPresentQueued)
                 {
-                    referenced = ReferencePresentTransaction(transaction);
-                    owner = referenced ? transaction : NULL;
+                    if (!ReferencePresentTransaction(transaction))
+                    {
+                        referenceFailed = TRUE;
+                        break;
+                    }
+                    owner = transaction;
                     ownerState = state;
                     kind = entry->Kind;
                     break;
@@ -5111,7 +5119,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
         LONG submissionReferences = context->SubmissionReferences;
         KeReleaseSpinLock(&context->SubmissionLock, submissionIrql);
 
-        if (malformed || (owner != NULL && !referenced))
+        if (malformed || referenceFailed)
         {
             adapter->RequestHardwareResetAtAnyIrql();
 #if defined(VIOGPU_NATIVE_CONTEXT)
