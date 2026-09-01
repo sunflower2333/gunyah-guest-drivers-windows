@@ -14,11 +14,11 @@ pages to VirtIO GPU with standard scatter/gather backing.
 - **WDF drivers** (vioinput, ...) are routed centrally by
   `VirtIO/WDF` (Dma.c / VirtIOWdf.c).
 - **viogpu** contains the Windows Native Context full-miniport source for the
-  Turnip/crosvm path. "Full miniport" identifies the registration/DDI model,
-  not a WDDM 1.2 capability claim: the current target uses the Win8 callback
-  table but reports the legacy `DXGKDDI_WDDMv1` profile. ARM64 source, build,
-  and package gates have passed; Windows/KMT/Host/GPU runtime remains
-  unverified, so the package is not approved for installation.
+  Turnip/crosvm path. `RenderOnly=1` selects a Win8/WDDM 1.2 render-only
+  registration with zero display topology; `RenderOnly=0` preserves the
+  legacy Win7/WDDMv1 display registration. The conditional registration change
+  has only local source/ABI validation; Windows/KMT/Host/GPU runtime remains
+  unverified, so no package containing it is approved for installation.
 
 ## Driver status
 
@@ -42,7 +42,7 @@ Legend:
 | Balloon | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viomem | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viofs | ⚠️ | VirtIO-WDF routing in place, data path unreviewed |
-| viogpu | ⚠️ | Native Context full-miniport package is ARM64 build-validated, reports legacy `DXGKDDI_WDDMv1`, and remains runtime-unverified/do-not-install |
+| viogpu | ⚠️ | Native Context full miniport has a locally validated conditional WDDM 1.2 render-only path and remains runtime-unverified/do-not-install |
 | pvpanic | ❌ | not ported |
 | fwcfg  | ❌ | not ported |
 | ivshmem | ❌ | not ported |

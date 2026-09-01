@@ -4050,17 +4050,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     else
     {
         status = VioGpuDodQueryAdapterInfo(hAdapter, pQueryAdapterInfo);
-        if (NT_SUCCESS(status) && pQueryAdapterInfo->Type == DXGKQAITYPE_DRIVERCAPS)
-        {
-            DXGK_DRIVERCAPS *driverCaps = static_cast<DXGK_DRIVERCAPS *>(pQueryAdapterInfo->pOutputData);
-            /* The registration table advertises the matching Win7 interface.
-             * Keep every WDDM 1.2-only capability disabled. */
-            driverCaps->WDDMVersion = DXGKDDI_WDDMv1;
-            driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes = 1;
-            driverCaps->SchedulingCaps.MultiEngineAware = 1;
-            driverCaps->SchedulingCaps.PreemptionAware = 0;
-            driverCaps->SchedulingCaps.CancelCommandAware = 0;
-        }
     }
 
     DbgPrintEx(DPFLTR_DEFAULT_ID,
@@ -9063,9 +9052,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmResetEngine(CONST HANDLE hAda
     adapter->RequestHardwareResetAtAnyIrql();
     return adapter->ResetFromTimeout();
 #else
-    /* Native Context cannot cancel/reset one Host engine independently.  A
-     * failed engine reset is the documented request for scheduler promotion
-     * to the adapter-wide ResetFromTimeout/RestartFromTimeout path. */
+    /* Native Context cannot cancel/reset one Host engine independently.  The
+     * WDDM 1.2 engine-reset contract permits failure here so the scheduler
+     * promotes recovery to ResetFromTimeout/RestartFromTimeout. */
     adapter->RequestHardwareResetAtAnyIrql();
     return STATUS_NOT_SUPPORTED;
 #endif

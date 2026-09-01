@@ -2275,24 +2275,26 @@ NTSTATUS VioGpuDod::ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In
 }
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
-static NTSTATUS VioGpuQueryWin7DriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO *queryAdapterInfo,
-                                          _In_ BOOLEAN pointerEnabled)
+static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO *queryAdapterInfo,
+                                            _In_ BOOLEAN pointerEnabled,
+                                            _In_ BOOLEAN renderOnly)
 {
-    if (queryAdapterInfo->OutputDataSize < VIOGPU_WIN7_DRIVERCAPS_SIZE)
+    ULONG requiredSize = renderOnly ? sizeof(DXGK_DRIVERCAPS) : VIOGPU_WIN7_DRIVERCAPS_SIZE;
+    if (queryAdapterInfo->OutputDataSize < requiredSize)
     {
         DbgPrint(TRACE_LEVEL_ERROR,
-                 ("QueryAdapterInfo output size (0x%u) is smaller than the Win7 DXGK_DRIVERCAPS prefix (0x%u)\n",
+                 ("QueryAdapterInfo output size (0x%u) is smaller than the required DXGK_DRIVERCAPS size (0x%u)\n",
                   queryAdapterInfo->OutputDataSize,
-                  VIOGPU_WIN7_DRIVERCAPS_SIZE));
+                  requiredSize));
         return STATUS_BUFFER_TOO_SMALL;
     }
 
     DXGK_DRIVERCAPS *driverCaps = static_cast<DXGK_DRIVERCAPS *>(queryAdapterInfo->pOutputData);
-    RtlZeroMemory(driverCaps, VIOGPU_WIN7_DRIVERCAPS_SIZE);
-    driverCaps->WDDMVersion = DXGKDDI_WDDMv1;
+    RtlZeroMemory(driverCaps, requiredSize);
+    driverCaps->WDDMVersion = renderOnly ? DXGKDDI_WDDMv1_2 : DXGKDDI_WDDMv1;
     driverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
 
-    if (pointerEnabled)
+    if (pointerEnabled && !renderOnly)
     {
         driverCaps->MaxPointerWidth = POINTER_SIZE;
         driverCaps->MaxPointerHeight = POINTER_SIZE;
@@ -2300,11 +2302,26 @@ static NTSTATUS VioGpuQueryWin7DriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO *q
         driverCaps->PointerCaps.MaskedColor = 1;
     }
 
+    if (renderOnly)
+    {
+        driverCaps->FlipCaps.FlipOnVSyncMmIo = 1;
+        driverCaps->SchedulingCaps.MultiEngineAware = 1;
+        /* WDDM 1.2 permits retaining the Win7 scheduler model.  Native Context
+         * has no Host primitive for preempting an in-flight command. */
+        driverCaps->SchedulingCaps.PreemptionAware = 0;
+        driverCaps->SchedulingCaps.CancelCommandAware = 1;
+        driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes = 1;
+        driverCaps->PreemptionCaps.GraphicsPreemptionGranularity = D3DKMDT_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;
+        driverCaps->PreemptionCaps.ComputePreemptionGranularity = D3DKMDT_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY;
+        driverCaps->SupportPerEngineTDR = 1;
+    }
+
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,
-               "viogpu Win7 DriverCaps: size=%u wddm=0x%04X pointerCaps=0x%08X\n",
-               VIOGPU_WIN7_DRIVERCAPS_SIZE,
+               "viogpu Native DriverCaps: size=%u wddm=0x%04X renderOnly=%u pointerCaps=0x%08X\n",
+               requiredSize,
                driverCaps->WDDMVersion,
+               renderOnly,
                driverCaps->PointerCaps.Value);
     return STATUS_SUCCESS;
 }
@@ -2383,7 +2400,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
         case DXGKQAITYPE_DRIVERCAPS:
             {
 #if defined(VIOGPU_NATIVE_CONTEXT)
-                status = VioGpuQueryWin7DriverCaps(pQueryAdapterInfo, IsPointerEnabled());
+                status = VioGpuQueryNativeDriverCaps(pQueryAdapterInfo, IsPointerEnabled(), IsRenderOnly());
 #else
                 if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_DRIVERCAPS))
                 {
@@ -2438,7 +2455,7 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                pQueryAdapterInfo->Type,
                pQueryAdapterInfo->OutputDataSize,
 #if defined(VIOGPU_NATIVE_CONTEXT)
-               VIOGPU_WIN7_DRIVERCAPS_SIZE,
+               IsRenderOnly() ? (ULONG)sizeof(DXGK_DRIVERCAPS) : VIOGPU_WIN7_DRIVERCAPS_SIZE,
 #else
                (ULONG)sizeof(DXGK_DRIVERCAPS),
 #endif

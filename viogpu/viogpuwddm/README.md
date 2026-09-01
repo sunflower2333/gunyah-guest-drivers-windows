@@ -1,13 +1,13 @@
 # viogpuwddm Native Context full miniport
 
 This project implements an ARM64 Native Context full miniport for the crosvm
-VirtIO GPU path. The project keeps the Win8 WDK declaration surface required by
-existing internal source, but dxgkrnl sees a
-`DXGKDDI_INTERFACE_VERSION_WIN7` registration table matching the reported
-legacy `DXGKDDI_WDDMv1` profile. It does not claim WDDM 1.2 capabilities: the
-mandatory WDDM 1.2 preemption, per-engine reset/TDR, direct-flip, and related
-contracts remain disabled. The source contains the registration entry point, a
-dedicated display-class INX, and an ARM64-only fail-closed D3D UMD shim.
+VirtIO GPU path. `RenderOnly=1` selects a Win8 registration table and reports a
+WDDM 1.2 render-only adapter with zero display topology. That mode registers
+the existing cancellation and per-engine TDR callbacks while retaining the
+permitted Win7 scheduler model because Native Context cannot preempt in-flight
+Host commands. `RenderOnly=0` preserves the legacy Win7/WDDMv1 display
+registration. The source contains the registration entry point, a dedicated
+display-class INX, and an ARM64-only fail-closed D3D UMD shim.
 The last committed activation batch passed the ARM64 compile, link, MAP, INF,
 signing, and package gates in the dedicated and product workflows. Signed
 package `100.6.101.58030` is installed in the unprotected Windows VM, starts
@@ -41,8 +41,10 @@ KMT/Host/GPU execution, TDR, and uninstall rollback remain unverified:
   an upgrade; the current unprotected path must not let dxgkrnl retain that
   retired adapter contract.
 - Native ring-1 fence retirement and reset-generation/TDR source contracts are
-  wired. Hardware preemption, per-engine reset, smooth rotation, and driver
-  color conversion are explicitly not advertised.
+  wired. Hardware preemption, smooth rotation, and driver color conversion are
+  explicitly not advertised. Render-only mode advertises its registered
+  engine-reset contract; an unsupported independent reset is promoted to the
+  existing adapter-wide timeout recovery path.
 
 Later device evidence supersedes the activation-only snapshot above. Signed
 package `100.6.101.58179` completed three 10,000-iteration KMT lifecycle phases
@@ -375,26 +377,28 @@ share one WPP provider. `driver_entry.cpp` is the sole WPP initialization owner;
 the project-local `wpp-non-owner.tpl` lets the reused `driver.cpp` compile its
 trace calls and cleanup reference without emitting a second provider definition.
 
-The legacy runtime table registers the full-graphics slots that the previous
-ETW trace reported missing: ACPI notification, ETW control, palette, scanline,
-interrupt control, and `RenderKm`. `GetScanLine` now publishes a bounded
+The runtime table is conditional. `RenderOnly=0` retains the legacy
+full-graphics slots that the previous ETW trace reported missing: ACPI
+notification, ETW control, palette, scanline, interrupt control, and `RenderKm`.
+`GetScanLine` publishes a bounded
 software progressive timing result from the active VidPN mode and the kernel
 performance counter; VirtIO-GPU has no hardware scanline register, so this
 does not imply a vblank interrupt source. `ControlInterrupt` supports the
 three DMA notification classes used by the native scheduler and gates the
 control/cursor queues with the same ISR barrier and DPC-drain ordering as
 transport teardown. Unsupported interrupt classes still fail closed, and
-`RenderKm` never sends CDD commands through the MSM parser. The Win8-only
-`CancelCommand`, per-engine TDR, post-display-ownership, and system-display
-callbacks remain implemented internally where needed by existing source but
-are not exposed through the Win7 registration table. The KMDOD-only
-`DxgkDdiPresentDisplayOnly` callback is also not registered.
+`RenderKm` never sends CDD commands through the MSM parser. `RenderOnly=1`
+registers the Win8 `CancelCommand` and per-engine TDR callbacks while omitting
+the display-specific slots. Post-display-ownership and system-display callbacks
+remain available only in the Win7 display table. The KMDOD-only
+`DxgkDdiPresentDisplayOnly` callback is not registered in either mode.
 
-`DxgkDdiCollectDbgInfo` remains registered in the legacy table and emits one
-bounded 32-byte snapshot using atomic reset and fence queries. Adapter-wide
-timeout recovery remains available. `CancelCommandAware` is zero because the
-legacy table has no cancellation callback. `SupportPerEngineTDR` is beyond the
-Win7 DriverCaps prefix and is not accessed or advertised.
+`DxgkDdiCollectDbgInfo` remains registered and emits one bounded 32-byte
+snapshot using atomic reset and fence queries. Adapter-wide timeout recovery
+remains available. Render-only DriverCaps set `CancelCommandAware` and
+`SupportPerEngineTDR` for the registered callbacks but keep `PreemptionAware`
+zero. Display mode retains the bounded Win7 DriverCaps prefix and does not
+access or advertise those Win8-only fields.
 
 Standard paging now covers primary, GDI shadow, and staging allocations. It
 uses context-zero paging records, copies or fills the VidMm-backed aperture
@@ -512,12 +516,12 @@ Normal-WB VidMm mapping and Host KGSL access; memory barriers order CPU accesses
 but do not add a platform CPU/GPU cache-maintenance primitive.
 These are explicit runtime gates; source inspection does not prove TDR, paging,
 or Present behavior. Optional capabilities that are not implemented remain
-disabled, including hardware preemption, FlipOnVSyncMmIo, per-engine TDR,
-rotation, direct flip, and GDI acceleration beyond the CPU-copy baseline.
+disabled, including hardware preemption, rotation, direct flip, and GDI
+acceleration beyond the CPU-copy baseline.
 System contexts provide typed lifecycle ownership and GDI contexts support the
 bounded Present baseline. Successful compilation alone still does not establish
-that the driver can register, start, render, recover, or satisfy its advertised
-legacy WDDMv1 profile in a Windows runtime.
+that the driver can register, start, render, recover, or satisfy either its
+render-only WDDM 1.2 profile or its legacy display profile in a Windows runtime.
 
 The stable display-only driver remains `viogpudo` and WDDM 1.2.
 

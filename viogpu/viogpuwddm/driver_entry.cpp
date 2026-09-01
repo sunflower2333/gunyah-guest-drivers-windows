@@ -17,7 +17,7 @@ BOOLEAN VioGpuWddmIsRenderOnlyRegistration()
 static_assert(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WIN8,
               "viogpuwddm requires Win8 declarations for its internal Native Context callbacks");
 
-/* Dxgkrnl must see a registration version consistent with DXGKDDI_WDDMv1. */
+/* Registration and DriverCaps must describe the same selected runtime mode. */
 static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
 {
     PAGED_CODE();
@@ -76,7 +76,7 @@ static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
 VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData, _In_ BOOLEAN renderOnly)
 {
     RtlZeroMemory(initialData, sizeof(*initialData));
-    initialData->Version = DXGKDDI_INTERFACE_VERSION_WIN7;
+    initialData->Version = renderOnly ? DXGKDDI_INTERFACE_VERSION_WIN8 : DXGKDDI_INTERFACE_VERSION_WIN7;
 
     initialData->DxgkDdiAddDevice = VioGpuDodAddDevice;
     initialData->DxgkDdiStartDevice = VioGpuDodStartDevice;
@@ -120,7 +120,14 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiControlInterrupt = VioGpuWddmControlInterrupt;
 
     initialData->DxgkDdiEscape = VioGpuWddmEscape;
-    if (!renderOnly)
+    if (renderOnly)
+    {
+        initialData->DxgkDdiCancelCommand = VioGpuWddmCancelCommand;
+        initialData->DxgkDdiQueryDependentEngineGroup = VioGpuWddmQueryDependentEngineGroup;
+        initialData->DxgkDdiQueryEngineStatus = VioGpuWddmQueryEngineStatus;
+        initialData->DxgkDdiResetEngine = VioGpuWddmResetEngine;
+    }
+    else
     {
         initialData->DxgkDdiSetPalette = VioGpuWddmSetPalette;
         initialData->DxgkDdiSetPointerPosition = VioGpuDodSetPointerPosition;
