@@ -3987,6 +3987,25 @@ VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter)
 VOID NativePagingBatchCancelled(_In_ PVOID callbackContext);
 VOID NativePagingBatchWorker(_In_ PVOID callbackContext);
 
+static_assert(static_cast<UINT>(DXGKQAITYPE_64BITONLYCAPS) == 47U, "unexpected DXGKQAITYPE_64BITONLYCAPS value");
+static_assert(sizeof(DXGK_64_BIT_ONLY_CAPS) == sizeof(UINT), "unexpected DXGK_64_BIT_ONLY_CAPS size");
+
+static NTSTATUS Query64BitOnlyCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
+{
+    if (queryAdapterInfo->OutputDataSize < sizeof(DXGK_64_BIT_ONLY_CAPS))
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    if (queryAdapterInfo->pOutputData == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    DXGK_64_BIT_ONLY_CAPS *caps = static_cast<DXGK_64_BIT_ONLY_CAPS *>(queryAdapterInfo->pOutputData);
+    RtlZeroMemory(caps, sizeof(*caps));
+    return STATUS_SUCCESS;
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE hAdapter,
                                                                     CONST DXGKARG_QUERYADAPTERINFO *pQueryAdapterInfo)
 {
@@ -4004,6 +4023,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     else if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT)
     {
         status = QuerySegment(adapter, pQueryAdapterInfo);
+    }
+    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_64BITONLYCAPS)
+    {
+        status = Query64BitOnlyCaps(pQueryAdapterInfo);
     }
     else if (static_cast<UINT>(pQueryAdapterInfo->Type) == 24U || static_cast<UINT>(pQueryAdapterInfo->Type) == 25U)
     {

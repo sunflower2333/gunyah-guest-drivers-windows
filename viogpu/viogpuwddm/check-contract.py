@@ -2906,6 +2906,39 @@ def check_render_only_contract() -> None:
         "RenderOnly=0 must preserve display discovery and child-status publication",
     )
 
+    wddm = canonical_code(WDDM_DDI_CODE)
+    for fragment in (
+        "static_assert(static_cast<UINT>(DXGKQAITYPE_64BITONLYCAPS)==47,",
+        "static_assert(sizeof(DXGK_64_BIT_ONLY_CAPS)==sizeof(UINT),",
+    ):
+        if wddm.count(fragment) != 1:
+            fail(f"render-only startup must pin the Windows 11 24H2 type-47 ABI: {fragment}")
+
+    caps = canonical_code(function_body("Query64BitOnlyCaps", WDDM_DDI_CODE))
+    require_order(
+        caps,
+        (
+            "queryAdapterInfo->OutputDataSize<sizeof(DXGK_64_BIT_ONLY_CAPS)",
+            "returnSTATUS_BUFFER_TOO_SMALL;",
+            "queryAdapterInfo->pOutputData==NULL",
+            "returnSTATUS_INVALID_PARAMETER;",
+            "DXGK_64_BIT_ONLY_CAPS*caps=static_cast<DXGK_64_BIT_ONLY_CAPS*>(queryAdapterInfo->pOutputData);",
+            "RtlZeroMemory(caps,sizeof(*caps));",
+            "returnSTATUS_SUCCESS;",
+        ),
+        "type-47 capability handling must validate, zero, and succeed without advertising bits",
+    )
+    if caps.count("RtlZeroMemory(") != 1:
+        fail("type-47 capability handling must contain one exact zero operation")
+
+    query = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
+    dispatch = (
+        "elseif(pQueryAdapterInfo->Type==DXGKQAITYPE_64BITONLYCAPS)"
+        "{status=Query64BitOnlyCaps(pQueryAdapterInfo);}"
+    )
+    if query.count(dispatch) != 1:
+        fail("the WDDM query wrapper must dispatch type 47 to its zero-capability helper exactly once")
+
 
 def check_vidpn_mode_contract() -> None:
     signal_info = canonical_code(function_body("BuildVideoSignalInfo", VIOGPU_CODE))
