@@ -32,6 +32,8 @@ const UINT VIOGPU_WDDM_PRESENT_RECTS_PER_PASS = 256;
 const LONG VIOGPU_WDDM_DEVICE_CLOSING = static_cast<LONG>(0x80000000UL);
 const LONG VIOGPU_WDDM_DEVICE_REFERENCE_MASK = 0x7FFFFFFF;
 const ULONGLONG VIOGPU_WDDM_CONTEXT_DESTROY_STALL_TIMEOUT_100NS = 10ULL * 1000 * 1000;
+const ULONG VIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_MAX_ATTEMPTS = 64;
+const LONGLONG VIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_RETRY_DELAY_100NS = 10LL * 1000 * 10;
 
 enum VIOGPU_WDDM_APERTURE_PAGE_STATE : UCHAR
 {
@@ -762,7 +764,7 @@ BOOLEAN ValidateNativeAllocationDestroyState(VIOGPU_WDDM_ALLOCATION *allocation)
 
 NTSTATUS FinalizeDeferredNativeContextDestroy(VIOGPU_WDDM_ALLOCATION *allocation)
 {
-    if (allocation == NULL)
+    if (allocation == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -784,10 +786,27 @@ NTSTATUS FinalizeDeferredNativeContextDestroy(VIOGPU_WDDM_ALLOCATION *allocation
     }
 
     BOOLEAN released = FALSE;
-    NTSTATUS status = context->DeferredAdapter->DestroyNativeContext(&context->NativeContext, &released);
-    if (!released && VioGpuAdapter::IsNativeContextReleased(&context->NativeContext))
+    NTSTATUS status = STATUS_DEVICE_BUSY;
+    for (ULONG attempt = 0; attempt < VIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_MAX_ATTEMPTS; ++attempt)
     {
-        released = TRUE;
+        status = context->DeferredAdapter->DestroyNativeContext(&context->NativeContext, &released);
+        if (!released && VioGpuAdapter::IsNativeContextReleased(&context->NativeContext))
+        {
+            released = TRUE;
+        }
+        if (released || status != STATUS_DEVICE_BUSY ||
+            attempt + 1 == VIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_MAX_ATTEMPTS)
+        {
+            break;
+        }
+
+        LARGE_INTEGER retryDelay;
+        retryDelay.QuadPart = -VIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_RETRY_DELAY_100NS;
+        status = KeDelayExecutionThread(KernelMode, FALSE, &retryDelay);
+        if (status != STATUS_SUCCESS)
+        {
+            break;
+        }
     }
     if (!released)
     {

@@ -8140,6 +8140,13 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         fail("DestroyAllocation must drop its context pin before deleting the KMD allocation")
 
     deferred_finalize = canonical_code(function_body("FinalizeDeferredNativeContextDestroy", WDDM_DDI_CODE))
+    canonical_wddm_ddi = canonical_code(WDDM_DDI_CODE)
+    for fragment in (
+        "constULONGVIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_MAX_ATTEMPTS=64;",
+        "constLONGLONGVIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_RETRY_DELAY_100NS=10LL*1000*10;",
+    ):
+        if canonical_wddm_ddi.count(fragment) != 1:
+            fail(f"deferred context destroy must retain its bounded retry constant: {fragment}")
     require_order(
         deferred_finalize,
         (
@@ -8147,8 +8154,12 @@ def check_wddm_guest_allocation_lifecycle() -> None:
             "if(context==NULL)",
             "context->Device!=NULL||context->DeferredAdapter==NULL",
             "InterlockedCompareExchange(&context->DestroyState,VioGpuWddmContextDestroyFinalizing,VioGpuWddmContextDestroyDeferred)",
+            "for(ULONGattempt=0;attempt<VIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_MAX_ATTEMPTS;++attempt)",
             "context->DeferredAdapter->DestroyNativeContext(&context->NativeContext,&released);",
             "VioGpuAdapter::IsNativeContextReleased(&context->NativeContext)",
+            "released||status!=STATUS_DEVICE_BUSY",
+            "retryDelay.QuadPart=-VIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_RETRY_DELAY_100NS;",
+            "KeDelayExecutionThread(KernelMode,FALSE,&retryDelay);",
             "if(!released)",
             "InterlockedExchange(&context->DestroyState,VioGpuWddmContextDestroyDeferred);",
             "allocation->DeferredContext=NULL;",
@@ -8157,6 +8168,12 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         ),
         "deferred context finalization must remain retryable until Host ownership is proven released",
     )
+    if deferred_finalize.count("KeGetCurrentIrql()!=PASSIVE_LEVEL") != 1:
+        fail("deferred context destroy retry must run only at PASSIVE_LEVEL")
+    if deferred_finalize.count("context->DeferredAdapter->DestroyNativeContext(&context->NativeContext,&released)") != 1:
+        fail("deferred context destroy must use one bounded retry-loop call site")
+    if deferred_finalize.count("attempt+1==VIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_MAX_ATTEMPTS") != 1:
+        fail("deferred context destroy retry must stop before delaying beyond its final attempt")
     if deferred_finalize.find("allocation->DeferredContext=NULL;") < deferred_finalize.find("if(!released)"):
         fail("failed deferred context finalization must retain its allocation retry anchor")
 
