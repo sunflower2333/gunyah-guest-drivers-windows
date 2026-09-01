@@ -760,6 +760,48 @@ BOOLEAN ValidateNativeAllocationDestroyState(VIOGPU_WDDM_ALLOCATION *allocation)
            allocation->HostState == VioGpuWddmAllocationHostNone;
 }
 
+NTSTATUS FinalizeDeferredNativeContextDestroy(VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    if (allocation == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    VIOGPU_WDDM_CONTEXT *context = allocation->DeferredContext;
+    if (context == NULL)
+    {
+        return STATUS_SUCCESS;
+    }
+    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Type != VioGpuWddmContextNative ||
+        context->Device != NULL || context->DeferredAdapter == NULL)
+    {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    if (InterlockedCompareExchange(&context->DestroyState,
+                                   VioGpuWddmContextDestroyFinalizing,
+                                   VioGpuWddmContextDestroyDeferred) != VioGpuWddmContextDestroyDeferred)
+    {
+        return STATUS_DEVICE_BUSY;
+    }
+
+    BOOLEAN released = FALSE;
+    NTSTATUS status = context->DeferredAdapter->DestroyNativeContext(&context->NativeContext, &released);
+    if (!released && VioGpuAdapter::IsNativeContextReleased(&context->NativeContext))
+    {
+        released = TRUE;
+    }
+    if (!released)
+    {
+        InterlockedExchange(&context->DestroyState, VioGpuWddmContextDestroyDeferred);
+        return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
+    }
+
+    allocation->DeferredContext = NULL;
+    context->DeferredAdapter = NULL;
+    context->Signature = 0;
+    delete context;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
 {
     if (allocation == NULL)
@@ -777,6 +819,10 @@ NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
     if (registration == NULL || range == NULL)
     {
         NTSTATUS status = registration == NULL && range == NULL ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+        if (status == STATUS_SUCCESS)
+        {
+            status = FinalizeDeferredNativeContextDestroy(allocation);
+        }
         RecordNativeAllocationDestroyState(adapter,
                                            VioGpuNativeAllocationDestroyDetach,
                                            status,
@@ -798,6 +844,7 @@ NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
     BOOLEAN valid = allocation->Destroying && allocation->HostState == VioGpuWddmAllocationHostNone &&
                     allocation->NativeContext == registration && allocation->ContextRange == range &&
                     range->Registration == registration && range->Linked && registration->AllocationReferences != 0;
+    VIOGPU_WDDM_CONTEXT *deferredContext = NULL;
     if (valid)
     {
         valid = FALSE;
@@ -811,6 +858,18 @@ NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
             }
         }
     }
+    if (valid && registration->AllocationClosing && registration->AllocationReferences == 1)
+    {
+        BOOLEAN onlyRange = registration->AllocationRanges.Flink == &range->Link &&
+                            registration->AllocationRanges.Blink == &range->Link;
+        deferredContext = CONTAINING_RECORD(registration, VIOGPU_WDDM_CONTEXT, NativeContext);
+        valid = onlyRange && deferredContext->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE &&
+                deferredContext->Type == VioGpuWddmContextNative && deferredContext->Device == NULL &&
+                deferredContext->DeferredAdapter != NULL &&
+                InterlockedCompareExchange(&deferredContext->DestroyState,
+                                           VioGpuWddmContextDestroyDeferred,
+                                           VioGpuWddmContextDestroyDeferred) == VioGpuWddmContextDestroyDeferred;
+    }
     if (valid)
     {
         RemoveEntryList(&range->Link);
@@ -818,6 +877,7 @@ NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
         allocation->ContextRange = NULL;
         --registration->AllocationReferences;
         allocation->NativeContext = NULL;
+        allocation->DeferredContext = deferredContext;
     }
     KeReleaseSpinLock(&registration->BindingLock, oldIrql);
     NTSTATUS status = valid ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
@@ -831,6 +891,12 @@ NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
         return status;
     }
     delete range;
+    status = FinalizeDeferredNativeContextDestroy(allocation);
+    if (status != STATUS_SUCCESS)
+    {
+        RecordNativeAllocationDestroyState(adapter, VioGpuNativeAllocationDestroyDetach, status, 3, allocation);
+        return status;
+    }
     RecordNativeAllocationDestroyState(adapter,
                                        VioGpuNativeAllocationDestroyComplete,
                                        STATUS_SUCCESS,
@@ -4353,6 +4419,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
         allocation->Adapter = adapter;
         allocation->Resource = resource;
         allocation->NativeContext = nativeContext;
+        allocation->DeferredContext = NULL;
         allocation->ContextGeneration = contextGeneration;
         allocation->ContextResetGeneration = contextResetGeneration;
         allocation->ContextId = contextId;
@@ -4934,6 +5001,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
     context->Device = device;
     context->RuntimeContext = NULL;
     context->Type = contextType;
+    context->DestroyState = VioGpuWddmContextDestroyActive;
+    context->DeferredAdapter = NULL;
     context->NodeOrdinal = createContext->NodeOrdinal;
     context->EngineAffinity = createContext->EngineAffinity;
     KeInitializeSpinLock(&context->NativeContext.BindingLock);
@@ -4962,6 +5031,96 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
     createContext->ContextInfo.PatchLocationListSize = contextType == VioGpuWddmContextGdi ? 256U
                                                                                            : VIOGPU_WDDM_PATCH_LIST_SIZE;
     createContext->hContext = context;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS DeferNativeContextDestroy(_Inout_ VIOGPU_WDDM_CONTEXT *context,
+                                   _In_ VioGpuDod *adapter,
+                                   _Out_ BOOLEAN *deferred)
+{
+    if (context == NULL || adapter == NULL || deferred == NULL || context->Type != VioGpuWddmContextNative ||
+        context->Device == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *deferred = FALSE;
+
+    VIOGPU_WDDM_DEVICE *device = context->Device;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->NativeContext.BindingLock, &oldIrql);
+    ULONG references = context->NativeContext.AllocationReferences;
+    LONG registrationState = InterlockedCompareExchange(&context->NativeContext.State,
+                                                        VioGpuNativeContextDead,
+                                                        VioGpuNativeContextDead);
+    VIOGPU_NATIVE_CONTEXT_OWNER *owner = context->NativeContext.Owner;
+    BOOLEAN live = context->NativeContext.Registered && context->NativeContext.Adapter != NULL &&
+                   context->NativeContext.Adapter->GetVioGpu() == adapter && owner != NULL &&
+                   owner->Registration == &context->NativeContext && owner->State == VioGpuNativeContextOwnerLive &&
+                   context->NativeContext.Generation > 0 && context->NativeContext.ResetGeneration != 0 &&
+                   context->NativeContext.ContextId != 0 && owner->Generation == context->NativeContext.Generation &&
+                   owner->ResetGeneration == context->NativeContext.ResetGeneration &&
+                   owner->ContextId == context->NativeContext.ContextId && registrationState == VioGpuNativeContextLive;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    live = live && owner->ControlResourceCreated && owner->ControlMapped && owner->ControlResourceId != 0 &&
+           owner->ControlBlobSize == VIOGPU_NATIVE_CONTROL_BLOB_SIZE && owner->ControlAddress != NULL &&
+           owner->SubmitQueueCreated && owner->SubmitQueueId != 0 &&
+           context->NativeContext.SubmitQueueId == owner->SubmitQueueId && context->NativeContext.VaStart != 0 &&
+           context->NativeContext.VaSize != 0;
+#endif
+    BOOLEAN retired = !context->NativeContext.Registered && context->NativeContext.Adapter == NULL && owner == NULL &&
+                      context->NativeContext.Generation == 0 && context->NativeContext.ResetGeneration == 0 &&
+                      context->NativeContext.ContextId == 0 && context->NativeContext.VaStart == 0 &&
+                      context->NativeContext.VaSize == 0 && context->NativeContext.SubmitQueueId == 0 &&
+                      registrationState == VioGpuNativeContextDead;
+    BOOLEAN valid = (live || retired) &&
+                    InterlockedCompareExchange(&context->DestroyState,
+                                               VioGpuWddmContextDestroyActive,
+                                               VioGpuWddmContextDestroyActive) == VioGpuWddmContextDestroyActive &&
+                    context->DeferredAdapter == NULL && device->Adapter == adapter;
+    if (!valid)
+    {
+        KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    context->NativeContext.AllocationClosing = TRUE;
+    ULONG rangeCount = 0;
+    BOOLEAN rangesValid = TRUE;
+    for (PLIST_ENTRY entry = context->NativeContext.AllocationRanges.Flink;
+         entry != &context->NativeContext.AllocationRanges;
+         entry = entry->Flink)
+    {
+        VIOGPU_WDDM_ALLOCATION_RANGE *range = CONTAINING_RECORD(entry, VIOGPU_WDDM_ALLOCATION_RANGE, Link);
+        if (range->Registration != &context->NativeContext || !range->Linked || rangeCount == MAXULONG)
+        {
+            rangesValid = FALSE;
+            break;
+        }
+        ++rangeCount;
+    }
+    if (!rangesValid || references < rangeCount)
+    {
+        KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    if (references > rangeCount)
+    {
+        KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
+        return STATUS_DEVICE_BUSY;
+    }
+    if (references == 0)
+    {
+        KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
+        return STATUS_SUCCESS;
+    }
+
+    context->DeferredAdapter = adapter;
+    context->RuntimeContext = NULL;
+    context->Device = NULL;
+    InterlockedExchange(&context->DestroyState, VioGpuWddmContextDestroyDeferred);
+    DereferenceDevice(device);
+    *deferred = TRUE;
+    KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
     return STATUS_SUCCESS;
 }
 
@@ -5230,6 +5389,24 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
                                                      6U);
 #endif
             return STATUS_GRAPHICS_ALLOCATION_BUSY;
+        }
+    }
+
+    if (context->Type == VioGpuWddmContextNative)
+    {
+        BOOLEAN deferred = FALSE;
+        NTSTATUS deferStatus = DeferNativeContextDestroy(context, adapter, &deferred);
+        if (deferStatus != STATUS_SUCCESS)
+        {
+            if (deferStatus != STATUS_DEVICE_BUSY)
+            {
+                adapter->RequestHardwareResetAtAnyIrql();
+            }
+            return deferStatus;
+        }
+        if (deferred)
+        {
+            return STATUS_SUCCESS;
         }
     }
 

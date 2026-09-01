@@ -8283,6 +8283,7 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
     context->VaSize = vaSize;
     context->SubmitQueueId = submitQueueId;
 #endif
+    context->AllocationClosing = FALSE;
     context->Registered = TRUE;
     InterlockedExchange(&context->State, VioGpuNativeContextLive);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
@@ -8635,6 +8636,7 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
     context->VaStart = 0;
     context->VaSize = 0;
     context->SubmitQueueId = 0;
+    context->AllocationClosing = FALSE;
     InterlockedExchange(&context->State, VioGpuNativeContextDead);
     KeReleaseSpinLock(&context->BindingLock, oldIrql);
     *released = TRUE;
@@ -8776,8 +8778,9 @@ __declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::AcquireNativeContextSnapsho
             KIRQL oldIrql;
             KeAcquireSpinLock(&context->BindingLock, &oldIrql);
             BOOLEAN matches = context->Adapter == this && context->Owner == owner && context->Registered &&
-                              context->Generation == generation && context->ResetGeneration == resetGeneration &&
-                              context->ContextId == owner->ContextId && context->VaStart != 0 && context->VaSize != 0 &&
+                              !context->AllocationClosing && context->Generation == generation &&
+                              context->ResetGeneration == resetGeneration && context->ContextId == owner->ContextId &&
+                              context->VaStart != 0 && context->VaSize != 0 &&
 #if defined(VIOGPU_NATIVE_CONTEXT)
                               context->SubmitQueueId != 0 && owner->SubmitQueueCreated &&
                               owner->SubmitQueueId == context->SubmitQueueId &&
@@ -8849,7 +8852,7 @@ BOOLEAN VioGpuAdapter::ReferenceNativeContextAllocation(_In_ const VIOGPU_NATIVE
     KeAcquireSpinLock(&context->BindingLock, &oldIrql);
     BOOLEAN referenced = context->Adapter == snapshot->Adapter && context->Owner == snapshot->Owner &&
                          snapshot->Owner->Registration == context && context->Registered &&
-                         context->Generation == snapshot->Generation &&
+                         !context->AllocationClosing && context->Generation == snapshot->Generation &&
                          context->ResetGeneration == snapshot->ResetGeneration &&
                          context->ContextId == snapshot->ContextId &&
                          context->SubmitQueueId == snapshot->SubmitQueueId &&

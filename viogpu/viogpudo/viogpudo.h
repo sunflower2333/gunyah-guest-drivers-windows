@@ -366,6 +366,7 @@ struct VIOGPU_NATIVE_CONTEXT_REGISTRATION
     ULONG AllocationReferences;
     LIST_ENTRY AllocationRanges;
     BOOLEAN Registered;
+    BOOLEAN AllocationClosing;
 };
 
 struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT

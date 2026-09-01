@@ -132,6 +132,8 @@ struct VIOGPU_WDDM_ALLOCATION_RANGE
     BOOLEAN Linked;
 };
 
+struct VIOGPU_WDDM_CONTEXT;
+
 enum VIOGPU_WDDM_ALLOCATION_HOST_STATE : LONG
 {
     VioGpuWddmAllocationHostNone = 0,
@@ -150,6 +152,7 @@ struct VIOGPU_WDDM_ALLOCATION
     VioGpuDod *Adapter;
     VIOGPU_WDDM_RESOURCE *Resource;
     VIOGPU_NATIVE_CONTEXT_REGISTRATION *NativeContext;
+    VIOGPU_WDDM_CONTEXT *DeferredContext;
     LONG ContextGeneration;
     ULONGLONG ContextResetGeneration;
     UINT ContextId;
@@ -264,6 +267,13 @@ enum VIOGPU_WDDM_CONTEXT_TYPE : LONG
     VioGpuWddmContextGdi,
 };
 
+enum VIOGPU_WDDM_CONTEXT_DESTROY_STATE : LONG
+{
+    VioGpuWddmContextDestroyActive = 0,
+    VioGpuWddmContextDestroyDeferred,
+    VioGpuWddmContextDestroyFinalizing,
+};
+
 struct VIOGPU_WDDM_CONTEXT
 {
     ULONG Signature;
@@ -282,6 +292,8 @@ struct VIOGPU_WDDM_CONTEXT
     VIOGPU_WDDM_DEVICE *Device;
     HANDLE RuntimeContext;
     VIOGPU_WDDM_CONTEXT_TYPE Type;
+    volatile LONG DestroyState;
+    VioGpuDod *DeferredAdapter;
     UINT NodeOrdinal;
     UINT EngineAffinity;
     VIOGPU_NATIVE_CONTEXT_REGISTRATION NativeContext;

@@ -8010,6 +8010,8 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         fail("protected context snapshots must retain their exact registration identity")
     if registration_header.count("LIST_ENTRYAllocationRanges;") != 1:
         fail("native registration must own the per-context IOVA range registry")
+    if registration_header.count("BOOLEANAllocationClosing;") != 1:
+        fail("native registration must close new allocation publication before deferred destroy")
 
     resource_matches = re.findall(
         r"\bstruct\s+VIOGPU_WDDM_RESOURCE\s*\{(.*?)\}\s*;",
@@ -8058,6 +8060,8 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     for fragment in ("expectedContextId==0", "owner->ContextId!=expectedContextId"):
         if allocation_lookup.count(fragment) != 1:
             fail(f"range-based allocation lookup must require the caller's context identity: {fragment}")
+    if allocation_lookup.count("!context->AllocationClosing") != 1:
+        fail("range-based allocation lookup must reject a closing Native Context")
 
     acquire_bound = canonical_code(function_body("AcquireAllocationNativeContextSnapshot", WDDM_DDI_CODE))
     for fragment in (
@@ -8078,6 +8082,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "context->ResetGeneration==snapshot->ResetGeneration",
         "context->ContextId==snapshot->ContextId",
         "context->AllocationReferences!=MAXULONG",
+        "!context->AllocationClosing",
         "++context->AllocationReferences;",
     ):
         if reference.count(fragment) != 1:
@@ -8116,6 +8121,8 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     ):
         if range_register.count(fragment) != 1:
             fail(f"native allocation range registration must reject malformed existing metadata: {fragment}")
+    if "AllocationClosing" in range_register:
+        fail("a Native Context close must let an allocation with an existing reference finish range publication")
     range_unregister = canonical_code(function_body("UnregisterNativeAllocationRange", WDDM_DDI_CODE))
     if range_unregister.count("RemoveEntryList(&range->Link)") != 1:
         fail("native allocation teardown must unregister its context IOVA range")
@@ -8131,6 +8138,33 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         unlink_binding < release_binding < clear_binding and detach_call < delete_allocation
     ):
         fail("DestroyAllocation must drop its context pin before deleting the KMD allocation")
+
+    deferred_finalize = canonical_code(function_body("FinalizeDeferredNativeContextDestroy", WDDM_DDI_CODE))
+    require_order(
+        deferred_finalize,
+        (
+            "context=allocation->DeferredContext;",
+            "if(context==NULL)",
+            "context->Device!=NULL||context->DeferredAdapter==NULL",
+            "InterlockedCompareExchange(&context->DestroyState,VioGpuWddmContextDestroyFinalizing,VioGpuWddmContextDestroyDeferred)",
+            "context->DeferredAdapter->DestroyNativeContext(&context->NativeContext,&released);",
+            "VioGpuAdapter::IsNativeContextReleased(&context->NativeContext)",
+            "if(!released)",
+            "InterlockedExchange(&context->DestroyState,VioGpuWddmContextDestroyDeferred);",
+            "allocation->DeferredContext=NULL;",
+            "context->Signature=0;",
+            "deletecontext;",
+        ),
+        "deferred context finalization must remain retryable until Host ownership is proven released",
+    )
+    if deferred_finalize.find("allocation->DeferredContext=NULL;") < deferred_finalize.find("if(!released)"):
+        fail("failed deferred context finalization must retain its allocation retry anchor")
+
+    invalidate_registrations = canonical_code(
+        function_body("VioGpuAdapter::InvalidateNativeContextRegistrationsLocked", VIOGPU_CODE)
+    )
+    if "AllocationClosing" in invalidate_registrations:
+        fail("adapter reset must preserve a deferred context close until its last allocation detach")
 
     create_host = canonical_code(function_body("VioGpuAdapter::CreateNativeGuestAllocation", VIOGPU_CODE))
     host_sequence = (
@@ -8763,8 +8797,89 @@ def check_wddm_context_lifetime() -> None:
         fail("DestroyContext must preserve completion dispatch for well-formed owners after the bounded deadline")
     if "adapter->RequestHardwareResetAtAnyIrql();" in destroy[owner_retry:owner_busy]:
         fail("DestroyContext must not suppress completion dispatch for a well-formed owner at the deadline")
-    if destroy.count("adapter->RequestHardwareResetAtAnyIrql();") != 2:
-        fail("DestroyContext must request reset only for malformed or inconsistent pending ownership")
+    defer_failure = destroy.find("if(deferStatus!=STATUS_SUCCESS)")
+    defer_busy = destroy.find("if(deferStatus!=STATUS_DEVICE_BUSY)", defer_failure)
+    defer_reset = destroy.find("adapter->RequestHardwareResetAtAnyIrql();", defer_busy)
+    defer_return = destroy.find("returndeferStatus;", defer_reset)
+    if (
+        destroy.count("adapter->RequestHardwareResetAtAnyIrql();") != 3
+        or min(defer_failure, defer_busy, defer_reset, defer_return) < 0
+        or not owner_busy < defer_failure < defer_busy < defer_reset < defer_return
+    ):
+        fail("DestroyContext must preserve retryable in-flight allocation close without requesting reset")
+
+    deferred_destroy = canonical_code(function_body("DeferNativeContextDestroy", WDDM_DDI_CODE))
+    require_order(
+        deferred_destroy,
+        (
+            "KeAcquireSpinLock(&context->NativeContext.BindingLock,&oldIrql);",
+            "references=context->NativeContext.AllocationReferences;",
+            "registrationState=InterlockedCompareExchange(&context->NativeContext.State",
+            "context->NativeContext.Registered&&context->NativeContext.Adapter!=NULL",
+            "context->NativeContext.Adapter->GetVioGpu()==adapter",
+            "owner->Registration==&context->NativeContext",
+            "owner->Generation==context->NativeContext.Generation",
+            "owner->ResetGeneration==context->NativeContext.ResetGeneration",
+            "owner->ContextId==context->NativeContext.ContextId",
+            "owner->ControlResourceCreated&&owner->ControlMapped&&owner->ControlResourceId!=0",
+            "context->NativeContext.SubmitQueueId==owner->SubmitQueueId",
+            "retired=!context->NativeContext.Registered&&context->NativeContext.Adapter==NULL&&owner==NULL",
+            "context->NativeContext.SubmitQueueId==0&&registrationState==VioGpuNativeContextDead;",
+            "valid=(live||retired)",
+            "context->NativeContext.AllocationClosing=TRUE;",
+            "rangeCount=0;",
+            "entry=context->NativeContext.AllocationRanges.Flink;",
+            "range->Registration!=&context->NativeContext||!range->Linked||rangeCount==MAXULONG",
+            "if(!rangesValid||references<rangeCount)",
+            "if(references>rangeCount)",
+            "returnSTATUS_DEVICE_BUSY;",
+            "if(references==0)",
+            "context->DeferredAdapter=adapter;",
+            "context->RuntimeContext=NULL;",
+            "context->Device=NULL;",
+            "InterlockedExchange(&context->DestroyState,VioGpuWddmContextDestroyDeferred);",
+            "DereferenceDevice(device);",
+        ),
+        "context destroy must close allocation publication, drain in-flight creates, and defer balanced ownership",
+    )
+    if deferred_destroy.count("context->NativeContext.AllocationClosing=TRUE;") != 1:
+        fail("Native Context destroy must publish allocation close exactly once under the binding lock")
+    if deferred_destroy.count("returnSTATUS_DEVICE_BUSY;") != 1:
+        fail("only an in-flight allocation reference/range mismatch may make Native Context close retryable")
+    release_lock = "KeReleaseSpinLock(&context->NativeContext.BindingLock,oldIrql);"
+    invalid_state = deferred_destroy.find("if(!valid)")
+    invalid_state_release = deferred_destroy.find(release_lock, invalid_state)
+    invalid_ranges = deferred_destroy.find("if(!rangesValid||references<rangeCount)", invalid_state_release)
+    invalid_ranges_release = deferred_destroy.find(release_lock, invalid_ranges)
+    busy_reference = deferred_destroy.find("if(references>rangeCount)", invalid_ranges_release)
+    busy_reference_release = deferred_destroy.find(release_lock, busy_reference)
+    zero_reference = deferred_destroy.find("if(references==0)", busy_reference_release)
+    zero_reference_release = deferred_destroy.find(release_lock, zero_reference)
+    device_release = deferred_destroy.find("DereferenceDevice(device);")
+    final_reference_release = deferred_destroy.find(release_lock, device_release)
+    release_sequence = (
+        invalid_state,
+        invalid_state_release,
+        invalid_ranges,
+        invalid_ranges_release,
+        busy_reference,
+        busy_reference_release,
+        zero_reference,
+        zero_reference_release,
+        device_release,
+        final_reference_release,
+    )
+    if (
+        deferred_destroy.count(release_lock) != 5
+        or min(release_sequence) < 0
+        or list(release_sequence) != sorted(release_sequence)
+    ):
+        fail("Native Context close must unlock every invalid, in-flight, immediate, and deferred exit")
+    defer_call = destroy.find("DeferNativeContextDestroy(context,adapter,&deferred)")
+    defer_success = destroy.find("if(deferred){returnSTATUS_SUCCESS;}", defer_call)
+    immediate_destroy = destroy.find("context->Device->Adapter->DestroyNativeContext(", defer_success)
+    if min(defer_call, defer_success, immediate_destroy) < 0 or not defer_call < defer_success < immediate_destroy:
+        fail("DestroyContext must publish deferred logical success before the immediate no-allocation Host path")
 
     for owner_type, reference_call in (
         ("Render", "ReferenceRenderSubmission(submission)"),
@@ -9131,6 +9246,30 @@ def check_wddm_submission_lifetime() -> None:
         ),
         "Native allocation detach must atomically release its range and context reference",
     )
+    require_order(
+        detach_native,
+        (
+            "registration->AllocationClosing&&registration->AllocationReferences==1",
+            "onlyRange=registration->AllocationRanges.Flink==&range->Link&&registration->AllocationRanges.Blink==&range->Link;",
+            "CONTAINING_RECORD(registration,VIOGPU_WDDM_CONTEXT,NativeContext)",
+            "allocation->DeferredContext=deferredContext;",
+            "KeReleaseSpinLock(&registration->BindingLock,oldIrql);",
+            "deleterange;",
+        ),
+        "the last closing allocation must transfer a retry anchor before finalizing its Native Context",
+    )
+    delete_range = detach_native.find("deleterange;")
+    last_finalize = detach_native.find("status=FinalizeDeferredNativeContextDestroy(allocation);", delete_range)
+    last_finalize_failure = detach_native.find("if(status!=STATUS_SUCCESS)", last_finalize)
+    if min(delete_range, last_finalize, last_finalize_failure) < 0 or not (
+        delete_range < last_finalize < last_finalize_failure
+    ):
+        fail("the final range detach must prove deferred Host teardown before returning success")
+    null_detach = detach_native.find("if(registration==NULL||range==NULL)")
+    retry_finalize = detach_native.find("status=FinalizeDeferredNativeContextDestroy(allocation);", null_detach)
+    first_binding_lock = detach_native.find("KeAcquireSpinLock(&registration->BindingLock,&oldIrql);", retry_finalize)
+    if min(null_detach, retry_finalize, first_binding_lock) < 0 or not null_detach < retry_finalize < first_binding_lock:
+        fail("a detached allocation retry must finish its retained deferred context before returning success")
 
     open_allocation = canonical_code(function_body("VioGpuWddmOpenAllocation", WDDM_DDI_CODE))
     require_order(
