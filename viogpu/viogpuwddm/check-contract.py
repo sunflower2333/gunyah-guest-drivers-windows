@@ -2829,18 +2829,25 @@ def check_render_only_contract() -> None:
         registration_query,
         (
             "BOOLEANrenderOnly=TRUE;",
-            "NTSTATUSstatus=ZwOpenKey(&key,KEY_QUERY_VALUE,&attributes);",
+            "NTSTATUSstatus=ZwOpenKey(&serviceKey,KEY_READ,&attributes);",
             "if(!NT_SUCCESS(status)){returnTRUE;}",
+            'RtlInitUnicodeString(&parametersName,L"Parameters");',
+            "InitializeObjectAttributes(&attributes,&parametersName,",
+            "serviceKey,NULL);",
+            "status=ZwOpenKey(&parametersKey,KEY_QUERY_VALUE,&attributes);",
+            "ZwClose(serviceKey);if(!NT_SUCCESS(status)){returnTRUE;}",
             'RtlInitUnicodeString(&valueName,L"RenderOnly");',
-            "status=ZwQueryValueKey(key,&valueName,KeyValuePartialInformation,",
+            "status=ZwQueryValueKey(parametersKey,&valueName,KeyValuePartialInformation,",
             "valueInfo.Info.Type==REG_DWORD",
             "valueInfo.Info.DataLength==sizeof(ULONG)",
             "renderOnly=value!=0;",
-            "ZwClose(key);",
+            "ZwClose(parametersKey);",
             "returnrenderOnly;",
         ),
-        "DriverEntry must read the service RenderOnly value with an enabled fail-safe default",
+        "DriverEntry must read Parameters\\RenderOnly with an enabled fail-safe default",
     )
+    if registration_query.count("if(!NT_SUCCESS(status)){returnTRUE;}") != 2:
+        fail("DriverEntry must fail safe after both service and Parameters key opens")
     registration_state = canonical_code(function_body("VioGpuWddmIsRenderOnlyRegistration"))
     if registration_state != "returng_VioGpuWddmRenderOnlyRegistration;":
         fail("adapter startup must consume the exact registration-time RenderOnly decision")
@@ -11814,7 +11821,7 @@ def check_installation_contract() -> None:
         "AddService=VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog",
         "ServiceBinary=%INX_PLATFORM_DRIVERS_DIR%\\viogpuwddm.sys",
         "AddReg=VioGpuWddm_ServiceSettings",
-        "[VioGpuWddm_ServiceSettings]HKR,,RenderOnly,%REG_DWORD%,1",
+        "[VioGpuWddm_ServiceSettings]HKR,Parameters,RenderOnly,%REG_DWORD%,1",
         "MSISupported,%REG_DWORD%,1",
         "MessageNumberLimit,%REG_DWORD%,4",
         'UserModeDriverName,%REG_MULTI_SZ%,"%13%\\viogpud3d.dll",'
@@ -11826,7 +11833,8 @@ def check_installation_contract() -> None:
         if compact.count(fragment) != 1:
             fail(f"full-miniport INX must contain exactly one installation contract fragment: {fragment}")
     render_only_defaults = re.findall(
-        r"(?im)^HKR\s*,\s*,\s*RenderOnly\s*,\s*%REG_DWORD%\s*,\s*1\s*$", source
+        r"(?im)^HKR\s*,\s*(?:Parameters)?\s*,\s*RenderOnly\s*,\s*%REG_DWORD%\s*,\s*1\s*$",
+        source,
     )
     if len(render_only_defaults) != 2:
         fail("full-miniport INX must default both service and device RenderOnly values to one")
@@ -11841,9 +11849,9 @@ def check_installation_contract() -> None:
         r"(?ims)^\[VioGpuWddm_ServiceSettings\]\s*$([\s\S]*?)(?=^\[|\Z)", source
     )
     if service_section is None or len(
-        re.findall(r"(?im)^HKR\s*,\s*,\s*RenderOnly\b", service_section.group(1))
+        re.findall(r"(?im)^HKR\s*,\s*Parameters\s*,\s*RenderOnly\b", service_section.group(1))
     ) != 1:
-        fail("service settings must contain one registration-time RenderOnly default")
+        fail("service settings must contain one Parameters\\RenderOnly default")
     if re.search(r"NT\$ARCH\$\.\d+\.\d+\.\.\.\d+", source):
         fail("full-miniport INX must leave TargetOSVersion decoration to InfArch")
     if re.search(r"(?i)nt(?:amd64|x86)|viogpudo\.sys", source):

@@ -53,7 +53,7 @@ ServiceBinary = %INX_PLATFORM_DRIVERS_DIR%\viogpuwddm.sys
 AddReg = VioGpuWddm_ServiceSettings
 
 [VioGpuWddm_ServiceSettings]
-HKR,,RenderOnly,%REG_DWORD%,1
+HKR,Parameters,RenderOnly,%REG_DWORD%,1
 
 [VioGpuWddm_EventLog]
 AddReg = VioGpuWddm_EventLog.AddReg

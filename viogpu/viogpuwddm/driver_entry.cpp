@@ -26,8 +26,24 @@ static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
     OBJECT_ATTRIBUTES attributes;
     InitializeObjectAttributes(&attributes, registryPath, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
 
-    HANDLE key = NULL;
-    NTSTATUS status = ZwOpenKey(&key, KEY_QUERY_VALUE, &attributes);
+    HANDLE serviceKey = NULL;
+    NTSTATUS status = ZwOpenKey(&serviceKey, KEY_READ, &attributes);
+    if (!NT_SUCCESS(status))
+    {
+        return TRUE;
+    }
+
+    UNICODE_STRING parametersName;
+    RtlInitUnicodeString(&parametersName, L"Parameters");
+    InitializeObjectAttributes(&attributes,
+                               &parametersName,
+                               OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+                               serviceKey,
+                               NULL);
+
+    HANDLE parametersKey = NULL;
+    status = ZwOpenKey(&parametersKey, KEY_QUERY_VALUE, &attributes);
+    ZwClose(serviceKey);
     if (!NT_SUCCESS(status))
     {
         return TRUE;
@@ -40,7 +56,7 @@ static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
         UCHAR Bytes[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG)];
     } valueInfo = {};
     ULONG resultLength = 0;
-    status = ZwQueryValueKey(key,
+    status = ZwQueryValueKey(parametersKey,
                              &valueName,
                              KeyValuePartialInformation,
                              valueInfo.Bytes,
@@ -53,7 +69,7 @@ static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
         renderOnly = value != 0;
     }
 
-    ZwClose(key);
+    ZwClose(parametersKey);
     return renderOnly;
 }
 
