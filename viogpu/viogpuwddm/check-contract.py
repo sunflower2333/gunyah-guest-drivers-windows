@@ -328,7 +328,8 @@ def else_block_after(source: str, if_end: int) -> Optional[str]:
 def require_order(code: str, fragments: tuple[str, ...], message: str) -> None:
     offsets = [code.find(fragment) for fragment in fragments]
     if min(offsets) < 0 or offsets != sorted(offsets):
-        fail(message)
+        missing = [fragment for fragment, offset in zip(fragments, offsets) if offset < 0]
+        fail(f"{message}; missing={missing}, offsets={offsets}")
 
 
 def check_virtio_reset_contract() -> None:
@@ -2642,8 +2643,10 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
     normalized = re.sub(r"\s+", " ", body).strip()
     expected = (
         "PAGED_CODE(); "
+        "BOOLEAN renderOnly = VioGpuWddmReadRenderOnly(registryPath); "
+        "g_VioGpuWddmRenderOnlyRegistration = renderOnly; "
         "DRIVER_INITIALIZATION_DATA initialData; "
-        "VioGpuWddmBuildInitializationData(&initialData); "
+        "VioGpuWddmBuildInitializationData(&initialData, renderOnly); "
         "WPP_INIT_TRACING(driverObject, registryPath); "
         "NTSTATUS status = DxgkInitialize(driverObject, registryPath, &initialData); "
         "if (!NT_SUCCESS(status)) { WPP_CLEANUP(NULL); } "
@@ -2724,7 +2727,6 @@ def check_callback_table() -> None:
         "DxgkDdiCreateContext": "VioGpuWddmCreateContext",
         "DxgkDdiDestroyContext": "VioGpuWddmDestroyContext",
         "DxgkDdiBuildPagingBuffer": "VioGpuWddmBuildPagingBuffer",
-        "DxgkDdiSetPalette": "VioGpuWddmSetPalette",
         "DxgkDdiRender": "VioGpuWddmRender",
         "DxgkDdiRenderKm": "VioGpuWddmRenderKm",
         "DxgkDdiPresent": "VioGpuWddmPresent",
@@ -2735,9 +2737,13 @@ def check_callback_table() -> None:
         "DxgkDdiResetFromTimeout": "VioGpuWddmResetFromTimeout",
         "DxgkDdiRestartFromTimeout": "VioGpuWddmRestartFromTimeout",
         "DxgkDdiCollectDbgInfo": "VioGpuWddmCollectDbgInfo",
+        "DxgkDdiControlInterrupt": "VioGpuWddmControlInterrupt",
+        "DxgkDdiEscape": "VioGpuWddmEscape",
+    }
+    display_callbacks = {
+        "DxgkDdiSetPalette": "VioGpuWddmSetPalette",
         "DxgkDdiSetPointerPosition": "VioGpuDodSetPointerPosition",
         "DxgkDdiSetPointerShape": "VioGpuDodSetPointerShape",
-        "DxgkDdiEscape": "VioGpuWddmEscape",
         "DxgkDdiIsSupportedVidPn": "VioGpuDodIsSupportedVidPn",
         "DxgkDdiRecommendFunctionalVidPn": "VioGpuDodRecommendFunctionalVidPn",
         "DxgkDdiEnumVidPnCofuncModality": "VioGpuDodEnumVidPnCofuncModality",
@@ -2747,10 +2753,10 @@ def check_callback_table() -> None:
         "DxgkDdiUpdateActiveVidPnPresentPath": "VioGpuDodUpdateActiveVidPnPresentPath",
         "DxgkDdiRecommendMonitorModes": "VioGpuDodRecommendMonitorModes",
         "DxgkDdiGetScanLine": "VioGpuWddmGetScanLine",
-        "DxgkDdiControlInterrupt": "VioGpuWddmControlInterrupt",
         "DxgkDdiQueryVidPnHWCapability": "VioGpuDodQueryVidPnHWCapability",
     }
-    for member, callback in callbacks.items():
+    all_callbacks = {**callbacks, **display_callbacks}
+    for member, callback in all_callbacks.items():
         assignments = re.findall(
             rf"\binitialData\s*->\s*{re.escape(member)}\s*=\s*{re.escape(callback)}\s*;", body
         )
@@ -2758,7 +2764,7 @@ def check_callback_table() -> None:
             fail(f"callback table must assign {member} to {callback} exactly once")
 
     assignment_members = re.findall(r"\binitialData\s*->\s*(\w+)\s*=", body)
-    expected_members = ["Version", *callbacks]
+    expected_members = ["Version", *all_callbacks]
     if sorted(assignment_members) != sorted(expected_members):
         fail("callback table contains an unexpected, missing, or duplicate initialData assignment")
 
@@ -2766,6 +2772,9 @@ def check_callback_table() -> None:
         "RtlZeroMemory(initialData, sizeof(*initialData));",
         "initialData->Version = DXGKDDI_INTERFACE_VERSION_WIN7;",
         *(f"initialData->{member} = {callback};" for member, callback in callbacks.items()),
+        "if (!renderOnly) {",
+        *(f"initialData->{member} = {callback};" for member, callback in display_callbacks.items()),
+        "}",
     ]
     if re.sub(r"\s+", " ", body).strip() != " ".join(expected_statements):
         fail("callback table must contain only the exact expected initialization statement sequence")
@@ -2806,12 +2815,35 @@ def check_render_only_contract() -> None:
         (
             "value=1;",
             'StatusOptional=ReadRegistryDWORD(DevInstRegKeyHandle,L"RenderOnly",&value);',
-            "SetRenderOnly(!NT_SUCCESS(StatusOptional)||!!value);",
+            "SetRenderOnly(VioGpuWddmIsRenderOnlyRegistration()||!NT_SUCCESS(StatusOptional)||!!value);",
         ),
-        "RenderOnly registry parsing must default to enabled while preserving an explicit zero opt-out",
+        "device RenderOnly parsing must agree with the registration-time switch before allowing display mode",
     )
     if registry.count('L"RenderOnly"') != 1:
         fail("RenderOnly registry state must be read exactly once")
+
+    if DRIVER_SOURCE.count("static BOOLEAN g_VioGpuWddmRenderOnlyRegistration = TRUE;") != 1:
+        fail("registration-time RenderOnly state must fail safe to enabled")
+    registration_query = canonical_code(function_body("VioGpuWddmReadRenderOnly", DRIVER_SOURCE))
+    require_order(
+        registration_query,
+        (
+            "BOOLEANrenderOnly=TRUE;",
+            "NTSTATUSstatus=ZwOpenKey(&key,KEY_QUERY_VALUE,&attributes);",
+            "if(!NT_SUCCESS(status)){returnTRUE;}",
+            'RtlInitUnicodeString(&valueName,L"RenderOnly");',
+            "status=ZwQueryValueKey(key,&valueName,KeyValuePartialInformation,",
+            "valueInfo.Info.Type==REG_DWORD",
+            "valueInfo.Info.DataLength==sizeof(ULONG)",
+            "renderOnly=value!=0;",
+            "ZwClose(key);",
+            "returnrenderOnly;",
+        ),
+        "DriverEntry must read the service RenderOnly value with an enabled fail-safe default",
+    )
+    registration_state = canonical_code(function_body("VioGpuWddmIsRenderOnlyRegistration"))
+    if registration_state != "returng_VioGpuWddmRenderOnlyRegistration;":
+        fail("adapter startup must consume the exact registration-time RenderOnly decision")
 
     start = function_body("VioGpuDod::StartDevice", VIOGPU_CODE)
     start_canonical = canonical_code(start)
@@ -11781,9 +11813,10 @@ def check_installation_contract() -> None:
         "[VioGpuWddm_RetiredDeviceSettings]HKR,,RequireRestrictedDma",
         "AddService=VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog",
         "ServiceBinary=%INX_PLATFORM_DRIVERS_DIR%\\viogpuwddm.sys",
+        "AddReg=VioGpuWddm_ServiceSettings",
+        "[VioGpuWddm_ServiceSettings]HKR,,RenderOnly,%REG_DWORD%,1",
         "MSISupported,%REG_DWORD%,1",
         "MessageNumberLimit,%REG_DWORD%,4",
-        "RenderOnly,%REG_DWORD%,1",
         'UserModeDriverName,%REG_MULTI_SZ%,"%13%\\viogpud3d.dll",'
         '"%13%\\viogpud3d.dll","%13%\\viogpud3d.dll"',
         "InstalledDisplayDrivers,%REG_MULTI_SZ%,viogpud3d,viogpud3d,viogpud3d",
@@ -11792,6 +11825,25 @@ def check_installation_contract() -> None:
     for fragment in required:
         if compact.count(fragment) != 1:
             fail(f"full-miniport INX must contain exactly one installation contract fragment: {fragment}")
+    render_only_defaults = re.findall(
+        r"(?im)^HKR\s*,\s*,\s*RenderOnly\s*,\s*%REG_DWORD%\s*,\s*1\s*$", source
+    )
+    if len(render_only_defaults) != 2:
+        fail("full-miniport INX must default both service and device RenderOnly values to one")
+    device_section = re.search(
+        r"(?ims)^\[VioGpuWddm_DeviceSettings\]\s*$([\s\S]*?)(?=^\[|\Z)", source
+    )
+    if device_section is None or len(
+        re.findall(r"(?im)^HKR\s*,\s*,\s*RenderOnly\b", device_section.group(1))
+    ) != 1:
+        fail("device settings must contain one RenderOnly default")
+    service_section = re.search(
+        r"(?ims)^\[VioGpuWddm_ServiceSettings\]\s*$([\s\S]*?)(?=^\[|\Z)", source
+    )
+    if service_section is None or len(
+        re.findall(r"(?im)^HKR\s*,\s*,\s*RenderOnly\b", service_section.group(1))
+    ) != 1:
+        fail("service settings must contain one registration-time RenderOnly default")
     if re.search(r"NT\$ARCH\$\.\d+\.\d+\.\.\.\d+", source):
         fail("full-miniport INX must leave TargetOSVersion decoration to InfArch")
     if re.search(r"(?i)nt(?:amd64|x86)|viogpudo\.sys", source):

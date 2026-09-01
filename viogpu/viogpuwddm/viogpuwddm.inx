@@ -50,6 +50,10 @@ ServiceType = %SERVICE_KERNEL_DRIVER%
 StartType = %SERVICE_DEMAND_START%
 ErrorControl = %SERVICE_ERROR_NORMAL%
 ServiceBinary = %INX_PLATFORM_DRIVERS_DIR%\viogpuwddm.sys
+AddReg = VioGpuWddm_ServiceSettings
+
+[VioGpuWddm_ServiceSettings]
+HKR,,RenderOnly,%REG_DWORD%,1
 
 [VioGpuWddm_EventLog]
 AddReg = VioGpuWddm_EventLog.AddReg

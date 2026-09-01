@@ -12,7 +12,8 @@
 
 class VioGpuDod;
 
-VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData);
+VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData, _In_ BOOLEAN renderOnly);
+BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 
 struct VIOGPU_WDDM_KMD_DMA_PRIVATE

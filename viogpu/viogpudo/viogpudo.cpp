@@ -48,6 +48,7 @@ static const UINT VIOGPU_SCANLINE_REFRESH_HZ = 60U;
 extern "C" UCHAR __ImageBase;
 
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
+BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 
 static const ULONG VIOGPU_WIN7_DRIVERCAPS_SIZE = FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps);
 static_assert(VIOGPU_WIN7_DRIVERCAPS_SIZE == 528, "unexpected Win7 DXGK_DRIVERCAPS prefix size");
@@ -6211,7 +6212,7 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
 #if defined(VIOGPU_NATIVE_CONTEXT)
     value = 1;
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"RenderOnly", &value);
-    SetRenderOnly(!NT_SUCCESS(StatusOptional) || !!value);
+    SetRenderOnly(VioGpuWddmIsRenderOnlyRegistration() || !NT_SUCCESS(StatusOptional) || !!value);
 #endif
 
     // The following keys are optional and no need to report error if them are missing
