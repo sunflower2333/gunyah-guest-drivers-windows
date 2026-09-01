@@ -4959,10 +4959,16 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
      * class check must ignore that one supported bit while still rejecting all
      * unknown/reserved flags. */
     const ULONG contextClassFlags = createContext->Flags.Value & ~4U;
+    const BOOLEAN hasPrivateData = createContext->pPrivateDriverData != NULL ||
+                                   createContext->PrivateDriverDataSize != 0;
     VIOGPU_WDDM_CONTEXT_TYPE contextType = VioGpuWddmContextNative;
     if (!createContext->Flags.SystemContext && !createContext->Flags.GdiContext && contextClassFlags == 0)
     {
-        contextType = VioGpuWddmContextNative;
+        /* The UMD CreateContext callback has no GDI selector.  Dxgkrnl sends
+         * standard UMD contexts with no class flags or private payload, while
+         * Native Context uses the same class flags plus the required ABI
+         * payload. */
+        contextType = hasPrivateData ? VioGpuWddmContextNative : VioGpuWddmContextGdi;
     }
     else if (createContext->Flags.SystemContext && !createContext->Flags.GdiContext && contextClassFlags == 1U)
     {
