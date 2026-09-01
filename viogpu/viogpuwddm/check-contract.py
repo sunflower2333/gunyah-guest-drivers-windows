@@ -2786,6 +2786,127 @@ def check_callback_table() -> None:
             fail(f"legacy Win7 runtime registration must not expose Win8-only callback {forbidden}")
 
 
+def check_render_only_contract() -> None:
+    header = canonical_code(VIOGPU_HEADER_CODE)
+    for fragment in (
+        "UINTRenderOnly:1;",
+        "BOOLEANIsRenderOnly()const{returnm_Flags.RenderOnly;}",
+        "voidSetRenderOnly(BOOLEANenable){m_Flags.RenderOnly=enable;}",
+    ):
+        if header.count(fragment) != 1:
+            fail(f"render-only mode must have one exact adapter-state contract: {fragment}")
+
+    constructor = canonical_code(function_body("VioGpuDod::VioGpuDod", VIOGPU_CODE))
+    if constructor.count("SetRenderOnly(TRUE);") != 1:
+        fail("Native Context adapter construction must fail safe to render-only mode")
+
+    registry = canonical_code(function_body("VioGpuDod::GetRegisterInfo", VIOGPU_SOURCE))
+    require_order(
+        registry,
+        (
+            "value=1;",
+            'StatusOptional=ReadRegistryDWORD(DevInstRegKeyHandle,L"RenderOnly",&value);',
+            "SetRenderOnly(!NT_SUCCESS(StatusOptional)||!!value);",
+        ),
+        "RenderOnly registry parsing must default to enabled while preserving an explicit zero opt-out",
+    )
+    if registry.count('L"RenderOnly"') != 1:
+        fail("RenderOnly registry state must be read exactly once")
+
+    start = function_body("VioGpuDod::StartDevice", VIOGPU_CODE)
+    start_canonical = canonical_code(start)
+    display_blocks = [
+        canonical_code(body)
+        for condition, body, _, _ in if_blocks(start)
+        if canonical_code(condition) == "!IsRenderOnly()"
+    ]
+    if len(display_blocks) != 1:
+        fail("StartDevice must contain one explicit non-render-only display branch")
+    display = display_blocks[0]
+    for fragment in (
+        "DxgkCbAcquirePostDisplayOwnership",
+        "m_SystemDisplayInfo.Width",
+        "m_CurrentMode.DispInfo.Width",
+        "m_CurrentMode.DispInfo.TargetId=0;",
+    ):
+        if fragment not in display:
+            fail(f"the RenderOnly=0 display path must preserve its ownership and mode setup: {fragment}")
+        if start_canonical.count(fragment) != display.count(fragment):
+            fail(f"render-only startup must isolate all display setup inside the opt-out branch: {fragment}")
+    for fragment in (
+        "*pNumberOfViews=IsRenderOnly()?0:MAX_VIEWS;",
+        "*pNumberOfChildren=IsRenderOnly()?0:MAX_CHILDREN;",
+    ):
+        if start_canonical.count(fragment) != 1:
+            fail(f"StartDevice must report zero display topology only in render-only mode: {fragment}")
+    require_order(
+        start_canonical,
+        (
+            "Status=GetRegisterInfo();",
+            "Status=m_pHWDevice->HWInit(m_DeviceInfo.TranslatedResourceList,&m_CurrentMode.DispInfo);",
+            "if(!IsRenderOnly())",
+            "*pNumberOfViews=IsRenderOnly()?0:MAX_VIEWS;",
+            "*pNumberOfChildren=IsRenderOnly()?0:MAX_CHILDREN;",
+        ),
+        "render-only selection must precede transport startup and topology publication",
+    )
+
+    transport = function_body("VioGpuAdapter::StartNativeContextTransport", VIOGPU_CODE)
+    mode_blocks = [
+        (canonical_code(body), end)
+        for condition, body, _, end in if_blocks(transport)
+        if canonical_code(condition) == "m_pVioGpuDod->IsRenderOnly()"
+    ]
+    if len(mode_blocks) != 1:
+        fail("Native Context transport must contain one render-only mode-list branch")
+    render_modes, branch_end = mode_blocks[0]
+    expected_render_modes = "delete[]m_ModeInfo;m_ModeInfo=NULL;m_ModeCount=0;status=STATUS_SUCCESS;"
+    if render_modes != expected_render_modes:
+        fail("render-only transport must discard display modes and continue initialization")
+    display_modes = else_block_after(transport, branch_end)
+    if display_modes is None or canonical_code(display_modes) != "status=BuildModeList(pDispInfo);":
+        fail("RenderOnly=0 must preserve the complete VioGPU display-mode discovery path")
+
+    interrupt = canonical_code(function_body("VioGpuAdapter::InterruptRoutine", VIOGPU_CODE))
+    present_guard = (
+        "if(!m_pVioGpuDod->IsRenderOnly()&&m_pVioGpuDod->IsUsePresentProgress()&&"
+        "(intReason&ISR_REASON_DISPLAY)==ISR_REASON_DISPLAY)"
+    )
+    if interrupt.count(present_guard) != 1:
+        fail("render-only interrupts must not publish display present progress")
+
+    worker = canonical_code(function_body("VioGpuAdapter::ThreadWorkRoutine", VIOGPU_CODE))
+    if worker.count("if(!m_pVioGpuDod->IsRenderOnly()){NotifyResolutionEvent();}") != 1:
+        fail("render-only worker activity must not publish resolution events")
+
+    config = function_body("VioGpuAdapter::ConfigChanged", VIOGPU_CODE)
+    config_canonical = canonical_code(config)
+    render_config_blocks = [
+        (canonical_code(body), end)
+        for condition, body, _, end in if_blocks(config)
+        if canonical_code(condition) == "m_pVioGpuDod->IsRenderOnly()"
+    ]
+    if len(render_config_blocks) != 1:
+        fail("display configuration changes must contain one render-only isolation branch")
+    render_config, _ = render_config_blocks[0]
+    for fragment in (
+        "events_clear|=VIRTIO_GPU_EVENT_DISPLAY;",
+        "virtio_set_config(&m_VioDev,FIELD_OFFSET(GPU_CONFIG,events_clear),&events_clear,sizeof(m_u32NumScanouts));",
+        "return;",
+    ):
+        if render_config.count(fragment) != 1:
+            fail(f"render-only configuration handling must acknowledge and discard display events: {fragment}")
+    require_order(
+        config_canonical,
+        (
+            f"if(m_pVioGpuDod->IsRenderOnly()){{{render_config}}}",
+            "GetDisplayInfo();",
+            "UpdateChildStatus(TRUE);",
+        ),
+        "RenderOnly=0 must preserve display discovery and child-status publication",
+    )
+
+
 def check_vidpn_mode_contract() -> None:
     signal_info = canonical_code(function_body("BuildVideoSignalInfo", VIOGPU_CODE))
     require_order(
@@ -11629,6 +11750,7 @@ def check_installation_contract() -> None:
         "ServiceBinary=%INX_PLATFORM_DRIVERS_DIR%\\viogpuwddm.sys",
         "MSISupported,%REG_DWORD%,1",
         "MessageNumberLimit,%REG_DWORD%,4",
+        "RenderOnly,%REG_DWORD%,1",
         'UserModeDriverName,%REG_MULTI_SZ%,"%13%\\viogpud3d.dll",'
         '"%13%\\viogpud3d.dll","%13%\\viogpud3d.dll"',
         "InstalledDisplayDrivers,%REG_MULTI_SZ%,viogpud3d,viogpud3d,viogpud3d",
@@ -11661,6 +11783,7 @@ def main() -> None:
     check_native_win7_driver_caps_contract()
     check_registration_helper(sources)
     check_callback_table()
+    check_render_only_contract()
     check_vidpn_mode_contract()
     check_legacy_runtime_callback_contract()
     check_wddm_handle_ownership()

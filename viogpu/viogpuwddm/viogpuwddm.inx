@@ -63,6 +63,7 @@ HKR,,HWCursor,%REG_DWORD%,0
 HKR,,FlexResolution,%REG_DWORD%,1
 HKR,,UsePhysicalMemory,%REG_DWORD%,0
 HKR,,UsePresentProgress,%REG_DWORD%,0
+HKR,,RenderOnly,%REG_DWORD%,1
 HKR,,UserModeDriverName,%REG_MULTI_SZ%,"%13%\viogpud3d.dll","%13%\viogpud3d.dll","%13%\viogpud3d.dll"
 HKR,,InstalledDisplayDrivers,%REG_MULTI_SZ%,viogpud3d,viogpud3d,viogpud3d
 

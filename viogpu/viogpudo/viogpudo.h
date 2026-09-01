@@ -44,7 +44,8 @@ typedef struct
     UINT FlexResolution : 1;
     UINT UsePhysicalMemory : 1;
     UINT UsePresentProgress : 1;
-    UINT Unused : 25;
+    UINT RenderOnly : 1;
+    UINT Unused : 24;
 } DRIVER_STATUS_FLAG;
 
 #pragma pack(pop)
@@ -837,6 +838,14 @@ class VioGpuDod
     void SetUsePresentProgress(BOOLEAN enable)
     {
         m_Flags.UsePresentProgress = enable;
+    }
+    BOOLEAN IsRenderOnly() const
+    {
+        return m_Flags.RenderOnly;
+    }
+    void SetRenderOnly(BOOLEAN enable)
+    {
+        m_Flags.RenderOnly = enable;
     }
     void SetPersistentDispMode0Width(USHORT res)
     {

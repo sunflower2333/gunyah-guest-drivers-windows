@@ -155,6 +155,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     RtlZeroMemory(&m_PointerShape, sizeof(m_PointerShape));
     ExInitializeRundownProtection(&m_HardwareOperations);
 #if defined(VIOGPU_NATIVE_CONTEXT)
+    SetRenderOnly(TRUE);
     KeInitializeSpinLock(&m_NativeFenceLock);
     m_HardwareResetCallerRva = 0;
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
@@ -418,6 +419,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                                VioGpuNativeStartRegistryConfiguration,
                                STATUS_SUCCESS,
                                static_cast<DWORD>(Status));
+    DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "viogpu StartDevice: renderOnly=%u\n", IsRenderOnly());
 
     Status = m_pHWDevice->HWInit(m_DeviceInfo.TranslatedResourceList, &m_CurrentMode.DispInfo);
     if (!NT_SUCCESS(Status))
@@ -446,66 +448,74 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
         return UnwindFailedStart(Status);
     }
 
-    VIOGPU_RECORD_NATIVE_START(this,
-                               VioGpuNativeStartPostDisplayOwnership,
-                               STATUS_PENDING,
-                               VioGpuNativeStartDetailNone);
-    if (IsVgaDevice() && m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership)
+    if (!IsRenderOnly())
     {
-        Status = m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership(m_DxgkInterface.DeviceHandle, &m_SystemDisplayInfo);
-    }
-
-    if (!NT_SUCCESS(Status))
-    {
-        DbgPrintEx(DPFLTR_DEFAULT_ID,
-                   DPFLTR_ERROR_LEVEL,
-                   "viogpu StartDevice: DxgkCbAcquirePostDisplayOwnership failed, status=0x%08X\n",
-                   Status);
-        DbgPrint(TRACE_LEVEL_FATAL,
-                 ("DxgkCbAcquirePostDisplayOwnership failed with status 0x%X Width = %d\n",
-                  Status,
-                  m_SystemDisplayInfo.Width));
-        VioGpuDbgBreak();
-        VIOGPU_RECORD_NATIVE_START(this, VioGpuNativeStartPostDisplayOwnership, Status, VioGpuNativeStartDetailNone);
-        return UnwindFailedStart(STATUS_UNSUCCESSFUL);
-    }
-    DbgPrint(TRACE_LEVEL_FATAL,
-             ("DxgkCbAcquirePostDisplayOwnership Width = %d Height = %d Pitch = %d ColorFormat = %d\n",
-              m_SystemDisplayInfo.Width,
-              m_SystemDisplayInfo.Height,
-              m_SystemDisplayInfo.Pitch,
-              m_SystemDisplayInfo.ColorFormat));
-
-    if (m_SystemDisplayInfo.Width == 0)
-    {
-        m_SystemDisplayInfo.Width = NOM_WIDTH_SIZE;
-        m_SystemDisplayInfo.Height = NOM_HEIGHT_SIZE;
-        m_SystemDisplayInfo.ColorFormat = D3DDDIFMT_X8R8G8B8;
-        m_SystemDisplayInfo.Pitch = (BPPFromPixelFormat(m_SystemDisplayInfo.ColorFormat) / BITS_PER_BYTE) *
-                                    m_SystemDisplayInfo.Width;
-        m_SystemDisplayInfo.TargetId = 0;
-        if (m_SystemDisplayInfo.PhysicAddress.QuadPart == 0LL)
+        VIOGPU_RECORD_NATIVE_START(this,
+                                   VioGpuNativeStartPostDisplayOwnership,
+                                   STATUS_PENDING,
+                                   VioGpuNativeStartDetailNone);
+        if (IsVgaDevice() && m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership)
         {
-            m_SystemDisplayInfo.PhysicAddress = m_pHWDevice->GetFrameBufferPA();
+            Status = m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership(m_DxgkInterface.DeviceHandle,
+                                                                       &m_SystemDisplayInfo);
         }
-    }
 
-    m_CurrentMode.DispInfo.Width = max(MIN_WIDTH_SIZE, m_SystemDisplayInfo.Width);
-    m_CurrentMode.DispInfo.Height = max(MIN_HEIGHT_SIZE, m_SystemDisplayInfo.Height);
-    m_CurrentMode.DispInfo.ColorFormat = D3DDDIFMT_X8R8G8B8;
-    m_CurrentMode.DispInfo.Pitch = (BPPFromPixelFormat(m_CurrentMode.DispInfo.ColorFormat) / BITS_PER_BYTE) *
-                                   m_CurrentMode.DispInfo.Width;
-    m_CurrentMode.DispInfo.TargetId = 0;
-    if (m_CurrentMode.DispInfo.PhysicAddress.QuadPart == 0LL && m_SystemDisplayInfo.PhysicAddress.QuadPart != 0LL)
-    {
-        m_CurrentMode.DispInfo.PhysicAddress = m_SystemDisplayInfo.PhysicAddress;
-    }
+        if (!NT_SUCCESS(Status))
+        {
+            DbgPrintEx(DPFLTR_DEFAULT_ID,
+                       DPFLTR_ERROR_LEVEL,
+                       "viogpu StartDevice: DxgkCbAcquirePostDisplayOwnership failed, status=0x%08X\n",
+                       Status);
+            DbgPrint(TRACE_LEVEL_FATAL,
+                     ("DxgkCbAcquirePostDisplayOwnership failed with status 0x%X Width = %d\n",
+                      Status,
+                      m_SystemDisplayInfo.Width));
+            VioGpuDbgBreak();
+            VIOGPU_RECORD_NATIVE_START(this,
+                                       VioGpuNativeStartPostDisplayOwnership,
+                                       Status,
+                                       VioGpuNativeStartDetailNone);
+            return UnwindFailedStart(STATUS_UNSUCCESSFUL);
+        }
+        DbgPrint(TRACE_LEVEL_FATAL,
+                 ("DxgkCbAcquirePostDisplayOwnership Width = %d Height = %d Pitch = %d ColorFormat = %d\n",
+                  m_SystemDisplayInfo.Width,
+                  m_SystemDisplayInfo.Height,
+                  m_SystemDisplayInfo.Pitch,
+                  m_SystemDisplayInfo.ColorFormat));
 
-    DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s ColorFormat = %d\n", __FUNCTION__, m_CurrentMode.DispInfo.ColorFormat));
+        if (m_SystemDisplayInfo.Width == 0)
+        {
+            m_SystemDisplayInfo.Width = NOM_WIDTH_SIZE;
+            m_SystemDisplayInfo.Height = NOM_HEIGHT_SIZE;
+            m_SystemDisplayInfo.ColorFormat = D3DDDIFMT_X8R8G8B8;
+            m_SystemDisplayInfo.Pitch = (BPPFromPixelFormat(m_SystemDisplayInfo.ColorFormat) / BITS_PER_BYTE) *
+                                        m_SystemDisplayInfo.Width;
+            m_SystemDisplayInfo.TargetId = 0;
+            if (m_SystemDisplayInfo.PhysicAddress.QuadPart == 0LL)
+            {
+                m_SystemDisplayInfo.PhysicAddress = m_pHWDevice->GetFrameBufferPA();
+            }
+        }
+
+        m_CurrentMode.DispInfo.Width = max(MIN_WIDTH_SIZE, m_SystemDisplayInfo.Width);
+        m_CurrentMode.DispInfo.Height = max(MIN_HEIGHT_SIZE, m_SystemDisplayInfo.Height);
+        m_CurrentMode.DispInfo.ColorFormat = D3DDDIFMT_X8R8G8B8;
+        m_CurrentMode.DispInfo.Pitch = (BPPFromPixelFormat(m_CurrentMode.DispInfo.ColorFormat) / BITS_PER_BYTE) *
+                                       m_CurrentMode.DispInfo.Width;
+        m_CurrentMode.DispInfo.TargetId = 0;
+        if (m_CurrentMode.DispInfo.PhysicAddress.QuadPart == 0LL && m_SystemDisplayInfo.PhysicAddress.QuadPart != 0LL)
+        {
+            m_CurrentMode.DispInfo.PhysicAddress = m_SystemDisplayInfo.PhysicAddress;
+        }
+
+        DbgPrint(TRACE_LEVEL_INFORMATION,
+                 ("<--- %s ColorFormat = %d\n", __FUNCTION__, m_CurrentMode.DispInfo.ColorFormat));
+    }
 
     VIOGPU_RECORD_NATIVE_START(this, VioGpuNativeStartFinalState, STATUS_PENDING, VioGpuNativeStartDetailNone);
-    *pNumberOfViews = MAX_VIEWS;
-    *pNumberOfChildren = MAX_CHILDREN;
+    *pNumberOfViews = IsRenderOnly() ? 0 : MAX_VIEWS;
+    *pNumberOfChildren = IsRenderOnly() ? 0 : MAX_CHILDREN;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     InterlockedExchange(&m_HardwareResetCallerRva, 0);
 #endif
@@ -6198,6 +6208,12 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
         SetUsePresentProgress(!!value);
     }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    value = 1;
+    StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"RenderOnly", &value);
+    SetRenderOnly(!NT_SUCCESS(StatusOptional) || !!value);
+#endif
+
     // The following keys are optional and no need to report error if them are missing
     value = 0;
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"PersistentDispMode0Width", &value);
@@ -9422,7 +9438,17 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
     }
 
     VIOGPU_RECORD_NATIVE_START(m_pVioGpuDod, VioGpuNativeStartModeList, STATUS_PENDING, VioGpuNativeStartDetailNone);
-    status = BuildModeList(pDispInfo);
+    if (m_pVioGpuDod->IsRenderOnly())
+    {
+        delete[] m_ModeInfo;
+        m_ModeInfo = NULL;
+        m_ModeCount = 0;
+        status = STATUS_SUCCESS;
+    }
+    else
+    {
+        status = BuildModeList(pDispInfo);
+    }
     if (NT_SUCCESS(status) && !m_CtrlQueue.IsSynchronousRequestsHealthy())
     {
         status = STATUS_IO_TIMEOUT;
@@ -11012,7 +11038,8 @@ BOOLEAN VioGpuAdapter::InterruptRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface, 
     BOOLEAN serviced = intReason != 0;
     if (serviced)
     {
-        if (m_pVioGpuDod->IsUsePresentProgress() && (intReason & ISR_REASON_DISPLAY) == ISR_REASON_DISPLAY)
+        if (!m_pVioGpuDod->IsRenderOnly() && m_pVioGpuDod->IsUsePresentProgress() &&
+            (intReason & ISR_REASON_DISPLAY) == ISR_REASON_DISPLAY)
         {
             DXGKARGCB_NOTIFY_INTERRUPT_DATA NotifyInterrupt = {};
             NotifyInterrupt.InterruptType = DXGK_INTERRUPT_DISPLAYONLY_PRESENT_PROGRESS;
@@ -11051,7 +11078,10 @@ void VioGpuAdapter::ThreadWorkRoutine(void)
             break;
         }
         ConfigChanged();
-        NotifyResolutionEvent();
+        if (!m_pVioGpuDod->IsRenderOnly())
+        {
+            NotifyResolutionEvent();
+        }
     }
 }
 
@@ -11062,6 +11092,15 @@ void VioGpuAdapter::ConfigChanged(void)
     virtio_get_config(&m_VioDev, FIELD_OFFSET(GPU_CONFIG, events_read), &events_read, sizeof(m_u32NumScanouts));
     if (events_read & VIRTIO_GPU_EVENT_DISPLAY)
     {
+        if (m_pVioGpuDod->IsRenderOnly())
+        {
+            events_clear |= VIRTIO_GPU_EVENT_DISPLAY;
+            virtio_set_config(&m_VioDev,
+                              FIELD_OFFSET(GPU_CONFIG, events_clear),
+                              &events_clear,
+                              sizeof(m_u32NumScanouts));
+            return;
+        }
         GetDisplayInfo();
         if (!m_CtrlQueue.IsSynchronousRequestsHealthy())
         {
