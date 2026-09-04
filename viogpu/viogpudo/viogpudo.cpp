@@ -1049,7 +1049,14 @@ BOOLEAN VioGpuDod::DrainNativeSoftwareSubmissionCompletionsFromDpc(void)
 {
     if (KeGetCurrentIrql() != DISPATCH_LEVEL)
     {
-        return FALSE;
+        /* Being off DISPATCH_LEVEL means this is not the DPC that owns the
+         * software completion ring, so there is nothing to drain here.  That is
+         * not a hardware fault, and reporting it as one made DpcRoutine request
+         * a hardware reset that nothing at runtime can clear: the only path back
+         * to VioGpuHardwareActive is the recovery inside SetPowerState, so every
+         * later present fails AcquireNativeSubmissionOperation with
+         * STATUS_DEVICE_NOT_READY until the device is restarted. */
+        return TRUE;
     }
 
     UINT completedFence = 0;
@@ -4394,9 +4401,16 @@ __declspec(noinline) VOID VioGpuDod::RequestHardwareResetAtAnyIrql(void)
 #endif
     LONG previousState = InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
 #if defined(VIOGPU_NATIVE_CONTEXT)
-    if (previousState == VioGpuHardwareActive && callerRva != 0 && callerRva <= MAXULONG)
+    UNREFERENCED_PARAMETER(previousState);
+    if (callerRva != 0 && callerRva <= MAXULONG)
     {
-        InterlockedCompareExchange(&m_HardwareResetCallerRva, static_cast<LONG>(callerRva), 0);
+        /* Publish the most recent requester rather than only the first one
+         * observed while the adapter was still Active.  StartDevice and the
+         * SetPowerState recovery both clear this field, and the direct state
+         * writes in UnwindFailedStart and StopDevice do not record at all, so
+         * the compare-exchange form left the field reading zero for exactly the
+         * runtime resets whose origin has to be identified. */
+        InterlockedExchange(&m_HardwareResetCallerRva, static_cast<LONG>(callerRva));
     }
     RequestWddmSubmissionDrainAtAnyIrql();
 #else

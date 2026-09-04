@@ -5323,11 +5323,11 @@ def check_wddm_present_contract() -> None:
             "ULONG_PTRreturnAddress=reinterpret_cast<ULONG_PTR>(_ReturnAddress());",
             "ULONG_PTRcallerRva=returnAddress>=imageBase?returnAddress-imageBase:0;",
             "InterlockedExchange(&m_HardwareResetState,VioGpuHardwareResetRequested);",
-            "previousState==VioGpuHardwareActive&&callerRva!=0&&callerRva<=MAXULONG",
-            "InterlockedCompareExchange(&m_HardwareResetCallerRva,static_cast<LONG>(callerRva),0);",
+            "callerRva!=0&&callerRva<=MAXULONG",
+            "InterlockedExchange(&m_HardwareResetCallerRva,static_cast<LONG>(callerRva));",
             "RequestWddmSubmissionDrainAtAnyIrql();",
         ),
-        "every hardware reset request must capture first-active-epoch provenance before deferred drain",
+        "every hardware reset request must publish the most recent provenance before deferred drain",
     )
     if reset_request.count("InterlockedExchange(&m_HardwareResetState,VioGpuHardwareResetRequested);") != 1 or \
        reset_request.count("_ReturnAddress()") != 1 or reset_request.count("&__ImageBase") != 1:
