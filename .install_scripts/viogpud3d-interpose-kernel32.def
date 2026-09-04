@@ -1,0 +1,9 @@
+LIBRARY kernel32.dll
+EXPORTS
+LoadLibraryA
+GetProcAddress
+CreateFileA
+WriteFile
+CloseHandle
+SetFilePointer
+GetLastError
