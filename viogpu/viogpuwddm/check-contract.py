@@ -2566,29 +2566,43 @@ def check_native_driver_caps_contract() -> None:
 
     helper = canonical_code(function_body("VioGpuQueryNativeDriverCaps", VIOGPU_CODE))
     for fragment in (
-        "ULONGrequiredSize=renderOnly?sizeof(DXGK_DRIVERCAPS):VIOGPU_WIN7_DRIVERCAPS_SIZE;",
+        # The reply extent follows the buffer dxgkrnl supplied, not the mode.
+        "constBOOLEANfullCaps=queryAdapterInfo->OutputDataSize>=sizeof(DXGK_DRIVERCAPS);",
+        "ULONGrequiredSize=fullCaps?(ULONG)sizeof(DXGK_DRIVERCAPS):VIOGPU_WIN7_DRIVERCAPS_SIZE;",
         "queryAdapterInfo->OutputDataSize<requiredSize",
         "returnSTATUS_BUFFER_TOO_SMALL;",
         "RtlZeroMemory(driverCaps,requiredSize);",
-        "driverCaps->WDDMVersion=renderOnly?DXGKDDI_WDDMv1_2:DXGKDDI_WDDMv1;",
+        # WDDM 1.2 and the render engine topology are unconditional: the render
+        # engine exists in both registrations, and a display-mode adapter that
+        # advertised zero nodes broke CreateContext and left D3D no feature levels.
+        "driverCaps->WDDMVersion=DXGKDDI_WDDMv1_2;",
         "driverCaps->HighestAcceptableAddress.QuadPart=(ULONG64)-1;",
         "if(pointerEnabled&&!renderOnly)",
         "driverCaps->MaxPointerWidth=POINTER_SIZE;",
         "driverCaps->MaxPointerHeight=POINTER_SIZE;",
         "driverCaps->PointerCaps.Color=1;",
         "driverCaps->PointerCaps.MaskedColor=1;",
-        "if(renderOnly)",
         "driverCaps->FlipCaps.FlipOnVSyncMmIo=1;",
         "driverCaps->SchedulingCaps.MultiEngineAware=1;",
         "driverCaps->SchedulingCaps.PreemptionAware=0;",
         "driverCaps->SchedulingCaps.CancelCommandAware=1;",
         "driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes=1;",
+        # These two live past the Win7 prefix, so they need the full structure.
+        "if(fullCaps)",
         "driverCaps->PreemptionCaps.GraphicsPreemptionGranularity=D3DKMDT_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;",
         "driverCaps->PreemptionCaps.ComputePreemptionGranularity=D3DKMDT_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY;",
         "driverCaps->SupportPerEngineTDR=1;",
     ):
         if helper.count(fragment) != 1:
-            fail(f"Native Context DriverCaps output must retain its conditional Win7/WDDM 1.2 contract: {fragment}")
+            fail(f"Native Context DriverCaps must publish the render engine in both modes: {fragment}")
+
+    # The mode must no longer gate scheduling or topology.
+    topology = helper.find("driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes=1;")
+    preempt_guard = helper.find("if(fullCaps)")
+    if topology < 0 or preempt_guard < 0 or topology > preempt_guard:
+        fail("Native Context DriverCaps must publish engine topology before the full-structure guard")
+    if "if(renderOnly)" in helper:
+        fail("Native Context DriverCaps must not gate GPU scheduling caps on render-only mode")
     if helper.count("RtlZeroMemory(") != 1:
         fail("Native Context DriverCaps must zero exactly the selected versioned structure extent")
 
@@ -10432,12 +10446,12 @@ def check_wddm_submission_lifetime() -> None:
         fail("a failed preemption interrupt notification must gate the adapter for TDR")
     driver_caps = canonical_code(function_body("VioGpuQueryNativeDriverCaps", VIOGPU_CODE))
     for fragment in (
-        "driverCaps->WDDMVersion=renderOnly?DXGKDDI_WDDMv1_2:DXGKDDI_WDDMv1;",
+        "driverCaps->WDDMVersion=DXGKDDI_WDDMv1_2;",
         "driverCaps->SchedulingCaps.PreemptionAware=0;",
         "driverCaps->SupportPerEngineTDR=1;",
     ):
         if driver_caps.count(fragment) != 1:
-            fail(f"the render-only WDDM 1.2 scheduler/TDR contract is incomplete: {fragment}")
+            fail(f"the WDDM 1.2 scheduler/TDR contract is incomplete: {fragment}")
     if "driverCaps->SupportSmoothRotation" in driver_caps:
         fail("render-only DriverCaps must not advertise the display-only smooth-rotation capability")
 

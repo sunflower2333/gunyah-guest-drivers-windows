@@ -2279,7 +2279,18 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
                                             _In_ BOOLEAN pointerEnabled,
                                             _In_ BOOLEAN renderOnly)
 {
-    ULONG requiredSize = renderOnly ? sizeof(DXGK_DRIVERCAPS) : VIOGPU_WIN7_DRIVERCAPS_SIZE;
+    /* The GPU engine topology and scheduler contract describe the render
+     * engine, which exists in both the render-only and the display
+     * registration.  Publishing them only for render-only left a display-mode
+     * adapter advertising zero processing nodes, so dxgkrnl could not form a
+     * valid node ordinal and CreateContext failed STATUS_INVALID_PARAMETER,
+     * while Direct3D found no feature levels to bind.  Select the reply extent
+     * from the buffer dxgkrnl actually supplied instead of from the mode:
+     * WDDMVersion, SchedulingCaps and GpuEngineTopology all sit inside the
+     * 528-byte Win7 prefix, while PreemptionCaps and SupportPerEngineTDR do
+     * not and stay gated on the full structure. */
+    const BOOLEAN fullCaps = queryAdapterInfo->OutputDataSize >= sizeof(DXGK_DRIVERCAPS);
+    ULONG requiredSize = fullCaps ? (ULONG)sizeof(DXGK_DRIVERCAPS) : VIOGPU_WIN7_DRIVERCAPS_SIZE;
     if (queryAdapterInfo->OutputDataSize < requiredSize)
     {
         DbgPrint(TRACE_LEVEL_ERROR,
@@ -2291,7 +2302,7 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
 
     DXGK_DRIVERCAPS *driverCaps = static_cast<DXGK_DRIVERCAPS *>(queryAdapterInfo->pOutputData);
     RtlZeroMemory(driverCaps, requiredSize);
-    driverCaps->WDDMVersion = renderOnly ? DXGKDDI_WDDMv1_2 : DXGKDDI_WDDMv1;
+    driverCaps->WDDMVersion = DXGKDDI_WDDMv1_2;
     driverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
 
     if (pointerEnabled && !renderOnly)
@@ -2302,15 +2313,16 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
         driverCaps->PointerCaps.MaskedColor = 1;
     }
 
-    if (renderOnly)
+    driverCaps->FlipCaps.FlipOnVSyncMmIo = 1;
+    driverCaps->SchedulingCaps.MultiEngineAware = 1;
+    /* WDDM 1.2 permits retaining the Win7 scheduler model.  Native Context
+     * has no Host primitive for preempting an in-flight command. */
+    driverCaps->SchedulingCaps.PreemptionAware = 0;
+    driverCaps->SchedulingCaps.CancelCommandAware = 1;
+    driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes = 1;
+
+    if (fullCaps)
     {
-        driverCaps->FlipCaps.FlipOnVSyncMmIo = 1;
-        driverCaps->SchedulingCaps.MultiEngineAware = 1;
-        /* WDDM 1.2 permits retaining the Win7 scheduler model.  Native Context
-         * has no Host primitive for preempting an in-flight command. */
-        driverCaps->SchedulingCaps.PreemptionAware = 0;
-        driverCaps->SchedulingCaps.CancelCommandAware = 1;
-        driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes = 1;
         driverCaps->PreemptionCaps.GraphicsPreemptionGranularity = D3DKMDT_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;
         driverCaps->PreemptionCaps.ComputePreemptionGranularity = D3DKMDT_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY;
         driverCaps->SupportPerEngineTDR = 1;
@@ -2318,10 +2330,11 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
 
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,
-               "viogpu Native DriverCaps: size=%u wddm=0x%04X renderOnly=%u pointerCaps=0x%08X\n",
+               "viogpu Native DriverCaps: size=%u wddm=0x%04X renderOnly=%u nodes=%u pointerCaps=0x%08X\n",
                requiredSize,
                driverCaps->WDDMVersion,
                renderOnly,
+               driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes,
                driverCaps->PointerCaps.Value);
     return STATUS_SUCCESS;
 }
@@ -2455,7 +2468,9 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                pQueryAdapterInfo->Type,
                pQueryAdapterInfo->OutputDataSize,
 #if defined(VIOGPU_NATIVE_CONTEXT)
-               IsRenderOnly() ? (ULONG)sizeof(DXGK_DRIVERCAPS) : VIOGPU_WIN7_DRIVERCAPS_SIZE,
+               pQueryAdapterInfo->OutputDataSize >= sizeof(DXGK_DRIVERCAPS)
+                   ? (ULONG)sizeof(DXGK_DRIVERCAPS)
+                   : VIOGPU_WIN7_DRIVERCAPS_SIZE,
 #else
                (ULONG)sizeof(DXGK_DRIVERCAPS),
 #endif
