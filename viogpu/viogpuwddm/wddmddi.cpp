@@ -4265,8 +4265,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
 _Use_decl_annotations_ NTSTATUS APIENTRY
 VioGpuWddmGetStandardAllocationDriverData(CONST HANDLE hAdapter, DXGKARG_GETSTANDARDALLOCATIONDRIVERDATA *data)
 {
-    UNREFERENCED_PARAMETER(hAdapter);
-
     if (data == NULL)
     {
         return STATUS_INVALID_PARAMETER;
@@ -4372,8 +4370,57 @@ VioGpuWddmGetStandardAllocationDriverData(CONST HANDLE hAdapter, DXGKARG_GETSTAN
                 return STATUS_SUCCESS;
             }
 
+        case D3DKMDT_STANDARDALLOCATION_GDISURFACE:
+            {
+                /* Dxgkrnl requests a GDI standard allocation while it builds a
+                 * D3D device.  Refusing it returned STATUS_NOT_SUPPORTED from
+                 * DxgkDdiGetStandardAllocationDriverData, which dxgkrnl reports
+                 * as "Driver returned an invalid NTSTATUS code" and turns into a
+                 * failed device creation, so Direct3D could never open a device
+                 * on this adapter.  GDI surfaces live in the same host-shared
+                 * aperture as the shadow and staging surfaces. */
+                D3DKMDT_GDISURFACEDATA *surface = data->pCreateGdiSurfaceData;
+                if (surface == NULL)
+                {
+                    return STATUS_INVALID_PARAMETER;
+                }
+
+                D3DDDIFORMAT format = surface->Format;
+                if (format == D3DDDIFMT_UNKNOWN)
+                {
+                    format = D3DDDIFMT_X8R8G8B8;
+                }
+
+                status = CalculateSurfaceLayout(surface->Width,
+                                                surface->Height,
+                                                format,
+                                                &privateData->Pitch,
+                                                &privateData->Size);
+                if (!NT_SUCCESS(status))
+                {
+                    return status;
+                }
+
+                surface->Pitch = privateData->Pitch;
+                privateData->Flags = VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE;
+                privateData->Width = surface->Width;
+                privateData->Height = surface->Height;
+                privateData->Format = ToPrivateFormat(format);
+                return STATUS_SUCCESS;
+            }
+
         default:
-            return STATUS_NOT_SUPPORTED;
+            {
+                /* Publish the unmodelled type rather than silently refusing it,
+                 * and report it with a status this DDI is allowed to return. */
+                VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+                if (adapter != NULL)
+                {
+                    adapter->RecordNativeStandardAllocationDiagnostic(
+                        static_cast<ULONG>(data->StandardAllocationType));
+                }
+                return STATUS_INVALID_PARAMETER;
+            }
     }
 }
 

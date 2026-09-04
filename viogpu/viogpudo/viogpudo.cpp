@@ -5818,6 +5818,31 @@ VOID VioGpuDod::RecordNativeCreateContextDiagnostic(_In_ ULONG flags,
     }
 }
 
+VOID VioGpuDod::RecordNativeStandardAllocationDiagnostic(_In_ ULONG standardAllocationType)
+{
+    PAGED_CODE();
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        return;
+    }
+
+    DWORD typeValue = standardAllocationType;
+    NTSTATUS typeWrite = WriteRegistryDWORD(deviceKey, L"NativeStandardAllocationType", &typeValue);
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(typeWrite))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu standard allocation diagnostic: write failed, type=%u write=0x%08X\n",
+                   typeValue,
+                   typeWrite);
+    }
+}
+
 VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,
                                               _In_ NTSTATUS status,
                                               _In_ const VIOGPU_NATIVE_PRESENT_DIAGNOSTIC *diagnostic)
