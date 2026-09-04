@@ -140,6 +140,26 @@ static BOOLEAN VioGpuNotifyNativeSchedulerAtDirql(_In_opt_ PVOID context)
 }
 #endif
 
+/* 60 Hz.  KeSetTimerEx takes its period in milliseconds, so this is the closest
+ * whole-millisecond period to the 60 Hz timing the mode list publishes. */
+static const LONG VioGpuCrtcVsyncPeriodMs = 16;
+
+static VOID VioGpuCrtcVsyncDpcRoutine(_In_ KDPC *dpc,
+                                      _In_opt_ PVOID context,
+                                      _In_opt_ PVOID argument1,
+                                      _In_opt_ PVOID argument2)
+{
+    UNREFERENCED_PARAMETER(dpc);
+    UNREFERENCED_PARAMETER(argument1);
+    UNREFERENCED_PARAMETER(argument2);
+
+    VioGpuDod *dod = static_cast<VioGpuDod *>(context);
+    if (dod != NULL)
+    {
+        dod->DeliverCrtcVsync();
+    }
+}
+
 PAGED_CODE_SEG_BEGIN
 VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     : m_pPhysicalDevice(pPhysicalDeviceObject), m_MonitorPowerState(PowerDeviceD0), m_AdapterPowerState(PowerDeviceD0),
@@ -151,6 +171,12 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     *((UINT *)&m_Flags) = 0;
     RtlZeroMemory(&m_DxgkInterface, sizeof(m_DxgkInterface));
+    InterlockedExchange(&m_CrtcVsyncTimerArmed, 0);
+    InterlockedExchange(&m_CrtcVsyncDeliveredCount, 0);
+    InterlockedExchange64(&m_CrtcVsyncPrimaryAddress, 0);
+    KeInitializeTimerEx(&m_CrtcVsyncTimer, SynchronizationTimer);
+    KeInitializeDpc(&m_CrtcVsyncDpc, VioGpuCrtcVsyncDpcRoutine, this);
+    KeSetImportanceDpc(&m_CrtcVsyncDpc, MediumHighImportance);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     InterlockedExchange(&m_NativeContextFailCallerRva, 0);
     InterlockedExchange(&m_NativeNotifyFailureReason, 0);
@@ -211,6 +237,11 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
 VioGpuDod::~VioGpuDod(void)
 {
     PAGED_CODE();
+    /* A queued vsync DPC must not outlive the adapter it notifies. */
+    InterlockedExchange(&m_CrtcVsyncEnabled, 0);
+    InterlockedExchange(&m_CrtcVsyncTimerArmed, 0);
+    KeCancelTimer(&m_CrtcVsyncTimer);
+    KeFlushQueuedDpcs();
     if (!m_HardwareRundownCompleted)
     {
         ExWaitForRundownProtectionRelease(&m_HardwareOperations);
@@ -572,6 +603,8 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
     PAGED_CODE();
 
     InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
+    InterlockedExchange(&m_CrtcVsyncEnabled, 0);
+    DisarmCrtcVsyncTimer();
 #if defined(VIOGPU_NATIVE_CONTEXT)
     RequestWddmSubmissionDrainAtAnyIrql();
     if (!WaitForWddmSubmissionDrain())
@@ -851,6 +884,31 @@ void VioGpuDod::CompleteNativeFenceReset(void)
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
     InterlockedExchange(&m_NativeCompletedFence, static_cast<LONG>(submitted));
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
+}
+
+VOID VioGpuDod::SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address)
+{
+    InterlockedExchange64(&m_CrtcVsyncPrimaryAddress, static_cast<LONG64>(address));
+}
+
+VOID VioGpuDod::DeliverCrtcVsync(void)
+{
+    if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0) == 0 || !IsHardwareInterruptDispatchAllowed())
+    {
+        return;
+    }
+
+    /* dxgkrnl matches the reported address against the primary programmed by
+     * SetVidPnSourceAddress, so report the one this adapter last scanned out. */
+    DXGKARGCB_NOTIFY_INTERRUPT_DATA notify = {};
+    notify.InterruptType = DXGK_INTERRUPT_CRTC_VSYNC;
+    notify.CrtcVsync.VidPnTargetId = 0;
+    notify.CrtcVsync.PhysicalAddress.QuadPart = InterlockedCompareExchange64(&m_CrtcVsyncPrimaryAddress, 0, 0);
+    notify.CrtcVsync.PhysicalAdapterMask = 1;
+    if (NotifyNativeSchedulerInterrupt(&notify, TRUE))
+    {
+        InterlockedIncrement(&m_CrtcVsyncDeliveredCount);
+    }
 }
 
 BOOLEAN VioGpuDod::NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
@@ -2276,6 +2334,35 @@ NTSTATUS VioGpuDod::GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine)
     return STATUS_SUCCESS;
 }
 
+VOID VioGpuDod::ArmCrtcVsyncTimer(void)
+{
+    PAGED_CODE();
+
+    if (InterlockedExchange(&m_CrtcVsyncTimerArmed, 1) == 1)
+    {
+        return;
+    }
+
+    LARGE_INTEGER dueTime;
+    dueTime.QuadPart = -(static_cast<LONGLONG>(VioGpuCrtcVsyncPeriodMs) * 10000);
+    KeSetTimerEx(&m_CrtcVsyncTimer, dueTime, VioGpuCrtcVsyncPeriodMs, &m_CrtcVsyncDpc);
+}
+
+VOID VioGpuDod::DisarmCrtcVsyncTimer(void)
+{
+    PAGED_CODE();
+
+    if (InterlockedExchange(&m_CrtcVsyncTimerArmed, 0) == 0)
+    {
+        return;
+    }
+
+    KeCancelTimer(&m_CrtcVsyncTimer);
+    /* The periodic DPC can already be queued on another processor.  Drain it
+     * here so no vsync report races the teardown that follows. */
+    KeFlushQueuedDpcs();
+}
+
 NTSTATUS VioGpuDod::ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In_ BOOLEAN enableInterrupt)
 {
     PAGED_CODE();
@@ -2297,10 +2384,23 @@ NTSTATUS VioGpuDod::ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In
              * STATUS_NOT_SUPPORTED, which is not a status DxgkDdiControlInterrupt
              * may return: dxgkrnl reports "Driver returned an invalid NTSTATUS
              * code" and fails the device creation, so no D3D device could ever
-             * open on this adapter.  The virtual scanout has no periodic vblank
-             * source, so record the requested state and report success rather
-             * than failing the caller. */
+             * open on this adapter.  The virtual scanout has no hardware
+             * vblank, so a periodic timer supplies one for as long as dxgkrnl
+             * asks for the interrupt.  Merely recording the request was not
+             * enough: with no vblank ever reported,
+             * D3DKMTWaitForVerticalBlankEvent returned STATUS_TIMEOUT on every
+             * call and the desktop compositor stopped presenting to this
+             * adapter after its first few frames, freezing the last composed
+             * frame on the scanout. */
             InterlockedExchange(&m_CrtcVsyncEnabled, enableInterrupt ? 1 : 0);
+            if (enableInterrupt)
+            {
+                ArmCrtcVsyncTimer();
+            }
+            else
+            {
+                DisarmCrtcVsyncTimer();
+            }
             return STATUS_SUCCESS;
 
         default:
@@ -5164,6 +5264,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD notifyFailureReason = ReadNativeNotifyFailureReason();
     DWORD notifyFailureStatus = ReadNativeNotifyFailureStatus();
     DWORD notifyFailureCount = ReadNativeNotifyFailureCount();
+    DWORD crtcVsyncEnabled = ReadCrtcVsyncEnabled();
+    DWORD crtcVsyncDelivered = ReadCrtcVsyncDeliveredCount();
     struct VALUE_WRITE
     {
         PCWSTR Name;
@@ -5173,6 +5275,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
         {L"NativeNotifyFailureReason", &notifyFailureReason},
         {L"NativeNotifyFailureStatus", &notifyFailureStatus},
         {L"NativeNotifyFailureCount", &notifyFailureCount},
+        {L"NativeCrtcVsyncEnabled", &crtcVsyncEnabled},
+        {L"NativeCrtcVsyncDelivered", &crtcVsyncDelivered},
         {L"NativeContextAllocationDestroyStage", &stage},
         {L"NativeContextAllocationDestroyStatus", &statusValue},
         {L"NativeContextAllocationDestroyDetail", &detail},

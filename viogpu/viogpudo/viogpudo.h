@@ -924,6 +924,28 @@ class VioGpuDod
     NTSTATUS ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In_ BOOLEAN enableInterrupt);
     // Set of the CRTC vsync interrupt state dxgkrnl last requested.
     volatile LONG m_CrtcVsyncEnabled;
+    /* The virtual scanout raises no periodic vertical blank, so a
+     * synchronization timer stands in for the CRTC interrupt.  Without a vblank
+     * report D3DKMTWaitForVerticalBlankEvent returns STATUS_TIMEOUT on every
+     * call and the desktop compositor stops presenting to this adapter after
+     * its first few frames. */
+    KTIMER m_CrtcVsyncTimer;
+    KDPC m_CrtcVsyncDpc;
+    volatile LONG m_CrtcVsyncTimerArmed;
+    volatile LONG m_CrtcVsyncDeliveredCount;
+    volatile LONG64 m_CrtcVsyncPrimaryAddress;
+    VOID ArmCrtcVsyncTimer(void);
+    VOID DisarmCrtcVsyncTimer(void);
+    VOID DeliverCrtcVsync(void);
+    VOID SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address);
+    DWORD ReadCrtcVsyncDeliveredCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_CrtcVsyncDeliveredCount, 0, 0));
+    }
+    DWORD ReadCrtcVsyncEnabled(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0));
+    }
     BOOLEAN InterruptRoutine(_In_ ULONG MessageNumber);
     VOID DpcRoutine(VOID);
     NTSTATUS QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQueryAdapterInfo);

@@ -3249,6 +3249,56 @@ def check_legacy_runtime_callback_contract() -> None:
         if fragment not in scanline:
             fail(f"VioGpuDod::GetScanLine must publish bounded software timing: {fragment}")
 
+    dod_interrupt = canonical_code(function_body("VioGpuDod::ControlInterrupt", VIOGPU_CODE))
+    for fragment in (
+        "InterlockedExchange(&m_CrtcVsyncEnabled,enableInterrupt?1:0);",
+        "ArmCrtcVsyncTimer();",
+        "DisarmCrtcVsyncTimer();",
+    ):
+        if fragment not in dod_interrupt:
+            fail(f"vsync interrupt control must drive the software vertical-blank source: {fragment}")
+    if "STATUS_NOT_SUPPORTED" in dod_interrupt:
+        fail("interrupt control must not return a status DxgkDdiControlInterrupt may not return")
+
+    # The virtual scanout raises no hardware vblank.  Reporting none at all made
+    # D3DKMTWaitForVerticalBlankEvent return STATUS_TIMEOUT on every call, and the
+    # desktop compositor stopped presenting to this adapter after its first few
+    # frames.  A periodic timer has to stand in for the CRTC interrupt.
+    deliver_vsync = canonical_code(function_body("VioGpuDod::DeliverCrtcVsync", VIOGPU_CODE))
+    for fragment in (
+        "InterlockedCompareExchange(&m_CrtcVsyncEnabled,0,0)==0||!IsHardwareInterruptDispatchAllowed()",
+        "notify.InterruptType=DXGK_INTERRUPT_CRTC_VSYNC;",
+        "notify.CrtcVsync.VidPnTargetId=0;",
+        "notify.CrtcVsync.PhysicalAddress.QuadPart=InterlockedCompareExchange64(&m_CrtcVsyncPrimaryAddress,0,0);",
+        "NotifyNativeSchedulerInterrupt(&notify,TRUE)",
+    ):
+        if fragment not in deliver_vsync:
+            fail(f"vsync delivery must report a gated CRTC vertical blank for the programmed primary: {fragment}")
+
+    arm_vsync = canonical_code(function_body("VioGpuDod::ArmCrtcVsyncTimer", VIOGPU_CODE))
+    if "InterlockedExchange(&m_CrtcVsyncTimerArmed,1)==1" not in arm_vsync:
+        fail("arming the software vertical-blank source must be idempotent")
+    if "KeSetTimerEx(&m_CrtcVsyncTimer,dueTime,VioGpuCrtcVsyncPeriodMs,&m_CrtcVsyncDpc);" not in arm_vsync:
+        fail("the software vertical-blank source must be a periodic timer")
+
+    disarm_vsync = canonical_code(function_body("VioGpuDod::DisarmCrtcVsyncTimer", VIOGPU_CODE))
+    for fragment in (
+        "InterlockedExchange(&m_CrtcVsyncTimerArmed,0)==0",
+        "KeCancelTimer(&m_CrtcVsyncTimer);",
+        "KeFlushQueuedDpcs();",
+    ):
+        if fragment not in disarm_vsync:
+            fail(f"disarming the software vertical-blank source must drain its queued DPC: {fragment}")
+
+    stop_device = canonical_code(function_body("VioGpuDod::StopDevice", VIOGPU_CODE))
+    if "DisarmCrtcVsyncTimer();" not in stop_device:
+        fail("StopDevice must stop the software vertical-blank source before hardware teardown")
+
+    dod_destructor = canonical_code(function_body("VioGpuDod::~VioGpuDod", VIOGPU_CODE))
+    for fragment in ("KeCancelTimer(&m_CrtcVsyncTimer);", "KeFlushQueuedDpcs();"):
+        if fragment not in dod_destructor:
+            fail(f"adapter teardown must not leave a queued vsync DPC behind: {fragment}")
+
     adapter_interrupt = canonical_code(function_body("VioGpuAdapter::ControlInterrupt", VIOGPU_CODE))
     for fragment in (
         "if(!m_bVirtioInitialized||!m_bQueuesInitialized||m_pVioGpuDod==NULL||!m_pVioGpuDod->IsHardwareInit())",

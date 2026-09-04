@@ -9319,6 +9319,10 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
             return STATUS_INVALID_PARAMETER;
         }
         VIOGPU_HOST_CONTEXT_RESULT result = adapter->Set2DScanout(0, 0, 0, 0, &previousResourceId);
+        if (result == VioGpuHostContextConfirmed)
+        {
+            adapter->SetCrtcVsyncPrimaryAddress(0);
+        }
         return result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
     }
 
@@ -9351,6 +9355,12 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
                                                                   allocation->Width,
                                                                   allocation->Height,
                                                                   &previousResourceId);
+        if (result == VioGpuHostContextConfirmed)
+        {
+            /* The vsync report carries the primary dxgkrnl programmed here. */
+            adapter->SetCrtcVsyncPrimaryAddress(
+                static_cast<ULONGLONG>(setVidPnSourceAddress->PrimaryAddress.QuadPart));
+        }
         status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
     }
     KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
