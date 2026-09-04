@@ -1,0 +1,96 @@
+name: Build Vulkan validation tools (ARM64)
+
+# Builds vkcube and vulkaninfo natively for Windows ARM64 so the DroidVM
+# Native Context Turnip ICD can be validated with the standard Khronos tools
+# rather than only with project-local probes.  Manual dispatch only: this does
+# not build any driver and is not part of the driver gates.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tools_ref:
+        description: Vulkan-Tools tag or branch to build
+        required: false
+        default: v1.4.313
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: vkcube + vulkaninfo (native ARM64)
+    runs-on: windows-11-arm
+
+    steps:
+      - name: Check out Vulkan-Tools
+        uses: actions/checkout@v4
+        with:
+          repository: KhronosGroup/Vulkan-Tools
+          ref: ${{ inputs.tools_ref || 'v1.4.313' }}
+          path: Vulkan-Tools
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure
+        shell: pwsh
+        working-directory: Vulkan-Tools
+        run: |
+          cmake -S . -B build `
+            -D UPDATE_DEPS=ON `
+            -D CMAKE_BUILD_TYPE=Release `
+            -D BUILD_CUBE=ON `
+            -D BUILD_VULKANINFO=ON `
+            -D BUILD_ICD=OFF `
+            -D BUILD_TESTS=OFF
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+
+      - name: Build
+        shell: pwsh
+        working-directory: Vulkan-Tools
+        run: |
+          cmake --build build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+
+      - name: Collect and verify ARM64 binaries
+        shell: pwsh
+        working-directory: Vulkan-Tools
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $found = @()
+          foreach ($name in @('vkcube.exe', 'vkcubepp.exe', 'vulkaninfo.exe')) {
+            $hit = Get-ChildItem -Path build -Recurse -Filter $name -ErrorAction SilentlyContinue |
+                   Sort-Object Length -Descending | Select-Object -First 1
+            if ($null -ne $hit) {
+              Copy-Item $hit.FullName out/
+              $found += $hit.Name
+            }
+          }
+          if ($found -notcontains 'vkcube.exe') { throw "vkcube.exe was not produced" }
+
+          # Every collected binary must be an ARM64 PE, or it is useless here.
+          foreach ($f in Get-ChildItem out -Filter *.exe) {
+            $fs = [IO.File]::OpenRead($f.FullName)
+            try {
+              $br = [IO.BinaryReader]::new($fs)
+              if ($br.ReadUInt16() -ne 0x5a4d) { throw "$($f.Name): no MZ header" }
+              $fs.Position = 0x3c
+              $peOff = $br.ReadUInt32()
+              $fs.Position = $peOff
+              if ($br.ReadUInt32() -ne 0x00004550) { throw "$($f.Name): no PE signature" }
+              $machine = $br.ReadUInt16()
+              if ($machine -ne 0xaa64) { throw "$($f.Name): machine 0x{0:X} is not ARM64" -f $machine }
+            } finally { $fs.Dispose() }
+            "{0}  {1} bytes  ARM64" -f $f.Name, $f.Length
+            (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $f.Name
+          }
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-tools-arm64
+          path: Vulkan-Tools/out/
+          if-no-files-found: error
