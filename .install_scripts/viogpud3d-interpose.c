@@ -136,6 +136,54 @@ static HRESULT w_calcsize(void *hAdapter, void *pArg)
     return hr;
 }
 
+/* D3D11DDI_DEVICEFUNCS has exactly 152 members in the WDK header extracted by
+ * .github/workflows/dump-d3d-ddi-layout.yml, so this bound is known rather than
+ * guessed and filling within it stays inside the table.  Mesa leaves 15 entries
+ * empty, 13 of them the deferred-context and command-list group.  Each stub
+ * records the slot it occupies, so a call tells us which entry the runtime
+ * actually needs. */
+#define D3D11_DEVICEFUNCS_MEMBERS 152
+
+static u32 g_stub_slot[32];
+
+#define DEFINE_STUB(n) \
+static u64 stub_##n(void) { log_hex64("  *** runtime called filled slot=", (u64)g_stub_slot[n]); return 0; }
+
+DEFINE_STUB(0)  DEFINE_STUB(1)  DEFINE_STUB(2)  DEFINE_STUB(3)
+DEFINE_STUB(4)  DEFINE_STUB(5)  DEFINE_STUB(6)  DEFINE_STUB(7)
+DEFINE_STUB(8)  DEFINE_STUB(9)  DEFINE_STUB(10) DEFINE_STUB(11)
+DEFINE_STUB(12) DEFINE_STUB(13) DEFINE_STUB(14) DEFINE_STUB(15)
+DEFINE_STUB(16) DEFINE_STUB(17) DEFINE_STUB(18) DEFINE_STUB(19)
+DEFINE_STUB(20) DEFINE_STUB(21) DEFINE_STUB(22) DEFINE_STUB(23)
+DEFINE_STUB(24) DEFINE_STUB(25) DEFINE_STUB(26) DEFINE_STUB(27)
+DEFINE_STUB(28) DEFINE_STUB(29) DEFINE_STUB(30) DEFINE_STUB(31)
+
+static void *const g_stubs[32] = {
+    (void *)stub_0,  (void *)stub_1,  (void *)stub_2,  (void *)stub_3,
+    (void *)stub_4,  (void *)stub_5,  (void *)stub_6,  (void *)stub_7,
+    (void *)stub_8,  (void *)stub_9,  (void *)stub_10, (void *)stub_11,
+    (void *)stub_12, (void *)stub_13, (void *)stub_14, (void *)stub_15,
+    (void *)stub_16, (void *)stub_17, (void *)stub_18, (void *)stub_19,
+    (void *)stub_20, (void *)stub_21, (void *)stub_22, (void *)stub_23,
+    (void *)stub_24, (void *)stub_25, (void *)stub_26, (void *)stub_27,
+    (void *)stub_28, (void *)stub_29, (void *)stub_30, (void *)stub_31,
+};
+
+static void fill_null_slots(void **tbl)
+{
+    u32 i, used = 0;
+    if (!tbl) return;
+    for (i = 0; i < D3D11_DEVICEFUNCS_MEMBERS && used < 32; i++) {
+        if (tbl[i] == 0) {
+            g_stub_slot[used] = i;
+            tbl[i] = g_stubs[used];
+            log_hex64("  filled slot=", (u64)i);
+            used++;
+        }
+    }
+    log_hex64("  slots filled=", (u64)used);
+}
+
 /* Report which slots of a driver-filled function table are still NULL.  The
  * D3D11 runtime answers DXGI_ERROR_DRIVER_INTERNAL_ERROR when it finds a
  * required entry missing, so the gaps are the interesting part. */
@@ -161,6 +209,107 @@ static void log_null_slots(const char *label, void **tbl, u32 slots)
     log_hex64("  null slot count=", (u64)nulls);
 }
 
+/* D3D10DDIARG_CREATEDEVICE ends with, for D3D11.1 and later interfaces,
+ *   +0x48 Flags, +0x50 PFND3D10DDI_RETRIEVESUBOBJECT *ppfnRetrieveSubObject
+ * an in/out slot the driver is expected to populate with its sub-object
+ * retrieval entry point.  The Mesa frontend never writes it. */
+#define RETRIEVESUBOBJECT_OFFSET 0x50
+
+static long w_retrievesubobject(void *hDevice, u32 subDeviceId, u64 paramSize,
+                                void *pParams, u64 outSize, void *pOut)
+{
+    (void)hDevice; (void)paramSize; (void)pParams; (void)outSize; (void)pOut;
+    log_hex64("  *** runtime called RetrieveSubObject subDeviceId=", (u64)subDeviceId);
+    return 0x80004001L; /* E_NOTIMPL */
+}
+
+static void probe_retrieve_subobject(void *pCreateData)
+{
+    void **slot = *(void ***)((u8 *)pCreateData + RETRIEVESUBOBJECT_OFFSET);
+    if (!slot) { log_str("  <no ppfnRetrieveSubObject>\n"); return; }
+    log_hex64("  ppfnRetrieveSubObject=", (u64)slot);
+    log_hex64("  *ppfnRetrieveSubObject=", (u64)*slot);
+    if (*slot == 0) {
+        *slot = (void *)w_retrievesubobject;
+        log_str("  filled RetrieveSubObject\n");
+    }
+}
+
+/* DXGI_DDI_BASE_ARGS sits at +0x28 of D3D10DDIARG_CREATEDEVICE and is two
+ * pointers: pDXGIBaseCallbacks then the versioned pDXGIDDIBaseFunctions.  The
+ * Windows 11 runtime supplies the DXGI1_6_1 table, which has 22 entries, while
+ * the Mesa frontend fills at most the 18 of DXGI1_3.  Bound is from the WDK
+ * header, so the scan and the fill both stay inside the table. */
+#define DXGI_FUNCS_OFFSET  0x30
+#define DXGI_FUNCS_MEMBERS 22
+
+static u32 g_dxgi_stub_slot[8];
+
+#define DEFINE_DXGI_STUB(n) \
+static u64 dxgi_stub_##n(void) { log_hex64("  *** runtime called filled DXGI slot=", (u64)g_dxgi_stub_slot[n]); return 0x80004001ULL; }
+
+DEFINE_DXGI_STUB(0) DEFINE_DXGI_STUB(1) DEFINE_DXGI_STUB(2) DEFINE_DXGI_STUB(3)
+DEFINE_DXGI_STUB(4) DEFINE_DXGI_STUB(5) DEFINE_DXGI_STUB(6) DEFINE_DXGI_STUB(7)
+
+static void *const g_dxgi_stubs[8] = {
+    (void *)dxgi_stub_0, (void *)dxgi_stub_1, (void *)dxgi_stub_2, (void *)dxgi_stub_3,
+    (void *)dxgi_stub_4, (void *)dxgi_stub_5, (void *)dxgi_stub_6, (void *)dxgi_stub_7,
+};
+
+static void probe_dxgi_funcs(void *pCreateData)
+{
+    void **tbl = *(void ***)((u8 *)pCreateData + DXGI_FUNCS_OFFSET);
+    u32 i, used = 0;
+    if (!tbl) { log_str("  <no pDXGIDDIBaseFunctions>\n"); return; }
+    log_hex64("  pDXGIDDIBaseFunctions=", (u64)tbl);
+    for (i = 0; i < DXGI_FUNCS_MEMBERS; i++) {
+        if (tbl[i] == 0) {
+            log_hex64("  DXGI slot NULL=", (u64)i);
+            if (used < 8) {
+                g_dxgi_stub_slot[used] = i;
+                tbl[i] = g_dxgi_stubs[used];
+                used++;
+            }
+        }
+    }
+    log_hex64("  DXGI slots filled=", (u64)used);
+}
+
+/* The user-mode driver reports failures to the runtime through
+ * pUMCallbacks->pfnSetErrorCb, which is the first member of
+ * D3D11DDI_CORELAYER_DEVICECALLBACKS (40 members).  In
+ * D3D10DDIARG_CREATEDEVICE that union sits at +0x40:
+ *   +00 hRTDevice, +08 Interface, +0C Version, +10 pKTCallbacks,
+ *   +18 device funcs, +20 hDrvDevice, +28 DXGIBaseDDI (two pointers),
+ *   +38 hRTCoreLayer, +40 pUMCallbacks, +48 Flags.
+ * The runtime's struct is const, so a private copy is substituted rather than
+ * patched in place. */
+#define UMCALLBACKS_OFFSET 0x40
+#define UMCALLBACKS_MEMBERS 40
+
+static void *g_umcb_copy[UMCALLBACKS_MEMBERS];
+static void (*o_seterror)(void *hRTCoreLayer, long hr);
+
+static void w_seterror(void *hRTCoreLayer, long hr)
+{
+    log_hex64("  *** UMD reported SetErrorCb hr=", (u64)(u32)hr);
+    if (o_seterror) o_seterror(hRTCoreLayer, hr);
+}
+
+static void hook_um_callbacks(void *pCreateData)
+{
+    void ***slot = (void ***)((u8 *)pCreateData + UMCALLBACKS_OFFSET);
+    void **cb = *slot;
+    u32 i;
+    if (!cb) { log_str("  <no pUMCallbacks>\n"); return; }
+    log_hex64("  pUMCallbacks=", (u64)cb);
+    for (i = 0; i < UMCALLBACKS_MEMBERS; i++) g_umcb_copy[i] = cb[i];
+    o_seterror = (void (*)(void *, long))g_umcb_copy[0];
+    log_hex64("  original pfnSetErrorCb=", (u64)o_seterror);
+    g_umcb_copy[0] = (void *)w_seterror;
+    *slot = g_umcb_copy;
+}
+
 static HRESULT w_createdev(void *hAdapter, void *pCreateData)
 {
     HRESULT hr;
@@ -169,6 +318,7 @@ static HRESULT w_createdev(void *hAdapter, void *pCreateData)
         *(u32 *)((u8 *)pCreateData + 8) = REAL_IFACE;
         log_str("  [translated Interface 0xB0011 -> 0xB0010]\n");
     }
+    hook_um_callbacks(pCreateData);
     hr = o_createdev(hAdapter, pCreateData);
     log_hex64("  CreateDevice ret=", (u64)(u32)hr);
     if (hr == 0 && pCreateData) {
@@ -177,7 +327,10 @@ static HRESULT w_createdev(void *hAdapter, void *pCreateData)
         /* Read-only.  The WDK header that defines this table's extent is not
          * available here, so the scan bound is a guess and writing into it
          * could land outside the allocation. */
-        log_null_slots("  device funcs NULL slots:\n", funcs, 400);
+        log_null_slots("  device funcs NULL slots:\n", funcs, D3D11_DEVICEFUNCS_MEMBERS);
+        fill_null_slots(funcs);
+        probe_dxgi_funcs(pCreateData);
+        probe_retrieve_subobject(pCreateData);
     }
     return hr;
 }
@@ -204,16 +357,8 @@ static HRESULT w_getversions(void *hAdapter, u32 *puEntries, u64 *pVersions)
         if (!pVersions) {
             log_hex64("  count query, entries=", (u64)*puEntries);
         } else {
-            u32 i, kept = 0;
-            for (i = 0; i < *puEntries; i++) {
-                if ((pVersions[i] >> 32) <= MAX_KEPT_IFACE) {
-                    pVersions[kept++] = pVersions[i];
-                } else {
-                    log_hex64("    dropped version=", pVersions[i]);
-                }
-            }
-            *puEntries = kept;
-            for (i = 0; i < kept && i < 16; i++) log_hex64("    version=", pVersions[i]);
+            u32 i;
+            for (i = 0; i < *puEntries && i < 16; i++) log_hex64("    version=", pVersions[i]);
         }
     }
     return hr;
