@@ -6718,6 +6718,69 @@ def check_native_context_destroy_diagnostics() -> None:
         fail("Native Context destroy decoder fixture must reject an uncommitted slot")
 
 
+def check_native_context_currency_diagnostics() -> None:
+    """The retained-owner teardown path must name the term that blocked it."""
+    expected_terms = {
+        "VioGpuNativeContextCurrencyGeneration": 0x00000001,
+        "VioGpuNativeContextCurrencyResetGenerationValid": 0x00000002,
+        "VioGpuNativeContextCurrencyResetGeneration": 0x00000004,
+        "VioGpuNativeContextCurrencyReady": 0x00000008,
+        "VioGpuNativeContextCurrencySynchronous": 0x00000010,
+        "VioGpuNativeContextCurrencyHardwareResetRequested": 0x00000020,
+        "VioGpuNativeContextCurrencyStateShift": 8,
+        "VioGpuNativeContextCurrencyStateMask": 0x0000FF00,
+    }
+    declared = {
+        name: int(value, 0)
+        for name, value in re.findall(
+            r"\b(VioGpuNativeContextCurrency[A-Za-z0-9]+)\s*=\s*(0x[0-9A-Fa-f]+|[0-9]+)\s*,",
+            VIOGPU_HEADER_SOURCE,
+        )
+    }
+    if declared != expected_terms:
+        fail(f"currency diagnostics must declare exactly {expected_terms}, found {declared}")
+
+    destroy = canonical_code(function_body("VioGpuAdapter::DestroyNativeContext", VIOGPU_CODE))
+    # Each term is read once, without short-circuiting, so the persisted Detail
+    # field describes every term rather than only the first failing one.
+    for fragment in (
+        "BOOLEANgenerationCurrent=contextGeneration==generation;",
+        "BOOLEANcontextResetGenerationValid=contextResetGeneration!=0;",
+        "BOOLEANresetGenerationCurrent=contextResetGeneration==adapterResetGeneration;",
+        "BOOLEANnativeContextReady=nativeContextState==VioGpuNativeContextReady;",
+        "BOOLEANsynchronousRequestsHealthy=m_CtrlQueue.IsSynchronousRequestsHealthy();",
+        "BOOLEANhardwareResetRequested=m_pVioGpuDod!=NULL&&m_pVioGpuDod->IsHardwareResetRequested();",
+        "BOOLEANcurrent=generationCurrent&&contextResetGenerationValid&&resetGenerationCurrent&&"
+        "nativeContextReady&&synchronousRequestsHealthy;",
+    ):
+        if destroy.count(fragment) != 1:
+            fail(f"teardown currency must evaluate exactly one unconditional term: {fragment}")
+
+    if destroy.count("DWORDcurrencyTerms=") != 1:
+        fail("teardown currency must build exactly one persisted term bitmask")
+
+    terms_offset = destroy.find("DWORDcurrencyTerms=")
+    current_offset = destroy.find("BOOLEANcurrent=generationCurrent")
+    host_destroy = destroy.find("DestroyNativeContextHostObjectsLocked(owner)")
+    if terms_offset < 0 or current_offset < 0 or host_destroy < 0:
+        fail("teardown currency must compute its terms before the Host teardown attempt")
+    if not terms_offset < current_offset < host_destroy:
+        fail("teardown currency bitmask must be built before the predicate and the Host attempt")
+
+    # The retained-owner record is the only one that carries the bitmask; the
+    # success record stays at zero so the two remain distinguishable.
+    busy_record = (
+        "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostResult,status,currencyTerms,"
+        "static_cast<DWORD>(destroyResult),"
+    )
+    if destroy.count(busy_record) != 1:
+        fail("the retained-owner teardown record must persist the currency bitmask in Detail")
+    if destroy.count(
+        "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostResult,STATUS_SUCCESS,0,"
+    ) != 1:
+        fail("the successful teardown record must keep a zero Detail field")
+
+
 def check_native_map_diagnostics() -> None:
     dod_header = canonical_code(VIOGPU_HEADER_SOURCE)
     for fragment in (
@@ -11910,6 +11973,7 @@ def main() -> None:
     check_wddm_present_contract()
     check_native_context_ownership()
     check_native_context_destroy_diagnostics()
+    check_native_context_currency_diagnostics()
     check_native_map_diagnostics()
     check_native_parameter_diagnostics()
     check_wddm_private_abi(root)

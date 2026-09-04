@@ -8572,14 +8572,33 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
 #endif
 
     LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
-    BOOLEAN current = contextGeneration == generation && contextResetGeneration != 0 &&
-                      contextResetGeneration == (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration,
-                                                                                        0,
-                                                                                        0) &&
-                      InterlockedCompareExchange(&m_NativeContextState,
-                                                 VioGpuNativeContextOffline,
-                                                 VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
-                      m_CtrlQueue.IsSynchronousRequestsHealthy();
+    /* Evaluate every currency term separately instead of short-circuiting.
+     * A teardown that cannot reach the Host retains its owner for retry, and
+     * the persisted diagnostic previously could not distinguish which term
+     * blocked it.  Each term below is a side-effect-free atomic read, so
+     * evaluating all of them is equivalent to the short-circuited predicate. */
+    LONG nativeContextState = InterlockedCompareExchange(&m_NativeContextState,
+                                                         VioGpuNativeContextOffline,
+                                                         VioGpuNativeContextOffline);
+    ULONGLONG adapterResetGeneration = (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0);
+    BOOLEAN generationCurrent = contextGeneration == generation;
+    BOOLEAN contextResetGenerationValid = contextResetGeneration != 0;
+    BOOLEAN resetGenerationCurrent = contextResetGeneration == adapterResetGeneration;
+    BOOLEAN nativeContextReady = nativeContextState == VioGpuNativeContextReady;
+    BOOLEAN synchronousRequestsHealthy = m_CtrlQueue.IsSynchronousRequestsHealthy();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    BOOLEAN hardwareResetRequested = m_pVioGpuDod != NULL && m_pVioGpuDod->IsHardwareResetRequested();
+    DWORD currencyTerms = (generationCurrent ? (DWORD)VioGpuNativeContextCurrencyGeneration : 0U) |
+                          (contextResetGenerationValid ? (DWORD)VioGpuNativeContextCurrencyResetGenerationValid : 0U) |
+                          (resetGenerationCurrent ? (DWORD)VioGpuNativeContextCurrencyResetGeneration : 0U) |
+                          (nativeContextReady ? (DWORD)VioGpuNativeContextCurrencyReady : 0U) |
+                          (synchronousRequestsHealthy ? (DWORD)VioGpuNativeContextCurrencySynchronous : 0U) |
+                          (hardwareResetRequested ? (DWORD)VioGpuNativeContextCurrencyHardwareResetRequested : 0U) |
+                          ((((DWORD)nativeContextState) << VioGpuNativeContextCurrencyStateShift) &
+                           (DWORD)VioGpuNativeContextCurrencyStateMask);
+#endif
+    BOOLEAN current = generationCurrent && contextResetGenerationValid && resetGenerationCurrent &&
+                      nativeContextReady && synchronousRequestsHealthy;
 
     VIOGPU_HOST_CONTEXT_RESULT destroyResult = VioGpuHostContextUnknown;
 #if defined(VIOGPU_NATIVE_CONTEXT)
@@ -8617,7 +8636,7 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
         {
             m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostResult,
                                                                status,
-                                                               0,
+                                                               currencyTerms,
                                                                static_cast<DWORD>(destroyResult),
                                                                diagnosticContextId,
                                                                VioGpuNativeContextDestroying,

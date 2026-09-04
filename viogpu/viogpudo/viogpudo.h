@@ -172,6 +172,23 @@ enum VIOGPU_NATIVE_CONTEXT_DESTROY_STAGE : DWORD
     VioGpuNativeContextDestroyComplete = 0x0FFF,
 };
 
+/* Individual terms of the teardown currency predicate in
+ * VioGpuAdapter::DestroyNativeContext.  A retained owner reports these in the
+ * persisted destroy diagnostic's Detail field so a blocked teardown names the
+ * term that blocked it instead of being indistinguishable from a transport
+ * failure.  The observed native context state is packed into bits 8-15. */
+enum VIOGPU_NATIVE_CONTEXT_CURRENCY_TERM : DWORD
+{
+    VioGpuNativeContextCurrencyGeneration = 0x00000001,
+    VioGpuNativeContextCurrencyResetGenerationValid = 0x00000002,
+    VioGpuNativeContextCurrencyResetGeneration = 0x00000004,
+    VioGpuNativeContextCurrencyReady = 0x00000008,
+    VioGpuNativeContextCurrencySynchronous = 0x00000010,
+    VioGpuNativeContextCurrencyHardwareResetRequested = 0x00000020,
+    VioGpuNativeContextCurrencyStateShift = 8,
+    VioGpuNativeContextCurrencyStateMask = 0x0000FF00,
+};
+
 enum VIOGPU_NATIVE_ALLOCATION_DESTROY_STAGE : DWORD
 {
     VioGpuNativeAllocationDestroyEntered = 0x0100,
