@@ -37,6 +37,17 @@ __declspec(dllimport) u32    __cdecl GetFileAttributesA(const char *);
 
 static const char hexd[] = "0123456789ABCDEF";
 
+/* Freestanding build: the compiler may lower a struct or array copy to a
+ * memcpy call, and there is no CRT to supply one. */
+void *memcpy(void *dst, const void *src, unsigned long long n)
+{
+    u8 *d = (u8 *)dst;
+    const u8 *s = (const u8 *)src;
+    unsigned long long i;
+    for (i = 0; i < n; i++) d[i] = s[i];
+    return dst;
+}
+
 static u32 slen(const char *s) { u32 n = 0; while (s[n]) n++; return n; }
 
 static int logging_enabled(void)
@@ -183,6 +194,8 @@ static void fill_null_slots(void **tbl)
     }
     log_hex64("  slots filled=", (u64)used);
 }
+
+#include "devtrace.inc"
 
 /* Report which slots of a driver-filled function table are still NULL.  The
  * D3D11 runtime answers DXGI_ERROR_DRIVER_INTERNAL_ERROR when it finds a
@@ -331,6 +344,7 @@ static HRESULT w_createdev(void *hAdapter, void *pCreateData)
         fill_null_slots(funcs);
         probe_dxgi_funcs(pCreateData);
         probe_retrieve_subobject(pCreateData);
+        trace_all_device_funcs(funcs);
     }
     return hr;
 }
