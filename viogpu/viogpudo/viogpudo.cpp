@@ -151,6 +151,9 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     *((UINT *)&m_Flags) = 0;
     RtlZeroMemory(&m_DxgkInterface, sizeof(m_DxgkInterface));
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    InterlockedExchange(&m_NativeContextFailCallerRva, 0);
+#endif
     RtlZeroMemory(&m_DeviceInfo, sizeof(m_DeviceInfo));
     RtlZeroMemory(&m_CurrentMode, sizeof(m_CurrentMode));
     RtlZeroMemory(&m_SystemDisplayInfo, sizeof(m_SystemDisplayInfo));
@@ -4364,8 +4367,17 @@ static BOOLEAN VioGpuNativeControlFaultsClear(_In_ VioGpuAdapter *adapter,
 }
 #endif
 
-void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
+__declspec(noinline) void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
 {
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    ULONG_PTR failImageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    ULONG_PTR failReturnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+    ULONG_PTR failCallerRva = failReturnAddress >= failImageBase ? failReturnAddress - failImageBase : 0;
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextFailProvenance(failCallerRva);
+    }
+#endif
     InterlockedIncrement(&m_NativeContextGeneration);
     InterlockedIncrement64(&m_NativeContextResetGeneration);
     InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
@@ -6175,6 +6187,8 @@ VOID VioGpuDod::RecordNativePresentExecutionDiagnostic(_In_ const VIOGPU_NATIVE_
     };
     // clang-format off
     const DIAGNOSTIC_VALUE values[] = {
+        {L"NativeContextFailCallerRva",
+         static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailCallerRva, 0, 0))},
         {L"NativePresentExecuteStatus", diagnostic->Status},
         {L"NativePresentExecuteDetail", diagnostic->Detail},
         {L"NativePresentExecuteResetProvenanceValid", 0},

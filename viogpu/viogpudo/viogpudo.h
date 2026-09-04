@@ -471,7 +471,7 @@ class VioGpuAdapter : IVioGpuPCI
                                 _In_ CONST CURRENT_MODE *pModeCur);
     NTSTATUS Escape(_In_ CONST DXGKARG_ESCAPE *pEscap);
     /* May be called by the display-only transport completion path at any IRQL. */
-    void FailNativeContextAtAnyIrql(void);
+    __declspec(noinline) void FailNativeContextAtAnyIrql(void);
     CPciResources *GetPciResources(void)
     {
         return &m_PciResources;
@@ -771,6 +771,7 @@ class VioGpuDod
     mutable volatile LONG m_HardwareResetState;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     volatile LONG m_HardwareResetCallerRva;
+    volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_NativeSubmissionFaultDiagnosticRecorded;
     volatile LONG m_NativeSubmissionFaultCallerRva;
     volatile LONG m_NativeSubmissionFaultExecutionDiagnosticState;
@@ -1020,6 +1021,18 @@ class VioGpuDod
                                                                                    VioGpuHardwareActive));
     }
     __declspec(noinline) VOID RequestHardwareResetAtAnyIrql(void);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    /* The native-context failure handler has eight call sites in the virtqueue
+     * and control-queue error paths; publishing which one ran is the only way to
+     * name the fault that closes the submission gate. */
+    VOID RecordNativeContextFailProvenance(_In_ ULONG_PTR callerRva)
+    {
+        if (callerRva != 0 && callerRva <= MAXULONG)
+        {
+            InterlockedExchange(&m_NativeContextFailCallerRva, static_cast<LONG>(callerRva));
+        }
+    }
+#endif
     BOOLEAN IsHardwareInterruptDispatchAllowed(void) const
     {
         LONG state = InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareActive);
