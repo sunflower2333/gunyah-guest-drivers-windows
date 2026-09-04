@@ -6309,13 +6309,33 @@ def check_native_context_ownership() -> None:
     )
     if min(close_sequence) < 0 or list(close_sequence) != sorted(close_sequence):
         fail("submitqueue CLOSE must release the response lease before VirtIO submit and reacquire it after completion")
-    close_guard = (
-        "if(!VioGpuCopyNativeControlResponse(this,owner,sequence,&response,sizeof(response))||response.ret!=0)"
+    # The two failure modes are deliberately separated.  An unreadable reply
+    # means request/response framing on the shared control queue is
+    # untrustworthy, so poisoning it is correct.  A well-formed reply carrying a
+    # nonzero ret means the Host answered this request and only reported an
+    # error for this one submitqueue, so the shared queue is still usable.
+    # Poisoning there was observed on device to block every later context
+    # teardown until the device restarts, so it must fail only this context.
+    framing_guard = (
+        "if(!VioGpuCopyNativeControlResponse(this,owner,sequence,&response,sizeof(response)))"
         "{m_CtrlQueue.PoisonSynchronousRequests();returnVioGpuHostContextUnknown;}"
     )
-    if close_queue.count(close_guard) != 1:
-        fail("submitqueue CLOSE must poison and retain ownership until a complete zero-return response")
-    close_guard_end = close_queue.find(close_guard)
+    if close_queue.count(framing_guard) != 1:
+        fail("submitqueue CLOSE must poison the shared queue only when the reply cannot be read back")
+    host_error_guard_start = close_queue.find("if(response.ret!=0){")
+    if host_error_guard_start < 0:
+        fail("submitqueue CLOSE must handle a nonzero Host return separately from a framing failure")
+    host_error_guard_end = close_queue.find("returnVioGpuHostContextUnknown;}", host_error_guard_start)
+    if host_error_guard_end < 0:
+        fail("submitqueue CLOSE must retain ownership when the Host reports a nonzero return")
+    host_error_guard = close_queue[host_error_guard_start:host_error_guard_end]
+    if "PoisonSynchronousRequests" in host_error_guard:
+        fail("a nonzero submitqueue CLOSE return must not poison the shared synchronous queue")
+    if "RecordNativeSubmitQueueCloseDiagnostic(owner->SubmitQueueId,response.ret)" not in host_error_guard:
+        fail("a nonzero submitqueue CLOSE return must persist the Host result for diagnosis")
+    if close_queue.count("m_CtrlQueue.PoisonSynchronousRequests();") != 2:
+        fail("submitqueue CLOSE must keep exactly one seed and one framing poison site")
+    close_guard_end = host_error_guard_end
     clear_created = close_queue.find("owner->SubmitQueueCreated=FALSE;")
     clear_id = close_queue.find("owner->SubmitQueueId=0;")
     if min(close_guard_end, clear_created, clear_id) < 0 or not close_guard_end < clear_created < clear_id:

@@ -5593,6 +5593,38 @@ VOID VioGpuDod::RecordNativeContextMapMemoryDiagnostic(_In_ NTSTATUS status,
                mappedValue);
 }
 
+VOID VioGpuDod::RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId, _In_ LONG hostResult)
+{
+    PAGED_CODE();
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu submitqueue close diagnostic: registry open failed, open=0x%08X\n",
+                   openStatus);
+        return;
+    }
+
+    DWORD resultValue = static_cast<DWORD>(hostResult);
+    DWORD queueValue = queueId;
+    NTSTATUS resultWrite = WriteRegistryDWORD(deviceKey, L"NativeSubmitQueueCloseHostResult", &resultValue);
+    // The queue id is the commit marker for the preceding Host result.
+    NTSTATUS queueWrite = WriteRegistryDWORD(deviceKey, L"NativeSubmitQueueCloseQueueId", &queueValue);
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(resultWrite) || !NT_SUCCESS(queueWrite))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu submitqueue close diagnostic: write failed, writes=%08X/%08X\n",
+                   resultWrite,
+                   queueWrite);
+    }
+}
+
 VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva)
 {
     PAGED_CODE();
@@ -7859,9 +7891,23 @@ VioGpuAdapter::CloseNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER 
     }
 
     MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP response = {};
-    if (!VioGpuCopyNativeControlResponse(this, owner, sequence, &response, sizeof(response)) || response.ret != 0)
+    if (!VioGpuCopyNativeControlResponse(this, owner, sequence, &response, sizeof(response)))
     {
+        /* The reply could not be read back, so request/response framing on the
+         * shared control queue is untrustworthy and poisoning is correct. */
         m_CtrlQueue.PoisonSynchronousRequests();
+        return VioGpuHostContextUnknown;
+    }
+    if (response.ret != 0)
+    {
+        /* The Host answered this request correctly and only reported an error
+         * for this one submitqueue, so framing is intact.  Fail just this
+         * context's teardown: poisoning the shared queue here would block every
+         * later context teardown until the device is restarted. */
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeSubmitQueueCloseDiagnostic(owner->SubmitQueueId, response.ret);
+        }
         return VioGpuHostContextUnknown;
     }
 
