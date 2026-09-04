@@ -2582,7 +2582,6 @@ def check_native_driver_caps_contract() -> None:
         "driverCaps->MaxPointerHeight=POINTER_SIZE;",
         "driverCaps->PointerCaps.Color=1;",
         "driverCaps->PointerCaps.MaskedColor=1;",
-        "driverCaps->FlipCaps.FlipOnVSyncMmIo=1;",
         "driverCaps->SchedulingCaps.MultiEngineAware=1;",
         "driverCaps->SchedulingCaps.PreemptionAware=0;",
         "driverCaps->SchedulingCaps.CancelCommandAware=1;",
@@ -2613,7 +2612,6 @@ def check_native_driver_caps_contract() -> None:
         "MaxPointerWidth",
         "MaxPointerHeight",
         "PointerCaps",
-        "FlipCaps",
         "SchedulingCaps",
         "GpuEngineTopology",
         "PreemptionCaps",
@@ -4838,8 +4836,13 @@ def check_wddm_standard_primary_scanout() -> None:
 
     query_caps = canonical_code(function_body("VioGpuDod::QueryAdapterInfo", VIOGPU_CODE))
     wddm_query_caps = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
+    # The Native Context caps moved into their own helper, so the prohibition has
+    # to name that helper too; checking only the two DDI bodies let the flip
+    # capability reappear behind the refactor.
+    native_caps = canonical_code(function_body("VioGpuQueryNativeDriverCaps", VIOGPU_CODE))
     if "RtlZeroMemory(pDriverCaps,pQueryAdapterInfo->OutputDataSize);" not in query_caps or \
-       "FlipOnVSyncMmIo" in query_caps or "FlipOnVSyncMmIo" in wddm_query_caps:
+       "FlipOnVSyncMmIo" in query_caps or "FlipOnVSyncMmIo" in wddm_query_caps or \
+       "FlipOnVSyncMmIo" in native_caps or "FlipCaps" in native_caps:
         fail("the synchronous PASSIVE_LEVEL scanout path must not advertise MMIO flip capability")
 
 

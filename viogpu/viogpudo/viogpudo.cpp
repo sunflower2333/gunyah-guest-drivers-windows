@@ -2314,7 +2314,14 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
         driverCaps->PointerCaps.MaskedColor = 1;
     }
 
-    driverCaps->FlipCaps.FlipOnVSyncMmIo = 1;
+    /* The scanout is programmed by a synchronous virtqueue round trip that has
+     * to run at PASSIVE_LEVEL, so this miniport cannot flip from an MMIO write
+     * at device IRQL.  Advertising FlipOnVSyncMmIo made dxgkrnl present every
+     * composed frame as a flip through DxgkDdiSetVidPnSourceAddress, which this
+     * driver accepts only for a mode change, so no frame ever became the
+     * scanned-out primary and the desktop stayed black on guest and Host alike.
+     * Publishing no flip capability routes presents to DxgkDdiPresent, the blt
+     * path this driver actually implements. */
     driverCaps->SchedulingCaps.MultiEngineAware = 1;
     /* WDDM 1.2 permits retaining the Win7 scheduler model.  Native Context
      * has no Host primitive for preempting an in-flight command. */
