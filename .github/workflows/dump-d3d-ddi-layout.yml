@@ -1,0 +1,69 @@
+name: Dump D3D DDI table layout
+
+# The Direct3D device-creation failure needs the WDK's D3D11DDI_DEVICEFUNCS
+# definition to bound the device function table and name its members.  The WDK
+# is preinstalled on the runner but not vendored in this repository, so this
+# workflow extracts the layout and publishes it as an artifact.
+#
+# Uses a path-scoped push trigger: workflow_dispatch needs the workflow to be
+# registered on the default branch, and this one lives on a topic branch.
+on:
+  push:
+    paths:
+      - '.github/workflows/dump-d3d-ddi-layout.yml'
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate the WDK d3d10umddi.h
+        shell: pwsh
+        run: |
+          $roots = @('C:\Program Files (x86)\Windows Kits\10\Include',
+                     'C:\Program Files\Windows Kits\10\Include')
+          $hdr = $null
+          foreach ($r in $roots) {
+            if (Test-Path $r) {
+              $hdr = Get-ChildItem $r -Recurse -Filter 'd3d10umddi.h' -ErrorAction SilentlyContinue |
+                     Sort-Object FullName -Descending | Select-Object -First 1
+              if ($hdr) { break }
+            }
+          }
+          if (-not $hdr) { throw 'd3d10umddi.h not found' }
+          Write-Output "HEADER=$($hdr.FullName)"
+          "HEADER=$($hdr.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Extract the device function tables
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item $env:HEADER out\d3d10umddi.h
+          $text = Get-Content $env:HEADER -Raw
+          foreach ($name in @('D3D10DDI_DEVICEFUNCS','D3D10_1DDI_DEVICEFUNCS',
+                              'D3D11DDI_DEVICEFUNCS','D3D11_1DDI_DEVICEFUNCS',
+                              'D3DWDDM1_3DDI_DEVICEFUNCS')) {
+            $m = [regex]::Match($text, "typedef struct $name\s*\{(.*?)\}\s*$name\s*;", 'Singleline')
+            if (-not $m.Success) {
+              $m = [regex]::Match($text, "struct $name\s*\{(.*?)\};", 'Singleline')
+            }
+            if ($m.Success) {
+              $body = $m.Groups[1].Value
+              # One member per line, in declaration order = slot order.
+              $members = [regex]::Matches($body, '(\w+)\s*;') | ForEach-Object { $_.Groups[1].Value }
+              $i = 0
+              $lines = $members | ForEach-Object { $s = '{0:X3}  {1}' -f $i, $_; $i++; $s }
+              Write-Output "=== $name : $($members.Count) members ==="
+              $lines | Out-File -FilePath "out\$name.txt" -Encoding utf8
+              $lines | Select-Object -First 400 | ForEach-Object { Write-Output $_ }
+            } else {
+              Write-Output "=== $name : NOT FOUND ==="
+            }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: d3d-ddi-layout
+          path: out/
