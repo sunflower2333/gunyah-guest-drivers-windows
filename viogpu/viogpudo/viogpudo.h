@@ -775,6 +775,7 @@ class VioGpuDod
     volatile LONG m_NativeNotifyFailureReason;
     volatile LONG m_NativeNotifyFailureStatus;
     volatile LONG m_NativeNotifyFailureCount;
+    volatile LONG m_UnansweredPresentRoundTrips;
     volatile LONG m_NativeSubmissionFaultDiagnosticRecorded;
     volatile LONG m_NativeSubmissionFaultCallerRva;
     volatile LONG m_NativeSubmissionFaultExecutionDiagnosticState;
@@ -1044,6 +1045,14 @@ class VioGpuDod
     DWORD ReadNativeNotifyFailureStatus(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeNotifyFailureStatus, 0, 0));
+    }
+    VOID RecordUnansweredPresentRoundTrip(void)
+    {
+        InterlockedIncrement(&m_UnansweredPresentRoundTrips);
+    }
+    DWORD ReadUnansweredPresentRoundTrips(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_UnansweredPresentRoundTrips, 0, 0));
     }
     DWORD ReadNativeNotifyFailureCount(void)
     {

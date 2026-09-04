@@ -156,6 +156,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     InterlockedExchange(&m_NativeNotifyFailureReason, 0);
     InterlockedExchange(&m_NativeNotifyFailureStatus, 0);
     InterlockedExchange(&m_NativeNotifyFailureCount, 0);
+    InterlockedExchange(&m_UnansweredPresentRoundTrips, 0);
 #endif
     RtlZeroMemory(&m_DeviceInfo, sizeof(m_DeviceInfo));
     RtlZeroMemory(&m_CurrentMode, sizeof(m_CurrentMode));
@@ -5159,6 +5160,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
      * that one is claimed once per boot: an allocation destroy happens
      * constantly, so these three always carry the latest completion-notify
      * failure. */
+    DWORD unansweredPresentRoundTrips = ReadUnansweredPresentRoundTrips();
     DWORD notifyFailureReason = ReadNativeNotifyFailureReason();
     DWORD notifyFailureStatus = ReadNativeNotifyFailureStatus();
     DWORD notifyFailureCount = ReadNativeNotifyFailureCount();
@@ -5167,6 +5169,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
         PCWSTR Name;
         PDWORD Value;
     } writes[] = {
+        {L"NativeUnansweredPresentRoundTrips", &unansweredPresentRoundTrips},
         {L"NativeNotifyFailureReason", &notifyFailureReason},
         {L"NativeNotifyFailureStatus", &notifyFailureStatus},
         {L"NativeNotifyFailureCount", &notifyFailureCount},
@@ -7807,8 +7810,23 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Present2DResource(_In_ UINT resourceId
     }
     if (result == VioGpuHostContextUnknown)
     {
+        /* An unanswered 2D round trip has already poisoned the synchronous
+         * queue inside SubmitSynchronousLocked, which is the safety this path
+         * actually needs: the device still owns that descriptor and no further
+         * synchronous request can reuse it.  Failing the whole native context
+         * on top of that was measured to be terminal.  It latches the hardware
+         * reset gate, whose only transition back to VioGpuHardwareActive lives
+         * in SetPowerState's recovery arm, so nothing at runtime reopens it;
+         * every later present then returns STATUS_DEVICE_NOT_READY and dxgkrnl
+         * spins on a packet it can never retire.  It also takes the render
+         * engine down with it, although the render path shares nothing with
+         * this descriptor.  Mark the resource unknown, count the event, and
+         * leave Direct3D and Vulkan running. */
         *resourceState = VioGpu2DResourceUnknown;
-        FailNativeContextAtAnyIrql();
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordUnansweredPresentRoundTrip();
+        }
     }
     return result;
 }
