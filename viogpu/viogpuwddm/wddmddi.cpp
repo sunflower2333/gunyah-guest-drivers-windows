@@ -3374,6 +3374,51 @@ NTSTATUS QuerySegment(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryA
     return STATUS_SUCCESS;
 }
 
+/* The Direct3D runtime asks for the segment list through the versioned
+ * QUERYSEGMENT2/3 types on WDDM 1.2+.  Answering only the original
+ * DXGKQAITYPE_QUERYSEGMENT left those returning STATUS_NOT_SUPPORTED, so the
+ * runtime could not describe video memory and reported no feature levels at
+ * all.  These describe the same single aperture segment as QuerySegment. */
+template <typename SegmentOut, typename SegmentDescriptor>
+static NTSTATUS QuerySegmentVersioned(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
+{
+    if (adapter == NULL || queryAdapterInfo->pOutputData == NULL ||
+        queryAdapterInfo->OutputDataSize < sizeof(SegmentOut))
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    GPU_CAPSET_DRM capset = {};
+    ULONGLONG resetGeneration = 0;
+    if (!adapter->QueryNativeContextReadiness(&capset, NULL, NULL, &resetGeneration) || resetGeneration == 0)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    SegmentOut *segmentInfo = static_cast<SegmentOut *>(queryAdapterInfo->pOutputData);
+    segmentInfo->NbSegment = 1;
+    segmentInfo->PagingBufferSegmentId = 0;
+    segmentInfo->PagingBufferSize = PAGE_SIZE;
+    segmentInfo->PagingBufferPrivateDataSize = sizeof(VIOGPU_WDDM_PAGING_PRIVATE);
+
+    /* Dxgkrnl calls twice: first with a null descriptor pointer to learn the
+     * count, then again with storage for that many descriptors. */
+    if (segmentInfo->pSegmentDescriptor != NULL)
+    {
+        SegmentDescriptor *descriptor = segmentInfo->pSegmentDescriptor;
+        RtlZeroMemory(descriptor, sizeof(*descriptor));
+        descriptor->BaseAddress.QuadPart = 0;
+        descriptor->CpuTranslatedAddress.QuadPart = 0;
+        descriptor->Size = VIOGPU_WDDM_APERTURE_SIZE;
+        descriptor->CommitLimit = VIOGPU_WDDM_APERTURE_SIZE;
+        descriptor->Flags.CpuVisible = TRUE;
+        descriptor->Flags.Aperture = TRUE;
+        descriptor->Flags.CacheCoherent = TRUE;
+    }
+
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
 {
     if (adapter == NULL || queryAdapterInfo->pInputData != NULL || queryAdapterInfo->InputDataSize != 0 ||
@@ -4023,6 +4068,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     else if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT)
     {
         status = QuerySegment(adapter, pQueryAdapterInfo);
+    }
+    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT2)
+    {
+        status = QuerySegmentVersioned<DXGK_QUERYSEGMENTOUT2, DXGK_SEGMENTDESCRIPTOR2>(adapter, pQueryAdapterInfo);
+    }
+    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT3)
+    {
+        status = QuerySegmentVersioned<DXGK_QUERYSEGMENTOUT3, DXGK_SEGMENTDESCRIPTOR3>(adapter, pQueryAdapterInfo);
     }
     else if (pQueryAdapterInfo->Type == DXGKQAITYPE_64BITONLYCAPS)
     {

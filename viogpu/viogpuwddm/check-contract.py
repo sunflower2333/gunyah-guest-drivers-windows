@@ -6868,6 +6868,35 @@ def check_native_synchronous_poison_diagnostics() -> None:
         fail("blocked teardown must publish poison provenance only for an unhealthy epoch")
 
 
+def check_versioned_segment_query_contract() -> None:
+    """D3D asks for segments through the versioned types; all three must answer."""
+    query = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
+    for fragment in (
+        "status=QuerySegment(adapter,pQueryAdapterInfo);",
+        "status=QuerySegmentVersioned<DXGK_QUERYSEGMENTOUT2,DXGK_SEGMENTDESCRIPTOR2>(adapter,pQueryAdapterInfo);",
+        "status=QuerySegmentVersioned<DXGK_QUERYSEGMENTOUT3,DXGK_SEGMENTDESCRIPTOR3>(adapter,pQueryAdapterInfo);",
+    ):
+        if query.count(fragment) != 1:
+            fail(f"QueryAdapterInfo must answer every segment query version: {fragment}")
+
+    helper = canonical_code(function_body("QuerySegmentVersioned", WDDM_DDI_CODE))
+    for fragment in (
+        "queryAdapterInfo->OutputDataSize<sizeof(SegmentOut)",
+        "returnSTATUS_BUFFER_TOO_SMALL;",
+        "returnSTATUS_DEVICE_NOT_READY;",
+        "segmentInfo->NbSegment=1;",
+        "segmentInfo->PagingBufferPrivateDataSize=sizeof(VIOGPU_WDDM_PAGING_PRIVATE);",
+        # Two-pass protocol: dxgkrnl first asks for the count with a null pointer.
+        "if(segmentInfo->pSegmentDescriptor!=NULL)",
+        "descriptor->Size=VIOGPU_WDDM_APERTURE_SIZE;",
+        "descriptor->CommitLimit=VIOGPU_WDDM_APERTURE_SIZE;",
+        "descriptor->Flags.Aperture=TRUE;",
+        "descriptor->Flags.CacheCoherent=TRUE;",
+    ):
+        if helper.count(fragment) != 1:
+            fail(f"versioned segment query must describe the same aperture segment: {fragment}")
+
+
 def check_native_map_diagnostics() -> None:
     dod_header = canonical_code(VIOGPU_HEADER_SOURCE)
     for fragment in (
@@ -12062,6 +12091,7 @@ def main() -> None:
     check_native_context_destroy_diagnostics()
     check_native_context_currency_diagnostics()
     check_native_synchronous_poison_diagnostics()
+    check_versioned_segment_query_contract()
     check_native_map_diagnostics()
     check_native_parameter_diagnostics()
     check_wddm_private_abi(root)
