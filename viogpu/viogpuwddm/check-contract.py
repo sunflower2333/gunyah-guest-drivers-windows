@@ -6781,6 +6781,56 @@ def check_native_context_currency_diagnostics() -> None:
         fail("the successful teardown record must keep a zero Detail field")
 
 
+def check_native_synchronous_poison_diagnostics() -> None:
+    """Poisoning the synchronous epoch is terminal, so record who caused it."""
+    queue = QUEUE_CODE
+    poison = function_body("CtrlQueue::PoisonSynchronousRequests", queue)
+    compact_poison = compact_code(poison)
+    # The RVA must be captured before the state changes: once poisoned the
+    # function returns early, so a later capture would miss repeat callers.
+    capture = compact_poison.find("InterlockedCompareExchange(&m_SynchronousPoisonCallerRva")
+    mutate = compact_poison.find("InterlockedCompareExchange64(&m_SynchronousEpochState")
+    if capture < 0 or mutate < 0 or capture > mutate:
+        fail("synchronous poison must record its caller RVA before mutating the epoch")
+    if not re.search(
+        r"__declspec\(noinline\)\s+void\s+CtrlQueue::PoisonSynchronousRequests\s*\(", queue
+    ):
+        fail("synchronous poison must stay noinline so the captured return address is its caller")
+    if queue.count("_ReturnAddress()") < 1 or queue.count("__ImageBase") < 1:
+        fail("synchronous poison provenance must be an image-relative return address")
+
+    declaration = canonical_code(VIOGPU_HEADER_SOURCE)
+    expected_declaration = (
+        "VOIDRecordNativeSynchronousPoisonDiagnostic(_In_ULONGstate,_In_ULONGgeneration,"
+        "_In_ULONGcallerRva);"
+    )
+    if declaration.count(expected_declaration) != 1:
+        fail("adapter must declare exactly one persistent synchronous poison recorder")
+
+    recorder = function_body("VioGpuDod::RecordNativeSynchronousPoisonDiagnostic", VIOGPU_SOURCE)
+    if "IoOpenDeviceRegistryKey" not in recorder or "PLUGPLAY_REGKEY_DRIVER" not in recorder:
+        fail("synchronous poison diagnostics must persist on the device driver registry key")
+    writes = (
+        'WriteRegistryDWORD(deviceKey, L"NativeSynchronousEpochState", &stateValue)',
+        'WriteRegistryDWORD(deviceKey, L"NativeSynchronousEpochGeneration", &generationValue)',
+        'WriteRegistryDWORD(deviceKey, L"NativeSynchronousPoisonCallerRva", &callerValue)',
+    )
+    offsets = [compact_code(recorder).find(compact_code(w)) for w in writes]
+    if any(o < 0 for o in offsets) or offsets != sorted(offsets):
+        fail("synchronous poison diagnostics must write epoch fields before the caller commit marker")
+    if recorder.count("ZwClose(deviceKey)") != 1:
+        fail("synchronous poison diagnostics must close exactly one device registry handle")
+
+    destroy = canonical_code(function_body("VioGpuAdapter::DestroyNativeContext", VIOGPU_CODE))
+    call = (
+        "if(!synchronousRequestsHealthy){m_pVioGpuDod->RecordNativeSynchronousPoisonDiagnostic("
+        "m_CtrlQueue.SynchronousEpochStateValue(),m_CtrlQueue.SynchronousEpochGenerationValue(),"
+        "m_CtrlQueue.SynchronousPoisonCallerRva());}"
+    )
+    if destroy.count(call) != 1:
+        fail("blocked teardown must publish poison provenance only for an unhealthy epoch")
+
+
 def check_native_map_diagnostics() -> None:
     dod_header = canonical_code(VIOGPU_HEADER_SOURCE)
     for fragment in (
@@ -11974,6 +12024,7 @@ def main() -> None:
     check_native_context_ownership()
     check_native_context_destroy_diagnostics()
     check_native_context_currency_diagnostics()
+    check_native_synchronous_poison_diagnostics()
     check_native_map_diagnostics()
     check_native_parameter_diagnostics()
     check_wddm_private_abi(root)

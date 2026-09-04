@@ -5593,6 +5593,42 @@ VOID VioGpuDod::RecordNativeContextMapMemoryDiagnostic(_In_ NTSTATUS status,
                mappedValue);
 }
 
+VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva)
+{
+    PAGED_CODE();
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu synchronous poison diagnostic: registry open failed, state=%u open=0x%08X\n",
+                   state,
+                   openStatus);
+        return;
+    }
+
+    DWORD stateValue = state;
+    DWORD generationValue = generation;
+    DWORD callerValue = callerRva;
+    NTSTATUS stateWrite = WriteRegistryDWORD(deviceKey, L"NativeSynchronousEpochState", &stateValue);
+    NTSTATUS generationWrite = WriteRegistryDWORD(deviceKey, L"NativeSynchronousEpochGeneration", &generationValue);
+    // The caller RVA is the commit marker for the preceding epoch fields.
+    NTSTATUS callerWrite = WriteRegistryDWORD(deviceKey, L"NativeSynchronousPoisonCallerRva", &callerValue);
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(stateWrite) || !NT_SUCCESS(generationWrite) || !NT_SUCCESS(callerWrite))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu synchronous poison diagnostic: write failed, writes=%08X/%08X/%08X\n",
+                   stateWrite,
+                   generationWrite,
+                   callerWrite);
+    }
+}
+
 VOID VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                        _In_ NTSTATUS status,
                                                        _In_ UINT inputDataSize,
@@ -8634,6 +8670,12 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
 #if defined(VIOGPU_NATIVE_CONTEXT)
         if (m_pVioGpuDod != NULL)
         {
+            if (!synchronousRequestsHealthy)
+            {
+                m_pVioGpuDod->RecordNativeSynchronousPoisonDiagnostic(m_CtrlQueue.SynchronousEpochStateValue(),
+                                                                      m_CtrlQueue.SynchronousEpochGenerationValue(),
+                                                                      m_CtrlQueue.SynchronousPoisonCallerRva());
+            }
             m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostResult,
                                                                status,
                                                                currencyTerms,

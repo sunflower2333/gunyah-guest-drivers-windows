@@ -30,6 +30,8 @@
 #include "viogpu_queue.h"
 #include "baseobj.h"
 #include "../../VirtIO/osdep.h"
+
+extern "C" UCHAR __ImageBase;
 #if !DBG
 #include "viogpu_queue.tmh"
 #endif
@@ -309,8 +311,20 @@ BOOLEAN CtrlQueue::IsSynchronousRequestsHealthy(void)
            VioGpuSynchronousEnabled;
 }
 
-void CtrlQueue::PoisonSynchronousRequests(void)
+__declspec(noinline) void CtrlQueue::PoisonSynchronousRequests(void)
 {
+    /* Record the first caller before poisoning.  The epoch cannot leave the
+     * poisoned state while the device stays started, so this RVA is the only
+     * evidence of which request path wedged it.  Resolve it against the
+     * matching viogpuwddm.map. */
+    ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    ULONG_PTR returnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+    ULONG_PTR callerRva = returnAddress >= imageBase ? returnAddress - imageBase : 0;
+    if (callerRva != 0 && callerRva <= MAXULONG)
+    {
+        InterlockedCompareExchange(&m_SynchronousPoisonCallerRva, static_cast<LONG>(callerRva), 0);
+    }
+
     LONG64 current = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
     for (;;)
     {
@@ -402,6 +416,21 @@ void CtrlQueue::EndSynchronousRequest(void)
 {
     PAGED_CODE();
     KeReleaseMutex(&m_SynchronousMutex, FALSE);
+}
+
+ULONG CtrlQueue::SynchronousPoisonCallerRva(void)
+{
+    return static_cast<ULONG>(InterlockedCompareExchange(&m_SynchronousPoisonCallerRva, 0, 0));
+}
+
+ULONG CtrlQueue::SynchronousEpochStateValue(void)
+{
+    return static_cast<ULONG>(VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)));
+}
+
+ULONG CtrlQueue::SynchronousEpochGenerationValue(void)
+{
+    return static_cast<ULONG>(VioGpuSynchronousGeneration(VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)));
 }
 
 BOOLEAN CtrlQueue::EnableSynchronousRequests(void)

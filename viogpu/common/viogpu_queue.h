@@ -429,6 +429,7 @@ class CtrlQueue : public VioGpuQueue
         m_FenceIdr = 0;
         KeInitializeMutex(&m_SynchronousMutex, 0);
         m_SynchronousEpochState = VioGpuSynchronousOffline;
+        m_SynchronousPoisonCallerRva = 0;
         KeInitializeSpinLock(&m_NativeSubmitLock);
         InitializeListHead(&m_NativeSubmitBacklog);
         m_NativeSubmitBacklogPoisoned = 0;
@@ -500,7 +501,13 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN IsSynchronousRequestsHealthy(void);
     NTSTATUS QuiesceSynchronousRequests(void);
     void CompleteSynchronousRequestTeardown(void);
-    void PoisonSynchronousRequests(void);
+    __declspec(noinline) void PoisonSynchronousRequests(void);
+    /* Provenance for the first poison of the synchronous epoch.  Poisoning is
+     * terminal until the device is stopped, so the caller that caused it is
+     * the only way to tell a genuine protocol failure from mere contention. */
+    ULONG SynchronousPoisonCallerRva(void);
+    ULONG SynchronousEpochStateValue(void);
+    ULONG SynchronousEpochGenerationValue(void);
 
     BOOLEAN CreateResource(UINT res_id, UINT format, UINT width, UINT height);
     BOOLEAN DestroyResource(UINT id);
@@ -521,6 +528,7 @@ class CtrlQueue : public VioGpuQueue
     VIOGPU_HOST_CONTEXT_RESULT SubmitSynchronousNoDataLocked(PGPU_VBUFFER buf);
     KMUTEX m_SynchronousMutex;
     DECLSPEC_ALIGN(8) volatile LONG64 m_SynchronousEpochState;
+    volatile LONG m_SynchronousPoisonCallerRva;
     volatile LONG m_FenceIdr;
     KSPIN_LOCK m_NativeSubmitLock;
     LIST_ENTRY m_NativeSubmitBacklog;
