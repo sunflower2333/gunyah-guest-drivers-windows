@@ -421,6 +421,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                                STATUS_SUCCESS,
                                static_cast<DWORD>(Status));
     DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "viogpu StartDevice: renderOnly=%u\n", IsRenderOnly());
+    RecordAdapterInfoTypeMap();
 
     Status = m_pHWDevice->HWInit(m_DeviceInfo.TranslatedResourceList, &m_CurrentMode.DispInfo);
     if (!NT_SUCCESS(Status))
@@ -5647,6 +5648,46 @@ VOID VioGpuDod::RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId,
                    detailWrite,
                    queueWrite);
     }
+}
+
+VOID VioGpuDod::RecordAdapterInfoTypeMap(void)
+{
+    PAGED_CODE();
+
+    /* QueryAdapterInfo type 5 is refused as unsupported and Direct3D reports no
+     * feature levels because of it, but DXGK_QUERYADAPTERINFOTYPE is a WDK enum
+     * whose numeric values are not documented.  Publish the values this WDK
+     * actually assigns so the failing type can be named instead of guessed. */
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        return;
+    }
+
+    struct
+    {
+        PCWSTR Name;
+        DWORD Value;
+    } entries[] = {
+        {L"NativeQaiTypeUmdPrivate", static_cast<DWORD>(DXGKQAITYPE_UMDRIVERPRIVATE)},
+        {L"NativeQaiTypeDriverCaps", static_cast<DWORD>(DXGKQAITYPE_DRIVERCAPS)},
+        {L"NativeQaiTypeQuerySegment", static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT)},
+        {L"NativeQaiTypeQuerySegment2", static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT2)},
+        {L"NativeQaiTypeQuerySegment3", static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT3)},
+        {L"NativeQaiTypeNumPowerComponents", static_cast<DWORD>(DXGKQAITYPE_NUMPOWERCOMPONENTS)},
+        {L"NativeQaiTypeGpuMmuCaps", static_cast<DWORD>(DXGKQAITYPE_GPUMMUCAPS)},
+        {L"NativeQaiType64BitOnlyCaps", static_cast<DWORD>(DXGKQAITYPE_64BITONLYCAPS)},
+    };
+
+    for (ULONG index = 0; index < ARRAYSIZE(entries); ++index)
+    {
+        DWORD value = entries[index].Value;
+        UNICODE_STRING name;
+        RtlInitUnicodeString(&name, entries[index].Name);
+        ZwSetValueKey(deviceKey, &name, 0, REG_DWORD, &value, sizeof(value));
+    }
+    ZwClose(deviceKey);
 }
 
 VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva)
