@@ -143,7 +143,8 @@ static BOOLEAN VioGpuNotifyNativeSchedulerAtDirql(_In_opt_ PVOID context)
 PAGED_CODE_SEG_BEGIN
 VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     : m_pPhysicalDevice(pPhysicalDeviceObject), m_MonitorPowerState(PowerDeviceD0), m_AdapterPowerState(PowerDeviceD0),
-      m_pHWDevice(NULL), m_HardwareRundownCompleted(FALSE), m_HardwareResetState(VioGpuHardwareActive)
+      m_pHWDevice(NULL), m_HardwareRundownCompleted(FALSE), m_HardwareResetState(VioGpuHardwareActive),
+      m_CrtcVsyncEnabled(0)
 {
     PAGED_CODE();
 
@@ -2264,8 +2265,29 @@ NTSTATUS VioGpuDod::ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In
         case DXGK_INTERRUPT_DMA_PREEMPTED:
         case DXGK_INTERRUPT_DMA_FAULTED:
             break;
+
+        case DXGK_INTERRUPT_CRTC_VSYNC:
+        case DXGK_INTERRUPT_CRTC_VSYNC_WITH_MULTIPLANE_OVERLAY:
+        case DXGK_INTERRUPT_DISPLAYONLY_VSYNC:
+            /* Dxgkrnl enables the CRTC vertical-blank interrupt for every D3D
+             * device that asks for vsync on a display-capable adapter, and that
+             * is the only adapter-scoped call the Direct3D device-creation path
+             * makes which this driver did not model.  Refusing it returned
+             * STATUS_NOT_SUPPORTED, which is not a status DxgkDdiControlInterrupt
+             * may return: dxgkrnl reports "Driver returned an invalid NTSTATUS
+             * code" and fails the device creation, so no D3D device could ever
+             * open on this adapter.  The virtual scanout has no periodic vblank
+             * source, so record the requested state and report success rather
+             * than failing the caller. */
+            InterlockedExchange(&m_CrtcVsyncEnabled, enableInterrupt ? 1 : 0);
+            return STATUS_SUCCESS;
+
         default:
-            return STATUS_NOT_SUPPORTED;
+            /* Report an unmodelled type with a status this DDI is allowed to
+             * return, and publish it so it stays visible. */
+            RecordNativeControlInterruptDiagnostic(static_cast<ULONG>(interruptType),
+                                                   enableInterrupt ? 1U : 0U);
+            return STATUS_INVALID_PARAMETER;
     }
 
     if (!IsDriverActive() || !IsHardwareInit() || m_pHWDevice == NULL)
@@ -5841,6 +5863,25 @@ VOID VioGpuDod::RecordNativeStandardAllocationDiagnostic(_In_ ULONG standardAllo
                    typeValue,
                    typeWrite);
     }
+}
+
+VOID VioGpuDod::RecordNativeControlInterruptDiagnostic(_In_ ULONG interruptType, _In_ ULONG enable)
+{
+    PAGED_CODE();
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        return;
+    }
+
+    DWORD enableValue = enable;
+    DWORD typeValue = interruptType;
+    (VOID) WriteRegistryDWORD(deviceKey, L"NativeControlInterruptEnable", &enableValue);
+    // Type is the commit marker for the preceding field.
+    (VOID) WriteRegistryDWORD(deviceKey, L"NativeControlInterruptType", &typeValue);
+    ZwClose(deviceKey);
 }
 
 VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,

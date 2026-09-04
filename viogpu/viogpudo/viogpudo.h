@@ -913,6 +913,8 @@ class VioGpuDod
     NTSTATUS QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVICE_DESCRIPTOR *pDeviceDescriptor);
     NTSTATUS GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine);
     NTSTATUS ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In_ BOOLEAN enableInterrupt);
+    // Set of the CRTC vsync interrupt state dxgkrnl last requested.
+    volatile LONG m_CrtcVsyncEnabled;
     BOOLEAN InterruptRoutine(_In_ ULONG MessageNumber);
     VOID DpcRoutine(VOID);
     NTSTATUS QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQueryAdapterInfo);
@@ -1144,6 +1146,7 @@ class VioGpuDod
                                              _In_ UINT engineAffinity,
                                              _In_ UINT privateDataSize);
     VOID RecordNativeStandardAllocationDiagnostic(_In_ ULONG standardAllocationType);
+    VOID RecordNativeControlInterruptDiagnostic(_In_ ULONG interruptType, _In_ ULONG enable);
     VOID RecordNativePresentDiagnostic(_In_ DWORD reason,
                                        _In_ NTSTATUS status,
                                        _In_ const VIOGPU_NATIVE_PRESENT_DIAGNOSTIC *diagnostic);
