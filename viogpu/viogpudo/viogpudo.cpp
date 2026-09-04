@@ -5593,7 +5593,10 @@ VOID VioGpuDod::RecordNativeContextMapMemoryDiagnostic(_In_ NTSTATUS status,
                mappedValue);
 }
 
-VOID VioGpuDod::RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId, _In_ LONG hostResult, _In_ ULONG copyResult)
+VOID VioGpuDod::RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId,
+                                                       _In_ LONG hostResult,
+                                                       _In_ ULONG stage,
+                                                       _In_ ULONG detail)
 {
     PAGED_CODE();
 
@@ -5609,21 +5612,24 @@ VOID VioGpuDod::RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId, _In_ 
     }
 
     DWORD resultValue = static_cast<DWORD>(hostResult);
-    DWORD copyValue = copyResult;
+    DWORD stageValue = stage;
+    DWORD detailValue = detail;
     DWORD queueValue = queueId;
     NTSTATUS resultWrite = WriteRegistryDWORD(deviceKey, L"NativeSubmitQueueCloseHostResult", &resultValue);
-    NTSTATUS copyWrite = WriteRegistryDWORD(deviceKey, L"NativeSubmitQueueCloseCopyResult", &copyValue);
+    NTSTATUS stageWrite = WriteRegistryDWORD(deviceKey, L"NativeSubmitQueueCloseStage", &stageValue);
+    NTSTATUS detailWrite = WriteRegistryDWORD(deviceKey, L"NativeSubmitQueueCloseDetail", &detailValue);
     // The queue id is the commit marker for the preceding result fields.
     NTSTATUS queueWrite = WriteRegistryDWORD(deviceKey, L"NativeSubmitQueueCloseQueueId", &queueValue);
     ZwClose(deviceKey);
 
-    if (!NT_SUCCESS(resultWrite) || !NT_SUCCESS(copyWrite) || !NT_SUCCESS(queueWrite))
+    if (!NT_SUCCESS(resultWrite) || !NT_SUCCESS(stageWrite) || !NT_SUCCESS(detailWrite) || !NT_SUCCESS(queueWrite))
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
-                   "viogpu submitqueue close diagnostic: write failed, writes=%08X/%08X/%08X\n",
+                   "viogpu submitqueue close diagnostic: write failed, writes=%08X/%08X/%08X/%08X\n",
                    resultWrite,
-                   copyWrite,
+                   stageWrite,
+                   detailWrite,
                    queueWrite);
     }
 }
@@ -7872,9 +7878,19 @@ VioGpuAdapter::CloseNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER 
     }
 
     ULONG sequence = owner->LastControlSeqno + 1;
-    if (!VioGpuSeedNativeControlResponse(this, owner, sequence, sizeof(MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP)))
+    VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC closeDiagnostic = {};
+    if (!VioGpuSeedNativeControlResponse(this, owner, sequence,
+                                         sizeof(MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP), &closeDiagnostic))
     {
-        m_CtrlQueue.PoisonSynchronousRequests();
+        /* Seeding only touches this owner's control window, so a failure here
+         * is scoped to this context exactly like the post-submit cases below. */
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeSubmitQueueCloseDiagnostic(owner->SubmitQueueId,
+                                                                 0,
+                                                                 VioGpuSubmitQueueCloseStageSeed,
+                                                                 closeDiagnostic.SeedResult);
+        }
         return VioGpuHostContextUnknown;
     }
     owner->LastControlSeqno = sequence;
@@ -7894,9 +7910,8 @@ VioGpuAdapter::CloseNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER 
     }
 
     MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP response = {};
-    VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC copyDiagnostic = {};
     BOOLEAN copied = VioGpuCopyNativeControlResponse(this, owner, sequence, &response, sizeof(response),
-                                                     &copyDiagnostic);
+                                                     &closeDiagnostic);
     if (!copied || response.ret != 0)
     {
         /* Both failures are scoped to this context.  SubmitNativeControl has
@@ -7910,7 +7925,8 @@ VioGpuAdapter::CloseNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER 
         {
             m_pVioGpuDod->RecordNativeSubmitQueueCloseDiagnostic(owner->SubmitQueueId,
                                                                  response.ret,
-                                                                 copyDiagnostic.CopyResult);
+                                                                 VioGpuSubmitQueueCloseStageCopy,
+                                                                 closeDiagnostic.CopyResult);
         }
         return VioGpuHostContextUnknown;
     }

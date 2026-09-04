@@ -6299,12 +6299,12 @@ def check_native_context_ownership() -> None:
             fail(f"submitqueue CLOSE must use its exact 24-byte request and owner queue id: {fragment}")
     close_sequence = (
         close_queue.find(
-            "VioGpuSeedNativeControlResponse(this,owner,sequence,sizeof(MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP))"
+            "VioGpuSeedNativeControlResponse(this,owner,sequence,sizeof(MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP),&closeDiagnostic)"
         ),
         close_queue.find("owner->LastControlSeqno=sequence;"),
         close_queue.find("m_CtrlQueue.SubmitNativeControl(owner->ContextId,&request,sizeof(request))"),
         close_queue.find(
-            "VioGpuCopyNativeControlResponse(this,owner,sequence,&response,sizeof(response),&copyDiagnostic)"
+            "VioGpuCopyNativeControlResponse(this,owner,sequence,&response,sizeof(response),&closeDiagnostic)"
         ),
     )
     if min(close_sequence) < 0 or list(close_sequence) != sorted(close_sequence):
@@ -6324,10 +6324,21 @@ def check_native_context_ownership() -> None:
     close_guard_body = close_queue[close_guard_start:close_guard_end]
     if "PoisonSynchronousRequests" in close_guard_body:
         fail("a submitqueue CLOSE failure must not poison the shared synchronous queue")
-    if "RecordNativeSubmitQueueCloseDiagnostic(owner->SubmitQueueId,response.ret,copyDiagnostic.CopyResult)" not in close_guard_body:
+    if "RecordNativeSubmitQueueCloseDiagnostic(owner->SubmitQueueId,response.ret,VioGpuSubmitQueueCloseStageCopy,closeDiagnostic.CopyResult)" not in close_guard_body:
         fail("a submitqueue CLOSE failure must persist the Host result and the copy result")
-    if close_queue.count("m_CtrlQueue.PoisonSynchronousRequests();") != 1:
-        fail("submitqueue CLOSE must keep only the pre-submit seed poison site")
+    # The seed leg is scoped to the owner's window exactly like the copy leg,
+    # so the whole close path must be free of shared-queue poisoning.
+    seed_guard_start = close_queue.find("if(!VioGpuSeedNativeControlResponse(")
+    if seed_guard_start < 0:
+        fail("submitqueue CLOSE must seed its response lease before submitting")
+    seed_guard_end = close_queue.find("returnVioGpuHostContextUnknown;}", seed_guard_start)
+    if seed_guard_end < 0:
+        fail("submitqueue CLOSE must retain ownership when seeding fails")
+    seed_guard = close_queue[seed_guard_start:seed_guard_end]
+    if "RecordNativeSubmitQueueCloseDiagnostic(owner->SubmitQueueId,0,VioGpuSubmitQueueCloseStageSeed,closeDiagnostic.SeedResult)" not in seed_guard:
+        fail("a submitqueue CLOSE seed failure must persist its seed result")
+    if close_queue.count("m_CtrlQueue.PoisonSynchronousRequests();") != 0:
+        fail("no submitqueue CLOSE failure may poison the shared synchronous queue")
     clear_created = close_queue.find("owner->SubmitQueueCreated=FALSE;")
     clear_id = close_queue.find("owner->SubmitQueueId=0;")
     if min(close_guard_end, clear_created, clear_id) < 0 or not close_guard_end < clear_created < clear_id:

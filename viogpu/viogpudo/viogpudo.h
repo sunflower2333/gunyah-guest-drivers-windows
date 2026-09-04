@@ -177,6 +177,15 @@ enum VIOGPU_NATIVE_CONTEXT_DESTROY_STAGE : DWORD
  * persisted destroy diagnostic's Detail field so a blocked teardown names the
  * term that blocked it instead of being indistinguishable from a transport
  * failure.  The observed native context state is packed into bits 8-15. */
+/* Which leg of the submitqueue close reported a per-context failure.  Both
+ * legs act only on the owner's own control window, so neither poisons the
+ * shared synchronous control queue. */
+enum VIOGPU_SUBMITQUEUE_CLOSE_STAGE : DWORD
+{
+    VioGpuSubmitQueueCloseStageSeed = 1,
+    VioGpuSubmitQueueCloseStageCopy = 2,
+};
+
 enum VIOGPU_NATIVE_CONTEXT_CURRENCY_TERM : DWORD
 {
     VioGpuNativeContextCurrencyGeneration = 0x00000001,
@@ -1121,7 +1130,10 @@ class VioGpuDod
                                                 _In_ BOOLEAN attempted,
                                                 _In_ BOOLEAN mapped);
     VOID RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva);
-    VOID RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId, _In_ LONG hostResult, _In_ ULONG copyResult);
+    VOID RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId,
+                                                _In_ LONG hostResult,
+                                                _In_ ULONG stage,
+                                                _In_ ULONG detail);
     VOID RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                 _In_ NTSTATUS status,
                                                 _In_ UINT inputDataSize,
