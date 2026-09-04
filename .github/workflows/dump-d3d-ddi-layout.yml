@@ -36,6 +36,17 @@ jobs:
           Write-Output "HEADER=$($hdr.FullName)"
           "HEADER=$($hdr.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Copy the DXGI DDI header too
+        shell: pwsh
+        run: |
+          $dir = Split-Path -Parent $env:HEADER
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          foreach ($n in @('dxgiddi.h','d3dumddi.h','d3dkmddi.h')) {
+            $f = Join-Path $dir $n
+            if (Test-Path $f) { Copy-Item $f "out\$n"; Write-Output "copied $n" }
+            else { Write-Output "missing $n in $dir" }
+          }
+
       - name: Extract the device function tables
         shell: pwsh
         run: |
