@@ -5676,7 +5676,6 @@ VOID VioGpuDod::RecordAdapterInfoTypeMap(void)
         {L"NativeQaiTypeQuerySegment2", static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT2)},
         {L"NativeQaiTypeQuerySegment3", static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT3)},
         {L"NativeQaiTypeNumPowerComponents", static_cast<DWORD>(DXGKQAITYPE_NUMPOWERCOMPONENTS)},
-        {L"NativeQaiTypeGpuMmuCaps", static_cast<DWORD>(DXGKQAITYPE_GPUMMUCAPS)},
         {L"NativeQaiType64BitOnlyCaps", static_cast<DWORD>(DXGKQAITYPE_64BITONLYCAPS)},
     };
 
