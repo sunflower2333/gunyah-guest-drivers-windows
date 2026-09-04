@@ -6,12 +6,20 @@ name: Build Vulkan validation tools (ARM64)
 # not build any driver and is not part of the driver gates.
 
 on:
+  # workflow_dispatch alone would need this file on the default branch to be
+  # registered, and this is a validation-tools build that should not touch it.
+  # A path-scoped push trigger fires from the working branch instead.
   workflow_dispatch:
     inputs:
       tools_ref:
         description: Vulkan-Tools tag or branch to build
         required: false
         default: v1.4.313
+  push:
+    branches:
+      - viogpu-wddm3.1
+    paths:
+      - ".github/workflows/build-vulkan-tools-arm64.yml"
 
 permissions:
   contents: read
