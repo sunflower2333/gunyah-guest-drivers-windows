@@ -2711,13 +2711,16 @@ def check_callback_table() -> None:
     if len(zero_initialization) != 1:
         fail("callback table must zero DRIVER_INITIALIZATION_DATA exactly once")
 
+    # DriverCaps publishes WDDM 1.2 and the render engine in both modes, so the
+    # registered interface must be WDDM 1.2 in both modes.  A WIN7 table paired
+    # with 1.2 capabilities is self-contradictory and the D3D runtime rejects
+    # the adapter before loading any user-mode driver.
     version_assignment = re.findall(
-        r"\binitialData\s*->\s*Version\s*=\s*renderOnly\s*\?\s*DXGKDDI_INTERFACE_VERSION_WIN8\s*:\s*"
-        r"DXGKDDI_INTERFACE_VERSION_WIN7\s*;",
+        r"\binitialData\s*->\s*Version\s*=\s*DXGKDDI_INTERFACE_VERSION_WIN8\s*;",
         body,
     )
     if len(version_assignment) != 1:
-        fail("the callback table must select Win8 only for the WDDM 1.2 render-only contract")
+        fail("the callback table must register WDDM 1.2 in both modes to match DriverCaps")
 
     callbacks = {
         "DxgkDdiAddDevice": "VioGpuDodAddDevice",
@@ -2776,13 +2779,15 @@ def check_callback_table() -> None:
         "DxgkDdiGetScanLine": "VioGpuWddmGetScanLine",
         "DxgkDdiQueryVidPnHWCapability": "VioGpuDodQueryVidPnHWCapability",
     }
-    render_only_callbacks = {
+    # Engine/scheduler DDIs, owed in both modes because SchedulingCaps
+    # advertises MultiEngineAware and CancelCommandAware unconditionally.
+    engine_callbacks = {
         "DxgkDdiCancelCommand": "VioGpuWddmCancelCommand",
         "DxgkDdiQueryDependentEngineGroup": "VioGpuWddmQueryDependentEngineGroup",
         "DxgkDdiQueryEngineStatus": "VioGpuWddmQueryEngineStatus",
         "DxgkDdiResetEngine": "VioGpuWddmResetEngine",
     }
-    all_callbacks = {**callbacks, **render_only_callbacks, **display_callbacks}
+    all_callbacks = {**callbacks, **engine_callbacks, **display_callbacks}
     for member, callback in all_callbacks.items():
         assignments = re.findall(
             rf"\binitialData\s*->\s*{re.escape(member)}\s*=\s*{re.escape(callback)}\s*;", body
@@ -2797,11 +2802,10 @@ def check_callback_table() -> None:
 
     expected_statements = [
         "RtlZeroMemory(initialData, sizeof(*initialData));",
-        "initialData->Version = renderOnly ? DXGKDDI_INTERFACE_VERSION_WIN8 : DXGKDDI_INTERFACE_VERSION_WIN7;",
+        "initialData->Version = DXGKDDI_INTERFACE_VERSION_WIN8;",
         *(f"initialData->{member} = {callback};" for member, callback in callbacks.items()),
-        "if (renderOnly) {",
-        *(f"initialData->{member} = {callback};" for member, callback in render_only_callbacks.items()),
-        "} else {",
+        *(f"initialData->{member} = {callback};" for member, callback in engine_callbacks.items()),
+        "if (!renderOnly) {",
         *(f"initialData->{member} = {callback};" for member, callback in display_callbacks.items()),
         "}",
     ]

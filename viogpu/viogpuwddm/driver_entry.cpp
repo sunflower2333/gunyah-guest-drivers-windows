@@ -76,7 +76,12 @@ static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
 VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData, _In_ BOOLEAN renderOnly)
 {
     RtlZeroMemory(initialData, sizeof(*initialData));
-    initialData->Version = renderOnly ? DXGKDDI_INTERFACE_VERSION_WIN8 : DXGKDDI_INTERFACE_VERSION_WIN7;
+    /* DriverCaps publishes WDDM 1.2 and the render engine in both modes, so the
+     * registered interface has to be WDDM 1.2 in both modes too.  Registering
+     * WIN7 while claiming 1.2 hands dxgkrnl a callback table that contradicts
+     * the capabilities, and the D3D runtime then refuses the adapter before it
+     * ever loads a user-mode driver. */
+    initialData->Version = DXGKDDI_INTERFACE_VERSION_WIN8;
 
     initialData->DxgkDdiAddDevice = VioGpuDodAddDevice;
     initialData->DxgkDdiStartDevice = VioGpuDodStartDevice;
@@ -120,14 +125,16 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiControlInterrupt = VioGpuWddmControlInterrupt;
 
     initialData->DxgkDdiEscape = VioGpuWddmEscape;
-    if (renderOnly)
-    {
-        initialData->DxgkDdiCancelCommand = VioGpuWddmCancelCommand;
-        initialData->DxgkDdiQueryDependentEngineGroup = VioGpuWddmQueryDependentEngineGroup;
-        initialData->DxgkDdiQueryEngineStatus = VioGpuWddmQueryEngineStatus;
-        initialData->DxgkDdiResetEngine = VioGpuWddmResetEngine;
-    }
-    else
+
+    /* SchedulingCaps advertises MultiEngineAware and CancelCommandAware in both
+     * modes, which obliges the miniport to supply these four entry points in
+     * both modes.  They are engine/scheduler DDIs, not display ones. */
+    initialData->DxgkDdiCancelCommand = VioGpuWddmCancelCommand;
+    initialData->DxgkDdiQueryDependentEngineGroup = VioGpuWddmQueryDependentEngineGroup;
+    initialData->DxgkDdiQueryEngineStatus = VioGpuWddmQueryEngineStatus;
+    initialData->DxgkDdiResetEngine = VioGpuWddmResetEngine;
+
+    if (!renderOnly)
     {
         initialData->DxgkDdiSetPalette = VioGpuWddmSetPalette;
         initialData->DxgkDdiSetPointerPosition = VioGpuDodSetPointerPosition;
