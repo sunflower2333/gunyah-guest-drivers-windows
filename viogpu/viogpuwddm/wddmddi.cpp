@@ -8083,6 +8083,31 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
 
         if (!nativeSourceCurrent && !gdiSource)
         {
+            /* Neither identity held.  The present diagnostic records the source
+             * fields it already knows about, but not the ones HasGdiPresentIdentity
+             * actually turns on, so publish that predicate term by term.  Bit set
+             * means the term held. */
+            DWORD identityTerms = 0;
+            identityTerms |= source->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE ? 1U << 0 : 0;
+            identityTerms |= source->Adapter == context->Device->Adapter ? 1U << 1 : 0;
+            identityTerms |= context->Type == VioGpuWddmContextGdi ? 1U << 2 : 0;
+            identityTerms |= IsStandardAllocation(source) ? 1U << 3 : 0;
+            identityTerms |= !IsStandardPrimaryAllocation(source) ? 1U << 4 : 0;
+            identityTerms |= IsGdiSourceAllocation(source) ? 1U << 5 : 0;
+            identityTerms |= source->HostState == VioGpuWddmAllocationHostNone ? 1U << 6 : 0;
+            identityTerms |= source->BlobId == 0 ? 1U << 7 : 0;
+            identityTerms |= source->ResourceId != 0 ? 1U << 8 : 0;
+            identityTerms |= source->ResourceId < VIOGPU_NATIVE_RESOURCE_ID_START ? 1U << 9 : 0;
+            identityTerms |= source->ContextId == 0 ? 1U << 10 : 0;
+            identityTerms |= source->ContextGeneration == 0 ? 1U << 11 : 0;
+            identityTerms |= source->ContextResetGeneration == 0 ? 1U << 12 : 0;
+            identityTerms |= nativeSource ? 1U << 13 : 0;
+            identityTerms |= gdiCandidate ? 1U << 14 : 0;
+            identityTerms |= 1U << 31;
+            context->Device->Adapter->RecordNativeGdiIdentityDiagnostic(identityTerms,
+                                                                        static_cast<DWORD>(source->BlobId),
+                                                                        static_cast<DWORD>(source->ContextId),
+                                                                        static_cast<DWORD>(source->ContextGeneration));
             if (context->Type == VioGpuWddmContextNative)
             {
                 reason = VioGpuWddmPresentDiagnosticNativeSourceIdentity;

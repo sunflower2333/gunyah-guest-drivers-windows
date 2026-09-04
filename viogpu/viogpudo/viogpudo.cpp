@@ -189,6 +189,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_WddmPresentClosing = TRUE;
     m_NativePresentDiagnosticRecorded = 0;
     m_Native2DBackingDiagnosticRecorded = 0;
+    m_NativeGdiIdentityDiagnosticRecorded = 0;
     m_NativePresentExecutionDiagnosticRecorded = 0;
     m_NativePresentCopyProbeState = 0;
     m_NativePresentCopyProbeSequence = 0;
@@ -5846,6 +5847,50 @@ VOID VioGpuDod::RecordNativeCreateContextDiagnostic(_In_ ULONG flags,
                    "viogpu CreateContext diagnostic: write failed, flags=0x%08X write=0x%08X\n",
                    flagsValue,
                    flagsWrite);
+    }
+}
+
+VOID VioGpuDod::RecordNativeGdiIdentityDiagnostic(_In_ DWORD terms,
+                                                  _In_ DWORD blobId,
+                                                  _In_ DWORD contextId,
+                                                  _In_ DWORD contextGeneration)
+{
+    PAGED_CODE();
+
+    if (InterlockedCompareExchange(&m_NativeGdiIdentityDiagnosticRecorded, 1, 0) != 0)
+    {
+        return;
+    }
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        InterlockedExchange(&m_NativeGdiIdentityDiagnosticRecorded, 2);
+        return;
+    }
+
+    DWORD blobValue = blobId;
+    DWORD contextValue = contextId;
+    DWORD generationValue = contextGeneration;
+    DWORD termsValue = terms;
+    NTSTATUS blobWrite = WriteRegistryDWORD(deviceKey, L"NativeGdiIdentityBlobId", &blobValue);
+    NTSTATUS contextWrite = WriteRegistryDWORD(deviceKey, L"NativeGdiIdentityContextId", &contextValue);
+    NTSTATUS generationWrite = WriteRegistryDWORD(deviceKey, L"NativeGdiIdentityContextGeneration", &generationValue);
+    /* Terms last: a reader that sees a non-zero terms word has the whole record. */
+    NTSTATUS termsWrite = NT_SUCCESS(blobWrite) && NT_SUCCESS(contextWrite) && NT_SUCCESS(generationWrite)
+                              ? WriteRegistryDWORD(deviceKey, L"NativeGdiIdentityTerms", &termsValue)
+                              : blobWrite;
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(termsWrite))
+    {
+        InterlockedExchange(&m_NativeGdiIdentityDiagnosticRecorded, 2);
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu GDI identity diagnostic: write failed, terms=0x%08X write=0x%08X\n",
+                   terms,
+                   termsWrite);
     }
 }
 

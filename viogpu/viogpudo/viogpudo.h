@@ -804,6 +804,7 @@ class VioGpuDod
     volatile LONG m_NativePresentCopyProbeState;
     volatile LONG m_NativePresentCopyProbeSequence;
     volatile LONG m_Native2DBackingDiagnosticRecorded;
+    volatile LONG m_NativeGdiIdentityDiagnosticRecorded;
 #endif
 
     USHORT m_PersistentDispMode0Width;
@@ -1152,6 +1153,14 @@ class VioGpuDod
      * The four failure points are indistinguishable from the present diagnostic,
      * which reports only that the source ended up unbacked. */
     VOID RecordNative2DBackingDiagnostic(_In_ DWORD stage, _In_ DWORD detail, _In_ DWORD resourceId);
+
+    /* One-shot bitmap of the HasGdiPresentIdentity terms for a Present source
+     * that satisfied neither the native nor the GDI identity, plus the three
+     * fields that predicate tests and no other diagnostic records. */
+    VOID RecordNativeGdiIdentityDiagnostic(_In_ DWORD terms,
+                                           _In_ DWORD blobId,
+                                           _In_ DWORD contextId,
+                                           _In_ DWORD contextGeneration);
     VOID RecordNativeControlInterruptDiagnostic(_In_ ULONG interruptType, _In_ ULONG enable);
     VOID RecordNativePresentDiagnostic(_In_ DWORD reason,
                                        _In_ NTSTATUS status,
