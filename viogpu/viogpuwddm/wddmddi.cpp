@@ -2407,7 +2407,13 @@ BOOLEAN EnsureStandard2DAllocationBacking(VIOGPU_WDDM_ALLOCATION *allocation)
 
 BOOLEAN ReconcileGdiSourcePlacementAfterReset(VIOGPU_WDDM_ALLOCATION *allocation)
 {
-    if (!IsGdiSourceAllocation(allocation) || allocation->Adapter == NULL || !allocation->PlacementValid ||
+    /* Once the miniport publishes no flip capability, dxgkrnl stops flipping DWM's
+     * swapchain and converts it into a blt between two primaries, so the Present
+     * source on a GDI context is a standard primary rather than a CPU-visible GDI
+     * surface.  The GDI source class is left exactly as it is; a primary is
+     * admitted alongside it. */
+    if ((!IsGdiSourceAllocation(allocation) && !IsStandardPrimaryAllocation(allocation)) ||
+        allocation->Adapter == NULL || !allocation->PlacementValid ||
         !EnsureStandard2DAllocationBacking(allocation))
     {
         return FALSE;
@@ -2424,7 +2430,8 @@ BOOLEAN HasGdiPresentIdentity(_In_ const VIOGPU_WDDM_ALLOCATION *allocation,
 {
     return allocation != NULL && context != NULL && adapter != NULL &&
            allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE && allocation->Adapter == adapter &&
-           context->Type == VioGpuWddmContextGdi && IsGdiSourceAllocation(allocation) &&
+           context->Type == VioGpuWddmContextGdi &&
+           (IsGdiSourceAllocation(allocation) || IsStandardPrimaryAllocation(allocation)) &&
            allocation->HostState == VioGpuWddmAllocationHostNone && allocation->BlobId == 0 &&
            allocation->ResourceId != 0 && allocation->ResourceId < VIOGPU_NATIVE_RESOURCE_ID_START &&
            allocation->ContextId == 0 && allocation->ContextGeneration == 0 && allocation->ContextResetGeneration == 0;
@@ -3061,7 +3068,8 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     VIOGPU_NATIVE_CONTEXT_SNAPSHOT sourceSnapshot = {};
     BOOLEAN sourceSnapshotAcquired = FALSE;
     BOOLEAN nativeSource = HasLiveNativePresentIdentity(source, transaction->Context, transaction->Adapter);
-    BOOLEAN gdiSource = transaction->Context->Type == VioGpuWddmContextGdi && IsGdiSourceAllocation(source);
+    BOOLEAN gdiSource = transaction->Context->Type == VioGpuWddmContextGdi &&
+                        (IsGdiSourceAllocation(source) || IsStandardPrimaryAllocation(source));
     if (NT_SUCCESS(status))
     {
         sourceSnapshotAcquired = nativeSource && AcquireAllocationNativeContextSnapshot(source, &sourceSnapshot);
@@ -7629,7 +7637,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
             VIOGPU_WDDM_OPEN_ALLOCATION *sourceOpen = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(sourceEntry->hDeviceSpecificAllocation);
             VIOGPU_WDDM_OPEN_ALLOCATION *destinationOpen = reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(destinationEntry->hDeviceSpecificAllocation);
             BOOLEAN nativeSource = HasLiveNativePresentIdentity(source, transaction->Context, adapter);
-            BOOLEAN gdiSource = transaction->Context->Type == VioGpuWddmContextGdi && IsGdiSourceAllocation(source);
+            BOOLEAN gdiSource = transaction->Context->Type == VioGpuWddmContextGdi &&
+                                (IsGdiSourceAllocation(source) || IsStandardPrimaryAllocation(source));
             if (gdiSource)
             {
                 gdiSource = ReconcileGdiSourcePlacementAfterReset(source) &&
@@ -8065,7 +8074,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     if (NT_SUCCESS(status))
     {
         BOOLEAN nativeSource = HasLiveNativePresentIdentity(source, context, context->Device->Adapter);
-        BOOLEAN gdiCandidate = context->Type == VioGpuWddmContextGdi && IsGdiSourceAllocation(source);
+        BOOLEAN gdiCandidate = context->Type == VioGpuWddmContextGdi &&
+                               (IsGdiSourceAllocation(source) || IsStandardPrimaryAllocation(source));
         BOOLEAN gdiSource = gdiCandidate && HasGdiPresentIdentity(source, context, context->Device->Adapter);
         BOOLEAN nativeSourceCurrent = nativeSource &&
                                       context->Device->Adapter->IsNativeContextGenerationCurrent(source->ContextGeneration,
