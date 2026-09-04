@@ -2476,6 +2476,11 @@ def check_native_present_diagnostics() -> None:
         fail("submission-fault provenance capture must remain nonpaged and preserve its caller frame")
 
     present = canonical_code(function_body("VioGpuWddmPresent", WDDM_DDI_CODE))
+    if "STATUS_NOT_SUPPORTED" in present:
+        fail(
+            "Present must not return STATUS_NOT_SUPPORTED: dxgkrnl rejects it as an "
+            "invalid NTSTATUS and stops presenting on the adapter"
+        )
     for reason_name in tuple(expected_reasons)[1:]:
         if present.count(reason_name) != 1:
             fail(f"Present must map one rejection path to {reason_name}")

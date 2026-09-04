@@ -8109,7 +8109,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
 
         if (reason != VioGpuWddmPresentDiagnosticNone)
         {
-            status = STATUS_NOT_SUPPORTED;
+            /* STATUS_NOT_SUPPORTED is not a legal status for DxgkDdiPresent.  dxgkrnl
+             * logs "Driver returned an invalid NTSTATUS code: 0xffffffffc00000bb" and
+             * stops presenting on the adapter, so the desktop froze on whichever frame
+             * had last reached the Host while the driver recorded a clean present.
+             * Report the classified refusal with a status this DDI may return. */
+            status = STATUS_INVALID_PARAMETER;
             RecordPresentDiagnostic(context, present, source, destination, reason, status);
         }
     }
