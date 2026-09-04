@@ -1192,7 +1192,12 @@ class VioGpuDod
     /* One-shot record of the first EnsureStandard2DAllocationBacking failure.
      * The four failure points are indistinguishable from the present diagnostic,
      * which reports only that the source ended up unbacked. */
-    VOID RecordNative2DBackingDiagnostic(_In_ DWORD stage, _In_ DWORD detail, _In_ DWORD resourceId);
+    VOID RecordNative2DBackingDiagnostic(_In_ DWORD stage,
+                                         _In_ DWORD detail,
+                                         _In_ DWORD resourceId,
+                                         _In_ DWORD width,
+                                         _In_ DWORD height,
+                                         _In_ DWORD backingSize);
 
     /* One-shot bitmap of the HasGdiPresentIdentity terms for a Present source
      * that satisfied neither the native nor the GDI identity, plus the three

@@ -5938,7 +5938,12 @@ VOID VioGpuDod::RecordNativeGdiIdentityDiagnostic(_In_ DWORD terms,
     }
 }
 
-VOID VioGpuDod::RecordNative2DBackingDiagnostic(_In_ DWORD stage, _In_ DWORD detail, _In_ DWORD resourceId)
+VOID VioGpuDod::RecordNative2DBackingDiagnostic(_In_ DWORD stage,
+                                                _In_ DWORD detail,
+                                                _In_ DWORD resourceId,
+                                                _In_ DWORD width,
+                                                _In_ DWORD height,
+                                                _In_ DWORD backingSize)
 {
     PAGED_CODE();
 
@@ -5975,8 +5980,18 @@ VOID VioGpuDod::RecordNative2DBackingDiagnostic(_In_ DWORD stage, _In_ DWORD det
     DWORD stageValue = stage;
     NTSTATUS detailWrite = WriteRegistryDWORD(deviceKey, L"Native2DBackingDetail", &detailValue);
     NTSTATUS resourceWrite = WriteRegistryDWORD(deviceKey, L"Native2DBackingResourceId", &resourceValue);
+    /* Create2DResourceBacking's entry guard rejects width or height of zero, and a
+     * CPU-visible standard allocation is allowed to carry no surface layout at
+     * all, so these are the terms that decide whether the request is submittable. */
+    DWORD widthValue = width;
+    DWORD heightValue = height;
+    DWORD sizeValue = backingSize;
+    NTSTATUS widthWrite = WriteRegistryDWORD(deviceKey, L"Native2DBackingWidth", &widthValue);
+    NTSTATUS heightWrite = WriteRegistryDWORD(deviceKey, L"Native2DBackingHeight", &heightValue);
+    NTSTATUS sizeWrite = WriteRegistryDWORD(deviceKey, L"Native2DBackingSizeLow", &sizeValue);
     /* Stage last: a reader that sees a non-zero stage has the whole record. */
-    NTSTATUS stageWrite = NT_SUCCESS(detailWrite) && NT_SUCCESS(resourceWrite)
+    NTSTATUS stageWrite = NT_SUCCESS(detailWrite) && NT_SUCCESS(resourceWrite) && NT_SUCCESS(widthWrite) &&
+                                  NT_SUCCESS(heightWrite) && NT_SUCCESS(sizeWrite)
                               ? WriteRegistryDWORD(deviceKey, L"Native2DBackingStage", &stageValue)
                               : detailWrite;
     ZwClose(deviceKey);

@@ -2337,7 +2337,12 @@ VOID RecordBackingFailure(_In_ const VIOGPU_WDDM_ALLOCATION *allocation, _In_ DW
 {
     if (allocation != NULL && allocation->Adapter != NULL)
     {
-        allocation->Adapter->RecordNative2DBackingDiagnostic(stage, detail, allocation->ResourceId);
+        allocation->Adapter->RecordNative2DBackingDiagnostic(stage,
+                                                             detail,
+                                                             allocation->ResourceId,
+                                                             allocation->Width,
+                                                             allocation->Height,
+                                                             static_cast<DWORD>(allocation->BackingSize & MAXULONG));
     }
 }
 
