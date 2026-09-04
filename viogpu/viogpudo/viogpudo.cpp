@@ -188,6 +188,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     InitializeListHead(&m_WddmPresentTransactions);
     m_WddmPresentClosing = TRUE;
     m_NativePresentDiagnosticRecorded = 0;
+    m_Native2DBackingDiagnosticRecorded = 0;
     m_NativePresentExecutionDiagnosticRecorded = 0;
     m_NativePresentCopyProbeState = 0;
     m_NativePresentCopyProbeSequence = 0;
@@ -5845,6 +5846,48 @@ VOID VioGpuDod::RecordNativeCreateContextDiagnostic(_In_ ULONG flags,
                    "viogpu CreateContext diagnostic: write failed, flags=0x%08X write=0x%08X\n",
                    flagsValue,
                    flagsWrite);
+    }
+}
+
+VOID VioGpuDod::RecordNative2DBackingDiagnostic(_In_ DWORD stage, _In_ DWORD detail, _In_ DWORD resourceId)
+{
+    PAGED_CODE();
+
+    /* Presents run many times a second, so record only the first failure: a
+     * write per present would flood the device key and change timing. */
+    if (stage == 0 || InterlockedCompareExchange(&m_Native2DBackingDiagnosticRecorded, 1, 0) != 0)
+    {
+        return;
+    }
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        InterlockedExchange(&m_Native2DBackingDiagnosticRecorded, 2);
+        return;
+    }
+
+    DWORD detailValue = detail;
+    DWORD resourceValue = resourceId;
+    DWORD stageValue = stage;
+    NTSTATUS detailWrite = WriteRegistryDWORD(deviceKey, L"Native2DBackingDetail", &detailValue);
+    NTSTATUS resourceWrite = WriteRegistryDWORD(deviceKey, L"Native2DBackingResourceId", &resourceValue);
+    /* Stage last: a reader that sees a non-zero stage has the whole record. */
+    NTSTATUS stageWrite = NT_SUCCESS(detailWrite) && NT_SUCCESS(resourceWrite)
+                              ? WriteRegistryDWORD(deviceKey, L"Native2DBackingStage", &stageValue)
+                              : detailWrite;
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(stageWrite))
+    {
+        InterlockedExchange(&m_Native2DBackingDiagnosticRecorded, 2);
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu 2D backing diagnostic: write failed, stage=%u detail=0x%08X write=0x%08X\n",
+                   stage,
+                   detail,
+                   stageWrite);
     }
 }
 

@@ -289,6 +289,17 @@ $reasonNames = @{
     20 = 'EntryRejected'
 }
 
+# Stages recorded by RecordNative2DBackingDiagnostic when a standard 2D
+# allocation cannot be backed.  A present that finds its source unbacked
+# reports only Resource2DState = 0 for all four causes; these separate them.
+$backingStages = @{
+    1 = 'Reconcile'
+    2 = 'Placement'
+    3 = 'Format'
+    4 = 'ApertureEntries'
+    5 = 'HostCreateOrAttach'
+}
+
 foreach ($marker in @('NativePresentDiagnosticEpoch', 'NativePresentReason', 'NativePresentExecuteStage')) {
     if ($null -eq $diagnostic.PSObject.Properties[$marker]) {
         throw "Driver key '$driverKey' does not contain the Present diagnostic marker '$marker'."

@@ -2322,10 +2322,32 @@ BOOLEAN ReconcileStandard2DAllocationAfterReset(VIOGPU_WDDM_ALLOCATION *allocati
     return TRUE;
 }
 
+/* Stages for RecordNative2DBackingDiagnostic.  A present that finds its source
+ * unbacked reports only Resource2DState == 0, which is the same value for all
+ * four ways this can fail, so name them. */
+#define VIOGPU_2D_BACKING_STAGE_RECONCILE 1
+#define VIOGPU_2D_BACKING_STAGE_PLACEMENT 2
+#define VIOGPU_2D_BACKING_STAGE_FORMAT 3
+#define VIOGPU_2D_BACKING_STAGE_ENTRIES 4
+#define VIOGPU_2D_BACKING_STAGE_HOST 5
+
+DWORD BuildPresentPlacementDiagnosticState(_In_opt_ const VIOGPU_WDDM_ALLOCATION *allocation);
+
+VOID RecordBackingFailure(_In_ const VIOGPU_WDDM_ALLOCATION *allocation, _In_ DWORD stage, _In_ DWORD detail)
+{
+    if (allocation != NULL && allocation->Adapter != NULL)
+    {
+        allocation->Adapter->RecordNative2DBackingDiagnostic(stage, detail, allocation->ResourceId);
+    }
+}
+
 BOOLEAN EnsureStandard2DAllocationBacking(VIOGPU_WDDM_ALLOCATION *allocation)
 {
     if (!ReconcileStandard2DAllocationAfterReset(allocation))
     {
+        RecordBackingFailure(allocation,
+                             VIOGPU_2D_BACKING_STAGE_RECONCILE,
+                             allocation != NULL ? static_cast<DWORD>(allocation->Resource2DState) : 0);
         return FALSE;
     }
     if (allocation->Resource2DState == VioGpu2DResourceBackingAttached)
@@ -2336,12 +2358,16 @@ BOOLEAN EnsureStandard2DAllocationBacking(VIOGPU_WDDM_ALLOCATION *allocation)
     if (!allocation->PlacementValid || allocation->ApertureMdl == NULL || allocation->ApertureAddress == NULL ||
         allocation->ApertureMappedPageCount != allocation->AperturePageCount)
     {
+        RecordBackingFailure(allocation,
+                             VIOGPU_2D_BACKING_STAGE_PLACEMENT,
+                             BuildPresentPlacementDiagnosticState(allocation));
         return FALSE;
     }
 
     UINT virtioFormat = 0;
     if (!ResolveStandard2DFormat(allocation->Format, &virtioFormat))
     {
+        RecordBackingFailure(allocation, VIOGPU_2D_BACKING_STAGE_FORMAT, static_cast<DWORD>(allocation->Format));
         return FALSE;
     }
 
@@ -2350,6 +2376,7 @@ BOOLEAN EnsureStandard2DAllocationBacking(VIOGPU_WDDM_ALLOCATION *allocation)
     NTSTATUS status = AllocateApertureBackingEntries(allocation, &entries, &entryCount);
     if (!NT_SUCCESS(status))
     {
+        RecordBackingFailure(allocation, VIOGPU_2D_BACKING_STAGE_ENTRIES, static_cast<DWORD>(status));
         return FALSE;
     }
 
@@ -2363,7 +2390,14 @@ BOOLEAN EnsureStandard2DAllocationBacking(VIOGPU_WDDM_ALLOCATION *allocation)
                                                                                      &allocation->Resource2DState,
                                                                                      &allocation->Resource2DResetGeneration);
     ExFreePoolWithTag(entries, 'eSGV');
-    return result == VioGpuHostContextConfirmed && allocation->Resource2DState == VioGpu2DResourceBackingAttached;
+    if (result != VioGpuHostContextConfirmed || allocation->Resource2DState != VioGpu2DResourceBackingAttached)
+    {
+        RecordBackingFailure(allocation,
+                             VIOGPU_2D_BACKING_STAGE_HOST,
+                             (static_cast<DWORD>(result) << 8) | static_cast<DWORD>(allocation->Resource2DState));
+        return FALSE;
+    }
+    return TRUE;
 }
 
 BOOLEAN ReconcileGdiSourcePlacementAfterReset(VIOGPU_WDDM_ALLOCATION *allocation)

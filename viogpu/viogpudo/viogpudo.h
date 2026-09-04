@@ -803,6 +803,7 @@ class VioGpuDod
     volatile LONG m_NativePresentExecutionDiagnosticRecorded;
     volatile LONG m_NativePresentCopyProbeState;
     volatile LONG m_NativePresentCopyProbeSequence;
+    volatile LONG m_Native2DBackingDiagnosticRecorded;
 #endif
 
     USHORT m_PersistentDispMode0Width;
@@ -1146,6 +1147,11 @@ class VioGpuDod
                                              _In_ UINT engineAffinity,
                                              _In_ UINT privateDataSize);
     VOID RecordNativeStandardAllocationDiagnostic(_In_ ULONG standardAllocationType);
+
+    /* One-shot record of the first EnsureStandard2DAllocationBacking failure.
+     * The four failure points are indistinguishable from the present diagnostic,
+     * which reports only that the source ended up unbacked. */
+    VOID RecordNative2DBackingDiagnostic(_In_ DWORD stage, _In_ DWORD detail, _In_ DWORD resourceId);
     VOID RecordNativeControlInterruptDiagnostic(_In_ ULONG interruptType, _In_ ULONG enable);
     VOID RecordNativePresentDiagnostic(_In_ DWORD reason,
                                        _In_ NTSTATUS status,
