@@ -1037,15 +1037,15 @@ class VioGpuDod
         InterlockedExchange(&m_NativeNotifyFailureStatus, static_cast<LONG>(status));
         InterlockedIncrement(&m_NativeNotifyFailureCount);
     }
-    DWORD ReadNativeNotifyFailureReason(void) const
+    DWORD ReadNativeNotifyFailureReason(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeNotifyFailureReason, 0, 0));
     }
-    DWORD ReadNativeNotifyFailureStatus(void) const
+    DWORD ReadNativeNotifyFailureStatus(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeNotifyFailureStatus, 0, 0));
     }
-    DWORD ReadNativeNotifyFailureCount(void) const
+    DWORD ReadNativeNotifyFailureCount(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeNotifyFailureCount, 0, 0));
     }
