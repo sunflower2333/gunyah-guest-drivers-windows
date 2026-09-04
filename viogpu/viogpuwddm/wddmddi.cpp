@@ -4069,10 +4069,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     {
         status = QuerySegment(adapter, pQueryAdapterInfo);
     }
-    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT2)
-    {
-        status = QuerySegmentVersioned<DXGK_QUERYSEGMENTOUT2, DXGK_SEGMENTDESCRIPTOR2>(adapter, pQueryAdapterInfo);
-    }
     else if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT3)
     {
         status = QuerySegmentVersioned<DXGK_QUERYSEGMENTOUT3, DXGK_SEGMENTDESCRIPTOR3>(adapter, pQueryAdapterInfo);

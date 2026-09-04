@@ -6873,11 +6873,10 @@ def check_versioned_segment_query_contract() -> None:
     query = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
     for fragment in (
         "status=QuerySegment(adapter,pQueryAdapterInfo);",
-        "status=QuerySegmentVersioned<DXGK_QUERYSEGMENTOUT2,DXGK_SEGMENTDESCRIPTOR2>(adapter,pQueryAdapterInfo);",
         "status=QuerySegmentVersioned<DXGK_QUERYSEGMENTOUT3,DXGK_SEGMENTDESCRIPTOR3>(adapter,pQueryAdapterInfo);",
     ):
         if query.count(fragment) != 1:
-            fail(f"QueryAdapterInfo must answer every segment query version: {fragment}")
+            fail(f"QueryAdapterInfo must answer the QUERYSEGMENT and QUERYSEGMENT3 forms: {fragment}")
 
     helper = canonical_code(function_body("QuerySegmentVersioned", WDDM_DDI_CODE))
     for fragment in (
