@@ -1830,7 +1830,19 @@ def check_retired_pool_absence() -> None:
             relative_path = path.relative_to(repository_root).as_posix()
             if tracked_paths is not None and relative_path not in tracked_paths:
                 continue
-            if retired_token.search(path.read_text(encoding="utf-8", errors="ignore")):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if relative_path.startswith(".install_scripts/"):
+                # Installer scripts are allowed to *name* a retired pool inside a
+                # rejection guard -- that is how they refuse to publish an INF
+                # that carries one -- so only an unguarded mention is a
+                # violation there.  Driver and build wiring stay under the flat
+                # token scan.
+                text = "\n".join(
+                    line
+                    for line in text.splitlines()
+                    if "-match" not in line and "-notmatch" not in line
+                )
+            if retired_token.search(text):
                 references.append(relative_path)
     if references:
         fail(f"production source/build wiring must not reference retired Windows pools: {references}")
@@ -2593,7 +2605,7 @@ def check_native_driver_caps_contract() -> None:
         "driverCaps->PointerCaps.MaskedColor=1;",
         "driverCaps->SchedulingCaps.MultiEngineAware=1;",
         "driverCaps->SchedulingCaps.PreemptionAware=0;",
-        "driverCaps->SchedulingCaps.CancelCommandAware=1;",
+        "driverCaps->SchedulingCaps.CancelCommandAware=0;",
         "driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes=1;",
         # These two live past the Win7 prefix, so they need the full structure.
         "if(fullCaps)",
@@ -2787,7 +2799,10 @@ def check_callback_table() -> None:
         "DxgkDdiQueryVidPnHWCapability": "VioGpuDodQueryVidPnHWCapability",
     }
     # Engine/scheduler DDIs, owed in both modes because SchedulingCaps
-    # advertises MultiEngineAware and CancelCommandAware unconditionally.
+    # advertises MultiEngineAware unconditionally.  DxgkDdiCancelCommand stays
+    # registered even though CancelCommandAware is now 0: dxgkrnl ignores the
+    # slot at DXGKDDI_INTERFACE_VERSION_WIN8, and keeping the assignment means
+    # raising the registered version later needs no second change here.
     engine_callbacks = {
         "DxgkDdiCancelCommand": "VioGpuWddmCancelCommand",
         "DxgkDdiQueryDependentEngineGroup": "VioGpuWddmQueryDependentEngineGroup",
@@ -8054,8 +8069,13 @@ def check_wddm_paging_transaction_gate() -> None:
         if fragment not in validate_reference:
             fail(f"Submit paging reference validation must retain the Built owner gate: {fragment}")
     driver_caps = canonical_code(function_body("VioGpuQueryNativeDriverCaps", VIOGPU_CODE))
-    if driver_caps.count("driverCaps->SchedulingCaps.CancelCommandAware=1;") != 1:
-        fail("the WDDM 1.2 render-only contract must advertise its registered CancelCommand callback")
+    if driver_caps.count("driverCaps->SchedulingCaps.CancelCommandAware=0;") != 1:
+        fail(
+            "the WDDM 1.2 contract must keep CancelCommandAware clear: dxgkrnl only "
+            "copies the DxgkDdiCancelCommand slot for drivers registering 0x7002 or "
+            "later, so at DXGKDDI_INTERFACE_VERSION_WIN8 advertising it makes "
+            "dxgkrnl!ADAPTER_RENDER::DdiCancelCommand branch to a NULL pointer"
+        )
 
     finish = canonical_code(
         function_body_with_parameters(

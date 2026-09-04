@@ -2348,7 +2348,15 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
     /* WDDM 1.2 permits retaining the Win7 scheduler model.  Native Context
      * has no Host primitive for preempting an in-flight command. */
     driverCaps->SchedulingCaps.PreemptionAware = 0;
-    driverCaps->SchedulingCaps.CancelCommandAware = 1;
+    /* CancelCommandAware must stay clear while this miniport registers
+     * DXGKDDI_INTERFACE_VERSION_WIN8.  dxgkrnl copies the DxgkDdiCancelCommand
+     * slot out of DRIVER_INITIALIZATION_DATA only for drivers that report at
+     * least 0x7002, so at WIN8 (0x300E) its adapter slot stays NULL no matter
+     * what this driver assigns.  Advertising the capability anyway made
+     * dxgkrnl!ADAPTER_RENDER::DdiCancelCommand branch to address 0 as soon as
+     * a real D3D device started submitting work: bugcheck 0x7E with
+     * 0x80000003, twice, once the Direct3D path opened. */
+    driverCaps->SchedulingCaps.CancelCommandAware = 0;
     driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes = 1;
 
     if (fullCaps)
