@@ -805,6 +805,8 @@ class VioGpuDod
     volatile LONG m_NativePresentCopyProbeState;
     volatile LONG m_NativePresentCopyProbeSequence;
     volatile LONG m_Native2DBackingDiagnosticRecorded;
+    volatile LONG m_Native2DBackingLastStage;
+    volatile LONG m_Native2DBackingLastDetail;
     volatile LONG m_NativeGdiIdentityDiagnosticRecorded;
 #endif
 

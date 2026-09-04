@@ -192,6 +192,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_WddmPresentClosing = TRUE;
     m_NativePresentDiagnosticRecorded = 0;
     m_Native2DBackingDiagnosticRecorded = 0;
+    m_Native2DBackingLastStage = 0;
+    m_Native2DBackingLastDetail = 0;
     m_NativeGdiIdentityDiagnosticRecorded = 0;
     m_NativePresentExecutionDiagnosticRecorded = 0;
     m_NativePresentCopyProbeState = 0;
@@ -5924,12 +5926,25 @@ VOID VioGpuDod::RecordNative2DBackingDiagnostic(_In_ DWORD stage, _In_ DWORD det
 {
     PAGED_CODE();
 
-    /* Presents run many times a second, so record only the first failure: a
-     * write per present would flood the device key and change timing. */
-    if (stage == 0 || InterlockedCompareExchange(&m_Native2DBackingDiagnosticRecorded, 1, 0) != 0)
+    /* Presents run many times a second, so a write per present would flood the
+     * device key and change timing.  But recording only the first failure latches
+     * whatever went wrong during early boot and then misreports it as the current
+     * state for the rest of the run - which is exactly how a stale stage 5 with
+     * detail 0 outlived the condition that produced it.  Write whenever the
+     * (stage, detail) pair changes instead: steady-state failures cost one write,
+     * and the value always describes the most recent failure. */
+    if (stage == 0)
     {
         return;
     }
+    LONG stageValue32 = static_cast<LONG>(stage);
+    LONG detailValue32 = static_cast<LONG>(detail);
+    if (InterlockedExchange(&m_Native2DBackingLastStage, stageValue32) == stageValue32 &&
+        InterlockedExchange(&m_Native2DBackingLastDetail, detailValue32) == detailValue32)
+    {
+        return;
+    }
+    InterlockedExchange(&m_Native2DBackingLastDetail, detailValue32);
 
     HANDLE deviceKey = NULL;
     NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
