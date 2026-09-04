@@ -174,6 +174,9 @@ static HRESULT w_createdev(void *hAdapter, void *pCreateData)
     if (hr == 0 && pCreateData) {
         void **funcs = *(void ***)((u8 *)pCreateData + 0x18);
         log_hex64("  device funcs table=", (u64)funcs);
+        /* Read-only.  The WDK header that defines this table's extent is not
+         * available here, so the scan bound is a guess and writing into it
+         * could land outside the allocation. */
         log_null_slots("  device funcs NULL slots:\n", funcs, 400);
     }
     return hr;
