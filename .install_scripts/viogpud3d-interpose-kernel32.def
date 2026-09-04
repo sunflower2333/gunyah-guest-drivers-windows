@@ -7,3 +7,4 @@ WriteFile
 CloseHandle
 SetFilePointer
 GetLastError
+GetFileAttributesA

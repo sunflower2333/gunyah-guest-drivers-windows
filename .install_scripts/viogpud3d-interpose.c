@@ -11,6 +11,9 @@ typedef void               *HANDLE;
 
 #define REAL_UMD  "C:\\DroidVM\\ZinkD3D\\viogpud3d-zink.dll"
 #define LOG_PATH  "C:\\DroidVM\\ZinkD3D\\interpose.log"
+/* Every D3D application in the guest loads this module, so logging is gated on
+ * a marker file a probe run creates.  Without it the module only forwards. */
+#define LOG_GATE  "C:\\DroidVM\\ZinkD3D\\interpose.on"
 
 #define SPOOF_IFACE   0x000B0011u
 #define REAL_IFACE    0x000B0010u
@@ -23,6 +26,7 @@ __declspec(dllimport) int    __cdecl WriteFile(HANDLE, const void *, u32, u32 *,
 __declspec(dllimport) int    __cdecl CloseHandle(HANDLE);
 __declspec(dllimport) u32    __cdecl SetFilePointer(HANDLE, long, long *, u32);
 __declspec(dllimport) u32    __cdecl GetLastError(void);
+__declspec(dllimport) u32    __cdecl GetFileAttributesA(const char *);
 
 #define GENERIC_WRITE 0x40000000u
 #define FILE_SHARE_RW 0x00000003u
@@ -35,10 +39,17 @@ static const char hexd[] = "0123456789ABCDEF";
 
 static u32 slen(const char *s) { u32 n = 0; while (s[n]) n++; return n; }
 
+static int logging_enabled(void)
+{
+    return GetFileAttributesA(LOG_GATE) != 0xFFFFFFFFu;
+}
+
 static void log_raw(const char *buf, u32 len)
 {
-    HANDLE h = CreateFileA(LOG_PATH, GENERIC_WRITE, FILE_SHARE_RW, 0, OPEN_ALWAYS, 0x80u, 0);
+    HANDLE h;
     u32 wrote;
+    if (!logging_enabled()) return;
+    h = CreateFileA(LOG_PATH, GENERIC_WRITE, FILE_SHARE_RW, 0, OPEN_ALWAYS, 0x80u, 0);
     if (h == INVALID_H) return;
     SetFilePointer(h, 0, 0, FILE_END);
     WriteFile(h, buf, len, &wrote, 0);
@@ -125,16 +136,46 @@ static HRESULT w_calcsize(void *hAdapter, void *pArg)
     return hr;
 }
 
+/* Report which slots of a driver-filled function table are still NULL.  The
+ * D3D11 runtime answers DXGI_ERROR_DRIVER_INTERNAL_ERROR when it finds a
+ * required entry missing, so the gaps are the interesting part. */
+static void log_null_slots(const char *label, void **tbl, u32 slots)
+{
+    char line[128];
+    u32 i, j = 0, nulls = 0;
+    if (!tbl) { log_str("  <null table>\n"); return; }
+    log_str(label);
+    for (i = 0; i < slots; i++) {
+        if (tbl[i] == 0) {
+            nulls++;
+            if (nulls <= 48) {
+                line[j++] = ' ';
+                line[j++] = hexd[(i >> 8) & 0xF];
+                line[j++] = hexd[(i >> 4) & 0xF];
+                line[j++] = hexd[i & 0xF];
+                if (j > 100) { line[j++] = '\n'; log_raw(line, j); j = 0; }
+            }
+        }
+    }
+    if (j) { line[j++] = '\n'; log_raw(line, j); }
+    log_hex64("  null slot count=", (u64)nulls);
+}
+
 static HRESULT w_createdev(void *hAdapter, void *pCreateData)
 {
     HRESULT hr;
-    log_dump("CreateDevice pCreateData (Interface at +08):", pCreateData, 64);
+    log_dump("CreateDevice pCreateData (Interface at +08):", pCreateData, 160);
     if (pCreateData && *(u32 *)((u8 *)pCreateData + 8) == SPOOF_IFACE) {
         *(u32 *)((u8 *)pCreateData + 8) = REAL_IFACE;
         log_str("  [translated Interface 0xB0011 -> 0xB0010]\n");
     }
     hr = o_createdev(hAdapter, pCreateData);
     log_hex64("  CreateDevice ret=", (u64)(u32)hr);
+    if (hr == 0 && pCreateData) {
+        void **funcs = *(void ***)((u8 *)pCreateData + 0x18);
+        log_hex64("  device funcs table=", (u64)funcs);
+        log_null_slots("  device funcs NULL slots:\n", funcs, 400);
+    }
     return hr;
 }
 
@@ -144,17 +185,32 @@ static HRESULT w_closeadapter(void *hAdapter)
     return o_closeadapter(hAdapter);
 }
 
+/* Mesa's d3d10umd advertises the D3D11.1 and WDDM1.3 DDIs but never fills the
+ * device function-table entries those versions add: it populates only the D3D10,
+ * D3D10.1 and D3D11.0 views of the union.  The runtime picks the highest version
+ * offered, finds required slots NULL and fails device creation.  Drop the two
+ * versions whose tables are incomplete so the negotiation settles on D3D11.0,
+ * which is fully populated. */
+#define MAX_KEPT_IFACE 0x000B000BULL
+
 static HRESULT w_getversions(void *hAdapter, u32 *puEntries, u64 *pVersions)
 {
     HRESULT hr = o_getversions(hAdapter, puEntries, pVersions);
     log_hex64("GetSupportedVersions ret=", (u64)(u32)hr);
     if (hr == 0 && puEntries) {
-        u32 real = *puEntries;
         if (!pVersions) {
-            log_hex64("  count query, entries=", (u64)real);
+            log_hex64("  count query, entries=", (u64)*puEntries);
         } else {
-            u32 i;
-            for (i = 0; i < *puEntries && i < 16; i++) log_hex64("    version=", pVersions[i]);
+            u32 i, kept = 0;
+            for (i = 0; i < *puEntries; i++) {
+                if ((pVersions[i] >> 32) <= MAX_KEPT_IFACE) {
+                    pVersions[kept++] = pVersions[i];
+                } else {
+                    log_hex64("    dropped version=", pVersions[i]);
+                }
+            }
+            *puEntries = kept;
+            for (i = 0; i < kept && i < 16; i++) log_hex64("    version=", pVersions[i]);
         }
     }
     return hr;
