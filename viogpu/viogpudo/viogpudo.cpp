@@ -5593,7 +5593,7 @@ VOID VioGpuDod::RecordNativeContextMapMemoryDiagnostic(_In_ NTSTATUS status,
                mappedValue);
 }
 
-VOID VioGpuDod::RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId, _In_ LONG hostResult)
+VOID VioGpuDod::RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId, _In_ LONG hostResult, _In_ ULONG copyResult)
 {
     PAGED_CODE();
 
@@ -5609,18 +5609,21 @@ VOID VioGpuDod::RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId, _In_ 
     }
 
     DWORD resultValue = static_cast<DWORD>(hostResult);
+    DWORD copyValue = copyResult;
     DWORD queueValue = queueId;
     NTSTATUS resultWrite = WriteRegistryDWORD(deviceKey, L"NativeSubmitQueueCloseHostResult", &resultValue);
-    // The queue id is the commit marker for the preceding Host result.
+    NTSTATUS copyWrite = WriteRegistryDWORD(deviceKey, L"NativeSubmitQueueCloseCopyResult", &copyValue);
+    // The queue id is the commit marker for the preceding result fields.
     NTSTATUS queueWrite = WriteRegistryDWORD(deviceKey, L"NativeSubmitQueueCloseQueueId", &queueValue);
     ZwClose(deviceKey);
 
-    if (!NT_SUCCESS(resultWrite) || !NT_SUCCESS(queueWrite))
+    if (!NT_SUCCESS(resultWrite) || !NT_SUCCESS(copyWrite) || !NT_SUCCESS(queueWrite))
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
-                   "viogpu submitqueue close diagnostic: write failed, writes=%08X/%08X\n",
+                   "viogpu submitqueue close diagnostic: write failed, writes=%08X/%08X/%08X\n",
                    resultWrite,
+                   copyWrite,
                    queueWrite);
     }
 }
@@ -7891,22 +7894,23 @@ VioGpuAdapter::CloseNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER 
     }
 
     MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP response = {};
-    if (!VioGpuCopyNativeControlResponse(this, owner, sequence, &response, sizeof(response)))
+    VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC copyDiagnostic = {};
+    BOOLEAN copied = VioGpuCopyNativeControlResponse(this, owner, sequence, &response, sizeof(response),
+                                                     &copyDiagnostic);
+    if (!copied || response.ret != 0)
     {
-        /* The reply could not be read back, so request/response framing on the
-         * shared control queue is untrustworthy and poisoning is correct. */
-        m_CtrlQueue.PoisonSynchronousRequests();
-        return VioGpuHostContextUnknown;
-    }
-    if (response.ret != 0)
-    {
-        /* The Host answered this request correctly and only reported an error
-         * for this one submitqueue, so framing is intact.  Fail just this
-         * context's teardown: poisoning the shared queue here would block every
-         * later context teardown until the device is restarted. */
+        /* Both failures are scoped to this context.  SubmitNativeControl has
+         * already confirmed the shared virtqueue transaction, and the reply is
+         * read from this owner's own control window, so neither case says
+         * anything about request/response framing on the shared queue.
+         * Poisoning here was observed on device to block every later context
+         * teardown until the device restarts.  Fail only this teardown and keep
+         * ownership, so the window stays mapped for the retry. */
         if (m_pVioGpuDod != NULL)
         {
-            m_pVioGpuDod->RecordNativeSubmitQueueCloseDiagnostic(owner->SubmitQueueId, response.ret);
+            m_pVioGpuDod->RecordNativeSubmitQueueCloseDiagnostic(owner->SubmitQueueId,
+                                                                 response.ret,
+                                                                 copyDiagnostic.CopyResult);
         }
         return VioGpuHostContextUnknown;
     }

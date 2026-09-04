@@ -1121,7 +1121,7 @@ class VioGpuDod
                                                 _In_ BOOLEAN attempted,
                                                 _In_ BOOLEAN mapped);
     VOID RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva);
-    VOID RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId, _In_ LONG hostResult);
+    VOID RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId, _In_ LONG hostResult, _In_ ULONG copyResult);
     VOID RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                 _In_ NTSTATUS status,
                                                 _In_ UINT inputDataSize,
