@@ -772,6 +772,9 @@ class VioGpuDod
 #if defined(VIOGPU_NATIVE_CONTEXT)
     volatile LONG m_HardwareResetCallerRva;
     volatile LONG m_NativeContextFailCallerRva;
+    volatile LONG m_NativeNotifyFailureReason;
+    volatile LONG m_NativeNotifyFailureStatus;
+    volatile LONG m_NativeNotifyFailureCount;
     volatile LONG m_NativeSubmissionFaultDiagnosticRecorded;
     volatile LONG m_NativeSubmissionFaultCallerRva;
     volatile LONG m_NativeSubmissionFaultExecutionDiagnosticState;
@@ -1024,6 +1027,28 @@ class VioGpuDod
     }
     __declspec(noinline) VOID RequestHardwareResetAtAnyIrql(void);
 #if defined(VIOGPU_NATIVE_CONTEXT)
+    /* DxgkCbSynchronizeExecution has three failure exits and a dropped
+     * completion from any of them leaves the video scheduler spinning on a
+     * packet it can never retire.  Publishing which exit ran, and how often, is
+     * what separates them from outside the guest. */
+    VOID RecordNativeNotifyFailure(_In_ DWORD reason, _In_ NTSTATUS status)
+    {
+        InterlockedExchange(&m_NativeNotifyFailureReason, static_cast<LONG>(reason));
+        InterlockedExchange(&m_NativeNotifyFailureStatus, static_cast<LONG>(status));
+        InterlockedIncrement(&m_NativeNotifyFailureCount);
+    }
+    DWORD ReadNativeNotifyFailureReason(void) const
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeNotifyFailureReason, 0, 0));
+    }
+    DWORD ReadNativeNotifyFailureStatus(void) const
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeNotifyFailureStatus, 0, 0));
+    }
+    DWORD ReadNativeNotifyFailureCount(void) const
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeNotifyFailureCount, 0, 0));
+    }
     /* The native-context failure handler has eight call sites in the virtqueue
      * and control-queue error paths; publishing which one ran is the only way to
      * name the fault that closes the submission gate. */

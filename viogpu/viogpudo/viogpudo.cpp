@@ -153,6 +153,9 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     RtlZeroMemory(&m_DxgkInterface, sizeof(m_DxgkInterface));
 #if defined(VIOGPU_NATIVE_CONTEXT)
     InterlockedExchange(&m_NativeContextFailCallerRva, 0);
+    InterlockedExchange(&m_NativeNotifyFailureReason, 0);
+    InterlockedExchange(&m_NativeNotifyFailureStatus, 0);
+    InterlockedExchange(&m_NativeNotifyFailureCount, 0);
 #endif
     RtlZeroMemory(&m_DeviceInfo, sizeof(m_DeviceInfo));
     RtlZeroMemory(&m_CurrentMode, sizeof(m_CurrentMode));
@@ -854,6 +857,7 @@ BOOLEAN VioGpuDod::NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_IN
 {
     if (notification == NULL || !ExAcquireRundownProtection(&m_HardwareOperations))
     {
+        RecordNativeNotifyFailure(1, STATUS_DEVICE_NOT_READY);
         return FALSE;
     }
 
@@ -862,6 +866,7 @@ BOOLEAN VioGpuDod::NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_IN
     if (adapter == NULL || m_DxgkInterface.DxgkCbSynchronizeExecution == NULL ||
         !adapter->QueryNativeSubmitInterruptMessage(&messageNumber))
     {
+        RecordNativeNotifyFailure(2, STATUS_DEVICE_NOT_READY);
         ExReleaseRundownProtection(&m_HardwareOperations);
         return FALSE;
     }
@@ -877,6 +882,7 @@ BOOLEAN VioGpuDod::NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_IN
                                                                  &notified);
     if (!NT_SUCCESS(status) || !notified)
     {
+        RecordNativeNotifyFailure(notified ? 3U : 4U, status);
         ExReleaseRundownProtection(&m_HardwareOperations);
         return FALSE;
     }
@@ -5149,11 +5155,21 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD lengthLow = static_cast<DWORD>(length);
     DWORD lengthHigh = static_cast<DWORD>(length >> 32);
     DWORD resourceIdValue = resourceId;
+    /* Published here rather than from the present-execution diagnostic because
+     * that one is claimed once per boot: an allocation destroy happens
+     * constantly, so these three always carry the latest completion-notify
+     * failure. */
+    DWORD notifyFailureReason = ReadNativeNotifyFailureReason();
+    DWORD notifyFailureStatus = ReadNativeNotifyFailureStatus();
+    DWORD notifyFailureCount = ReadNativeNotifyFailureCount();
     struct VALUE_WRITE
     {
         PCWSTR Name;
         PDWORD Value;
     } writes[] = {
+        {L"NativeNotifyFailureReason", &notifyFailureReason},
+        {L"NativeNotifyFailureStatus", &notifyFailureStatus},
+        {L"NativeNotifyFailureCount", &notifyFailureCount},
         {L"NativeContextAllocationDestroyStage", &stage},
         {L"NativeContextAllocationDestroyStatus", &statusValue},
         {L"NativeContextAllocationDestroyDetail", &detail},
