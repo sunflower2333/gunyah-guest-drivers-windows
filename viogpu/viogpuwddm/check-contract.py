@@ -2053,6 +2053,10 @@ def check_native_present_diagnostics() -> None:
         "VioGpuWddmPresentDiagnosticTransactionReference": 17,
         "VioGpuWddmPresentDiagnosticTransactionRegistration": 18,
         "VioGpuWddmPresentDiagnosticContextPublication": 19,
+        # The entry guard refuses a present before allocations resolve, so it
+        # reports only the argument shape; without it a refused flag word is
+        # invisible and the desktop just stays black.
+        "VioGpuWddmPresentDiagnosticEntryRejected": 20,
     }
     observed_reasons = {
         name: int(value)

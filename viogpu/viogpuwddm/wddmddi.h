@@ -351,6 +351,9 @@ enum VIOGPU_WDDM_PRESENT_DIAGNOSTIC_REASON : DWORD
     VioGpuWddmPresentDiagnosticTransactionReference = 17,
     VioGpuWddmPresentDiagnosticTransactionRegistration = 18,
     VioGpuWddmPresentDiagnosticContextPublication = 19,
+    /* The entry guard rejects a present before any allocation is resolved,
+     * so it records only the argument shape it refused. */
+    VioGpuWddmPresentDiagnosticEntryRejected = 20,
 };
 
 enum VIOGPU_WDDM_PRESENT_EXECUTION_STAGE : DWORD

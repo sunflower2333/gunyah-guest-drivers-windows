@@ -286,6 +286,7 @@ $reasonNames = @{
     17 = 'TransactionReference'
     18 = 'TransactionRegistration'
     19 = 'ContextPublication'
+    20 = 'EntryRejected'
 }
 
 foreach ($marker in @('NativePresentDiagnosticEpoch', 'NativePresentReason', 'NativePresentExecuteStage')) {

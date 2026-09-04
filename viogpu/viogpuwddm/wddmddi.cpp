@@ -2498,6 +2498,25 @@ DWORD BuildPresentAllocationListDiagnosticValue(_In_ const DXGK_ALLOCATIONLIST *
            ((entry->Reserved & 0x03FFFFFFU) << 6);
 }
 
+VOID RecordPresentEntryRejection(_In_opt_ VIOGPU_WDDM_CONTEXT *context,
+                                 _In_opt_ const DXGKARG_PRESENT *present,
+                                 _In_ VIOGPU_WDDM_PRESENT_DIAGNOSTIC_REASON reason)
+{
+    if (context == NULL || present == NULL || context->Device == NULL || context->Device->Adapter == NULL)
+    {
+        return;
+    }
+
+    VIOGPU_NATIVE_PRESENT_DIAGNOSTIC diagnostic = {};
+    diagnostic.ContextType = static_cast<DWORD>(context->Type);
+    diagnostic.PresentFlags = present->Flags.Value;
+    diagnostic.SubRectCount = present->SubRectCnt;
+    diagnostic.MultipassOffset = present->MultipassOffset;
+    context->Device->Adapter->RecordNativePresentDiagnostic(static_cast<DWORD>(reason),
+                                                            STATUS_INVALID_PARAMETER,
+                                                            &diagnostic);
+}
+
 VOID RecordPresentDiagnostic(_In_ VIOGPU_WDDM_CONTEXT *context,
                              _In_ const DXGKARG_PRESENT *present,
                              _In_ const VIOGPU_WDDM_ALLOCATION *source,
@@ -7823,6 +7842,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
         (present->SubRectCnt != 0 &&
          (present->pDstSubRects == NULL || present->MultipassOffset >= present->SubRectCnt)))
     {
+        /* This guard runs before the allocations are resolved, so the full
+         * present diagnostic cannot be built here.  Record the argument shape
+         * anyway: a rejected flag word is otherwise invisible without a kernel
+         * debugger, and a present dxgkrnl issues but this driver refuses leaves
+         * the desktop black with nothing at all written down. */
+        RecordPresentEntryRejection(context, present, VioGpuWddmPresentDiagnosticEntryRejected);
         return STATUS_INVALID_PARAMETER;
     }
     if (present->DmaSize < sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) || present->PatchLocationListOutSize < 2)
