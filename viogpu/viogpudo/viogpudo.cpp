@@ -5771,6 +5771,46 @@ VOID VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
     }
 }
 
+VOID VioGpuDod::RecordNativeCreateContextDiagnostic(_In_ ULONG flags,
+                                                   _In_ UINT nodeOrdinal,
+                                                   _In_ UINT engineAffinity,
+                                                   _In_ UINT privateDataSize)
+{
+    PAGED_CODE();
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu CreateContext diagnostic: registry open failed, flags=0x%08X open=0x%08X\n",
+                   flags,
+                   openStatus);
+        return;
+    }
+
+    DWORD nodeValue = nodeOrdinal;
+    DWORD affinityValue = engineAffinity;
+    DWORD privateSizeValue = privateDataSize;
+    DWORD flagsValue = flags;
+    (VOID) WriteRegistryDWORD(deviceKey, L"NativeCreateContextNode", &nodeValue);
+    (VOID) WriteRegistryDWORD(deviceKey, L"NativeCreateContextAffinity", &affinityValue);
+    (VOID) WriteRegistryDWORD(deviceKey, L"NativeCreateContextPrivateSize", &privateSizeValue);
+    // Flags is the commit marker for the preceding fields.
+    NTSTATUS flagsWrite = WriteRegistryDWORD(deviceKey, L"NativeCreateContextFlags", &flagsValue);
+    ZwClose(deviceKey);
+
+    if (!NT_SUCCESS(flagsWrite))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_ERROR_LEVEL,
+                   "viogpu CreateContext diagnostic: write failed, flags=0x%08X write=0x%08X\n",
+                   flagsValue,
+                   flagsWrite);
+    }
+}
+
 VOID VioGpuDod::RecordNativePresentDiagnostic(_In_ DWORD reason,
                                               _In_ NTSTATUS status,
                                               _In_ const VIOGPU_NATIVE_PRESENT_DIAGNOSTIC *diagnostic)

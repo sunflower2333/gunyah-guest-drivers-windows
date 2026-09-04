@@ -5003,33 +5003,49 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
         return STATUS_INVALID_PARAMETER;
     }
 
-    /* VirtualAddressing is orthogonal to the three context classes.  Dxgkrnl
-     * sets it for a Native Context when the adapter advertises GPU VA, so the
-     * class check must ignore that one supported bit while still rejecting all
-     * unknown/reserved flags. */
-    const ULONG contextClassFlags = createContext->Flags.Value & ~4U;
+    /* Only SystemContext and GdiContext select the context class.  Every other
+     * bit describes an orthogonal capability: GPU virtual addressing, hardware
+     * queues, protected contexts, and bits added by later Windows releases.
+     * Treating an unrecognised bit as fatal made this DDI return
+     * STATUS_NOT_SUPPORTED, which is not a legal status for DxgkDdiCreateContext:
+     * dxgkrnl logs "Driver returned an invalid NTSTATUS code" and fails the
+     * D3D device creation that owns the context, which is why Direct3D could
+     * never open a device on this adapter.  Classify on the two class bits and
+     * carry the rest through untouched. */
+    const ULONG contextClassFlags = createContext->Flags.Value & ~VIOGPU_WDDM_CONTEXT_CLASS_FLAG_MASK;
+    const BOOLEAN systemContext = createContext->Flags.SystemContext != 0;
+    const BOOLEAN gdiContext = createContext->Flags.GdiContext != 0;
     const BOOLEAN hasPrivateData = createContext->pPrivateDriverData != NULL ||
                                    createContext->PrivateDriverDataSize != 0;
-    VIOGPU_WDDM_CONTEXT_TYPE contextType = VioGpuWddmContextNative;
-    if (!createContext->Flags.SystemContext && !createContext->Flags.GdiContext && contextClassFlags == 0)
+    if (contextClassFlags != 0)
+    {
+        /* Publish the flags dxgkrnl actually used so an unmodelled capability
+         * bit stays visible without a kernel debugger. */
+        device->Adapter->RecordNativeCreateContextDiagnostic(createContext->Flags.Value,
+                                                            createContext->NodeOrdinal,
+                                                            createContext->EngineAffinity,
+                                                            createContext->PrivateDriverDataSize);
+    }
+    VIOGPU_WDDM_CONTEXT_TYPE contextType;
+    if (systemContext && gdiContext)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    else if (systemContext)
+    {
+        contextType = VioGpuWddmContextSystem;
+    }
+    else if (gdiContext)
+    {
+        contextType = VioGpuWddmContextGdi;
+    }
+    else
     {
         /* The UMD CreateContext callback has no GDI selector.  Dxgkrnl sends
          * standard UMD contexts with no class flags or private payload, while
          * Native Context uses the same class flags plus the required ABI
          * payload. */
         contextType = hasPrivateData ? VioGpuWddmContextNative : VioGpuWddmContextGdi;
-    }
-    else if (createContext->Flags.SystemContext && !createContext->Flags.GdiContext && contextClassFlags == 1U)
-    {
-        contextType = VioGpuWddmContextSystem;
-    }
-    else if (createContext->Flags.GdiContext && !createContext->Flags.SystemContext && contextClassFlags == 2U)
-    {
-        contextType = VioGpuWddmContextGdi;
-    }
-    else
-    {
-        return STATUS_NOT_SUPPORTED;
     }
 
     VIOGPU_WDDM_CONTEXT_CREATE privateData = {};

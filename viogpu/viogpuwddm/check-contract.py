@@ -7593,13 +7593,15 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     create_requirements = (
         "KeGetCurrentIrql()!=PASSIVE_LEVEL",
         "createContext->EngineAffinity!=1",
-        "constULONGcontextClassFlags=createContext->Flags.Value&~4;",
+        "constULONGcontextClassFlags=createContext->Flags.Value&~VIOGPU_WDDM_CONTEXT_CLASS_FLAG_MASK;",
+        "constBOOLEANsystemContext=createContext->Flags.SystemContext!=0;",
+        "constBOOLEANgdiContext=createContext->Flags.GdiContext!=0;",
         "constBOOLEANhasPrivateData=createContext->pPrivateDriverData!=NULL||createContext->PrivateDriverDataSize!=0;",
-        "if(!createContext->Flags.SystemContext&&!createContext->Flags.GdiContext&&contextClassFlags==0){contextType=hasPrivateData?VioGpuWddmContextNative:VioGpuWddmContextGdi;}",
-        "elseif(createContext->Flags.SystemContext&&!createContext->Flags.GdiContext&&contextClassFlags==1)",
+        "device->Adapter->RecordNativeCreateContextDiagnostic(createContext->Flags.Value,createContext->NodeOrdinal,createContext->EngineAffinity,createContext->PrivateDriverDataSize);",
+        "if(systemContext&&gdiContext){returnSTATUS_INVALID_PARAMETER;}",
         "contextType=VioGpuWddmContextSystem;",
-        "elseif(createContext->Flags.GdiContext&&!createContext->Flags.SystemContext&&contextClassFlags==2)",
         "contextType=VioGpuWddmContextGdi;",
+        "contextType=hasPrivateData?VioGpuWddmContextNative:VioGpuWddmContextGdi;",
         "if(contextType==VioGpuWddmContextNative)",
         "createContext->pPrivateDriverData==NULL",
         "createContext->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_CONTEXT_CREATE)",
@@ -7619,6 +7621,11 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     for fragment in create_requirements:
         if create.count(fragment) != 1:
             fail(f"CreateContext must enforce exact native, system, and GDI context contracts: {fragment}")
+    if "returnSTATUS_NOT_SUPPORTED;" in create:
+        fail(
+            "CreateContext must not return STATUS_NOT_SUPPORTED: dxgkrnl rejects it as an "
+            "invalid NTSTATUS and fails the owning D3D device creation"
+        )
     if "ProbeForRead(" in create:
         fail("CreateContext must snapshot dxgkrnl-owned private data without probing it as a user address")
     create_snapshot = create.find("RtlCopyMemory(&privateData,createContext->pPrivateDriverData,sizeof(privateData));")

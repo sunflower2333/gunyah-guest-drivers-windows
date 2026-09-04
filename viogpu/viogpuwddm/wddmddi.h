@@ -268,6 +268,10 @@ enum VIOGPU_WDDM_CONTEXT_TYPE : LONG
     VioGpuWddmContextGdi,
 };
 
+/* DXGK_CREATECONTEXTFLAGS bits that select the context class.  All other bits
+ * describe orthogonal capabilities and must not affect classification. */
+#define VIOGPU_WDDM_CONTEXT_CLASS_FLAG_MASK 0x3U
+
 enum VIOGPU_WDDM_CONTEXT_DESTROY_STATE : LONG
 {
     VioGpuWddmContextDestroyActive = 0,

@@ -1139,6 +1139,10 @@ class VioGpuDod
                                                 _In_ NTSTATUS status,
                                                 _In_ UINT inputDataSize,
                                                 _In_ UINT outputDataSize);
+    VOID RecordNativeCreateContextDiagnostic(_In_ ULONG flags,
+                                             _In_ UINT nodeOrdinal,
+                                             _In_ UINT engineAffinity,
+                                             _In_ UINT privateDataSize);
     VOID RecordNativePresentDiagnostic(_In_ DWORD reason,
                                        _In_ NTSTATUS status,
                                        _In_ const VIOGPU_NATIVE_PRESENT_DIAGNOSTIC *diagnostic);
