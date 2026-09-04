@@ -3480,8 +3480,17 @@ def check_native_context_readiness(
         or len(re.findall(r"\bInterlockedIncrement64\s*\(\s*&m_NativeContextResetGeneration\s*\)", viogpu_code)) != 4
     ):
         fail("every internal generation advance must immediately advance the 64-bit reset generation")
-    if canonical_code(viogpu_code).count("m_NativeContextResetGeneration=0;") != 1:
-        fail("the adapter must initialize its 64-bit reset generation exactly once")
+    # The reset generation is a validity token, not a failure count: zero means
+    # "no valid generation" and every 2D submission path plus
+    # CompleteNativeContextInitialization refuses while it reads zero.  Since only
+    # the failure paths advance it, initializing to zero left a clean adapter
+    # unable to submit any 2D work until something had already failed.
+    if canonical_code(viogpu_code).count("m_NativeContextResetGeneration=1;") != 1 or \
+       "m_NativeContextResetGeneration=0;" in canonical_code(viogpu_code):
+        fail(
+            "the adapter must initialize its 64-bit reset generation exactly once, "
+            "to the first valid generation and never to zero"
+        )
     if compact_code("DECLSPEC_ALIGN(8) volatile LONG64 m_NativeContextResetGeneration;") not in compact_code(
         viogpu_header_code
     ):

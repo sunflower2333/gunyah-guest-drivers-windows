@@ -6637,7 +6637,16 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
 #endif
     m_NativeContextState = VioGpuNativeContextOffline;
     m_NativeContextGeneration = 0;
-    m_NativeContextResetGeneration = 0;
+    /* The reset generation is a validity token, not a failure count: zero means
+     * "no valid generation", and every 2D submission path plus
+     * CompleteNativeContextInitialization refuses while it reads zero.  The only
+     * writers that advance it are the failure paths, so starting at zero meant a
+     * clean adapter could never declare the Native Context ready and could never
+     * submit SET_SCANOUT, RESOURCE_CREATE_2D or TRANSFER/FLUSH - the 2D path only
+     * came alive after something had already failed once.  Start at the first
+     * valid generation so a healthy adapter is usable, and let the failure paths
+     * advance it from there as they already do. */
+    m_NativeContextResetGeneration = 1;
     m_InterruptDispatchEnabled = FALSE;
     m_bVirtioInitialized = FALSE;
     m_bQueuesInitialized = FALSE;
