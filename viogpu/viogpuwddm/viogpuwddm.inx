@@ -69,14 +69,7 @@ HKR,,UsePhysicalMemory,%REG_DWORD%,0
 HKR,,UsePresentProgress,%REG_DWORD%,0
 HKR,,RenderOnly,%REG_DWORD%,1
 HKR,,UserModeDriverName,%REG_MULTI_SZ%,"%13%\viogpud3d.dll","%13%\viogpud3d.dll","%13%\viogpud3d.dll"
-; InstalledDisplayDrivers is the XDDM-era display-driver list.  A WDDM
-; miniport publishes its user-mode driver through UserModeDriverName alone;
-; carrying the legacy value as well makes this adapter describe two different
-; driver models at once, which is a candidate cause of the
-; STATUS_GRAPHICS_DRIVER_MISMATCH (0xC01E0009) that
-; D3DKMTQueryAdapterInfo(KMTQAITYPE_UMDRIVERNAME) returns for every
-; KMTUMDVERSION on this adapter, leaving Direct3D with no user-mode driver to
-; load at all.
+HKR,,InstalledDisplayDrivers,%REG_MULTI_SZ%,viogpud3d,viogpud3d,viogpud3d
 
 [VioGpuWddm_RetiredDeviceSettings]
 HKR,,RequireRestrictedDma
