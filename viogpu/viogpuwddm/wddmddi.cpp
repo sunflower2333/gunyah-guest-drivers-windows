@@ -3487,8 +3487,19 @@ static NTSTATUS QuerySegmentVersioned(VioGpuDod *adapter, const DXGKARG_QUERYADA
 
 NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
 {
+    /* Accept any buffer that can hold the ABI header rather than demanding an
+     * exact sizeof(VIOGPU_WDDM_ADAPTER_INFO).  Requiring equality made this
+     * query fail STATUS_GRAPHICS_DRIVER_MISMATCH for every user-mode driver not
+     * compiled against this exact revision of the structure - including the
+     * shipped Mesa d3d10umd/Zink build, which knows nothing about it - so the
+     * adapter could never complete the private-data handshake that Direct3D
+     * device creation depends on, and D3D11CreateDevice returned
+     * DXGI_ERROR_UNSUPPORTED on this adapter at every feature level.  The
+     * header carries its own Size, so a caller with a smaller buffer gets the
+     * prefix that fits and can re-query once it knows the full extent. */
     if (adapter == NULL || queryAdapterInfo->pInputData != NULL || queryAdapterInfo->InputDataSize != 0 ||
-        queryAdapterInfo->pOutputData == NULL || queryAdapterInfo->OutputDataSize != sizeof(VIOGPU_WDDM_ADAPTER_INFO))
+        queryAdapterInfo->pOutputData == NULL ||
+        queryAdapterInfo->OutputDataSize < sizeof(VIOGPU_WDDM_ABI_HEADER))
     {
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
@@ -3513,8 +3524,11 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
             return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
 
-    VIOGPU_WDDM_ADAPTER_INFO *adapterInfo = static_cast<VIOGPU_WDDM_ADAPTER_INFO *>(queryAdapterInfo->pOutputData);
-    RtlZeroMemory(adapterInfo, sizeof(*adapterInfo));
+    /* Build the reply locally at full extent, then copy only what the caller's
+     * buffer can hold: writing through a VIOGPU_WDDM_ADAPTER_INFO* aimed at a
+     * shorter buffer would overrun it. */
+    VIOGPU_WDDM_ADAPTER_INFO local = {};
+    VIOGPU_WDDM_ADAPTER_INFO *adapterInfo = &local;
     InitializeAbiHeader(&adapterInfo->Header, sizeof(*adapterInfo));
     adapterInfo->Capabilities = VIOGPU_WDDM_CAPABILITIES_NONE;
     adapterInfo->ResetGeneration = resetGeneration;
@@ -3534,6 +3548,10 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
     adapterInfo->UcheTrapBase = capset.msm.uche_trap_base;
     adapterInfo->HasRayTracing = hasRayTracing;
     adapterInfo->MaxFrequency = capset.msm.max_freq;
+
+    size_t copyLength = queryAdapterInfo->OutputDataSize < sizeof(local) ? queryAdapterInfo->OutputDataSize
+                                                                        : sizeof(local);
+    RtlCopyMemory(queryAdapterInfo->pOutputData, &local, copyLength);
     return STATUS_SUCCESS;
 }
 

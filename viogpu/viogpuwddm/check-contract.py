@@ -7495,17 +7495,35 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         fail("ARM64 workflow must run the WDDM private ABI MSVC endpoint gate exactly once")
 
     query = canonical_code(function_body("QueryUmdPrivateInfo", WDDM_DDI_CODE))
+    # An exact output-size test rejected every user-mode driver not compiled
+    # against this revision of VIOGPU_WDDM_ADAPTER_INFO - including the shipped
+    # Mesa d3d10umd/Zink build - with STATUS_GRAPHICS_DRIVER_MISMATCH, so no D3D
+    # device could ever open on this adapter.  Require only that the caller can
+    # hold the self-describing ABI header.
     query_guard = (
         "adapter==NULL||queryAdapterInfo->pInputData!=NULL||queryAdapterInfo->InputDataSize!=0||"
         "queryAdapterInfo->pOutputData==NULL||"
-        "queryAdapterInfo->OutputDataSize!=sizeof(VIOGPU_WDDM_ADAPTER_INFO)"
+        "queryAdapterInfo->OutputDataSize<sizeof(VIOGPU_WDDM_ABI_HEADER)"
     )
     if query.count(query_guard) != 1 or query.count("adapterInfo->Capabilities=VIOGPU_WDDM_CAPABILITIES_NONE;") != 1:
-        fail("UMDRIVERPRIVATE must require zero input, exact output size, and zero capabilities")
-    zero_output = query.find("RtlZeroMemory(adapterInfo,sizeof(*adapterInfo));")
+        fail("UMDRIVERPRIVATE must require zero input, a header-sized output, and zero capabilities")
+    if "OutputDataSize!=sizeof(VIOGPU_WDDM_ADAPTER_INFO)" in query:
+        fail("UMDRIVERPRIVATE must not demand an exact VIOGPU_WDDM_ADAPTER_INFO output size")
+    # The reply is built locally and copied at the caller's length, so a short
+    # buffer cannot be overrun through a full-structure pointer.
+    for fragment in (
+        "VIOGPU_WDDM_ADAPTER_INFOlocal={};",
+        "InitializeAbiHeader(&adapterInfo->Header,sizeof(*adapterInfo));",
+        "RtlCopyMemory(queryAdapterInfo->pOutputData,&local,copyLength);",
+    ):
+        if query.count(fragment) != 1:
+            fail(f"UMDRIVERPRIVATE must build its reply locally and copy the fitting prefix: {fragment}")
+    # The local reply is zero-initialized at declaration, which covers the whole
+    # structure including any padding, before the header is stamped.
+    zero_output = query.find("VIOGPU_WDDM_ADAPTER_INFOlocal={};")
     initialize_header = query.find("InitializeAbiHeader(&adapterInfo->Header,sizeof(*adapterInfo));")
     if min(zero_output, initialize_header) < 0 or zero_output > initialize_header:
-        fail("UMDRIVERPRIVATE must initialize and zero the complete current pre-v1 output")
+        fail("UMDRIVERPRIVATE must zero the complete reply before stamping the ABI header")
     if query.count("adapterInfo->ResetGeneration=resetGeneration;") != 1 or query.count(
         "adapter->QueryNativeContextReadiness(&capset,NULL,NULL,&resetGeneration)"
     ) != 1:
