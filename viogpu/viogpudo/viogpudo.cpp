@@ -2490,8 +2490,7 @@ NTSTATUS VioGpuDod::ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In
         default:
             /* Report an unmodelled type with a status this DDI is allowed to
              * return, and publish it so it stays visible. */
-            RecordNativeControlInterruptDiagnostic(static_cast<ULONG>(interruptType),
-                                                   enableInterrupt ? 1U : 0U);
+            RecordNativeControlInterruptDiagnostic(static_cast<ULONG>(interruptType), enableInterrupt ? 1U : 0U);
             return STATUS_INVALID_PARAMETER;
     }
 
@@ -2711,9 +2710,8 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                pQueryAdapterInfo->Type,
                pQueryAdapterInfo->OutputDataSize,
 #if defined(VIOGPU_NATIVE_CONTEXT)
-               pQueryAdapterInfo->OutputDataSize >= sizeof(DXGK_DRIVERCAPS)
-                   ? (ULONG)sizeof(DXGK_DRIVERCAPS)
-                   : VIOGPU_WIN7_DRIVERCAPS_SIZE,
+               pQueryAdapterInfo->OutputDataSize >= sizeof(DXGK_DRIVERCAPS) ? (ULONG)sizeof(DXGK_DRIVERCAPS)
+                                                                            : VIOGPU_WIN7_DRIVERCAPS_SIZE,
 #else
                (ULONG)sizeof(DXGK_DRIVERCAPS),
 #endif
@@ -5255,9 +5253,13 @@ VOID VioGpuDod::RecordNativeAllocationRangeDiagnostic(_In_ NTSTATUS status,
     writes[7] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeCollisionContextId", &collisionContext);
     writes[8] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeCount", &rangeCount);
     writes[9] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeRegistrationState", &registrationState);
-    writes[10] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeRegistrationReferences", &registrationReferences);
+    writes[10] = WriteRegistryDWORD(deviceKey,
+                                    L"NativeContextAllocationRangeRegistrationReferences",
+                                    &registrationReferences);
     writes[11] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeAllocationDestroying", &destroying);
-    writes[12] = WriteRegistryDWORD(deviceKey, L"NativeContextAllocationRangeAllocationHostState", &allocationHostState);
+    writes[12] = WriteRegistryDWORD(deviceKey,
+                                    L"NativeContextAllocationRangeAllocationHostState",
+                                    &allocationHostState);
     DWORD reasonValue = reason;
     NTSTATUS reasonWrite = STATUS_SUCCESS;
     for (UINT index = 0; index < ARRAYSIZE(writes); ++index)
@@ -5277,7 +5279,8 @@ VOID VioGpuDod::RecordNativeAllocationRangeDiagnostic(_In_ NTSTATUS status,
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                NT_SUCCESS(reasonWrite) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
                "viogpu native allocation range diagnostic: status=0x%08X reason=%u ranges=%u "
-               "requested=0x%llX collision=0x%llX/%u resource=%u context=%u registration=%u/%u destroying=%u host=%u writes=0x%08X\n",
+               "requested=0x%llX collision=0x%llX/%u resource=%u context=%u registration=%u/%u destroying=%u host=%u "
+               "writes=0x%08X\n",
                statusValue,
                reason,
                rangeCount,
@@ -5362,38 +5365,152 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
         PCWSTR Name;
         PDWORD Value;
     } writes[] = {
-        {L"NativeUnansweredPresentRoundTrips", &unansweredPresentRoundTrips},
-        {L"NativeNotifyFailureReason", &notifyFailureReason},
-        {L"NativeNotifyFailureStatus", &notifyFailureStatus},
-        {L"NativeNotifyFailureCount", &notifyFailureCount},
-        {L"NativeCrtcVsyncEnabled", &crtcVsyncEnabled},
-        {L"NativeCrtcVsyncDelivered", &crtcVsyncDelivered},
-        {L"NativePreemptDeferred", &preemptDeferred},
-        {L"NativePreemptReported", &preemptReported},
-        {L"NativePreemptReset", &preemptReset},
-        {L"NativeCompletionDropped", &completionDropped},
-        {L"NativeCompletionDroppedFenceId", &completionDroppedFence},
-        {L"NativeResetDeviceCallerRva", &resetDeviceCallerRva},
-        {L"NativeResetDeviceCount", &resetDeviceCount},
-        {L"NativeContextAllocationDestroyStage", &stage},
-        {L"NativeContextAllocationDestroyStatus", &statusValue},
-        {L"NativeContextAllocationDestroyDetail", &detail},
-        {L"NativeContextAllocationDestroyNativeContextPresent", &nativeContextValue},
-        {L"NativeContextAllocationDestroyContextRangePresent", &contextRangeValue},
-        {L"NativeContextAllocationDestroyContextRangeLinked", &contextRangeLinkedValue},
-        {L"NativeContextAllocationDestroyRegistrationState", &registrationState},
-        {L"NativeContextAllocationDestroyRegistrationReferences", &registrationReferences},
-        {L"NativeContextAllocationDestroyAllocationDestroying", &destroyingValue},
-        {L"NativeContextAllocationDestroyAllocationHostState", &allocationHostState},
-        {L"NativeContextAllocationDestroyContextId", &contextIdValue},
-        {L"NativeContextAllocationDestroyResourceId", &resourceIdValue},
-        {L"NativeContextAllocationDestroyRangeCount", &rangeCount},
-        {L"NativeContextAllocationDestroyRequestedIovaLow", &requestedLow},
-        {L"NativeContextAllocationDestroyRequestedIovaHigh", &requestedHigh},
-        {L"NativeContextAllocationDestroyRangeIovaLow", &rangeLow},
-        {L"NativeContextAllocationDestroyRangeIovaHigh", &rangeHigh},
-        {L"NativeContextAllocationDestroyRangeLengthLow", &lengthLow},
-        {L"NativeContextAllocationDestroyRangeLengthHigh", &lengthHigh},
+                                                                                                        {L"NativeUnansw"
+                                                                                                         L"eredPresentR"
+                                                                                                         L"oundTrips",
+                                                                                                         &unansweredPresentRoundTrips},
+                                                                                                        {L"NativeNotify"
+                                                                                                         L"FailureReaso"
+                                                                                                         L"n",
+                                                                                                         &notifyFailureReason},
+                                                                                                        {L"NativeNotify"
+                                                                                                         L"FailureStatu"
+                                                                                                         L"s",
+                                                                                                         &notifyFailureStatus},
+                                                                                                        {L"NativeNotify"
+                                                                                                         L"FailureCoun"
+                                                                                                         L"t",
+                                                                                                         &notifyFailureCount},
+                                                                                                        {L"NativeCrtcVs"
+                                                                                                         L"yncEnabled",
+                                                                                                         &crtcVsyncEnabled},
+                                                                                                        {L"NativeCrtcVs"
+                                                                                                         L"yncDelivere"
+                                                                                                         L"d",
+                                                                                                         &crtcVsyncDelivered},
+                                                                                                        {L"NativePreemp"
+                                                                                                         L"tDeferred",
+                                                                                                         &preemptDeferred},
+                                                                                                        {L"NativePreemp"
+                                                                                                         L"tReported",
+                                                                                                         &preemptReported},
+                                                                                                        {L"NativePreemp"
+                                                                                                         L"tReset",
+                                                                                                         &preemptReset},
+                                                                                                        {L"NativeComple"
+                                                                                                         L"tionDropped",
+                                                                                                         &completionDropped},
+                                                                                                        {L"NativeComple"
+                                                                                                         L"tionDroppedF"
+                                                                                                         L"enceId",
+                                                                                                         &completionDroppedFence},
+                                                                                                        {L"NativeResetD"
+                                                                                                         L"eviceCallerR"
+                                                                                                         L"va",
+                                                                                                         &resetDeviceCallerRva},
+                                                                                                        {L"NativeResetD"
+                                                                                                         L"eviceCount",
+                                                                                                         &resetDeviceCount},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyStage",
+                                                                                                         &stage},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyStatu"
+                                                                                                         L"s",
+                                                                                                         &statusValue},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyDetai"
+                                                                                                         L"l",
+                                                                                                         &detail},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyNative"
+                                                                                                         L"ContextPrese"
+                                                                                                         L"nt",
+                                                                                                         &nativeContextValue},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyContex"
+                                                                                                         L"tRangePresen"
+                                                                                                         L"t",
+                                                                                                         &contextRangeValue},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyContex"
+                                                                                                         L"tRangeLinke"
+                                                                                                         L"d",
+                                                                                                         &contextRangeLinkedValue},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyRegist"
+                                                                                                         L"rationState",
+                                                                                                         &registrationState},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyRegist"
+                                                                                                         L"rationRefere"
+                                                                                                         L"nces",
+                                                                                                         &registrationReferences},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyAlloca"
+                                                                                                         L"tionDestroyi"
+                                                                                                         L"ng",
+                                                                                                         &destroyingValue},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyAlloca"
+                                                                                                         L"tionHostStat"
+                                                                                                         L"e",
+                                                                                                         &allocationHostState},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyContex"
+                                                                                                         L"tId",
+                                                                                                         &contextIdValue},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyResour"
+                                                                                                         L"ceId",
+                                                                                                         &resourceIdValue},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyRangeC"
+                                                                                                         L"ount",
+                                                                                                         &rangeCount},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyReques"
+                                                                                                         L"tedIovaLow",
+                                                                                                         &requestedLow},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyReques"
+                                                                                                         L"tedIovaHigh",
+                                                                                                         &requestedHigh},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyRangeI"
+                                                                                                         L"ovaLow",
+                                                                                                         &rangeLow},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyRangeI"
+                                                                                                         L"ovaHigh",
+                                                                                                         &rangeHigh},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyRangeL"
+                                                                                                         L"engthLow",
+                                                                                                         &lengthLow},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tAllocationD"
+                                                                                                         L"estroyRangeL"
+                                                                                                         L"engthHigh",
+                                                                                                         &lengthHigh},
     };
     NTSTATUS writeStatus = STATUS_SUCCESS;
     for (UINT index = 0; index < ARRAYSIZE(writes); ++index)
@@ -5958,13 +6075,32 @@ VOID VioGpuDod::RecordAdapterInfoTypeMap(void)
         PCWSTR Name;
         DWORD Value;
     } entries[] = {
-        {L"NativeQaiTypeUmdPrivate", static_cast<DWORD>(DXGKQAITYPE_UMDRIVERPRIVATE)},
-        {L"NativeQaiTypeDriverCaps", static_cast<DWORD>(DXGKQAITYPE_DRIVERCAPS)},
-        {L"NativeQaiTypeQuerySegment", static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT)},
-        {L"NativeQaiTypeQuerySegment2", static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT2)},
-        {L"NativeQaiTypeQuerySegment3", static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT3)},
-        {L"NativeQaiTypeNumPowerComponents", static_cast<DWORD>(DXGKQAITYPE_NUMPOWERCOMPONENTS)},
-        {L"NativeQaiType64BitOnlyCaps", static_cast<DWORD>(DXGKQAITYPE_64BITONLYCAPS)},
+                                                                                                        {L"NativeQaiTyp"
+                                                                                                         L"eUmdPrivate",
+                                                                                                         static_cast<DWORD>(DXGKQAITYPE_UMDRIVERPRIVATE)},
+                                                                                                        {L"NativeQaiTyp"
+                                                                                                         L"eDriverCaps",
+                                                                                                         static_cast<DWORD>(DXGKQAITYPE_DRIVERCAPS)},
+                                                                                                        {L"NativeQaiTyp"
+                                                                                                         L"eQuerySegmen"
+                                                                                                         L"t",
+                                                                                                         static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT)},
+                                                                                                        {L"NativeQaiTyp"
+                                                                                                         L"eQuerySegmen"
+                                                                                                         L"t2",
+                                                                                                         static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT2)},
+                                                                                                        {L"NativeQaiTyp"
+                                                                                                         L"eQuerySegmen"
+                                                                                                         L"t3",
+                                                                                                         static_cast<DWORD>(DXGKQAITYPE_QUERYSEGMENT3)},
+                                                                                                        {L"NativeQaiTyp"
+                                                                                                         L"eNumPowerCom"
+                                                                                                         L"ponents",
+                                                                                                         static_cast<DWORD>(DXGKQAITYPE_NUMPOWERCOMPONENTS)},
+                                                                                                        {L"NativeQaiTyp"
+                                                                                                         L"e64BitOnlyCa"
+                                                                                                         L"ps",
+                                                                                                         static_cast<DWORD>(DXGKQAITYPE_64BITONLYCAPS)},
     };
 
     for (ULONG index = 0; index < ARRAYSIZE(entries); ++index)
@@ -6011,6 +6147,31 @@ VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state, _In_ U
                    generationWrite,
                    callerWrite);
     }
+}
+
+VOID VioGpuDod::RecordNativeReadinessDiagnostic(void)
+{
+    PAGED_CODE();
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (adapter == NULL)
+    {
+        return;
+    }
+
+    HANDLE deviceKey = NULL;
+    NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
+    if (!NT_SUCCESS(openStatus))
+    {
+        return;
+    }
+
+    DWORD stateValue = adapter->NativeReadinessObservedState();
+    DWORD maskValue = adapter->NativeReadinessFailMask();
+    WriteRegistryDWORD(deviceKey, L"NativeReadinessObservedState", &stateValue);
+    // Mask is written last so it commits the state value that belongs with it.
+    WriteRegistryDWORD(deviceKey, L"NativeReadinessFailMask", &maskValue);
+    ZwClose(deviceKey);
 }
 
 VOID VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
@@ -6060,9 +6221,9 @@ VOID VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
 }
 
 VOID VioGpuDod::RecordNativeCreateContextDiagnostic(_In_ ULONG flags,
-                                                   _In_ UINT nodeOrdinal,
-                                                   _In_ UINT engineAffinity,
-                                                   _In_ UINT privateDataSize)
+                                                    _In_ UINT nodeOrdinal,
+                                                    _In_ UINT engineAffinity,
+                                                    _In_ UINT privateDataSize)
 {
     PAGED_CODE();
 
@@ -6127,9 +6288,10 @@ VOID VioGpuDod::RecordNativeGdiIdentityDiagnostic(_In_ DWORD terms,
     NTSTATUS contextWrite = WriteRegistryDWORD(deviceKey, L"NativeGdiIdentityContextId", &contextValue);
     NTSTATUS generationWrite = WriteRegistryDWORD(deviceKey, L"NativeGdiIdentityContextGeneration", &generationValue);
     /* Terms last: a reader that sees a non-zero terms word has the whole record. */
-    NTSTATUS termsWrite = NT_SUCCESS(blobWrite) && NT_SUCCESS(contextWrite) && NT_SUCCESS(generationWrite)
-                              ? WriteRegistryDWORD(deviceKey, L"NativeGdiIdentityTerms", &termsValue)
-                              : blobWrite;
+    NTSTATUS termsWrite = NT_SUCCESS(blobWrite) && NT_SUCCESS(contextWrite) && NT_SUCCESS(generationWrite) ? WriteRegistryDWORD(deviceKey,
+                                                                                                                                L"NativeGdiIdentityTerms",
+                                                                                                                                &termsValue)
+                                                                                                           : blobWrite;
     ZwClose(deviceKey);
 
     if (!NT_SUCCESS(termsWrite))
@@ -6195,10 +6357,11 @@ VOID VioGpuDod::RecordNative2DBackingDiagnostic(_In_ DWORD stage,
     NTSTATUS heightWrite = WriteRegistryDWORD(deviceKey, L"Native2DBackingHeight", &heightValue);
     NTSTATUS sizeWrite = WriteRegistryDWORD(deviceKey, L"Native2DBackingSizeLow", &sizeValue);
     /* Stage last: a reader that sees a non-zero stage has the whole record. */
-    NTSTATUS stageWrite = NT_SUCCESS(detailWrite) && NT_SUCCESS(resourceWrite) && NT_SUCCESS(widthWrite) &&
-                                  NT_SUCCESS(heightWrite) && NT_SUCCESS(sizeWrite)
-                              ? WriteRegistryDWORD(deviceKey, L"Native2DBackingStage", &stageValue)
-                              : detailWrite;
+    NTSTATUS stageWrite = NT_SUCCESS(detailWrite) && NT_SUCCESS(resourceWrite) && NT_SUCCESS(widthWrite) && NT_SUCCESS(heightWrite) && NT_SUCCESS(sizeWrite)
+                                                                                                                              ? WriteRegistryDWORD(deviceKey,
+                                                                                                                                                   L"Native2DBackingStage",
+                                                                                                                                                   &stageValue)
+                                                                                                                              : detailWrite;
     ZwClose(deviceKey);
 
     if (!NT_SUCCESS(stageWrite))
@@ -6926,6 +7089,8 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
      * valid generation so a healthy adapter is usable, and let the failure paths
      * advance it from there as they already do. */
     m_NativeContextResetGeneration = 1;
+    m_NativeReadinessFailMask = 0;
+    m_NativeReadinessObservedState = 0;
     m_InterruptDispatchEnabled = FALSE;
     m_bVirtioInitialized = FALSE;
     m_bQueuesInitialized = FALSE;
@@ -7527,12 +7692,46 @@ _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN VioGpuAdapter::QueryNativeContextRea
     KeAcquireSpinLock(&m_NativeContextReadinessLock, &oldIrql);
     LONG generation = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
     ULONGLONG currentResetGeneration = (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0);
-    ready = InterlockedCompareExchange(&m_NativeContextState,
-                                       VioGpuNativeContextOffline,
-                                       VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
-            m_NativeContextReadiness.Ready && m_NativeContextReadiness.Generation == generation &&
+    const LONG observedState = InterlockedCompareExchange(&m_NativeContextState,
+                                                          VioGpuNativeContextOffline,
+                                                          VioGpuNativeContextOffline);
+    ready = observedState == VioGpuNativeContextReady && m_NativeContextReadiness.Ready &&
+            m_NativeContextReadiness.Generation == generation &&
             m_NativeContextReadiness.ResetGeneration == currentResetGeneration && currentResetGeneration != 0 &&
             m_CtrlQueue.IsSynchronousRequestsHealthy();
+    if (!ready)
+    {
+        /* Readiness is six independent conditions but the caller only sees one
+         * BOOLEAN, so a STATUS_DEVICE_NOT_READY out of QueryUmdPrivateInfo could not
+         * be attributed to any of them.  Latch which ones failed. */
+        LONG mask = 0;
+        if (observedState != VioGpuNativeContextReady)
+        {
+            mask |= VIOGPU_READINESS_FAIL_STATE;
+        }
+        if (!m_NativeContextReadiness.Ready)
+        {
+            mask |= VIOGPU_READINESS_FAIL_NOT_PUBLISHED;
+        }
+        if (m_NativeContextReadiness.Generation != generation)
+        {
+            mask |= VIOGPU_READINESS_FAIL_GENERATION;
+        }
+        if (m_NativeContextReadiness.ResetGeneration != currentResetGeneration)
+        {
+            mask |= VIOGPU_READINESS_FAIL_RESET_GENERATION;
+        }
+        if (currentResetGeneration == 0)
+        {
+            mask |= VIOGPU_READINESS_FAIL_RESET_ZERO;
+        }
+        if (!m_CtrlQueue.IsSynchronousRequestsHealthy())
+        {
+            mask |= VIOGPU_READINESS_FAIL_SYNC_UNHEALTHY;
+        }
+        InterlockedExchange(&m_NativeReadinessFailMask, mask);
+        InterlockedExchange(&m_NativeReadinessObservedState, observedState);
+    }
     if (ready)
     {
         *capset = m_NativeContextReadiness.Capset;
@@ -8446,8 +8645,11 @@ VioGpuAdapter::CloseNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER 
 
     ULONG sequence = owner->LastControlSeqno + 1;
     VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC closeDiagnostic = {};
-    if (!VioGpuSeedNativeControlResponse(this, owner, sequence,
-                                         sizeof(MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP), &closeDiagnostic))
+    if (!VioGpuSeedNativeControlResponse(this,
+                                         owner,
+                                         sequence,
+                                         sizeof(MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP),
+                                         &closeDiagnostic))
     {
         /* Seeding only touches this owner's control window, so a failure here
          * is scoped to this context exactly like the post-submit cases below. */
@@ -8477,7 +8679,11 @@ VioGpuAdapter::CloseNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER 
     }
 
     MSM_CCMD_IOCTL_SIMPLE_SUBMITQUEUE_CLOSE_RSP response = {};
-    BOOLEAN copied = VioGpuCopyNativeControlResponse(this, owner, sequence, &response, sizeof(response),
+    BOOLEAN copied = VioGpuCopyNativeControlResponse(this,
+                                                     owner,
+                                                     sequence,
+                                                     &response,
+                                                     sizeof(response),
                                                      &closeDiagnostic);
     if (!copied || response.ret != 0)
     {

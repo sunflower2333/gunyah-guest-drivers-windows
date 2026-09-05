@@ -141,6 +141,19 @@ enum VIOGPU_NATIVE_START_STAGE : DWORD
     VioGpuNativeStartComplete = 0x0FFF,
 };
 
+/* Which condition made VioGpuAdapter::QueryNativeContextReadiness() answer FALSE.
+ * Readiness is a conjunction of six independent facts and every caller only saw the
+ * single BOOLEAN, so a STATUS_DEVICE_NOT_READY reaching user mode was unattributable. */
+enum VIOGPU_READINESS_FAIL : DWORD
+{
+    VIOGPU_READINESS_FAIL_STATE = 1U << 0,            // m_NativeContextState != Ready
+    VIOGPU_READINESS_FAIL_NOT_PUBLISHED = 1U << 1,    // readiness snapshot not published
+    VIOGPU_READINESS_FAIL_GENERATION = 1U << 2,       // context generation moved
+    VIOGPU_READINESS_FAIL_RESET_GENERATION = 1U << 3, // reset generation moved
+    VIOGPU_READINESS_FAIL_RESET_ZERO = 1U << 4,       // reset generation still zero
+    VIOGPU_READINESS_FAIL_SYNC_UNHEALTHY = 1U << 5,   // control queue not healthy
+};
+
 enum VIOGPU_NATIVE_CONTEXT_CREATE_STAGE : DWORD
 {
     VioGpuNativeContextCreateEntered = 0x0100,
@@ -552,6 +565,19 @@ class VioGpuAdapter : IVioGpuPCI
                                                                             _Out_opt_ UINT *capsetVersion,
                                                                             _Out_opt_ UINT *capsetSize,
                                                                             _Out_opt_ ULONGLONG *resetGeneration);
+
+    DWORD NativeReadinessFailMask(void) const
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(const_cast<volatile LONG *>(&m_NativeReadinessFailMask),
+                                                             0,
+                                                             0));
+    }
+    DWORD NativeReadinessObservedState(void) const
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(const_cast<volatile LONG *>(&m_NativeReadinessObservedState),
+                                                             0,
+                                                             0));
+    }
     __declspec(code_seg(".text")) NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
                                                                _In_ ULONGLONG expectedResetGeneration);
     __declspec(code_seg(".text")) NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
@@ -728,6 +754,11 @@ class VioGpuAdapter : IVioGpuPCI
 #endif
     volatile LONG m_NativeContextState;
     volatile LONG m_NativeContextGeneration;
+    /* Why the last QueryNativeContextReadiness() said no.  Readiness has six
+     * independent conditions and the caller only ever saw a single BOOLEAN, so a
+     * STATUS_DEVICE_NOT_READY could not be attributed to any of them. */
+    volatile LONG m_NativeReadinessFailMask;
+    volatile LONG m_NativeReadinessObservedState;
     DECLSPEC_ALIGN(8) volatile LONG64 m_NativeContextResetGeneration;
     volatile LONG m_InterruptDispatchEnabled;
     BOOLEAN m_bVirtioInitialized;
@@ -1255,21 +1286,21 @@ class VioGpuDod
                                                _In_ BOOLEAN allocationDestroying,
                                                _In_ DWORD allocationHostState);
     VOID RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
-                                                  _In_ NTSTATUS status,
-                                                  _In_ DWORD detail,
-                                                  _In_ BOOLEAN nativeContextPresent,
-                                                  _In_ BOOLEAN contextRangePresent,
-                                                  _In_ BOOLEAN contextRangeLinked,
-                                                  _In_ DWORD registrationState,
-                                                  _In_ DWORD registrationReferences,
-                                                  _In_ BOOLEAN allocationDestroying,
-                                                  _In_ DWORD allocationHostState,
-                                                  _In_ UINT contextId,
-                                                  _In_ UINT resourceId,
-                                                  _In_ DWORD rangeCount,
-                                                  _In_ ULONGLONG requestedIova,
-                                                  _In_ ULONGLONG rangeIova,
-                                                  _In_ SIZE_T rangeLength);
+                                                 _In_ NTSTATUS status,
+                                                 _In_ DWORD detail,
+                                                 _In_ BOOLEAN nativeContextPresent,
+                                                 _In_ BOOLEAN contextRangePresent,
+                                                 _In_ BOOLEAN contextRangeLinked,
+                                                 _In_ DWORD registrationState,
+                                                 _In_ DWORD registrationReferences,
+                                                 _In_ BOOLEAN allocationDestroying,
+                                                 _In_ DWORD allocationHostState,
+                                                 _In_ UINT contextId,
+                                                 _In_ UINT resourceId,
+                                                 _In_ DWORD rangeCount,
+                                                 _In_ ULONGLONG requestedIova,
+                                                 _In_ ULONGLONG rangeIova,
+                                                 _In_ SIZE_T rangeLength);
     VOID RecordNativeContextCreateResponseDiagnostic(_In_ const VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC *diagnostic);
     VOID RecordNativeContextMapResponseDiagnostic(_In_ const VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC *diagnostic);
     VOID RecordNativeContextParameterDiagnostic(_Inout_ PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic);
@@ -1286,6 +1317,7 @@ class VioGpuDod
                                                 _In_ LONG hostResult,
                                                 _In_ ULONG stage,
                                                 _In_ ULONG detail);
+    VOID RecordNativeReadinessDiagnostic(void);
     VOID RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                 _In_ NTSTATUS status,
                                                 _In_ UINT inputDataSize,

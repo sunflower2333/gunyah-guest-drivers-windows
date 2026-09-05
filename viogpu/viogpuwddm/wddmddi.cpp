@@ -528,8 +528,8 @@ VOID RecordNativeAllocationDestroyState(_In_ VioGpuDod *adapter,
         if (registration != NULL)
         {
             registrationState = static_cast<DWORD>(InterlockedCompareExchange(&registration->State,
-                                                                                VioGpuNativeContextDead,
-                                                                                VioGpuNativeContextDead));
+                                                                              VioGpuNativeContextDead,
+                                                                              VioGpuNativeContextDead));
             registrationReferences = registration->AllocationReferences;
         }
         if (range != NULL)
@@ -548,21 +548,21 @@ VOID RecordNativeAllocationDestroyState(_In_ VioGpuDod *adapter,
     }
 
     adapter->RecordNativeAllocationDestroyDiagnostic(stage,
-                                                      status,
-                                                      detail,
-                                                      allocation->NativeContext != NULL,
-                                                      rangePresent,
-                                                      rangeLinked,
-                                                      registrationState,
-                                                      registrationReferences,
-                                                      allocation->Destroying,
-                                                      allocation->HostState,
-                                                      allocation->ContextId,
-                                                      allocation->ResourceId,
-                                                      rangeCount,
-                                                      allocation->PrivateData.RequestedIova,
-                                                      rangeIova,
-                                                      rangeLength);
+                                                     status,
+                                                     detail,
+                                                     allocation->NativeContext != NULL,
+                                                     rangePresent,
+                                                     rangeLinked,
+                                                     registrationState,
+                                                     registrationReferences,
+                                                     allocation->Destroying,
+                                                     allocation->HostState,
+                                                     allocation->ContextId,
+                                                     allocation->ResourceId,
+                                                     rangeCount,
+                                                     allocation->PrivateData.RequestedIova,
+                                                     rangeIova,
+                                                     rangeLength);
 }
 
 BOOLEAN HasLiveNativePresentIdentity(_In_ const VIOGPU_WDDM_ALLOCATION *allocation,
@@ -615,8 +615,8 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
     DWORD registrationReferences = 0;
     KeAcquireSpinLock(&registration->BindingLock, &oldIrql);
     registrationState = static_cast<DWORD>(InterlockedCompareExchange(&registration->State,
-                                                                        VioGpuNativeContextDead,
-                                                                        VioGpuNativeContextDead));
+                                                                      VioGpuNativeContextDead,
+                                                                      VioGpuNativeContextDead));
     registrationReferences = registration->AllocationReferences;
     BOOLEAN valid = registration->Adapter != NULL && registration->Adapter->GetVioGpu() == allocation->Adapter &&
                     registration->Owner != NULL && registration->Registered &&
@@ -667,17 +667,17 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
         if (allocation->Adapter != NULL)
         {
             allocation->Adapter->RecordNativeAllocationRangeDiagnostic(STATUS_DEVICE_BUSY,
-                                                                        rejectionReason,
-                                                                        rangeCount,
-                                                                        range->Iova,
-                                                                        collisionIova,
-                                                                        collisionLength,
-                                                                        collisionResourceId,
-                                                                        collisionContextId,
-                                                                        registrationState,
-                                                                        registrationReferences,
-                                                                        allocation->Destroying,
-                                                                        allocation->HostState);
+                                                                       rejectionReason,
+                                                                       rangeCount,
+                                                                       range->Iova,
+                                                                       collisionIova,
+                                                                       collisionLength,
+                                                                       collisionResourceId,
+                                                                       collisionContextId,
+                                                                       registrationState,
+                                                                       registrationReferences,
+                                                                       allocation->Destroying,
+                                                                       allocation->HostState);
         }
         delete range;
         return STATUS_DEVICE_BUSY;
@@ -828,11 +828,7 @@ NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
         return STATUS_INVALID_PARAMETER;
     }
     VioGpuDod *adapter = allocation->Adapter;
-    RecordNativeAllocationDestroyState(adapter,
-                                       VioGpuNativeAllocationDestroyEntered,
-                                       STATUS_PENDING,
-                                       0,
-                                       allocation);
+    RecordNativeAllocationDestroyState(adapter, VioGpuNativeAllocationDestroyEntered, STATUS_PENDING, 0, allocation);
     VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration = allocation->NativeContext;
     VIOGPU_WDDM_ALLOCATION_RANGE *range = allocation->ContextRange;
     if (registration == NULL || range == NULL)
@@ -842,18 +838,10 @@ NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
         {
             status = FinalizeDeferredNativeContextDestroy(allocation);
         }
-        RecordNativeAllocationDestroyState(adapter,
-                                           VioGpuNativeAllocationDestroyDetach,
-                                           status,
-                                           1,
-                                           allocation);
+        RecordNativeAllocationDestroyState(adapter, VioGpuNativeAllocationDestroyDetach, status, 1, allocation);
         if (status == STATUS_SUCCESS)
         {
-            RecordNativeAllocationDestroyState(adapter,
-                                               VioGpuNativeAllocationDestroyComplete,
-                                               status,
-                                               0,
-                                               allocation);
+            RecordNativeAllocationDestroyState(adapter, VioGpuNativeAllocationDestroyComplete, status, 0, allocation);
         }
         return status;
     }
@@ -900,11 +888,7 @@ NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
     }
     KeReleaseSpinLock(&registration->BindingLock, oldIrql);
     NTSTATUS status = valid ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
-    RecordNativeAllocationDestroyState(adapter,
-                                       VioGpuNativeAllocationDestroyDetach,
-                                       status,
-                                       2,
-                                       allocation);
+    RecordNativeAllocationDestroyState(adapter, VioGpuNativeAllocationDestroyDetach, status, 2, allocation);
     if (!valid)
     {
         return status;
@@ -916,11 +900,7 @@ NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
         RecordNativeAllocationDestroyState(adapter, VioGpuNativeAllocationDestroyDetach, status, 3, allocation);
         return status;
     }
-    RecordNativeAllocationDestroyState(adapter,
-                                       VioGpuNativeAllocationDestroyComplete,
-                                       STATUS_SUCCESS,
-                                       0,
-                                       allocation);
+    RecordNativeAllocationDestroyState(adapter, VioGpuNativeAllocationDestroyComplete, STATUS_SUCCESS, 0, allocation);
     return status;
 }
 
@@ -2327,9 +2307,9 @@ BOOLEAN ReconcileStandard2DAllocationAfterReset(VIOGPU_WDDM_ALLOCATION *allocati
  * four ways this can fail, so name them. */
 #define VIOGPU_2D_BACKING_STAGE_RECONCILE 1
 #define VIOGPU_2D_BACKING_STAGE_PLACEMENT 2
-#define VIOGPU_2D_BACKING_STAGE_FORMAT 3
-#define VIOGPU_2D_BACKING_STAGE_ENTRIES 4
-#define VIOGPU_2D_BACKING_STAGE_HOST 5
+#define VIOGPU_2D_BACKING_STAGE_FORMAT    3
+#define VIOGPU_2D_BACKING_STAGE_ENTRIES   4
+#define VIOGPU_2D_BACKING_STAGE_HOST      5
 
 DWORD BuildPresentPlacementDiagnosticState(_In_opt_ const VIOGPU_WDDM_ALLOCATION *allocation);
 
@@ -2413,8 +2393,7 @@ BOOLEAN ReconcileGdiSourcePlacementAfterReset(VIOGPU_WDDM_ALLOCATION *allocation
      * surface.  The GDI source class is left exactly as it is; a primary is
      * admitted alongside it. */
     if ((!IsGdiSourceAllocation(allocation) && !IsStandardPrimaryAllocation(allocation)) ||
-        allocation->Adapter == NULL || !allocation->PlacementValid ||
-        !EnsureStandard2DAllocationBacking(allocation))
+        allocation->Adapter == NULL || !allocation->PlacementValid || !EnsureStandard2DAllocationBacking(allocation))
     {
         return FALSE;
     }
@@ -3412,6 +3391,9 @@ NTSTATUS QuerySegment(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryA
     ULONGLONG resetGeneration = 0;
     if (!adapter->QueryNativeContextReadiness(&capset, NULL, NULL, &resetGeneration) || resetGeneration == 0)
     {
+        /* Record which readiness condition failed.  Without this the only evidence a
+         * user-mode driver has is STATUS_DEVICE_NOT_READY, which names none of them. */
+        adapter->RecordNativeReadinessDiagnostic();
         return STATUS_DEVICE_NOT_READY;
     }
 
@@ -3498,8 +3480,7 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
      * header carries its own Size, so a caller with a smaller buffer gets the
      * prefix that fits and can re-query once it knows the full extent. */
     if (adapter == NULL || queryAdapterInfo->pInputData != NULL || queryAdapterInfo->InputDataSize != 0 ||
-        queryAdapterInfo->pOutputData == NULL ||
-        queryAdapterInfo->OutputDataSize < sizeof(VIOGPU_WDDM_ABI_HEADER))
+        queryAdapterInfo->pOutputData == NULL || queryAdapterInfo->OutputDataSize < sizeof(VIOGPU_WDDM_ABI_HEADER))
     {
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
@@ -3550,7 +3531,7 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
     adapterInfo->MaxFrequency = capset.msm.max_freq;
 
     size_t copyLength = queryAdapterInfo->OutputDataSize < sizeof(local) ? queryAdapterInfo->OutputDataSize
-                                                                        : sizeof(local);
+                                                                         : sizeof(local);
     RtlCopyMemory(queryAdapterInfo->pOutputData, &local, copyLength);
     return STATUS_SUCCESS;
 }
@@ -4481,8 +4462,7 @@ VioGpuWddmGetStandardAllocationDriverData(CONST HANDLE hAdapter, DXGKARG_GETSTAN
                 VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
                 if (adapter != NULL)
                 {
-                    adapter->RecordNativeStandardAllocationDiagnostic(
-                        static_cast<ULONG>(data->StandardAllocationType));
+                    adapter->RecordNativeStandardAllocationDiagnostic(static_cast<ULONG>(data->StandardAllocationType));
                 }
                 return STATUS_INVALID_PARAMETER;
             }
@@ -4748,11 +4728,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
         VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
         BOOLEAN snapshotAcquired = FALSE;
         NTSTATUS status = AcquireAllocationLifecycleForDestroy(allocation);
-        RecordNativeAllocationDestroyState(adapter,
-                                           VioGpuNativeAllocationDestroyLifecycle,
-                                           status,
-                                           index,
-                                           allocation);
+        RecordNativeAllocationDestroyState(adapter, VioGpuNativeAllocationDestroyLifecycle, status, index, allocation);
         if (status == STATUS_SUCCESS)
         {
             if (allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE || allocation->Adapter != adapter)
@@ -5153,9 +5129,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
         /* Publish the flags dxgkrnl actually used so an unmodelled capability
          * bit stays visible without a kernel debugger. */
         device->Adapter->RecordNativeCreateContextDiagnostic(createContext->Flags.Value,
-                                                            createContext->NodeOrdinal,
-                                                            createContext->EngineAffinity,
-                                                            createContext->PrivateDriverDataSize);
+                                                             createContext->NodeOrdinal,
+                                                             createContext->EngineAffinity,
+                                                             createContext->PrivateDriverDataSize);
     }
     VIOGPU_WDDM_CONTEXT_TYPE contextType;
     if (systemContext && gdiContext)
@@ -9401,8 +9377,7 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
         if (result == VioGpuHostContextConfirmed)
         {
             /* The vsync report carries the primary dxgkrnl programmed here. */
-            adapter->SetCrtcVsyncPrimaryAddress(
-                static_cast<ULONGLONG>(setVidPnSourceAddress->PrimaryAddress.QuadPart));
+            adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(setVidPnSourceAddress->PrimaryAddress.QuadPart));
         }
         status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
     }
