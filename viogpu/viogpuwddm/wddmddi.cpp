@@ -3489,6 +3489,9 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
     ULONGLONG resetGeneration = 0;
     if (!adapter->QueryNativeContextReadiness(&capset, NULL, NULL, &resetGeneration) || resetGeneration == 0)
     {
+        /* Record which readiness condition refused.  Without this the only evidence a
+         * user-mode driver has is STATUS_DEVICE_NOT_READY, which names none of them. */
+        adapter->RecordNativeReadinessDiagnostic();
         return STATUS_DEVICE_NOT_READY;
     }
 
