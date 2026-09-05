@@ -772,6 +772,8 @@ class VioGpuDod
 #if defined(VIOGPU_NATIVE_CONTEXT)
     volatile LONG m_HardwareResetCallerRva;
     volatile LONG m_NativeContextFailCallerRva;
+    volatile LONG m_ResetDeviceCallerRva;
+    volatile LONG m_ResetDeviceCount;
     volatile LONG m_NativeNotifyFailureReason;
     volatile LONG m_NativeNotifyFailureStatus;
     volatile LONG m_NativeNotifyFailureCount;
@@ -1095,6 +1097,27 @@ class VioGpuDod
         {
             InterlockedExchange(&m_NativeContextFailCallerRva, static_cast<LONG>(callerRva));
         }
+    }
+    /* Every ResetDevice() path reaches FailNativeContextAtAnyIrql through the
+     * same frame, so the failure provenance above always resolves to
+     * ResetDevice+0x60 and cannot tell a scheduler preemption from a power
+     * transition or a TDR.  Record ResetDevice's own caller as well, and count
+     * the calls so a single boot-time reset is distinguishable from a loop. */
+    VOID RecordResetDeviceProvenance(_In_ ULONG_PTR callerRva)
+    {
+        InterlockedIncrement(&m_ResetDeviceCount);
+        if (callerRva != 0 && callerRva <= MAXULONG)
+        {
+            InterlockedExchange(&m_ResetDeviceCallerRva, static_cast<LONG>(callerRva));
+        }
+    }
+    DWORD ReadResetDeviceCallerRva(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_ResetDeviceCallerRva, 0, 0));
+    }
+    DWORD ReadResetDeviceCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_ResetDeviceCount, 0, 0));
     }
 #endif
     BOOLEAN IsHardwareInterruptDispatchAllowed(void) const

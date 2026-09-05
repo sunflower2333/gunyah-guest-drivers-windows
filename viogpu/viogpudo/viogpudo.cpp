@@ -183,6 +183,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     KeSetImportanceDpc(&m_CrtcVsyncDpc, MediumHighImportance);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     InterlockedExchange(&m_NativeContextFailCallerRva, 0);
+    InterlockedExchange(&m_ResetDeviceCallerRva, 0);
+    InterlockedExchange(&m_ResetDeviceCount, 0);
     InterlockedExchange(&m_NativeNotifyFailureReason, 0);
     InterlockedExchange(&m_NativeNotifyFailureStatus, 0);
     InterlockedExchange(&m_NativeNotifyFailureCount, 0);
@@ -5341,6 +5343,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD preemptDeferred = ReadNativePreemptDeferredCount();
     DWORD preemptReported = ReadNativePreemptReportedCount();
     DWORD preemptReset = ReadNativePreemptResetCount();
+    DWORD resetDeviceCallerRva = ReadResetDeviceCallerRva();
+    DWORD resetDeviceCount = ReadResetDeviceCount();
     struct VALUE_WRITE
     {
         PCWSTR Name;
@@ -5355,6 +5359,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
         {L"NativePreemptDeferred", &preemptDeferred},
         {L"NativePreemptReported", &preemptReported},
         {L"NativePreemptReset", &preemptReset},
+        {L"NativeResetDeviceCallerRva", &resetDeviceCallerRva},
+        {L"NativeResetDeviceCount", &resetDeviceCount},
         {L"NativeContextAllocationDestroyStage", &stage},
         {L"NativeContextAllocationDestroyStatus", &statusValue},
         {L"NativeContextAllocationDestroyDetail", &detail},
@@ -11894,9 +11900,22 @@ VOID VioGpuAdapter::DpcRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 
-VOID VioGpuAdapter::ResetDevice(VOID)
+__declspec(noinline) VOID VioGpuAdapter::ResetDevice(VOID)
 {
     DbgPrint(TRACE_LEVEL_INFORMATION, ("---> %s\n", __FUNCTION__));
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    /* FailNativeContextAtAnyIrql already records its own caller, but every
+     * ResetDevice() path names the same frame, so that provenance stops at
+     * "ResetDevice+0x60" and cannot separate a scheduler preemption from a
+     * power transition or a TDR.  Record who called ResetDevice itself. */
+    ULONG_PTR resetImageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    ULONG_PTR resetReturnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+    ULONG_PTR resetCallerRva = resetReturnAddress >= resetImageBase ? resetReturnAddress - resetImageBase : 0;
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordResetDeviceProvenance(resetCallerRva);
+    }
+#endif
     FailNativeContextAtAnyIrql();
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
