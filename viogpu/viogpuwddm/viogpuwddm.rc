@@ -1,0 +1,31 @@
+/*
+ * Version resource for the VioGPU WDDM Native Context miniport.
+ *
+ * Without a VS_VERSION_INFO resource dxgkrnl cannot compare this kernel-mode
+ * driver against its user-mode driver, so D3DKMTQueryAdapterInfo with
+ * KMTQAITYPE_UMDRIVERNAME fails STATUS_GRAPHICS_DRIVER_MISMATCH (0xC01E0009)
+ * for every KMTUMDVERSION.  The Direct3D runtime then never loads
+ * viogpud3d.dll at all and D3D11CreateDevice returns DXGI_ERROR_UNSUPPORTED,
+ * which leaves the adapter with no Direct3D feature levels and the desktop
+ * black because DWM composes only through Direct3D.
+ */
+#include <windows.h>
+#include <ntverp.h>
+
+#include "..\..\build\vendor.ver"
+
+#undef  VER_FILEDESCRIPTION_STR
+#undef  VER_INTERNALNAME_STR
+#undef  VER_FILETYPE
+#undef  VER_FILESUBTYPE
+
+#define VER_FILETYPE               VFT_DRV
+#define VER_FILESUBTYPE            VFT2_DRV_DISPLAY
+
+#define VENDOR_VIRTIO_PRODUCT      VENDOR_PRODUCT_PREFIX "VIOGPU WDDM"
+#define VER_FILEDESCRIPTION_STR    VENDOR_DESC_PREFIX "VIOGPU WDDM" VENDOR_DESC_POSTFIX
+#define VER_INTERNALNAME_STR       "viogpuwddm.sys"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+
+#include "common.ver"

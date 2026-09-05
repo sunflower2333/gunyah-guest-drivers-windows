@@ -73,6 +73,9 @@
     <ClInclude Include="wddmddi.h" />
   </ItemGroup>
   <ItemGroup>
+    <ResourceCompile Include="viogpuwddm.rc" />
+  </ItemGroup>
+  <ItemGroup>
     <ClCompile Include="..\common\baseobj.cpp" />
     <ClCompile Include="..\common\bitops.cpp" />
     <ClCompile Include="..\common\edid.cpp" />

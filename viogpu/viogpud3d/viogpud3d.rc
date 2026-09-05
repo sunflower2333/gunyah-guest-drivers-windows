@@ -1,0 +1,30 @@
+/*
+ * Version resource for the VioGPU Direct3D user-mode driver.
+ *
+ * Dxgkrnl matches the user-mode driver against the miniport by version before
+ * it will return this file's path from KMTQAITYPE_UMDRIVERNAME.  With no
+ * VS_VERSION_INFO resource that match cannot be made, the query fails
+ * STATUS_GRAPHICS_DRIVER_MISMATCH, and the Direct3D runtime never maps this
+ * DLL into the process.  It must therefore carry the same version as
+ * viogpuwddm.sys, which is why both include the shared vendor/common headers.
+ */
+#include <windows.h>
+#include <ntverp.h>
+
+#include "..\..\build\vendor.ver"
+
+#undef  VER_FILEDESCRIPTION_STR
+#undef  VER_INTERNALNAME_STR
+#undef  VER_FILETYPE
+#undef  VER_FILESUBTYPE
+
+#define VER_FILETYPE               VFT_DLL
+#define VER_FILESUBTYPE            VFT2_UNKNOWN
+
+#define VENDOR_VIRTIO_PRODUCT      VENDOR_PRODUCT_PREFIX "VIOGPU D3D"
+#define VER_FILEDESCRIPTION_STR    VENDOR_DESC_PREFIX "VIOGPU D3D" VENDOR_DESC_POSTFIX
+#define VER_INTERNALNAME_STR       "viogpud3d.dll"
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+
+#include "common.ver"

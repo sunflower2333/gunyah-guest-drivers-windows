@@ -59,6 +59,9 @@
     <ClCompile Include="viogpud3d.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ResourceCompile Include="viogpud3d.rc" />
+  </ItemGroup>
+  <ItemGroup>
     <ClInclude Include="d3dumddi_compat.h" />
   </ItemGroup>
   <ItemGroup>
