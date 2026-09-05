@@ -164,7 +164,7 @@ PAGED_CODE_SEG_BEGIN
 VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     : m_pPhysicalDevice(pPhysicalDeviceObject), m_MonitorPowerState(PowerDeviceD0), m_AdapterPowerState(PowerDeviceD0),
       m_pHWDevice(NULL), m_HardwareRundownCompleted(FALSE), m_HardwareResetState(VioGpuHardwareActive),
-      m_CrtcVsyncEnabled(0)
+      m_CrtcVsyncEnabled(0), m_DodReadinessFailMask(0)
 {
     PAGED_CODE();
 
@@ -1964,12 +1964,29 @@ _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN VioGpuDod::QueryNativeContextReadine
 {
     if (!ExAcquireRundownProtection(&m_HardwareOperations))
     {
+        InterlockedExchange(&m_DodReadinessFailMask, VIOGPU_READINESS_FAIL_RUNDOWN);
         return FALSE;
     }
 
     VioGpuAdapter *adapter = m_pHWDevice;
-    BOOLEAN ready = !IsHardwareResetRequested() && adapter != NULL &&
+    const BOOLEAN resetRequested = IsHardwareResetRequested();
+    BOOLEAN ready = !resetRequested && adapter != NULL &&
                     adapter->QueryNativeContextReadiness(capset, capsetVersion, capsetSize, resetGeneration);
+    /* These two conditions live in the wrapper, so a refusal here leaves the
+     * adapter-level mask at zero and looks like "the adapter never objected". */
+    LONG dodMask = 0;
+    if (!ready)
+    {
+        if (resetRequested)
+        {
+            dodMask |= VIOGPU_READINESS_FAIL_RESET_REQUESTED;
+        }
+        if (adapter == NULL)
+        {
+            dodMask |= VIOGPU_READINESS_FAIL_NO_HW_DEVICE;
+        }
+    }
+    InterlockedExchange(&m_DodReadinessFailMask, dodMask);
     ExReleaseRundownProtection(&m_HardwareOperations);
     return ready;
 }
@@ -6167,6 +6184,7 @@ VOID VioGpuDod::RecordNativeReadinessDiagnostic(void)
      * refusal look identical to "readiness was never consulted". */
     DWORD stateValue = adapter != NULL ? adapter->NativeReadinessObservedState() : 0;
     DWORD maskValue = adapter != NULL ? adapter->NativeReadinessFailMask() : (DWORD)VIOGPU_READINESS_FAIL_NO_HW_DEVICE;
+    maskValue |= static_cast<DWORD>(InterlockedCompareExchange(&m_DodReadinessFailMask, 0, 0));
     WriteRegistryDWORD(deviceKey, L"NativeReadinessObservedState", &stateValue);
     // Mask is written last so it commits the state value that belongs with it.
     WriteRegistryDWORD(deviceKey, L"NativeReadinessFailMask", &maskValue);

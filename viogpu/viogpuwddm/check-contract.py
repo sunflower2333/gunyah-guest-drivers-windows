@@ -11753,10 +11753,20 @@ def check_adapter_lifecycle() -> None:
     wrapper_contracts = (
         (
             "VioGpuDod::QueryNativeContextReadiness",
-            "returnFALSE;",
+            # The failure arm latches why before returning; the rundown invariant is
+            # unchanged because nothing here touches m_pHWDevice.
+            "InterlockedExchange(&m_DodReadinessFailMask,VIOGPU_READINESS_FAIL_RUNDOWN);returnFALSE;",
             "VioGpuAdapter*adapter=m_pHWDevice;"
-            "BOOLEANready=!IsHardwareResetRequested()&&adapter!=NULL&&"
+            "constBOOLEANresetRequested=IsHardwareResetRequested();"
+            "BOOLEANready=!resetRequested&&adapter!=NULL&&"
             "adapter->QueryNativeContextReadiness(capset,capsetVersion,capsetSize,resetGeneration);"
+            # Attribution of a wrapper-level refusal, still inside the rundown window.
+            "LONGdodMask=0;"
+            "if(!ready){"
+            "if(resetRequested){dodMask|=VIOGPU_READINESS_FAIL_RESET_REQUESTED;}"
+            "if(adapter==NULL){dodMask|=VIOGPU_READINESS_FAIL_NO_HW_DEVICE;}"
+            "}"
+            "InterlockedExchange(&m_DodReadinessFailMask,dodMask);"
             "ExReleaseRundownProtection(&m_HardwareOperations);returnready;",
         ),
         (

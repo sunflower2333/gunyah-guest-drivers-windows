@@ -155,6 +155,10 @@ enum VIOGPU_READINESS_FAIL : DWORD
     /* Recorded by the DOD, not the adapter: there is no VioGpuAdapter to ask.
      * Without this the refusal is indistinguishable from "never recorded". */
     VIOGPU_READINESS_FAIL_NO_HW_DEVICE = 1U << 6,
+    /* Also recorded by the DOD: its wrapper refuses before the adapter is ever
+     * consulted, which is invisible in the adapter-level mask. */
+    VIOGPU_READINESS_FAIL_RUNDOWN = 1U << 7, // rundown protection not acquirable
+    VIOGPU_READINESS_FAIL_RESET_REQUESTED = 1U << 8,
 };
 
 enum VIOGPU_NATIVE_CONTEXT_CREATE_STAGE : DWORD
@@ -1321,6 +1325,7 @@ class VioGpuDod
                                                 _In_ ULONG stage,
                                                 _In_ ULONG detail);
     VOID RecordNativeReadinessDiagnostic(void);
+    volatile LONG m_DodReadinessFailMask;
     VOID RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                 _In_ NTSTATUS status,
                                                 _In_ UINT inputDataSize,
