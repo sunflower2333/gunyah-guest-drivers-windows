@@ -177,6 +177,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     InterlockedExchange(&m_NativePreemptDeferredCount, 0);
     InterlockedExchange(&m_NativePreemptReportedCount, 0);
     InterlockedExchange(&m_NativePreemptResetCount, 0);
+    InterlockedExchange(&m_NativeCompletionDroppedCount, 0);
+    InterlockedExchange(&m_NativeCompletionDroppedFenceId, 0);
     InterlockedExchange64(&m_CrtcVsyncPrimaryAddress, 0);
     KeInitializeTimerEx(&m_CrtcVsyncTimer, SynchronizationTimer);
     KeInitializeDpc(&m_CrtcVsyncDpc, VioGpuCrtcVsyncDpcRoutine, this);
@@ -1139,6 +1141,7 @@ BOOLEAN VioGpuDod::QueueNativeSoftwareSubmissionCompletion(_In_ UINT fenceId,
     if (fenceId == 0 || nodeOrdinal != 0 || engineOrdinal != 0 || KeGetCurrentIrql() != DISPATCH_LEVEL ||
         m_DxgkInterface.DxgkCbQueueDpc == NULL)
     {
+        RecordNativeCompletionDropped(fenceId);
         return FALSE;
     }
 
@@ -1166,6 +1169,13 @@ BOOLEAN VioGpuDod::QueueNativeSoftwareSubmissionCompletion(_In_ UINT fenceId,
     }
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
 
+    if (!valid)
+    {
+        /* Tracker full, duplicate fence, or a fence that does not advance the
+         * submitted endpoint.  Whatever the reason, this completion will never
+         * be reported. */
+        RecordNativeCompletionDropped(fenceId);
+    }
     if (valid)
     {
         /* A scheduler callback from inside SubmitCommand can reenter VidSch
@@ -5343,6 +5353,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD preemptDeferred = ReadNativePreemptDeferredCount();
     DWORD preemptReported = ReadNativePreemptReportedCount();
     DWORD preemptReset = ReadNativePreemptResetCount();
+    DWORD completionDropped = ReadNativeCompletionDroppedCount();
+    DWORD completionDroppedFence = ReadNativeCompletionDroppedFenceId();
     DWORD resetDeviceCallerRva = ReadResetDeviceCallerRva();
     DWORD resetDeviceCount = ReadResetDeviceCount();
     struct VALUE_WRITE
@@ -5359,6 +5371,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
         {L"NativePreemptDeferred", &preemptDeferred},
         {L"NativePreemptReported", &preemptReported},
         {L"NativePreemptReset", &preemptReset},
+        {L"NativeCompletionDropped", &completionDropped},
+        {L"NativeCompletionDroppedFenceId", &completionDroppedFence},
         {L"NativeResetDeviceCallerRva", &resetDeviceCallerRva},
         {L"NativeResetDeviceCount", &resetDeviceCount},
         {L"NativeContextAllocationDestroyStage", &stage},

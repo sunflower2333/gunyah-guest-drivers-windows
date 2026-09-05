@@ -942,6 +942,13 @@ class VioGpuDod
     volatile LONG m_NativePreemptDeferredCount;
     volatile LONG m_NativePreemptReportedCount;
     volatile LONG m_NativePreemptResetCount;
+    /* A completion that cannot be tracked is a completion dxgkrnl never
+     * hears about: the packet stays in flight from VidMm's point of view and
+     * its allocations stay busy, which is how bugcheck 0x10E
+     * VIDEO_MEMORY_MANAGEMENT_INTERNAL with STATUS_GRAPHICS_ALLOCATION_BUSY
+     * (0xC01E0102) is reached.  Count the drops so the condition is visible. */
+    volatile LONG m_NativeCompletionDroppedCount;
+    volatile LONG m_NativeCompletionDroppedFenceId;
     VOID ArmCrtcVsyncTimer(void);
     VOID DisarmCrtcVsyncTimer(void);
     VOID DeliverCrtcVsync(void);
@@ -1178,6 +1185,19 @@ class VioGpuDod
     DWORD ReadNativePreemptResetCount(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativePreemptResetCount, 0, 0));
+    }
+    DWORD ReadNativeCompletionDroppedCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeCompletionDroppedCount, 0, 0));
+    }
+    DWORD ReadNativeCompletionDroppedFenceId(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeCompletionDroppedFenceId, 0, 0));
+    }
+    VOID RecordNativeCompletionDropped(_In_ UINT fenceId)
+    {
+        InterlockedIncrement(&m_NativeCompletionDroppedCount);
+        InterlockedExchange(&m_NativeCompletionDroppedFenceId, static_cast<LONG>(fenceId));
     }
     VOID CountNativePreemptReset(void)
     {
