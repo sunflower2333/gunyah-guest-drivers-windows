@@ -12162,12 +12162,17 @@ def check_installation_contract() -> None:
         "MessageNumberLimit,%REG_DWORD%,4",
         'UserModeDriverName,%REG_MULTI_SZ%,"%13%\\viogpud3d.dll",'
         '"%13%\\viogpud3d.dll","%13%\\viogpud3d.dll"',
-        "InstalledDisplayDrivers,%REG_MULTI_SZ%,viogpud3d,viogpud3d,viogpud3d",
         "REG_MULTI_SZ=0x00010000",
     )
     for fragment in required:
         if compact.count(fragment) != 1:
             fail(f"full-miniport INX must contain exactly one installation contract fragment: {fragment}")
+    # InstalledDisplayDrivers is the XDDM display-driver list.  A WDDM miniport
+    # publishes its user-mode driver through UserModeDriverName alone; carrying
+    # the legacy value too makes the adapter describe two driver models at once.
+    directives = [ln for ln in source.splitlines() if not ln.lstrip().startswith(";")]
+    if any("InstalledDisplayDrivers" in ln for ln in directives):
+        fail("full-miniport INX must not publish the XDDM InstalledDisplayDrivers value")
     render_only_defaults = re.findall(
         r"(?im)^HKR\s*,\s*(?:Parameters)?\s*,\s*RenderOnly\s*,\s*%REG_DWORD%\s*,\s*1\s*$",
         source,
