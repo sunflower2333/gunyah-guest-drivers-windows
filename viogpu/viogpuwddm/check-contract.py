@@ -10549,15 +10549,56 @@ def check_wddm_submission_lifetime() -> None:
         preempt,
         (
             "preemptCommand->PreemptionFenceId!=0",
-            "adapter->IsNativeFenceQueueEmpty()",
             "adapter->ResetDevice();",
+            "adapter->IsHardwareResetRequested()",
+            "adapter->IsNativeFenceQueueEmpty()",
+            "adapter->DeferNativePreemption(preemptCommand->PreemptionFenceId)",
             "notify.InterruptType=DXGK_INTERRUPT_DMA_PREEMPTED;",
             "notify.DmaPreempted.PreemptionFenceId=preemptCommand->PreemptionFenceId;",
             "notify.DmaPreempted.LastCompletedFenceId=adapter->QueryNativeCompletedFence();",
             "adapter->NotifyNativeSchedulerInterrupt(&notify,TRUE)",
         ),
-        "preemption must reset on an in-flight native queue and notify only an idle queue",
+        "preemption must reset only a malformed request, defer an in-flight queue, and notify an idle queue",
     )
+    # A preemption on a busy engine is the scheduler reclaiming a live adapter,
+    # not a transport fault.  Resetting there latched a gate only SetPowerState
+    # clears, so every later present returned STATUS_DEVICE_NOT_READY and the
+    # desktop froze after its first frames with the cursor plane still live.
+    if "!adapter->IsNativeFenceQueueEmpty()" not in preempt:
+        fail("PreemptCommand must branch on an in-flight native queue rather than fold it into the fault test")
+    busy_branch = preempt.split("!adapter->IsNativeFenceQueueEmpty()", 1)[1]
+    if "adapter->DeferNativePreemption(" not in busy_branch:
+        fail("a preemption against in-flight native work must be deferred, never reset unconditionally")
+    defer = canonical_code(function_body("DeferNativePreemption", VIOGPU_CODE))
+    require_order(
+        defer,
+        (
+            "preemptionFence==0",
+            "InterlockedCompareExchange(&m_NativePendingPreemptionFence,static_cast<LONG>(preemptionFence),0)!=0",
+            "InterlockedIncrement(&m_NativePreemptDeferredCount);",
+            "returnReportDeferredNativePreemption();",
+        ),
+        "a deferred preemption must latch exactly one fence and re-check an already drained queue",
+    )
+    report = canonical_code(function_body("ReportDeferredNativePreemption", VIOGPU_CODE))
+    require_order(
+        report,
+        (
+            "pending==0||!IsNativeFenceQueueEmpty()",
+            "InterlockedCompareExchange(&m_NativePendingPreemptionFence,0,pending)!=pending",
+            "notify.InterruptType=DXGK_INTERRUPT_DMA_PREEMPTED;",
+            "notify.DmaPreempted.PreemptionFenceId=static_cast<UINT>(pending);",
+            "NotifyNativeSchedulerInterrupt(&notify,TRUE)",
+            "InterlockedIncrement(&m_NativePreemptReportedCount);",
+        ),
+        "a deferred preemption may only be reported once, and only after the native queue drains",
+    )
+    for name in (
+        "VioGpuDod::DrainNativeSoftwareSubmissionCompletionsFromDpc",
+        "CompleteNativeSystemSubmission",
+    ):
+        if "returnReportDeferredNativePreemption();" not in canonical_code(function_body(name, VIOGPU_CODE)):
+            fail(f"{name} must report a deferred preemption once it drains the native queue")
     if "preemptCommand->Flags.Value==0" not in preempt:
         fail("PreemptCommand must reject reserved preemption flags without returning an error")
     preempt_blocks = [

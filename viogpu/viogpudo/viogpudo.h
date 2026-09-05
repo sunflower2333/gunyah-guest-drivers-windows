@@ -934,6 +934,12 @@ class VioGpuDod
     volatile LONG m_CrtcVsyncTimerArmed;
     volatile LONG m_CrtcVsyncDeliveredCount;
     volatile LONG64 m_CrtcVsyncPrimaryAddress;
+    /* Zero when no preemption is outstanding.  Only one may be in flight per
+     * engine: dxgkrnl does not issue a second until the first is reported. */
+    volatile LONG m_NativePendingPreemptionFence;
+    volatile LONG m_NativePreemptDeferredCount;
+    volatile LONG m_NativePreemptReportedCount;
+    volatile LONG m_NativePreemptResetCount;
     VOID ArmCrtcVsyncTimer(void);
     VOID DisarmCrtcVsyncTimer(void);
     VOID DeliverCrtcVsync(void);
@@ -1127,6 +1133,33 @@ class VioGpuDod
     void ResetNativeFenceTracker(void);
     void InvalidateNativeFenceTracker(void);
     void CompleteNativeFenceReset(void);
+    /* DxgkDdiPreemptCommand arrives while Native Context work is still in
+     * flight - that is the only time the scheduler asks for a preemption.  The
+     * transport has no Host cancellation primitive, so the request cannot abort
+     * that work, but the adapter is not faulted either.  Latch the requested
+     * fence and report DXGK_INTERRUPT_DMA_PREEMPTED once the submission queue
+     * drains: by then nothing from the preempted packet can still reach guest
+     * memory, which is the property the previous unconditional ResetDevice()
+     * was protecting - at the cost of never reporting the preemption at all. */
+    BOOLEAN DeferNativePreemption(_In_ UINT preemptionFence);
+    BOOLEAN ReportDeferredNativePreemption(void);
+    void DiscardDeferredNativePreemption(void);
+    DWORD ReadNativePreemptDeferredCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativePreemptDeferredCount, 0, 0));
+    }
+    DWORD ReadNativePreemptReportedCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativePreemptReportedCount, 0, 0));
+    }
+    DWORD ReadNativePreemptResetCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativePreemptResetCount, 0, 0));
+    }
+    VOID CountNativePreemptReset(void)
+    {
+        InterlockedIncrement(&m_NativePreemptResetCount);
+    }
     BOOLEAN QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work, _In_ UINT fenceId);
     VOID CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
     VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP CancelNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);

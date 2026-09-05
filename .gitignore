@@ -46,3 +46,5 @@ cert/*.pfx.b64
 cert/*.key
 cert/*.cer.pem
 cert/*.pem
+__pycache__/
+*.pyc

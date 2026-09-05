@@ -9138,12 +9138,36 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPreemptCommand(CONST HANDLE h
     BOOLEAN valid = preemptCommand != NULL && preemptCommand->PreemptionFenceId != 0 &&
                     preemptCommand->NodeOrdinal == 0 && preemptCommand->EngineOrdinal == 0 &&
                     preemptCommand->Flags.Value == 0;
-    if (!valid || adapter->IsHardwareResetRequested() || !adapter->IsNativeFenceQueueEmpty())
+    if (!valid)
     {
-        /* Native Context has no Host cancellation primitive.  Do not fabricate
-         * a preemption while a command may still access guest memory; gate the
-         * transport and let the scheduler enter adapter-wide TDR. */
+        /* A malformed request is a real transport fault, not a scheduling
+         * event.  Gate the transport and let the scheduler reset the adapter. */
+        adapter->CountNativePreemptReset();
         adapter->ResetDevice();
+        return STATUS_SUCCESS;
+    }
+    if (adapter->IsHardwareResetRequested())
+    {
+        /* Already gated.  Resetting again would only re-latch a state that
+         * nothing but the scheduler's own recovery can clear. */
+        return STATUS_SUCCESS;
+    }
+    if (!adapter->IsNativeFenceQueueEmpty())
+    {
+        /* Native Context has no Host cancellation primitive, so this preemption
+         * cannot abort the in-flight command - but the adapter is healthy, and
+         * a preemption request is the normal way the scheduler reclaims a busy
+         * engine.  Resetting the device here latched a gate that only
+         * SetPowerState clears, so every later present returned
+         * STATUS_DEVICE_NOT_READY and the desktop froze after its first frames
+         * with the cursor plane still live.  Latch the fence instead and report
+         * it once the queue drains, when nothing from the preempted packet can
+         * still reach guest memory. */
+        if (!adapter->DeferNativePreemption(preemptCommand->PreemptionFenceId))
+        {
+            adapter->CountNativePreemptReset();
+            adapter->ResetDevice();
+        }
         return STATUS_SUCCESS;
     }
 
@@ -9155,6 +9179,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPreemptCommand(CONST HANDLE h
     notify.DmaPreempted.EngineOrdinal = preemptCommand->EngineOrdinal;
     if (!adapter->NotifyNativeSchedulerInterrupt(&notify, TRUE))
     {
+        adapter->CountNativePreemptReset();
         adapter->ResetDevice();
     }
     return STATUS_SUCCESS;
