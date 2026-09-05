@@ -451,13 +451,36 @@ BOOLEAN CtrlQueue::EnableSynchronousRequests(void)
     }
     LONG64 current = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
     BOOLEAN enabled = FALSE;
-    if (VioGpuSynchronousState(current) == VioGpuSynchronousOffline)
+    VIOGPU_SYNCHRONOUS_STATE state = VioGpuSynchronousState(current);
+    /* Poisoned has to be recoverable here, not only Offline.
+     *
+     * StopNativeContextTransportLocked() poisons the synchronous path on its way
+     * down.  While this accepted Offline alone, Poisoned was a one-way door: after
+     * the transport had been stopped once, EnableSynchronousRequests() could never
+     * succeed again, so IsSynchronousRequestsHealthy() stayed FALSE,
+     * QueryNativeContextReadiness() kept failing, and QueryUmdPrivateInfo()
+     * answered STATUS_DEVICE_NOT_READY for the rest of the boot.  Turnip then found
+     * no physical device at all, Zink could not create one, and the desktop
+     * composed black on a machine whose native context had actually started
+     * cleanly (NativeStartStage=VioGpuNativeStartComplete, status 0).
+     *
+     * Recovering is safe at exactly this point: the caller holds
+     * m_SynchronousMutex, so no synchronous request is in flight, and bumping the
+     * generation invalidates every waiter that observed the poisoned epoch - the
+     * same mechanism that already makes the Offline transition safe. */
+    if (state == VioGpuSynchronousOffline || state == VioGpuSynchronousPoisoned)
     {
         ULONG generation = VioGpuSynchronousGeneration(current);
         if (generation != MAXULONG)
         {
             LONG64 next = VioGpuMakeSynchronousEpochState(generation + 1, VioGpuSynchronousEnabled);
             enabled = InterlockedCompareExchange64(&m_SynchronousEpochState, next, current) == current;
+            if (enabled && state == VioGpuSynchronousPoisoned)
+            {
+                /* Keep the provenance of the poison that was just cleared, but let a
+                 * later one record its own caller. */
+                InterlockedExchange(&m_SynchronousPoisonCallerRva, 0);
+            }
         }
     }
     KeReleaseMutex(&m_SynchronousMutex, FALSE);
