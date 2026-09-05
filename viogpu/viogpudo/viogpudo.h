@@ -152,6 +152,9 @@ enum VIOGPU_READINESS_FAIL : DWORD
     VIOGPU_READINESS_FAIL_RESET_GENERATION = 1U << 3, // reset generation moved
     VIOGPU_READINESS_FAIL_RESET_ZERO = 1U << 4,       // reset generation still zero
     VIOGPU_READINESS_FAIL_SYNC_UNHEALTHY = 1U << 5,   // control queue not healthy
+    /* Recorded by the DOD, not the adapter: there is no VioGpuAdapter to ask.
+     * Without this the refusal is indistinguishable from "never recorded". */
+    VIOGPU_READINESS_FAIL_NO_HW_DEVICE = 1U << 6,
 };
 
 enum VIOGPU_NATIVE_CONTEXT_CREATE_STAGE : DWORD

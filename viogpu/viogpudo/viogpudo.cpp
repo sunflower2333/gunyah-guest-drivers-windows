@@ -6154,10 +6154,6 @@ VOID VioGpuDod::RecordNativeReadinessDiagnostic(void)
     PAGED_CODE();
 
     VioGpuAdapter *adapter = m_pHWDevice;
-    if (adapter == NULL)
-    {
-        return;
-    }
 
     HANDLE deviceKey = NULL;
     NTSTATUS openStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey);
@@ -6166,8 +6162,11 @@ VOID VioGpuDod::RecordNativeReadinessDiagnostic(void)
         return;
     }
 
-    DWORD stateValue = adapter->NativeReadinessObservedState();
-    DWORD maskValue = adapter->NativeReadinessFailMask();
+    /* A NULL m_pHWDevice is itself one of the readiness conditions, and it is the one
+     * that used to make this function return without writing anything - which made a
+     * refusal look identical to "readiness was never consulted". */
+    DWORD stateValue = adapter != NULL ? adapter->NativeReadinessObservedState() : 0;
+    DWORD maskValue = adapter != NULL ? adapter->NativeReadinessFailMask() : (DWORD)VIOGPU_READINESS_FAIL_NO_HW_DEVICE;
     WriteRegistryDWORD(deviceKey, L"NativeReadinessObservedState", &stateValue);
     // Mask is written last so it commits the state value that belongs with it.
     WriteRegistryDWORD(deviceKey, L"NativeReadinessFailMask", &maskValue);
