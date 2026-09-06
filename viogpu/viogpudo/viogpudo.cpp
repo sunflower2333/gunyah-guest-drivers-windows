@@ -7030,6 +7030,19 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
     value = 1;
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"RenderOnly", &value);
     SetRenderOnly(VioGpuWddmIsRenderOnlyRegistration() || !NT_SUCCESS(StatusOptional) || !!value);
+    /* A render-only adapter owns no VidPn target, so it must never service the
+     * pointer DDIs.  SetPointerShape() reaches UpdateCursor() -> CreateCursor(),
+     * which builds a cursor resource against CURRENT_MODE and shares
+     * ColorFormat() with CreateFrameBufferObj() - display code that assumes a
+     * scanout this adapter does not own.  A 0xD1 was taken with RenderOnly=1 at
+     * an instruction inside ColorFormat(), whose only two callers are those
+     * functions.  HWCursor is parsed earlier in this routine, so clear the
+     * capability here, after RenderOnly is known, or the registry value would
+     * re-enable a cursor on an adapter that cannot present one. */
+    if (IsRenderOnly())
+    {
+        SetPointerEnabled(FALSE);
+    }
 #endif
 
     // The following keys are optional and no need to report error if them are missing
