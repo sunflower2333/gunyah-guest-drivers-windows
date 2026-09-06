@@ -7768,8 +7768,9 @@ _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN VioGpuAdapter::QueryNativeContextRea
                                                                VioGpuNativeContextOffline,
                                                                VioGpuNativeContextOffline);
         const LONG recheckedGeneration = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
-        const ULONGLONG recheckedResetGeneration =
-            (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0);
+        const ULONGLONG recheckedResetGeneration = (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration,
+                                                                                           0,
+                                                                                           0);
         const BOOLEAN recheckedSyncHealthy = m_CtrlQueue.IsSynchronousRequestsHealthy();
         ready = recheckedState == VioGpuNativeContextReady && recheckedGeneration == generation &&
                 recheckedResetGeneration == currentResetGeneration && recheckedSyncHealthy;
