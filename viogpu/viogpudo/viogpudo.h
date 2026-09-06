@@ -94,6 +94,18 @@ enum VIOGPU_NATIVE_START_DETAIL : DWORD
 enum : UINT
 {
     VioGpuNativeFenceTrackerCapacity = 4096,
+    /* Power of two: the trace ring masks with (capacity - 1). */
+    VioGpuFenceTraceCapacity = 1024,
+    /* Fence trace event codes.  Paging and render submissions share
+     * m_NativeSubmittedFence, so a paging fence that fails the strictly-greater
+     * test is dropped and never reported to VidMm; these codes make that
+     * visible in a kernel dump. */
+    VioGpuFenceTraceRenderSubmit = 1,
+    VioGpuFenceTraceRenderReject = 2,
+    VioGpuFenceTraceRetire = 3,
+    VioGpuFenceTraceRetireMiss = 4,
+    VioGpuFenceTracePagingQueue = 5,
+    VioGpuFenceTracePagingDrop = 6,
     VioGpuNativeContextDestroyDiagnosticSlotCount = 64,
 };
 

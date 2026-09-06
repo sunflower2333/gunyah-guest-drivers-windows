@@ -774,6 +774,47 @@ void VioGpuDod::ReleaseNativeSubmissionOperation(void) const
     ExReleaseRundownProtection(&m_HardwareOperations);
 }
 
+/* Fence trace ring.  The 0x10E STATUS_GRAPHICS_ALLOCATION_BUSY bugchecks are
+ * raised by VidMm on its own worker with no miniport frame on the stack, and
+ * every capture route that goes through the registry or the filesystem has been
+ * shown not to survive the bugcheck on this guest: post-reboot reads report the
+ * following boot, and a log written immediately before the crash came back as
+ * NUL bytes with its length intact.  What does survive is memory the dump
+ * writer captures, so the fence history lives in a file-scope ring in .data
+ * (IMAGE_SCN_MEM_NOT_PAGED) behind a magic value that can be found by scanning
+ * a kernel dump for the signature - no dxgmms1 symbols required, only this
+ * driver's own layout. */
+#pragma pack(push, 8)
+struct VIOGPU_FENCE_TRACE_ENTRY
+{
+    UINT32 Event;
+    UINT32 FenceId;
+    UINT32 Completed;
+    UINT32 Irql;
+};
+struct VIOGPU_FENCE_TRACE
+{
+    UINT64 Magic;
+    UINT32 Capacity;
+    volatile LONG Index;
+    VIOGPU_FENCE_TRACE_ENTRY Entries[VioGpuFenceTraceCapacity];
+};
+#pragma pack(pop)
+
+/* "VGFTRACE" little-endian. */
+static VIOGPU_FENCE_TRACE g_VioGpuFenceTrace = {0x4543415254464756ULL, VioGpuFenceTraceCapacity, 0, {}};
+
+static VOID VioGpuTraceFence(_In_ UINT32 event, _In_ UINT32 fenceId, _In_ UINT32 completed)
+{
+    LONG slot = InterlockedIncrement(&g_VioGpuFenceTrace.Index) - 1;
+    VIOGPU_FENCE_TRACE_ENTRY *entry = &g_VioGpuFenceTrace.Entries[slot & (VioGpuFenceTraceCapacity - 1)];
+    entry->FenceId = fenceId;
+    entry->Completed = completed;
+    entry->Irql = static_cast<UINT32>(KeGetCurrentIrql());
+    KeMemoryBarrier();
+    entry->Event = event;
+}
+
 BOOLEAN VioGpuDod::RecordNativeSubmissionFence(_In_ UINT fenceId)
 {
     if (fenceId == 0)
@@ -804,6 +845,7 @@ BOOLEAN VioGpuDod::RecordNativeSubmissionFence(_In_ UINT fenceId)
         InterlockedExchange(&m_NativeSubmittedFence, static_cast<LONG>(fenceId));
     }
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
+    VioGpuTraceFence(valid ? VioGpuFenceTraceRenderSubmit : VioGpuFenceTraceRenderReject, fenceId, submitted);
     return valid;
 }
 
@@ -845,6 +887,7 @@ BOOLEAN VioGpuDod::RetireNativeSubmissionFence(_In_ UINT fenceId, _Out_ UINT *co
         }
     }
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
+    VioGpuTraceFence(match != NULL ? VioGpuFenceTraceRetire : VioGpuFenceTraceRetireMiss, fenceId, *completedFence);
     return match != NULL;
 }
 
@@ -1176,6 +1219,7 @@ BOOLEAN VioGpuDod::QueueNativeSoftwareSubmissionCompletion(_In_ UINT fenceId,
          * be reported. */
         RecordNativeCompletionDropped(fenceId);
     }
+    VioGpuTraceFence(valid ? VioGpuFenceTracePagingQueue : VioGpuFenceTracePagingDrop, fenceId, submitted);
     if (valid)
     {
         /* A scheduler callback from inside SubmitCommand can reenter VidSch
