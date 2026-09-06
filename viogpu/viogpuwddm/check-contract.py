@@ -9656,7 +9656,13 @@ def check_wddm_submission_lifetime() -> None:
     ):
         if fragment not in record_context_fence:
             fail(f"UMD submit fence recording must be context-scoped and monotonic: {fragment}")
-    retire_context_fence = canonical_code(function_body("RetireContextUmdFence", WDDM_DDI_CODE))
+    retire_context_fence = canonical_code(
+        function_body_with_parameters(
+            "RetireContextUmdFence",
+            "VIOGPU_WDDM_CONTEXT *context, UINT fenceId, UINT *newlyCompleted",
+            WDDM_DDI_CODE,
+        )
+    )
     require_order(
         retire_context_fence,
         (
@@ -9666,10 +9672,29 @@ def check_wddm_submission_lifetime() -> None:
             "match->State=VioGpuWddmContextFenceRetired;",
             "context->UmdFences[context->UmdFenceHead].State==VioGpuWddmContextFenceRetired",
             "--context->UmdFenceCount;",
+            "*newlyCompleted=completed;",
+            "KeReleaseSpinLock(&context->SubmissionLock,oldIrql);",
+        ),
+        "UMD completion must retire only tracked context fences and report a contiguous prefix",
+    )
+    # Retirement must not publish the UMD-visible endpoint.  Publishing before
+    # DXGK_INTERRUPT_DMA_COMPLETED lets a user-mode driver observe completion
+    # while VidMm still holds the allocation, and the destroy that follows is
+    # answered STATUS_GRAPHICS_ALLOCATION_BUSY - the 0x10E signature on the test
+    # guest.
+    if "InterlockedExchange(&context->CompletedUmdFence" in retire_context_fence:
+        fail("UMD fence retirement must not publish CompletedUmdFence; publication belongs after the VidSch notification")
+    publish_context_fence = canonical_code(function_body("PublishContextCompletedUmdFence", WDDM_DDI_CODE))
+    require_order(
+        publish_context_fence,
+        (
+            "KeAcquireSpinLock(&context->SubmissionLock,&oldIrql);",
+            "context->Signature==VIOGPU_WDDM_CONTEXT_SIGNATURE",
+            "static_cast<INT32>(completed-current)>0",
             "InterlockedExchange(&context->CompletedUmdFence,static_cast<LONG>(completed));",
             "KeReleaseSpinLock(&context->SubmissionLock,oldIrql);",
         ),
-        "UMD completion must retire only tracked context fences and publish a contiguous prefix",
+        "the UMD-visible completion endpoint must advance monotonically under the context lock",
     )
     query_context_fence = canonical_code(function_body("QueryContextCompletedUmdFence", WDDM_DDI_CODE))
     if "context->Signature==VIOGPU_WDDM_CONTEXT_SIGNATURE" not in query_context_fence or "context->CompletedUmdFence" not in query_context_fence:
@@ -10406,9 +10431,10 @@ def check_wddm_submission_lifetime() -> None:
         "response->ctx_id==submission->ContextId",
         "response->ring_idx==1",
         "adapter->IsNativeContextGenerationCurrent(submission->Generation,submission->ResetGeneration)",
-        "RetireContextUmdFence(context,submission->UmdFenceId)",
+        "RetireContextUmdFence(context,submission->UmdFenceId,&newlyCompletedUmdFence)",
         "QuarantineTerminalSubmission(submission,TRUE)",
         "adapter->NotifyNativeSubmissionCompletion(fenceId,nodeOrdinal,engineOrdinal,FALSE);",
+        "PublishContextCompletedUmdFence(context,newlyCompletedUmdFence);",
         "adapter->CompleteNativePassiveWork(&submission->Work);",
         "ReleaseRenderWorkReference(submission);",
         "adapter->NotifyNativeSubmissionFault(",

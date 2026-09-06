@@ -1106,8 +1106,23 @@ BOOLEAN RecordContextUmdFence(VIOGPU_WDDM_CONTEXT *context, UINT fenceId)
     return valid;
 }
 
-BOOLEAN RetireContextUmdFence(VIOGPU_WDDM_CONTEXT *context, UINT fenceId)
+/* Retires a tracked UMD fence and reports the new contiguous completion
+ * endpoint, but deliberately does NOT publish it.
+ *
+ * context->CompletedUmdFence is what GET_COMPLETED_FENCE hands to the user-mode
+ * driver, and publishing it here - before NotifyNativeSubmissionCompletion()
+ * raises DXGK_INTERRUPT_DMA_COMPLETED - let a UMD observe completion while VidMm
+ * still held a reference to the allocation.  A destroy issued in that window is
+ * answered with STATUS_GRAPHICS_ALLOCATION_BUSY, and nine 0x0000010E dumps on
+ * the test guest carry exactly that status.  Publication is therefore split out
+ * and performed by the caller after dxgkrnl has been told; see
+ * PublishContextCompletedUmdFence(). */
+BOOLEAN RetireContextUmdFence(VIOGPU_WDDM_CONTEXT *context, UINT fenceId, UINT *newlyCompleted)
 {
+    if (newlyCompleted != NULL)
+    {
+        *newlyCompleted = 0;
+    }
     if (context == NULL || fenceId == 0)
     {
         return FALSE;
@@ -1144,13 +1159,39 @@ BOOLEAN RetireContextUmdFence(VIOGPU_WDDM_CONTEXT *context, UINT fenceId)
             context->UmdFenceHead = (context->UmdFenceHead + 1) % VioGpuWddmContextFenceTrackerCapacity;
             --context->UmdFenceCount;
         }
-        if (completed != 0)
+        if (completed != 0 && newlyCompleted != NULL)
+        {
+            *newlyCompleted = completed;
+        }
+    }
+    KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
+    return match != NULL;
+}
+
+/* Publishes the completion endpoint the user-mode driver can observe.  Called
+ * only after DXGK_INTERRUPT_DMA_COMPLETED has been reported, so that a UMD which
+ * sees a fence as complete can rely on VidMm having already been told.
+ *
+ * Publication now happens outside the retire lock, so two completions can race
+ * here; advance only, never regress, using a wrap-safe comparison. */
+VOID PublishContextCompletedUmdFence(VIOGPU_WDDM_CONTEXT *context, UINT completed)
+{
+    if (context == NULL || completed == 0)
+    {
+        return;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
+    if (context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE)
+    {
+        UINT current = static_cast<UINT>(context->CompletedUmdFence);
+        if (current == 0 || static_cast<INT32>(completed - current) > 0)
         {
             InterlockedExchange(&context->CompletedUmdFence, static_cast<LONG>(completed));
         }
     }
     KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
-    return match != NULL;
 }
 
 /* A permanent queue failure begins adapter reset.  Any UMD fences which were
@@ -1807,9 +1848,10 @@ VOID NativeSubmissionComplete(_In_opt_ PVOID callbackContext)
                     response->padding[2] == 0 &&
                     adapter->IsNativeContextGenerationCurrent(submission->Generation, submission->ResetGeneration);
 
+    UINT newlyCompletedUmdFence = 0;
     if (valid)
     {
-        valid = RetireContextUmdFence(context, submission->UmdFenceId);
+        valid = RetireContextUmdFence(context, submission->UmdFenceId, &newlyCompletedUmdFence);
     }
 
     if (!QuarantineTerminalSubmission(submission, TRUE))
@@ -1825,6 +1867,8 @@ VOID NativeSubmissionComplete(_In_opt_ PVOID callbackContext)
     if (valid)
     {
         adapter->NotifyNativeSubmissionCompletion(fenceId, nodeOrdinal, engineOrdinal, FALSE);
+        /* Only now may the user-mode driver see this fence as complete. */
+        PublishContextCompletedUmdFence(context, newlyCompletedUmdFence);
     }
     else
     {
