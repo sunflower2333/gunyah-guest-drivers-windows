@@ -159,6 +159,11 @@ enum VIOGPU_READINESS_FAIL : DWORD
      * consulted, which is invisible in the adapter-level mask. */
     VIOGPU_READINESS_FAIL_RUNDOWN = 1U << 7, // rundown protection not acquirable
     VIOGPU_READINESS_FAIL_RESET_REQUESTED = 1U << 8,
+    /* The readiness check samples its six facts, publishes the capset, then samples
+     * four of them again before returning.  That second sample can refuse on its own,
+     * and until now it did so without latching anything - which is exactly the
+     * NativeReadinessFailMask==0 alongside STATUS_DEVICE_NOT_READY seen on hardware. */
+    VIOGPU_READINESS_FAIL_REVALIDATE = 1U << 9,
 };
 
 enum VIOGPU_NATIVE_CONTEXT_CREATE_STAGE : DWORD

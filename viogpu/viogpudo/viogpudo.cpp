@@ -7764,16 +7764,43 @@ _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN VioGpuAdapter::QueryNativeContextRea
         {
             *resetGeneration = m_NativeContextReadiness.ResetGeneration;
         }
-        ready = InterlockedCompareExchange(&m_NativeContextState,
-                                           VioGpuNativeContextOffline,
-                                           VioGpuNativeContextOffline) == VioGpuNativeContextReady &&
-                InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0) == generation &&
-                (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration,
-                                                        0,
-                                                        0) == currentResetGeneration &&
-                m_CtrlQueue.IsSynchronousRequestsHealthy();
+        const LONG recheckedState = InterlockedCompareExchange(&m_NativeContextState,
+                                                               VioGpuNativeContextOffline,
+                                                               VioGpuNativeContextOffline);
+        const LONG recheckedGeneration = InterlockedCompareExchange(&m_NativeContextGeneration, 0, 0);
+        const ULONGLONG recheckedResetGeneration =
+            (ULONGLONG)InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0);
+        const BOOLEAN recheckedSyncHealthy = m_CtrlQueue.IsSynchronousRequestsHealthy();
+        ready = recheckedState == VioGpuNativeContextReady && recheckedGeneration == generation &&
+                recheckedResetGeneration == currentResetGeneration && recheckedSyncHealthy;
         if (!ready)
         {
+            /* Attribute this refusal too.  The first sample latched nothing because it
+             * passed, so without this the caller sees STATUS_DEVICE_NOT_READY with an
+             * empty NativeReadinessFailMask and no way to tell which fact moved. */
+            LONG recheckMask = VIOGPU_READINESS_FAIL_REVALIDATE;
+            if (recheckedState != VioGpuNativeContextReady)
+            {
+                recheckMask |= VIOGPU_READINESS_FAIL_STATE;
+            }
+            if (recheckedGeneration != generation)
+            {
+                recheckMask |= VIOGPU_READINESS_FAIL_GENERATION;
+            }
+            if (recheckedResetGeneration != currentResetGeneration)
+            {
+                recheckMask |= VIOGPU_READINESS_FAIL_RESET_GENERATION;
+            }
+            if (recheckedResetGeneration == 0)
+            {
+                recheckMask |= VIOGPU_READINESS_FAIL_RESET_ZERO;
+            }
+            if (!recheckedSyncHealthy)
+            {
+                recheckMask |= VIOGPU_READINESS_FAIL_SYNC_UNHEALTHY;
+            }
+            InterlockedExchange(&m_NativeReadinessFailMask, recheckMask);
+            InterlockedExchange(&m_NativeReadinessObservedState, recheckedState);
             RtlZeroMemory(capset, sizeof(*capset));
             if (capsetVersion != NULL)
             {
