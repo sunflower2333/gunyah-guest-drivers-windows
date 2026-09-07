@@ -1231,6 +1231,26 @@ class VioGpuDod
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailCallerRva, 0, 0));
     }
+    /* Every path into the reset latch runs through NotifyNativeSubmissionFault,
+     * which already records the return address of whichever of its callers ran
+     * first.  Without that value the two published frames are the same for all
+     * of them, so the entry point cannot be told apart. */
+    DWORD ReadNativeSubmissionFaultCallerRva(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeSubmissionFaultCallerRva, 0, 0));
+    }
+    DWORD ReadNativeSubmissionFaultPresentSubmitStage(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeSubmissionFaultPresentSubmitStage, 0, 0));
+    }
+    DWORD ReadNativeSubmissionFaultPresentSubmitStatus(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeSubmissionFaultPresentSubmitStatus, 0, 0));
+    }
+    DWORD ReadNativeSubmissionFaultPresentSubmitDetail(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeSubmissionFaultPresentSubmitDetail, 0, 0));
+    }
     DWORD ReadResetDeviceCallerRva(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_ResetDeviceCallerRva, 0, 0));

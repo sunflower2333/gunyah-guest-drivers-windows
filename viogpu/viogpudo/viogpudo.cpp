@@ -5512,6 +5512,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD hardwareResetState = ReadHardwareResetState();
     DWORD hardwareResetCallerRva = ReadHardwareResetCallerRva();
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
+    DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
+    DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
+    DWORD submissionFaultPresentStatus = ReadNativeSubmissionFaultPresentSubmitStatus();
+    DWORD submissionFaultPresentDetail = ReadNativeSubmissionFaultPresentSubmitDetail();
     DWORD fenceRetireMissCount = VioGpuCountFenceTraceEvent(VioGpuFenceTraceRetireMiss);
     DWORD fenceRenderRejectCount = VioGpuCountFenceTraceEvent(VioGpuFenceTraceRenderReject);
     DWORD fencePagingDropCount = VioGpuCountFenceTraceEvent(VioGpuFenceTracePagingDrop);
@@ -5729,6 +5733,22 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"agingDropCoun"
                                                                                                          L"t",
                                                                                                          &fencePagingDropCount},
+                                                                                                        {L"NativeSubmis"
+                                                                                                         L"sionFaultCall"
+                                                                                                         L"erRva",
+                                                                                                         &submissionFaultCallerRva},
+                                                                                                        {L"NativeSubmis"
+                                                                                                         L"sionFaultPres"
+                                                                                                         L"entStage",
+                                                                                                         &submissionFaultPresentStage},
+                                                                                                        {L"NativeSubmis"
+                                                                                                         L"sionFaultPres"
+                                                                                                         L"entStatus",
+                                                                                                         &submissionFaultPresentStatus},
+                                                                                                        {L"NativeSubmis"
+                                                                                                         L"sionFaultPres"
+                                                                                                         L"entDetail",
+                                                                                                         &submissionFaultPresentDetail},
     };
     NTSTATUS writeStatus = STATUS_SUCCESS;
     for (UINT index = 0; index < ARRAYSIZE(writes); ++index)
