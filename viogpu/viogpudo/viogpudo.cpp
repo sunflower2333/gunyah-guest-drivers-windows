@@ -3960,6 +3960,9 @@ NTSTATUS VioGpuDod::SetVidPnSourceVisibility(_In_ CONST DXGKARG_SETVIDPNSOURCEVI
 {
     PAGED_CODE();
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    CountDisplayEvent(17);
+#endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
     VIOGPU_ASSERT(pSetVidPnSourceVisibility != NULL);
@@ -4008,6 +4011,9 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
 
     if (pCommitVidPn->Flags.PathPoweredOff)
     {
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        CountDisplayEvent(16);
+#endif
         Status = STATUS_SUCCESS;
         goto CommitVidPnExit;
     }
@@ -4035,6 +4041,12 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
     }
 
     Status = pVidPnTopologyInterface->pfnGetNumPaths(hVidPnTopology, &NumPaths);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (NT_SUCCESS(Status))
+    {
+        RecordDisplayValue(14, static_cast<LONG>(NumPaths));
+    }
+#endif
     if (!NT_SUCCESS(Status))
     {
         DbgPrint(TRACE_LEVEL_ERROR,
@@ -4077,6 +4089,9 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
         pPinnedVidPnSourceModeInfo = NULL;
     }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    RecordDisplayValue(15, pPinnedVidPnSourceModeInfo != NULL ? 1 : 0);
+#endif
     if (pPinnedVidPnSourceModeInfo == NULL)
     {
         Status = STATUS_SUCCESS;
@@ -5591,6 +5606,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayDescriptorHasEdid = ReadDisplayCounter(11);
     DWORD displayMonitorModesCalls = ReadDisplayCounter(12);
     DWORD displayRecommendVidPnCalls = ReadDisplayCounter(13);
+    DWORD displayCommitNumPaths = ReadDisplayCounter(14);
+    DWORD displayCommitPinnedMode = ReadDisplayCounter(15);
+    DWORD displayCommitPoweredOff = ReadDisplayCounter(16);
+    DWORD displaySetSourceVisCalls = ReadDisplayCounter(17);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5888,6 +5907,14 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayMonitorModesCalls},
                                                                                                         {L"NativeDisplayRecommendVidPnCalls",
                                                                                                          &displayRecommendVidPnCalls},
+                                                                                                        {L"NativeDisplayCommitNumPaths",
+                                                                                                         &displayCommitNumPaths},
+                                                                                                        {L"NativeDisplayCommitPinnedMode",
+                                                                                                         &displayCommitPinnedMode},
+                                                                                                        {L"NativeDisplayCommitPoweredOff",
+                                                                                                         &displayCommitPoweredOff},
+                                                                                                        {L"NativeDisplaySetSourceVisCalls",
+                                                                                                         &displaySetSourceVisCalls},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",

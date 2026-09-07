@@ -9585,6 +9585,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY
 VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOURCEADDRESS *setVidPnSourceAddress)
 {
     VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (adapter != NULL)
+    {
+        adapter->CountDisplayEvent(7);
+    }
+#endif
     if (adapter == NULL || setVidPnSourceAddress == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL ||
         setVidPnSourceAddress->VidPnSourceId != 0 || setVidPnSourceAddress->ContextCount != 0 ||
         setVidPnSourceAddress->Flags.Value != 1U)

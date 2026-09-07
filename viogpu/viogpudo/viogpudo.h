@@ -874,7 +874,7 @@ class VioGpuDod
     /* Windows persists no VidPn path for this adapter even with the display
      * DDIs registered and the child reporting connected, so the question is
      * which DDI Windows stops at.  One array rather than a dozen members. */
-    volatile LONG m_DisplayCounters[14];
+    volatile LONG m_DisplayCounters[18];
     volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_ResetDeviceCallerRva;
     volatile LONG m_ResetDeviceCount;
