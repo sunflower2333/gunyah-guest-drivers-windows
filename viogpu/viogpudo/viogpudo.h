@@ -868,6 +868,9 @@ class VioGpuDod
     volatile LONG m_NativeContextLifecycleTimeoutStage;
     volatile LONG64 m_NativeContextLifecycleAcquireTime;
     volatile LONG m_NativeContextLifecycleHeldMs;
+    volatile LONG m_ScanoutWaitTimeoutCount;
+    volatile LONG m_ScanoutWaitGaveUpCount;
+    volatile LONG m_ScanoutWaitHolderRva;
     volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_ResetDeviceCallerRva;
     volatile LONG m_ResetDeviceCount;
@@ -1335,6 +1338,37 @@ class VioGpuDod
     DWORD ReadNativeContextLifecycleHeldMs(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextLifecycleHeldMs, 0, 0));
+    }
+    /* Kept apart from the lifecycle counters: sharing them made a scanout
+     * timeout look like a lifecycle timeout while the lifecycle holder RVA and
+     * acquire time stayed stale, which is not a distinction that can be undone
+     * after the fact. */
+    VOID RecordScanoutWaitTimeout(void)
+    {
+        InterlockedIncrement(&m_ScanoutWaitTimeoutCount);
+    }
+    VOID RecordScanoutWaitGaveUp(void)
+    {
+        InterlockedIncrement(&m_ScanoutWaitGaveUpCount);
+    }
+    VOID RecordScanoutWaitHolder(_In_ ULONG_PTR callerRva)
+    {
+        if (callerRva != 0 && callerRva <= MAXULONG)
+        {
+            InterlockedExchange(&m_ScanoutWaitHolderRva, static_cast<LONG>(callerRva));
+        }
+    }
+    DWORD ReadScanoutWaitTimeoutCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_ScanoutWaitTimeoutCount, 0, 0));
+    }
+    DWORD ReadScanoutWaitGaveUpCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_ScanoutWaitGaveUpCount, 0, 0));
+    }
+    DWORD ReadScanoutWaitHolderRva(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_ScanoutWaitHolderRva, 0, 0));
     }
     /* Every path into the reset latch runs through NotifyNativeSubmissionFault,
      * which already records the return address of whichever of its callers ran

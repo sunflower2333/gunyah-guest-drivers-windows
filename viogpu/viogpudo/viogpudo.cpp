@@ -211,6 +211,9 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativeContextLifecycleTimeoutStage = 0;
     m_NativeContextLifecycleAcquireTime = 0;
     m_NativeContextLifecycleHeldMs = 0;
+    m_ScanoutWaitTimeoutCount = 0;
+    m_ScanoutWaitGaveUpCount = 0;
+    m_ScanoutWaitHolderRva = 0;
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
     m_NativeSubmissionFaultExecutionDiagnosticState = 0;
@@ -5536,6 +5539,9 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD lifecycleHolderRva = ReadNativeContextLifecycleHolderRva();
     DWORD lifecycleTimeoutStage = ReadNativeContextLifecycleTimeoutStage();
     DWORD lifecycleHeldMs = ReadNativeContextLifecycleHeldMs();
+    DWORD scanoutTimeoutCount = ReadScanoutWaitTimeoutCount();
+    DWORD scanoutGaveUpCount = ReadScanoutWaitGaveUpCount();
+    DWORD scanoutHolderRva = ReadScanoutWaitHolderRva();
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5793,6 +5799,18 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"tLifecycleHel"
                                                                                                          L"dMs",
                                                                                                          &lifecycleHeldMs},
+                                                                                                        {L"NativeScanou"
+                                                                                                         L"tWaitTimeoutC"
+                                                                                                         L"ount",
+                                                                                                         &scanoutTimeoutCount},
+                                                                                                        {L"NativeScanou"
+                                                                                                         L"tWaitGaveUpCo"
+                                                                                                         L"unt",
+                                                                                                         &scanoutGaveUpCount},
+                                                                                                        {L"NativeScanou"
+                                                                                                         L"tWaitHolderRv"
+                                                                                                         L"a",
+                                                                                                         &scanoutHolderRva},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -9910,6 +9928,9 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
 
 __declspec(code_seg(".text")) __declspec(noinline) NTSTATUS VioGpuAdapter::WaitScanoutLifecycle(void)
 {
+    ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    ULONG_PTR returnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+    ULONG_PTR callerRva = returnAddress >= imageBase ? returnAddress - imageBase : 0;
     for (UINT attempt = 0; attempt < 3; ++attempt)
     {
         LARGE_INTEGER scanoutTimeout;
@@ -9921,16 +9942,20 @@ __declspec(code_seg(".text")) __declspec(noinline) NTSTATUS VioGpuAdapter::WaitS
                                                     &scanoutTimeout);
         if (waitStatus == STATUS_SUCCESS)
         {
+            if (m_pVioGpuDod != NULL)
+            {
+                m_pVioGpuDod->RecordScanoutWaitHolder(callerRva);
+            }
             return waitStatus;
         }
         if (m_pVioGpuDod != NULL)
         {
-            m_pVioGpuDod->RecordNativeContextLifecycleTimeout();
+            m_pVioGpuDod->RecordScanoutWaitTimeout();
         }
     }
     if (m_pVioGpuDod != NULL)
     {
-        m_pVioGpuDod->RecordNativeContextLifecycleGaveUp();
+        m_pVioGpuDod->RecordScanoutWaitGaveUp();
     }
     return STATUS_TIMEOUT;
 }
