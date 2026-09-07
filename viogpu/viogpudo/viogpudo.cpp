@@ -5489,6 +5489,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD apertureMapSkipCount = ReadNativeApertureMapSkipCount();
     DWORD hardwareResetState = ReadHardwareResetState();
     DWORD hardwareResetCallerRva = ReadHardwareResetCallerRva();
+    DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD apertureFailureCount = ReadNativeApertureFailureCount();
     DWORD pagingResetCount = ReadNativePagingResetCount();
     struct VALUE_WRITE
@@ -5687,6 +5688,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"reResetCaller"
                                                                                                          L"Rva",
                                                                                                          &hardwareResetCallerRva},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tFailCallerRv"
+                                                                                                         L"a",
+                                                                                                         &nativeContextFailCallerRva},
     };
     NTSTATUS writeStatus = STATUS_SUCCESS;
     for (UINT index = 0; index < ARRAYSIZE(writes); ++index)

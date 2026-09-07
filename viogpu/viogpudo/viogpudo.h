@@ -1225,6 +1225,12 @@ class VioGpuDod
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetCallerRva, 0, 0));
     }
+    /* FailNativeContextAtAnyIrql is what sets the reset latch, and it already
+     * records its own caller -- that value just never reached the driver key. */
+    DWORD ReadNativeContextFailCallerRva(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailCallerRva, 0, 0));
+    }
     DWORD ReadResetDeviceCallerRva(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_ResetDeviceCallerRva, 0, 0));
