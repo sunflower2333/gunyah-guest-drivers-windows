@@ -9646,6 +9646,28 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
         {
             /* The vsync report carries the primary dxgkrnl programmed here. */
             adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(setVidPnSourceAddress->PrimaryAddress.QuadPart));
+
+            /* SET_SCANOUT only binds the resource: virtio-gpu has no autonomous
+             * scanout of guest memory, so the host keeps showing whatever that
+             * resource last received.  DWM flips through SetVidPnSourceAddress
+             * rather than Present, so without a transfer here the very first
+             * bind was the only thing the host ever saw -- HostPresentCount
+             * stuck at 1 against a scanout that stayed black.  Publish the
+             * newly bound primary. */
+            VIOGPU_HOST_CONTEXT_RESULT flush = adapter->Present2DResource(allocation->ResourceId,
+                                                                          0,
+                                                                          allocation->Width,
+                                                                          allocation->Height,
+                                                                          0,
+                                                                          0,
+                                                                          &allocation->Resource2DState,
+                                                                          &allocation->Resource2DResetGeneration);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+            adapter->CountDisplayEvent(18);
+            adapter->RecordDisplayValue(19, static_cast<LONG>(flush));
+#else
+            UNREFERENCED_PARAMETER(flush);
+#endif
         }
         status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
     }

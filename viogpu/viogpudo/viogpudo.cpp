@@ -5610,6 +5610,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayCommitPinnedMode = ReadDisplayCounter(15);
     DWORD displayCommitPoweredOff = ReadDisplayCounter(16);
     DWORD displaySetSourceVisCalls = ReadDisplayCounter(17);
+    DWORD displayFlipFlushCalls = ReadDisplayCounter(18);
+    DWORD displayFlipFlushResult = ReadDisplayCounter(19);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5915,6 +5917,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayCommitPoweredOff},
                                                                                                         {L"NativeDisplaySetSourceVisCalls",
                                                                                                          &displaySetSourceVisCalls},
+                                                                                                        {L"NativeDisplayFlipFlushCalls",
+                                                                                                         &displayFlipFlushCalls},
+                                                                                                        {L"NativeDisplayFlipFlushResult",
+                                                                                                         &displayFlipFlushResult},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
