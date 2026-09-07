@@ -5680,6 +5680,9 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayPublishStatus = ReadDisplayCounter(39);
     DWORD displayTeardownDegraded = ReadDisplayCounter(40);
     DWORD displayTeardownDestroyFail = ReadDisplayCounter(41);
+    DWORD displayStandardAllocCalls = ReadDisplayCounter(42);
+    DWORD displayStandardAllocRejects = ReadDisplayCounter(43);
+    DWORD displayStandardAllocStatus = ReadDisplayCounter(44);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -6033,6 +6036,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayTeardownDegraded},
                                                                                                         {L"NativeDisplayTeardownDestroyFail",
                                                                                                          &displayTeardownDestroyFail},
+                                                                                                        {L"NativeDisplayStandardAllocCalls",
+                                                                                                         &displayStandardAllocCalls},
+                                                                                                        {L"NativeDisplayStandardAllocRejects",
+                                                                                                         &displayStandardAllocRejects},
+                                                                                                        {L"NativeDisplayStandardAllocStatus",
+                                                                                                         &displayStandardAllocStatus},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",

@@ -4788,10 +4788,24 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
             status = STATUS_INVALID_USER_BUFFER;
             break;
         }
+        /* Distinguish a request this miniport refused from one that never
+         * arrived: a user-mode allocation that fails inside the runtime never
+         * reaches here at all. */
+        const BOOLEAN standardRequest = (privateData.Flags & VIOGPU_WDDM_ALLOCATION_NATIVE) == 0;
+        if (standardRequest)
+        {
+            adapter->CountDisplayEvent(42);
+        }
+
         SIZE_T alignedSize = 0;
         status = ValidateAllocationPrivate(&privateData, &alignedSize);
         if (!NT_SUCCESS(status))
         {
+            if (standardRequest)
+            {
+                adapter->CountDisplayEvent(43);
+                adapter->RecordDisplayValue(44, static_cast<LONG>(status));
+            }
             break;
         }
 
