@@ -214,6 +214,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_ScanoutWaitTimeoutCount = 0;
     m_ScanoutWaitGaveUpCount = 0;
     m_ScanoutWaitHolderRva = 0;
+    m_UmdPresentActive = 0;
     RtlZeroMemory((void *)m_DisplayCounters, sizeof(m_DisplayCounters));
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
@@ -2014,6 +2015,29 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Flush2DResource(_In_ UINT resourceId,
                                                         : VioGpuHostContextNotSubmitted;
     ReleaseNativeSubmissionOperation();
     return result;
+}
+
+NTSTATUS VioGpuDod::PublishPresentBlit(_In_ UINT width,
+                                       _In_ UINT height,
+                                       _In_ UINT sourcePitch,
+                                       _In_reads_bytes_(payloadSize) const BYTE *payload,
+                                       _In_ UINT payloadSize)
+{
+    if (!AcquireNativeSubmissionOperation())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    NTSTATUS status = adapter != NULL
+                          ? adapter->PublishPresentBlit(width, height, sourcePitch, payload, payloadSize)
+                          : STATUS_DEVICE_NOT_READY;
+    ReleaseNativeSubmissionOperation();
+    if (NT_SUCCESS(status))
+    {
+        SetUmdPresentActive();
+    }
+    return status;
 }
 
 VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
@@ -8357,6 +8381,59 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Flush2DResource(_In_ UINT resourceId,
     return m_CtrlQueue.FlushResourceSynchronous(resourceId, width, height, 0, 0);
 }
 
+NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
+                                           _In_ UINT height,
+                                           _In_ UINT sourcePitch,
+                                           _In_reads_bytes_(payloadSize) const BYTE *payload,
+                                           _In_ UINT payloadSize)
+{
+    PAGED_CODE();
+
+    if (payload == NULL || width == 0 || height == 0 || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* The frame must match the surface already bound to the host scanout: a
+     * different geometry would be published against the wrong stride. */
+    if (m_pFrameBuf == NULL || m_FrameBufWidth != width || m_FrameBufHeight != height)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    const UINT destinationPitch = width * 4U;
+    if (sourcePitch < destinationPitch || payloadSize / height < sourcePitch ||
+        m_pFrameBuf->GetSize() / height < destinationPitch)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    BYTE *destination = static_cast<BYTE *>(m_pFrameBuf->GetVirtualAddress());
+    if (destination == NULL)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    for (UINT row = 0; row < height; ++row)
+    {
+        RtlCopyMemory(destination + static_cast<SIZE_T>(row) * destinationPitch,
+                      payload + static_cast<SIZE_T>(row) * sourcePitch,
+                      destinationPitch);
+    }
+
+    /* Re-assert the scanout: a flip may have pointed the host at DWM's blank
+     * standard primary before the first frame arrived. */
+    const UINT resourceId = m_pFrameBuf->GetId();
+    if (!m_CtrlQueue.SetScanout(0, resourceId, width, height, 0, 0) ||
+        !m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0) ||
+        !m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    return STATUS_SUCCESS;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
                                                        _In_ UINT resourceId,
                                                        _In_ UINT width,
@@ -12761,6 +12838,8 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
     format = ColorFormat(pCurrentMode->DispInfo.ColorFormat);
     DbgPrint(TRACE_LEVEL_INFORMATION,
              ("---> %s - (%d -> %d)\n", __FUNCTION__, pCurrentMode->DispInfo.ColorFormat, format));
+    m_FrameBufWidth = 0;
+    m_FrameBufHeight = 0;
     resid = m_Idr.GetId();
     if (!m_CtrlQueue.CreateResource(resid, format, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight))
     {
@@ -12801,6 +12880,10 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
     pCurrentMode->FrameBuffer = obj->GetVirtualAddress();
     pCurrentMode->Flags.FrameBufferIsActive = TRUE;
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+
+    m_FrameBufWidth = pModeInfo->VisScreenWidth;
+    m_FrameBufHeight = pModeInfo->VisScreenHeight;
+
     return TRUE;
 }
 

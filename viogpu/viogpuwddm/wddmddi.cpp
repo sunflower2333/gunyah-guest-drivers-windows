@@ -4443,6 +4443,63 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRenderKm(CONST HANDLE hContex
 #endif
 }
 
+static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+
+    if (adapter == NULL || escape == NULL || escape->hDevice == NULL || escape->hContext != NULL ||
+        escape->Flags.Value != 0 || escape->pPrivateDriverData == NULL ||
+        escape->PrivateDriverDataSize <= sizeof(VIOGPU_WDDM_PRESENT_BLIT))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    VIOGPU_WDDM_PRESENT_BLIT request = {};
+    __try
+    {
+        RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return STATUS_INVALID_USER_BUFFER;
+    }
+
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
+        request.Opcode != VIOGPU_WDDM_ESCAPE_PRESENT_BLIT)
+    {
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;
+    }
+
+    if (request.Flags != VIOGPU_WDDM_ESCAPE_FLAGS_NONE || request.Format != VIOGPU_WDDM_FORMAT_B8G8R8A8_UNORM ||
+        request.Reserved != 0 || request.Width == 0 || request.Height == 0 || request.SourcePitch == 0 ||
+        request.PayloadSize == 0 ||
+        request.PayloadSize != escape->PrivateDriverDataSize - sizeof(VIOGPU_WDDM_PRESENT_BLIT))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (!adapter->IsDriverActive())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    const BYTE *payload = static_cast<const BYTE *>(escape->pPrivateDriverData) + sizeof(VIOGPU_WDDM_PRESENT_BLIT);
+    NTSTATUS status;
+    __try
+    {
+        status = adapter->PublishPresentBlit(request.Width,
+                                             request.Height,
+                                             request.SourcePitch,
+                                             payload,
+                                             request.PayloadSize);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return STATUS_INVALID_USER_BUFFER;
+    }
+    return status;
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter, CONST DXGKARG_ESCAPE *escape)
 {
     PAGED_CODE();
@@ -4459,6 +4516,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
     if (escape->hContext != NULL || escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_CONTEXT_INFO))
     {
         return QueryContextInfo(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
+    }
+    if (escape->PrivateDriverDataSize > sizeof(VIOGPU_WDDM_PRESENT_BLIT))
+    {
+        return PresentBlit(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
     }
     return VioGpuDodEscape(hAdapter, escape);
 }
@@ -9692,11 +9753,16 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
     }
     else
     {
-        VIOGPU_HOST_CONTEXT_RESULT result = adapter->Set2DScanout(0,
-                                                                  allocation->ResourceId,
-                                                                  allocation->Width,
-                                                                  allocation->Height,
-                                                                  &previousResourceId);
+        /* The user-mode driver renders on the host, so DWM's standard primary
+         * stays blank; once real frames are being published, re-binding the
+         * scanout to it would blank the display on every flip. */
+        VIOGPU_HOST_CONTEXT_RESULT result = adapter->IsUmdPresentActive()
+                                                ? VioGpuHostContextConfirmed
+                                                : adapter->Set2DScanout(0,
+                                                                        allocation->ResourceId,
+                                                                        allocation->Width,
+                                                                        allocation->Height,
+                                                                        &previousResourceId);
         if (result == VioGpuHostContextConfirmed)
         {
             /* The vsync report carries the primary dxgkrnl programmed here. */
@@ -9709,11 +9775,14 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
              * bind was the only thing the host ever saw -- HostPresentCount
              * stuck at 1 against a scanout that stayed black.  Publish the
              * newly bound primary. */
-            VIOGPU_HOST_CONTEXT_RESULT flush = adapter->Flush2DResource(allocation->ResourceId,
-                                                                        allocation->Width,
-                                                                        allocation->Height,
-                                                                        &allocation->Resource2DState,
-                                                                        &allocation->Resource2DResetGeneration);
+            VIOGPU_HOST_CONTEXT_RESULT flush =
+                adapter->IsUmdPresentActive()
+                    ? VioGpuHostContextConfirmed
+                    : adapter->Flush2DResource(allocation->ResourceId,
+                                               allocation->Width,
+                                               allocation->Height,
+                                               &allocation->Resource2DState,
+                                               &allocation->Resource2DResetGeneration);
 #if defined(VIOGPU_NATIVE_CONTEXT)
             adapter->CountDisplayEvent(18);
             adapter->RecordDisplayValue(19, static_cast<LONG>(flush));

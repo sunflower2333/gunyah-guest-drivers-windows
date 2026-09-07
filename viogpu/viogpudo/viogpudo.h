@@ -594,6 +594,15 @@ class VioGpuAdapter : IVioGpuPCI
                                                _In_ UINT height,
                                                _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                _Inout_ ULONGLONG *resourceResetGeneration);
+    /* Publish a finished frame the user-mode driver rendered on the host into
+     * the surface this adapter already scans out.  The guest pages behind the
+     * UMD's back buffer are never written, so the frame has to arrive as
+     * pixels rather than as a resource reference. */
+    NTSTATUS PublishPresentBlit(_In_ UINT width,
+                                _In_ UINT height,
+                                _In_ UINT sourcePitch,
+                                _In_reads_bytes_(payloadSize) const BYTE *payload,
+                                _In_ UINT payloadSize);
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,
                                             _In_ UINT width,
@@ -834,6 +843,8 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuBuf m_GpuBuf;
     VioGpuIdr m_Idr;
     VioGpuObj *m_pFrameBuf;
+    UINT m_FrameBufWidth;
+    UINT m_FrameBufHeight;
     VioGpuObj *m_pCursorBuf;
     VioGpuMemSegment m_CursorSegment;
     VioGpuMemSegment m_FrameSegment;
@@ -884,6 +895,7 @@ class VioGpuDod
      * DDIs registered and the child reporting connected, so the question is
      * which DDI Windows stops at.  One array rather than a dozen members. */
     volatile LONG m_DisplayCounters[32];
+    volatile LONG m_UmdPresentActive;
     volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_ResetDeviceCallerRva;
     volatile LONG m_ResetDeviceCount;
@@ -1158,6 +1170,21 @@ class VioGpuDod
                                                _In_ UINT height,
                                                _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                _Inout_ ULONGLONG *resourceResetGeneration);
+    NTSTATUS PublishPresentBlit(_In_ UINT width,
+                                _In_ UINT height,
+                                _In_ UINT sourcePitch,
+                                _In_reads_bytes_(payloadSize) const BYTE *payload,
+                                _In_ UINT payloadSize);
+    /* Once the user-mode driver publishes frames, it owns the scanout: a flip
+     * must not re-point the host at DWM's blank standard primary. */
+    BOOLEAN IsUmdPresentActive(void)
+    {
+        return InterlockedCompareExchange(&m_UmdPresentActive, 0, 0) != 0;
+    }
+    VOID SetUmdPresentActive(void)
+    {
+        InterlockedExchange(&m_UmdPresentActive, 1);
+    }
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,
                                             _In_ UINT width,

@@ -7385,6 +7385,17 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT32 CommandStreamSize;
             VIOGPU_WDDM_UINT32 Reserved[4];
         """,
+        "VIOGPU_WDDM_PRESENT_BLIT": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            VIOGPU_WDDM_UINT32 Opcode;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT32 Width;
+            VIOGPU_WDDM_UINT32 Height;
+            VIOGPU_WDDM_UINT32 SourcePitch;
+            VIOGPU_WDDM_UINT32 Format;
+            VIOGPU_WDDM_UINT32 PayloadSize;
+            VIOGPU_WDDM_UINT32 Reserved;
+        """,
         "VIOGPU_WDDM_ALLOCATION_REFERENCE": """
             VIOGPU_WDDM_UINT32 AllocationIndex;
             VIOGPU_WDDM_UINT32 Flags;
@@ -7578,6 +7589,40 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     ):
         if escape_dispatch.count(fragment) != 1:
             fail(f"Escape must dispatch the exact context completion endpoint: {fragment}")
+    for fragment in (
+        "escape->PrivateDriverDataSize>sizeof(VIOGPU_WDDM_PRESENT_BLIT)",
+        "returnPresentBlit(reinterpret_cast<VioGpuDod*>(hAdapter),escape);",
+    ):
+        if escape_dispatch.count(fragment) != 1:
+            fail(f"Escape must dispatch the frame publication endpoint exactly once: {fragment}")
+    present_blit = canonical_code(function_body("PresentBlit", WDDM_DDI_CODE))
+    for fragment in (
+        "escape->hDevice==NULL",
+        "escape->hContext!=NULL",
+        "escape->Flags.Value!=0",
+        "escape->PrivateDriverDataSize<=sizeof(VIOGPU_WDDM_PRESENT_BLIT)",
+        "RtlCopyMemory(&request,escape->pPrivateDriverData,sizeof(request));",
+        "request.Opcode!=VIOGPU_WDDM_ESCAPE_PRESENT_BLIT",
+        "request.Format!=VIOGPU_WDDM_FORMAT_B8G8R8A8_UNORM",
+        "request.PayloadSize!=escape->PrivateDriverDataSize-sizeof(VIOGPU_WDDM_PRESENT_BLIT)",
+        "adapter->PublishPresentBlit(request.Width,request.Height,request.SourcePitch,payload,request.PayloadSize);",
+    ):
+        if present_blit.count(fragment) != 1:
+            fail(f"frame publication endpoint must validate its request before publishing: {fragment}")
+    # A frame published by the user-mode driver owns the scanout: re-binding it to
+    # DWM's blank standard primary on the next flip would blank the display.
+    publish = canonical_code(function_body("VioGpuAdapter::PublishPresentBlit", VIOGPU_SOURCE))
+    for fragment in (
+        "m_FrameBufWidth!=width||m_FrameBufHeight!=height",
+        "m_CtrlQueue.SetScanout(0,resourceId,width,height,0,0)",
+        "m_CtrlQueue.TransferToHost2D(resourceId,0,width,height,0,0)",
+        "m_CtrlQueue.ResFlush(resourceId,width,height,0,0)",
+    ):
+        if publish.count(fragment) != 1:
+            fail(f"frame publication must target the scanned-out surface: {fragment}")
+    set_source_address = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
+    if set_source_address.count("adapter->IsUmdPresentActive()") != 2:
+        fail("a flip must not re-point or republish the scanout once frames are being published")
     completed_fence_query = canonical_code(function_body("QueryCompletedFenceInfo", WDDM_DDI_CODE))
     for fragment in (
         "escape->hDevice==NULL",
