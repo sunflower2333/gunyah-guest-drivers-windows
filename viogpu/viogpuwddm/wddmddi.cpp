@@ -6080,9 +6080,17 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     BOOLEAN snapshotAcquired = nativeAllocation && AcquireAllocationNativeContextSnapshot(allocation, &snapshot);
     if (nativeAllocation && !snapshotAcquired)
     {
+        /* The context that owns this allocation is gone or superseded, so there
+         * is no host to create the guest allocation on -- and no GPU work left
+         * that could reference it, because the work belonged to that context.
+         * Refusing is not available: DxgkDdiBuildPagingBuffer cannot return a
+         * failure, and driving the adapter into reset over one dead allocation
+         * costs the whole boot (the reset latch is never cleared at runtime).
+         * Leave the host binding clear and report the mapping done; the aperture
+         * state stays idle, which the unmap path already retires as a no-op. */
+        adapter->CountNativeApertureMapSkip();
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
-        adapter->RecordNativeApertureFailure(VioGpuApertureStageMapSnapshot, STATUS_DEVICE_NOT_READY);
-        return STATUS_GRAPHICS_ALLOCATION_BUSY;
+        return STATUS_SUCCESS;
     }
 
     DWORD failureStage = VioGpuApertureStageMapValidate;

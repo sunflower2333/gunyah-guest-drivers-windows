@@ -1040,6 +1040,7 @@ class VioGpuDod
     volatile LONG m_NativeApertureFailureRecorded;
     volatile LONG m_NativeApertureRetireCount;
     volatile LONG m_NativeApertureIdleCount;
+    volatile LONG m_NativeApertureMapSkipCount;
     volatile LONG m_NativeApertureFailureCount;
     volatile LONG m_NativePagingResetCount;
     VOID ArmCrtcVsyncTimer(void);
@@ -1330,6 +1331,14 @@ class VioGpuDod
     VOID CountNativeApertureIdle(void)
     {
         InterlockedIncrement(&m_NativeApertureIdleCount);
+    }
+    VOID CountNativeApertureMapSkip(void)
+    {
+        InterlockedIncrement(&m_NativeApertureMapSkipCount);
+    }
+    DWORD ReadNativeApertureMapSkipCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeApertureMapSkipCount, 0, 0));
     }
     DWORD ReadNativeApertureRetireCount(void)
     {

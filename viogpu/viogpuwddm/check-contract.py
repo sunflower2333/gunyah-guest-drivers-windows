@@ -9117,8 +9117,19 @@ def check_paging_buffer_status_contract() -> None:
             fail(f"the paging-buffer status helper must fail closed into a reset: {fragment}")
 
     aperture = canonical_code(function_body("MapApertureAllocation", WDDM_DDI_CODE))
-    if aperture.count("adapter->RecordNativeApertureFailure(") < 5:
+    # Four genuine refusal exits remain: arguments, lifecycle, placement and the
+    # combined validate/backing/host tail.  The snapshot gate is no longer one of
+    # them -- a dead owning context is reported as mapped and counted under
+    # CountNativeApertureMapSkip, because refusing costs the whole boot.
+    if aperture.count("adapter->RecordNativeApertureFailure(") < 4:
         fail("MapApertureAllocation must attribute every refusal to a stage")
+    if "adapter->CountNativeApertureMapSkip();" not in aperture:
+        fail("MapApertureAllocation must count, not refuse, a map whose owning context is gone")
+    snapshot_gate = aperture.find("if(nativeAllocation&&!snapshotAcquired)")
+    if snapshot_gate < 0 or "returnSTATUS_GRAPHICS_ALLOCATION_BUSY;" in aperture[
+        snapshot_gate : aperture.find("DWORDfailureStage")
+    ]:
+        fail("a map whose owning context is gone must not be refused: VidMm cannot accept a refusal")
 
 
 def check_wddm_context_lifetime() -> None:
