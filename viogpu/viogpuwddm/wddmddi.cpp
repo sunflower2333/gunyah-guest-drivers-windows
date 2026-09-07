@@ -9665,6 +9665,26 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
 #if defined(VIOGPU_NATIVE_CONTEXT)
             adapter->CountDisplayEvent(18);
             adapter->RecordDisplayValue(19, static_cast<LONG>(flush));
+            /* Whether the primary Windows just bound actually holds a desktop.
+             * A confirmed transfer of an all-black surface and a transfer that
+             * never happened look identical from the host side. */
+            if (allocation->ApertureAddress != NULL && allocation->BackingSize >= 0x1000)
+            {
+                const BYTE *pixels = static_cast<const BYTE *>(allocation->ApertureAddress);
+                SIZE_T span = allocation->BackingSize < 0x100000 ? allocation->BackingSize : 0x100000;
+                LONG nonZero = 0;
+                for (SIZE_T offset = 0; offset < span; offset += 4096)
+                {
+                    if (pixels[offset] != 0 || pixels[offset + 1] != 0 || pixels[offset + 2] != 0)
+                    {
+                        ++nonZero;
+                    }
+                }
+                adapter->RecordDisplayValue(20, nonZero);
+                adapter->RecordDisplayValue(21, static_cast<LONG>(pixels[0]) |
+                                                    (static_cast<LONG>(pixels[1]) << 8) |
+                                                    (static_cast<LONG>(pixels[2]) << 16));
+            }
 #else
             UNREFERENCED_PARAMETER(flush);
 #endif

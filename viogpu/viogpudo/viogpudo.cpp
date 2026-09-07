@@ -5612,6 +5612,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displaySetSourceVisCalls = ReadDisplayCounter(17);
     DWORD displayFlipFlushCalls = ReadDisplayCounter(18);
     DWORD displayFlipFlushResult = ReadDisplayCounter(19);
+    DWORD displayPrimaryNonZeroPages = ReadDisplayCounter(20);
+    DWORD displayPrimaryFirstPixel = ReadDisplayCounter(21);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5921,6 +5923,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayFlipFlushCalls},
                                                                                                         {L"NativeDisplayFlipFlushResult",
                                                                                                          &displayFlipFlushResult},
+                                                                                                        {L"NativeDisplayPrimaryNonZeroPages",
+                                                                                                         &displayPrimaryNonZeroPages},
+                                                                                                        {L"NativeDisplayPrimaryFirstPixel",
+                                                                                                         &displayPrimaryFirstPixel},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
