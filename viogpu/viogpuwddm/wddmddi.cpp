@@ -9654,14 +9654,11 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
              * bind was the only thing the host ever saw -- HostPresentCount
              * stuck at 1 against a scanout that stayed black.  Publish the
              * newly bound primary. */
-            VIOGPU_HOST_CONTEXT_RESULT flush = adapter->Present2DResource(allocation->ResourceId,
-                                                                          0,
-                                                                          allocation->Width,
-                                                                          allocation->Height,
-                                                                          0,
-                                                                          0,
-                                                                          &allocation->Resource2DState,
-                                                                          &allocation->Resource2DResetGeneration);
+            VIOGPU_HOST_CONTEXT_RESULT flush = adapter->Flush2DResource(allocation->ResourceId,
+                                                                        allocation->Width,
+                                                                        allocation->Height,
+                                                                        &allocation->Resource2DState,
+                                                                        &allocation->Resource2DResetGeneration);
 #if defined(VIOGPU_NATIVE_CONTEXT)
             adapter->CountDisplayEvent(18);
             adapter->RecordDisplayValue(19, static_cast<LONG>(flush));

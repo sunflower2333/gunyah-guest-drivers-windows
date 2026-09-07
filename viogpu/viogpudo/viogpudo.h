@@ -585,6 +585,15 @@ class VioGpuAdapter : IVioGpuPCI
                                                  _In_ UINT y,
                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                  _Inout_ ULONGLONG *resourceResetGeneration);
+    /* Flush without a guest->host transfer, for a primary whose pixels are
+     * produced on the host: DWM's present is a GPU blit into the host copy
+     * of the resource, so the guest pages behind it stay zero, and a
+     * TRANSFER_TO_HOST_2D uploads those zeros over the rendered result. */
+    VIOGPU_HOST_CONTEXT_RESULT Flush2DResource(_In_ UINT resourceId,
+                                               _In_ UINT width,
+                                               _In_ UINT height,
+                                               _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                               _Inout_ ULONGLONG *resourceResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,
                                             _In_ UINT width,
@@ -1144,6 +1153,11 @@ class VioGpuDod
                                                  _In_ UINT y,
                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                  _Inout_ ULONGLONG *resourceResetGeneration);
+    VIOGPU_HOST_CONTEXT_RESULT Flush2DResource(_In_ UINT resourceId,
+                                               _In_ UINT width,
+                                               _In_ UINT height,
+                                               _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                               _Inout_ ULONGLONG *resourceResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,
                                             _In_ UINT width,

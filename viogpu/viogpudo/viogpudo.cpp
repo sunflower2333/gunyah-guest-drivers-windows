@@ -1994,6 +1994,28 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Present2DResource(_In_ UINT resourceId,
     return result;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Flush2DResource(_In_ UINT resourceId,
+                                                      _In_ UINT width,
+                                                      _In_ UINT height,
+                                                      _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                      _Inout_ ULONGLONG *resourceResetGeneration)
+{
+    if (!AcquireNativeSubmissionOperation())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    VIOGPU_HOST_CONTEXT_RESULT result = adapter != NULL ? adapter->Flush2DResource(resourceId,
+                                                                                   width,
+                                                                                   height,
+                                                                                   resourceState,
+                                                                                   resourceResetGeneration)
+                                                        : VioGpuHostContextNotSubmitted;
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
                                                    _In_ UINT resourceId,
                                                    _In_ UINT width,
@@ -8270,6 +8292,39 @@ void VioGpuAdapter::Reconcile2DScanoutAfterResetLocked(void)
         m_2DScanoutUnknown = FALSE;
         m_2DScanoutResetGeneration = 0;
     }
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Flush2DResource(_In_ UINT resourceId,
+                                                          _In_ UINT width,
+                                                          _In_ UINT height,
+                                                          _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
+                                                          _Inout_ ULONGLONG *resourceResetGeneration)
+{
+    PAGED_CODE();
+
+    if (resourceState == NULL || resourceResetGeneration == NULL || resourceId == 0 ||
+        resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || width == 0 || height == 0 ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    BOOLEAN retired = FALSE;
+    if (!Reconcile2DResourceAfterReset(resourceState, resourceResetGeneration, &retired) ||
+        *resourceState != VioGpu2DResourceBackingAttached)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    ULONGLONG operationGeneration = static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration,
+                                                                                        0,
+                                                                                        0));
+    if (operationGeneration == 0 || *resourceResetGeneration != operationGeneration)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    return m_CtrlQueue.FlushResourceSynchronous(resourceId, width, height, 0, 0);
 }
 
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
