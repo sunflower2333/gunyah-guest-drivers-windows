@@ -8424,16 +8424,20 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
         return STATUS_INVALID_PARAMETER;
     }
 
-    /* The frame must match the surface already bound to the host scanout: a
-     * different geometry would be published against the wrong stride. */
-    if (m_pFrameBuf == NULL || m_FrameBufWidth != width || m_FrameBufHeight != height)
+    /* The frame only has to fit the scanned-out surface. A window is rarely the
+     * size of the desktop -- the first real client published 853x683 against a
+     * 1280x1024 framebuffer -- so copy what arrives into the top left and leave
+     * the rest of the surface alone, publishing the whole thing afterwards. */
+    if (m_pFrameBuf == NULL || m_FrameBufWidth == 0 || m_FrameBufHeight == 0 ||
+        width > m_FrameBufWidth || height > m_FrameBufHeight)
     {
         return STATUS_DEVICE_NOT_READY;
     }
 
-    const UINT destinationPitch = width * 4U;
-    if (sourcePitch < destinationPitch || payloadSize / height < sourcePitch ||
-        m_pFrameBuf->GetSize() / height < destinationPitch)
+    const UINT destinationPitch = m_FrameBufWidth * 4U;
+    const UINT copyBytes = width * 4U;
+    if (sourcePitch < copyBytes || payloadSize / height < sourcePitch ||
+        m_pFrameBuf->GetSize() / m_FrameBufHeight < destinationPitch)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -8450,15 +8454,17 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
     {
         RtlCopyMemory(destination + static_cast<SIZE_T>(row) * destinationPitch,
                       payload + static_cast<SIZE_T>(row) * sourcePitch,
-                      destinationPitch);
+                      copyBytes);
     }
 
     /* Re-assert the scanout: a flip may have pointed the host at DWM's blank
      * standard primary before the first frame arrived. */
     const UINT resourceId = m_pFrameBuf->GetId();
-    if (!m_CtrlQueue.SetScanout(0, resourceId, width, height, 0, 0) ||
-        !m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0) ||
-        !m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0))
+    const UINT scanoutWidth = m_FrameBufWidth;
+    const UINT scanoutHeight = m_FrameBufHeight;
+    if (!m_CtrlQueue.SetScanout(0, resourceId, scanoutWidth, scanoutHeight, 0, 0) ||
+        !m_CtrlQueue.TransferToHost2D(resourceId, 0, scanoutWidth, scanoutHeight, 0, 0) ||
+        !m_CtrlQueue.ResFlush(resourceId, scanoutWidth, scanoutHeight, 0, 0))
     {
         return STATUS_DEVICE_NOT_READY;
     }

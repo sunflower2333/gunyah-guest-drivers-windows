@@ -7633,10 +7633,10 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     # DWM's blank standard primary on the next flip would blank the display.
     publish = canonical_code(function_body("VioGpuAdapter::PublishPresentBlit", VIOGPU_SOURCE))
     for fragment in (
-        "m_FrameBufWidth!=width||m_FrameBufHeight!=height",
-        "m_CtrlQueue.SetScanout(0,resourceId,width,height,0,0)",
-        "m_CtrlQueue.TransferToHost2D(resourceId,0,width,height,0,0)",
-        "m_CtrlQueue.ResFlush(resourceId,width,height,0,0)",
+        "width>m_FrameBufWidth||height>m_FrameBufHeight",
+        "m_CtrlQueue.SetScanout(0,resourceId,scanoutWidth,scanoutHeight,0,0)",
+        "m_CtrlQueue.TransferToHost2D(resourceId,0,scanoutWidth,scanoutHeight,0,0)",
+        "m_CtrlQueue.ResFlush(resourceId,scanoutWidth,scanoutHeight,0,0)",
     ):
         if publish.count(fragment) != 1:
             fail(f"frame publication must target the scanned-out surface: {fragment}")
