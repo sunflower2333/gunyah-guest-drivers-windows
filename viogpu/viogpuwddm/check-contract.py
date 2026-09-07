@@ -4826,7 +4826,7 @@ def check_wddm_standard_primary_scanout() -> None:
     set_host = canonical_code(function_body("VioGpuAdapter::Set2DScanout", VIOGPU_CODE))
     for fragment in (
         "KeGetCurrentIrql()!=PASSIVE_LEVEL",
-        "KeWaitForSingleObject(&m_2DScanoutMutex,Executive,KernelMode,FALSE,&timeout)",
+        "WaitScanoutLifecycle()",
         "Reconcile2DScanoutAfterResetLocked();",
         "*previousResourceId=m_2DScanoutResourceId;",
         "if(m_2DScanoutUnknown)",
@@ -4847,7 +4847,7 @@ def check_wddm_standard_primary_scanout() -> None:
 
     detach_host = canonical_code(function_body("VioGpuAdapter::Detach2DScanoutResource", VIOGPU_CODE))
     for fragment in (
-        "KeWaitForSingleObject(&m_2DScanoutMutex,Executive,KernelMode,FALSE,&timeout)",
+        "WaitScanoutLifecycle()",
         "Reconcile2DScanoutAfterResetLocked();",
         "if(m_2DScanoutResourceId!=resourceId)",
         "m_CtrlQueue.SetScanoutSynchronous(0,0,0,0,0,0)",

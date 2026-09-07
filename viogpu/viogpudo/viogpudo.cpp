@@ -207,6 +207,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativeContextLifecycleTimeoutCount = 0;
     m_NativeContextLifecycleGaveUpCount = 0;
     m_NativeContextLifecycleHolderRva = 0;
+    m_NativeContextDestroyCurrentStage = 0;
+    m_NativeContextLifecycleTimeoutStage = 0;
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
     m_NativeSubmissionFaultExecutionDiagnosticState = 0;
@@ -5230,6 +5232,10 @@ VOID VioGpuDod::RecordNativeContextDestroyDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_
 {
     PAGED_CODE();
 
+    /* The lifecycle mutex holder is DestroyNativeContext, so the stage it last
+     * reported names the sub-step a waiter is blocked behind. */
+    InterlockedExchange(&m_NativeContextDestroyCurrentStage, static_cast<LONG>(stage));
+
     LARGE_INTEGER timeout;
     timeout.QuadPart = -10LL * 1000 * 1000;
     NTSTATUS mutexStatus = KeWaitForSingleObject(&m_NativeContextDestroyDiagnosticMutex,
@@ -5526,6 +5532,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD lifecycleTimeoutCount = ReadNativeContextLifecycleTimeoutCount();
     DWORD lifecycleGaveUpCount = ReadNativeContextLifecycleGaveUpCount();
     DWORD lifecycleHolderRva = ReadNativeContextLifecycleHolderRva();
+    DWORD lifecycleTimeoutStage = ReadNativeContextLifecycleTimeoutStage();
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5775,6 +5782,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"tLifecycleHol"
                                                                                                          L"derRva",
                                                                                                          &lifecycleHolderRva},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tLifecycleTim"
+                                                                                                         L"eoutStage",
+                                                                                                         &lifecycleTimeoutStage},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -8135,12 +8146,9 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
     }
     *previousResourceId = 0;
 
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_2DScanoutMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = WaitScanoutLifecycle();
     if (status != STATUS_SUCCESS)
     {
-        FailNativeContextAtAnyIrql();
         return VioGpuHostContextUnknown;
     }
     Reconcile2DScanoutAfterResetLocked();
@@ -8185,12 +8193,9 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Detach2DScanoutResource(_In_ UINT reso
     }
     *detached = FALSE;
 
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_2DScanoutMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = WaitScanoutLifecycle();
     if (status != STATUS_SUCCESS)
     {
-        FailNativeContextAtAnyIrql();
         return VioGpuHostContextUnknown;
     }
     Reconcile2DScanoutAfterResetLocked();
@@ -8241,12 +8246,9 @@ BOOLEAN VioGpuAdapter::Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEA
     }
     *active = FALSE;
 
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_2DScanoutMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = WaitScanoutLifecycle();
     if (status != STATUS_SUCCESS)
     {
-        FailNativeContextAtAnyIrql();
         return FALSE;
     }
     Reconcile2DScanoutAfterResetLocked();
@@ -9899,6 +9901,33 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
     return status;
 }
 
+__declspec(code_seg(".text")) __declspec(noinline) NTSTATUS VioGpuAdapter::WaitScanoutLifecycle(void)
+{
+    for (UINT attempt = 0; attempt < 3; ++attempt)
+    {
+        LARGE_INTEGER scanoutTimeout;
+        scanoutTimeout.QuadPart = -5LL * 10 * 1000 * 1000;
+        NTSTATUS waitStatus = KeWaitForSingleObject(&m_2DScanoutMutex,
+                                                    Executive,
+                                                    KernelMode,
+                                                    FALSE,
+                                                    &scanoutTimeout);
+        if (waitStatus == STATUS_SUCCESS)
+        {
+            return waitStatus;
+        }
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextLifecycleTimeout();
+        }
+    }
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextLifecycleGaveUp();
+    }
+    return STATUS_TIMEOUT;
+}
+
 __declspec(code_seg(".text")) __declspec(noinline) NTSTATUS VioGpuAdapter::WaitNativeContextLifecycle(void)
 {
     ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
@@ -9924,6 +9953,7 @@ __declspec(code_seg(".text")) __declspec(noinline) NTSTATUS VioGpuAdapter::WaitN
         if (m_pVioGpuDod != NULL)
         {
             m_pVioGpuDod->RecordNativeContextLifecycleTimeout();
+            m_pVioGpuDod->RecordNativeContextLifecycleTimeoutStage();
         }
     }
     if (m_pVioGpuDod != NULL)

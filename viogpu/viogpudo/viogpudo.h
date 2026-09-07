@@ -648,6 +648,8 @@ class VioGpuAdapter : IVioGpuPCI
      * reset latch.  A slow holder is not a broken GPU: wait again, and if the
      * holder still will not let go fail only the operation that asked. */
     __declspec(code_seg(".text")) __declspec(noinline) NTSTATUS WaitNativeContextLifecycle(void);
+    /* The 2D scanout mutex had the same timeout-means-dead-GPU shape. */
+    __declspec(code_seg(".text")) __declspec(noinline) NTSTATUS WaitScanoutLifecycle(void);
     static VioGpuAdapter *ReferenceNativeContextAdapter(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
     static void DereferenceNativeContextAdapter(_In_ VioGpuAdapter *adapter);
     static BOOLEAN IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
@@ -862,6 +864,8 @@ class VioGpuDod
     volatile LONG m_NativeContextLifecycleTimeoutCount;
     volatile LONG m_NativeContextLifecycleGaveUpCount;
     volatile LONG m_NativeContextLifecycleHolderRva;
+    volatile LONG m_NativeContextDestroyCurrentStage;
+    volatile LONG m_NativeContextLifecycleTimeoutStage;
     volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_ResetDeviceCallerRva;
     volatile LONG m_ResetDeviceCount;
@@ -1271,6 +1275,11 @@ class VioGpuDod
     {
         InterlockedIncrement(&m_NativeContextLifecycleTimeoutCount);
     }
+    VOID RecordNativeContextLifecycleTimeoutStage(void)
+    {
+        InterlockedExchange(&m_NativeContextLifecycleTimeoutStage,
+                            InterlockedCompareExchange(&m_NativeContextDestroyCurrentStage, 0, 0));
+    }
     VOID RecordNativeContextLifecycleGaveUp(void)
     {
         InterlockedIncrement(&m_NativeContextLifecycleGaveUpCount);
@@ -1295,6 +1304,10 @@ class VioGpuDod
     DWORD ReadNativeContextLifecycleHolderRva(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextLifecycleHolderRva, 0, 0));
+    }
+    DWORD ReadNativeContextLifecycleTimeoutStage(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextLifecycleTimeoutStage, 0, 0));
     }
     /* Every path into the reset latch runs through NotifyNativeSubmissionFault,
      * which already records the return address of whichever of its callers ran
