@@ -2465,10 +2465,17 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
     for (UINT ChildIndex = 0; ChildIndex < ChildRelationsCount; ++ChildIndex)
     {
         pChildRelations[ChildIndex].ChildDeviceType = TypeVideoOutput;
-        pChildRelations[ChildIndex].ChildCapabilities.HpdAwareness = IsVgaDevice() ? HpdAwarenessAlwaysConnected
-                                                                                   : HpdAwarenessInterruptible;
-        pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.InterfaceTechnology = IsVgaDevice() ? D3DKMDT_VOT_INTERNAL
-                                                                                                           : D3DKMDT_VOT_HD15;
+        /* The crosvm scanout is fixed for the life of the device: there is no
+         * hot-plug to interrupt on.  Declaring HpdAwarenessInterruptible made
+         * Windows wait for a DxgkCbIndicateChildStatus that only ever arrives
+         * from the VIRTIO_GPU_EVENT_DISPLAY config-change handler, and this
+         * host never raises that event -- so QueryChildStatus was polled once
+         * at boot, answered Connected, and the monitor was still never built:
+         * no 1AF4 entry under GraphicsDrivers\Connectivity, a VidPn committed
+         * with the source inactive, and DxgkDdiSetVidPnSourceAddress never
+         * called, which is a black scanout with no presents. */
+        pChildRelations[ChildIndex].ChildCapabilities.HpdAwareness = HpdAwarenessAlwaysConnected;
+        pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.InterfaceTechnology = D3DKMDT_VOT_INTERNAL;
         pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.MonitorOrientationAwareness = D3DKMDT_MOA_NONE;
         pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.SupportsSdtvModes = FALSE;
         pChildRelations[ChildIndex].AcpiUid = 0;
