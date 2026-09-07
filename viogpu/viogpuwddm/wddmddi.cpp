@@ -904,6 +904,89 @@ NTSTATUS DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *allocation)
     return status;
 }
 
+/* Why did AcquireAllocationNativeContextSnapshot say no?  Skipping the map on a
+ * failed snapshot assumed the owning context was gone; the soak proved that
+ * wrong -- thirteen of them fire during boot, on allocations the adapter needs,
+ * and the result is a device that never renders.  Re-evaluate the same
+ * conditions and publish which one refused so the real cause is named rather
+ * than worked around. */
+static DWORD DescribeAllocationNativeContextSnapshotFailure(_In_ VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    DWORD detail = 0;
+    if (allocation == NULL)
+    {
+        return 0x1u;
+    }
+    if (!IsNativeAllocation(allocation))
+    {
+        detail |= 0x2u;
+    }
+    if (allocation->NativeContext == NULL)
+    {
+        detail |= 0x4u;
+    }
+    if (allocation->ContextGeneration <= 0)
+    {
+        detail |= 0x8u;
+    }
+    if (allocation->ContextResetGeneration == 0)
+    {
+        detail |= 0x10u;
+    }
+    if (allocation->ContextId == 0)
+    {
+        detail |= 0x20u;
+    }
+    if (allocation->BackingSize == 0)
+    {
+        detail |= 0x40u;
+    }
+    if (allocation->PrivateData.RequestedIova == 0)
+    {
+        detail |= 0x80u;
+    }
+    if (allocation->PrivateData.ExpectedResetGeneration != allocation->ContextResetGeneration)
+    {
+        detail |= 0x100u;
+    }
+    VIOGPU_NATIVE_CONTEXT_SNAPSHOT probe = {};
+    if (!VioGpuAdapter::AcquireNativeContextSnapshot(allocation->NativeContext, &probe))
+    {
+        /* The registration itself would not yield a reference: it is closing,
+         * or has already been torn down. */
+        return detail | 0x200u;
+    }
+    if (probe.Registration != allocation->NativeContext)
+    {
+        detail |= 0x400u;
+    }
+    if (probe.Generation != allocation->ContextGeneration)
+    {
+        detail |= 0x800u;
+    }
+    if (probe.ResetGeneration != allocation->ContextResetGeneration)
+    {
+        detail |= 0x1000u;
+    }
+    if (probe.ContextId != allocation->ContextId)
+    {
+        detail |= 0x2000u;
+    }
+    if (probe.VaStart == 0 || probe.VaSize == 0)
+    {
+        detail |= 0x4000u;
+    }
+    else if (allocation->PrivateData.RequestedIova < probe.VaStart ||
+             (ULONGLONG)allocation->BackingSize > probe.VaSize ||
+             allocation->PrivateData.RequestedIova >
+                 probe.VaStart + probe.VaSize - (ULONGLONG)allocation->BackingSize)
+    {
+        detail |= 0x8000u;
+    }
+    VioGpuAdapter::ReleaseNativeContextSnapshot(&probe);
+    return detail;
+}
+
 BOOLEAN AcquireAllocationNativeContextSnapshot(VIOGPU_WDDM_ALLOCATION *allocation,
                                                VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot)
 {
@@ -6088,6 +6171,9 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
          * costs the whole boot (the reset latch is never cleared at runtime).
          * Leave the host binding clear and report the mapping done; the aperture
          * state stays idle, which the unmap path already retires as a no-op. */
+        adapter->RecordNativeApertureFailure(VioGpuApertureStageMapSnapshot,
+                                            STATUS_DEVICE_NOT_READY,
+                                            DescribeAllocationNativeContextSnapshotFailure(allocation));
         adapter->CountNativeApertureMapSkip();
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
         return STATUS_SUCCESS;
