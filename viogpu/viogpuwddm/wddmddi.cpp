@@ -6378,6 +6378,31 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
     DWORD unmapStage = VioGpuApertureStageUnmap;
     DWORD unmapDetail = 0;
 
+    /* The aperture page state is torn down as soon as the last mapped page goes
+     * to the dummy page, and nothing obliges VidMm to stop unmapping there: it
+     * also unmaps ranges an allocation never held.  With no PFN array, no page
+     * state array, no base page and no host binding there is nothing to retire
+     * and nothing to tell the host, so this is a no-op rather than an error.
+     * Calling it an error meant STATUS_GRAPHICS_ALLOCATION_BUSY, which
+     * DxgkDdiBuildPagingBuffer cannot return without bugchecking 0x10E. */
+    BOOLEAN apertureIdle = !allocation->ApertureBaseValid || allocation->AperturePfns == NULL ||
+                           allocation->ApertureMappedPages == NULL || allocation->AperturePageCount == 0 ||
+                           allocation->ApertureMappedPageCount == 0;
+    BOOLEAN identityValid = allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
+                            allocation->Adapter == adapter && !allocation->Destroying;
+    BOOLEAN hostIdle = nativeAllocation ? allocation->HostState == VioGpuWddmAllocationHostNone
+                                        : allocation->Resource2DState == VioGpu2DResourceNone;
+    if (identityValid && apertureIdle && hostIdle)
+    {
+        adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapIdle, STATUS_SUCCESS, 0);
+        KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+        if (snapshotAcquired)
+        {
+            VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+        }
+        return STATUS_SUCCESS;
+    }
+
     SIZE_T allocationPage = allocation->ApertureBaseValid && offsetInPages >= allocation->ApertureBasePage ? offsetInPages - allocation->ApertureBasePage
                                                                                                            : MAXULONG_PTR;
     if (allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE || allocation->Adapter != adapter ||

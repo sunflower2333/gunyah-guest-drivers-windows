@@ -129,6 +129,7 @@ enum : UINT
     VioGpuApertureStageUnmapHost = 17,
     VioGpuApertureStageUnmapScanout = 18,
     VioGpuApertureStageUnmapStandard = 19,
+    VioGpuApertureStageUnmapIdle = 20,
     VioGpuNativeContextDestroyDiagnosticSlotCount = 64,
 };
 
