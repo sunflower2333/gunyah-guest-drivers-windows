@@ -201,6 +201,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     SetRenderOnly(TRUE);
     KeInitializeSpinLock(&m_NativeFenceLock);
     m_HardwareResetCallerRva = 0;
+    m_HardwareResetFirstCallerRva = 0;
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
     m_NativeSubmissionFaultExecutionDiagnosticState = 0;
@@ -580,6 +581,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     *pNumberOfChildren = IsRenderOnly() ? 0 : MAX_CHILDREN;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     InterlockedExchange(&m_HardwareResetCallerRva, 0);
+    InterlockedExchange(&m_HardwareResetFirstCallerRva, 0);
 #endif
     if (InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareRecovering) !=
         VioGpuHardwareRecovering)
@@ -2324,6 +2326,7 @@ NTSTATUS VioGpuDod::SetPowerState(_In_ ULONG HardwareUid,
                     return STATUS_DEVICE_NOT_READY;
                 }
                 InterlockedExchange(&m_HardwareResetCallerRva, 0);
+                InterlockedExchange(&m_HardwareResetFirstCallerRva, 0);
 #endif
                 if (InterlockedCompareExchange(&m_HardwareResetState, VioGpuHardwareActive, VioGpuHardwareRecovering) !=
                     VioGpuHardwareRecovering)
@@ -4753,6 +4756,7 @@ __declspec(noinline) VOID VioGpuDod::RequestHardwareResetAtAnyIrql(void)
          * the compare-exchange form left the field reading zero for exactly the
          * runtime resets whose origin has to be identified. */
         InterlockedExchange(&m_HardwareResetCallerRva, static_cast<LONG>(callerRva));
+        InterlockedCompareExchange(&m_HardwareResetFirstCallerRva, static_cast<LONG>(callerRva), 0);
     }
     RequestWddmSubmissionDrainAtAnyIrql();
 #else
@@ -5511,6 +5515,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD apertureMapSkipCount = ReadNativeApertureMapSkipCount();
     DWORD hardwareResetState = ReadHardwareResetState();
     DWORD hardwareResetCallerRva = ReadHardwareResetCallerRva();
+    DWORD hardwareResetFirstCallerRva = ReadHardwareResetFirstCallerRva();
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5737,6 +5742,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"sionFaultCall"
                                                                                                          L"erRva",
                                                                                                          &submissionFaultCallerRva},
+                                                                                                        {L"NativeHardwa"
+                                                                                                         L"reResetFirstC"
+                                                                                                         L"allerRva",
+                                                                                                         &hardwareResetFirstCallerRva},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",

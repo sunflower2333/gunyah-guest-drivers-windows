@@ -850,6 +850,7 @@ class VioGpuDod
     mutable volatile LONG m_HardwareResetState;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     volatile LONG m_HardwareResetCallerRva;
+    volatile LONG m_HardwareResetFirstCallerRva;
     volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_ResetDeviceCallerRva;
     volatile LONG m_ResetDeviceCount;
@@ -1224,6 +1225,14 @@ class VioGpuDod
     DWORD ReadHardwareResetCallerRva(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetCallerRva, 0, 0));
+    }
+    /* m_HardwareResetCallerRva deliberately publishes the most recent
+     * requester, which cannot answer who started a latch that every later
+     * refusal then re-requests.  Keep the first requester of each latch
+     * separately so cause and consequence can be told apart. */
+    DWORD ReadHardwareResetFirstCallerRva(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetFirstCallerRva, 0, 0));
     }
     /* FailNativeContextAtAnyIrql is what sets the reset latch, and it already
      * records its own caller -- that value just never reached the driver key. */
