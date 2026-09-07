@@ -871,6 +871,10 @@ class VioGpuDod
     volatile LONG m_ScanoutWaitTimeoutCount;
     volatile LONG m_ScanoutWaitGaveUpCount;
     volatile LONG m_ScanoutWaitHolderRva;
+    /* Windows persists no VidPn path for this adapter even with the display
+     * DDIs registered and the child reporting connected, so the question is
+     * which DDI Windows stops at.  One array rather than a dozen members. */
+    volatile LONG m_DisplayCounters[14];
     volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_ResetDeviceCallerRva;
     volatile LONG m_ResetDeviceCount;
@@ -1369,6 +1373,26 @@ class VioGpuDod
     DWORD ReadScanoutWaitHolderRva(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_ScanoutWaitHolderRva, 0, 0));
+    }
+    VOID CountDisplayEvent(_In_ ULONG index)
+    {
+        if (index < ARRAYSIZE(m_DisplayCounters))
+        {
+            InterlockedIncrement(&m_DisplayCounters[index]);
+        }
+    }
+    VOID RecordDisplayValue(_In_ ULONG index, _In_ LONG value)
+    {
+        if (index < ARRAYSIZE(m_DisplayCounters))
+        {
+            InterlockedExchange(&m_DisplayCounters[index], value);
+        }
+    }
+    DWORD ReadDisplayCounter(_In_ ULONG index)
+    {
+        return index < ARRAYSIZE(m_DisplayCounters)
+                   ? static_cast<DWORD>(InterlockedCompareExchange(&m_DisplayCounters[index], 0, 0))
+                   : 0;
     }
     /* Every path into the reset latch runs through NotifyNativeSubmissionFault,
      * which already records the return address of whichever of its callers ran

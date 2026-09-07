@@ -214,6 +214,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_ScanoutWaitTimeoutCount = 0;
     m_ScanoutWaitGaveUpCount = 0;
     m_ScanoutWaitHolderRva = 0;
+    RtlZeroMemory((void *)m_DisplayCounters, sizeof(m_DisplayCounters));
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
     m_NativeSubmissionFaultExecutionDiagnosticState = 0;
@@ -591,6 +592,10 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     VIOGPU_RECORD_NATIVE_START(this, VioGpuNativeStartFinalState, STATUS_PENDING, VioGpuNativeStartDetailNone);
     *pNumberOfViews = IsRenderOnly() ? 0 : MAX_VIEWS;
     *pNumberOfChildren = IsRenderOnly() ? 0 : MAX_CHILDREN;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    RecordDisplayValue(0, static_cast<LONG>(*pNumberOfViews));
+    RecordDisplayValue(1, static_cast<LONG>(*pNumberOfChildren));
+#endif
 #if defined(VIOGPU_NATIVE_CONTEXT)
     InterlockedExchange(&m_HardwareResetCallerRva, 0);
     InterlockedExchange(&m_HardwareResetFirstCallerRva, 0);
@@ -2488,6 +2493,10 @@ NTSTATUS VioGpuDod::QueryChildStatus(_Inout_ DXGK_CHILD_STATUS *pChildStatus, _I
         case StatusConnection:
             {
                 pChildStatus->HotPlug.Connected = IsDriverActive();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+                CountDisplayEvent(8);
+                RecordDisplayValue(9, pChildStatus->HotPlug.Connected ? 1 : 0);
+#endif
                 return STATUS_SUCCESS;
             }
 
@@ -2516,6 +2525,10 @@ NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVI
     PBYTE edid = NULL;
 
     edid = m_pHWDevice->GetEdidData();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    CountDisplayEvent(10);
+    RecordDisplayValue(11, edid != NULL ? 1 : 0);
+#endif
 
     if (!edid)
     {
@@ -3069,6 +3082,9 @@ NTSTATUS VioGpuDod::IsSupportedVidPn(_Inout_ DXGKARG_ISSUPPORTEDVIDPN *pIsSuppor
     }
 
     pIsSupportedVidPn->IsVidPnSupported = FALSE;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    CountDisplayEvent(2);
+#endif
 
     CONST DXGK_VIDPN_INTERFACE *pVidPnInterface;
     NTSTATUS Status = m_DxgkInterface.DxgkCbQueryVidPnInterface(pIsSupportedVidPn->hDesiredVidPn,
@@ -3193,6 +3209,9 @@ VioGpuDod::RecommendFunctionalVidPn(_In_ CONST DXGKARG_RECOMMENDFUNCTIONALVIDPN 
 {
     PAGED_CODE();
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    CountDisplayEvent(13);
+#endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<---> %s\n", __FUNCTION__));
 
     VIOGPU_ASSERT(pRecommendFunctionalVidPn == NULL);
@@ -3215,6 +3234,9 @@ NTSTATUS VioGpuDod::RecommendMonitorModes(_In_ CONST DXGKARG_RECOMMENDMONITORMOD
 {
     PAGED_CODE();
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    CountDisplayEvent(12);
+#endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
     return AddSingleMonitorMode(pRecommendMonitorModes);
@@ -3496,6 +3518,9 @@ NTSTATUS VioGpuDod::EnumVidPnCofuncModality(_In_ CONST DXGKARG_ENUMVIDPNCOFUNCMO
 {
     PAGED_CODE();
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    CountDisplayEvent(4);
+#endif
     VIOGPU_ASSERT(pEnumCofuncModality != NULL);
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
@@ -3956,6 +3981,9 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
 {
     PAGED_CODE();
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    CountDisplayEvent(5);
+#endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
     VIOGPU_ASSERT(pCommitVidPn != NULL);
@@ -5542,6 +5570,20 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD scanoutTimeoutCount = ReadScanoutWaitTimeoutCount();
     DWORD scanoutGaveUpCount = ReadScanoutWaitGaveUpCount();
     DWORD scanoutHolderRva = ReadScanoutWaitHolderRva();
+    DWORD displayStartViews = ReadDisplayCounter(0);
+    DWORD displayStartChildren = ReadDisplayCounter(1);
+    DWORD displayIsSupportedCalls = ReadDisplayCounter(2);
+    DWORD displayIsSupportedRejects = ReadDisplayCounter(3);
+    DWORD displayEnumCofuncCalls = ReadDisplayCounter(4);
+    DWORD displayCommitCalls = ReadDisplayCounter(5);
+    DWORD displayCommitStatus = ReadDisplayCounter(6);
+    DWORD displaySetSourceAddrCalls = ReadDisplayCounter(7);
+    DWORD displayChildStatusCalls = ReadDisplayCounter(8);
+    DWORD displayChildConnected = ReadDisplayCounter(9);
+    DWORD displayDescriptorCalls = ReadDisplayCounter(10);
+    DWORD displayDescriptorHasEdid = ReadDisplayCounter(11);
+    DWORD displayMonitorModesCalls = ReadDisplayCounter(12);
+    DWORD displayRecommendVidPnCalls = ReadDisplayCounter(13);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5811,6 +5853,34 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"tWaitHolderRv"
                                                                                                          L"a",
                                                                                                          &scanoutHolderRva},
+                                                                                                        {L"NativeDisplayStartViews",
+                                                                                                         &displayStartViews},
+                                                                                                        {L"NativeDisplayStartChildren",
+                                                                                                         &displayStartChildren},
+                                                                                                        {L"NativeDisplayIsSupportedCalls",
+                                                                                                         &displayIsSupportedCalls},
+                                                                                                        {L"NativeDisplayIsSupportedRejects",
+                                                                                                         &displayIsSupportedRejects},
+                                                                                                        {L"NativeDisplayEnumCofuncCalls",
+                                                                                                         &displayEnumCofuncCalls},
+                                                                                                        {L"NativeDisplayCommitCalls",
+                                                                                                         &displayCommitCalls},
+                                                                                                        {L"NativeDisplayCommitStatus",
+                                                                                                         &displayCommitStatus},
+                                                                                                        {L"NativeDisplaySetSourceAddrCalls",
+                                                                                                         &displaySetSourceAddrCalls},
+                                                                                                        {L"NativeDisplayChildStatusCalls",
+                                                                                                         &displayChildStatusCalls},
+                                                                                                        {L"NativeDisplayChildConnected",
+                                                                                                         &displayChildConnected},
+                                                                                                        {L"NativeDisplayDescriptorCalls",
+                                                                                                         &displayDescriptorCalls},
+                                                                                                        {L"NativeDisplayDescriptorHasEdid",
+                                                                                                         &displayDescriptorHasEdid},
+                                                                                                        {L"NativeDisplayMonitorModesCalls",
+                                                                                                         &displayMonitorModesCalls},
+                                                                                                        {L"NativeDisplayRecommendVidPnCalls",
+                                                                                                         &displayRecommendVidPnCalls},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
