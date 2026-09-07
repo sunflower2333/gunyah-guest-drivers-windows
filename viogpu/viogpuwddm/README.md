@@ -1,12 +1,18 @@
 # viogpuwddm Native Context full miniport
 
 This project implements an ARM64 Native Context full miniport for the crosvm
-VirtIO GPU path. `RenderOnly=1` selects a Win8 registration table and reports a
-WDDM 1.2 render-only adapter with zero display topology. That mode registers
-the existing cancellation and per-engine TDR callbacks while retaining the
-permitted Win7 scheduler model because Native Context cannot preempt in-flight
-Host commands. `RenderOnly=0` preserves the legacy Win7/WDDMv1 display
-registration. The source contains the registration entry point, a dedicated
+VirtIO GPU path. The package **defaults to `RenderOnly=0`**: VioGPU is a full
+display+render adapter that publishes its own VidPn topology and owns the
+desktop target, scanning out through the crosvm gpu-0 surface. SimpleFB is not
+the front end.
+
+`RenderOnly=1` remains available as an isolation mode: it selects a Win8
+registration table and reports a WDDM 1.2 render-only adapter with zero display
+topology, registering the existing cancellation and per-engine TDR callbacks
+while retaining the permitted Win7 scheduler model because Native Context
+cannot preempt in-flight Host commands. Note that the value is read from the
+service `Parameters` key at registration time and latched, so it cannot be
+changed by editing the device key alone. The source contains the registration entry point, a dedicated
 display-class INX, and an ARM64-only fail-closed D3D UMD shim.
 The last committed activation batch passed the ARM64 compile, link, MAP, INF,
 signing, and package gates in the dedicated and product workflows. Signed
