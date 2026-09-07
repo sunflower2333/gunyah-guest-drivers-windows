@@ -209,6 +209,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativeContextLifecycleHolderRva = 0;
     m_NativeContextDestroyCurrentStage = 0;
     m_NativeContextLifecycleTimeoutStage = 0;
+    m_NativeContextLifecycleAcquireTime = 0;
+    m_NativeContextLifecycleHeldMs = 0;
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
     m_NativeSubmissionFaultExecutionDiagnosticState = 0;
@@ -5533,6 +5535,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD lifecycleGaveUpCount = ReadNativeContextLifecycleGaveUpCount();
     DWORD lifecycleHolderRva = ReadNativeContextLifecycleHolderRva();
     DWORD lifecycleTimeoutStage = ReadNativeContextLifecycleTimeoutStage();
+    DWORD lifecycleHeldMs = ReadNativeContextLifecycleHeldMs();
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5786,6 +5789,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"tLifecycleTim"
                                                                                                          L"eoutStage",
                                                                                                          &lifecycleTimeoutStage},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tLifecycleHel"
+                                                                                                         L"dMs",
+                                                                                                         &lifecycleHeldMs},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -9954,6 +9961,7 @@ __declspec(code_seg(".text")) __declspec(noinline) NTSTATUS VioGpuAdapter::WaitN
         {
             m_pVioGpuDod->RecordNativeContextLifecycleTimeout();
             m_pVioGpuDod->RecordNativeContextLifecycleTimeoutStage();
+            m_pVioGpuDod->RecordNativeContextLifecycleHeld();
         }
     }
     if (m_pVioGpuDod != NULL)

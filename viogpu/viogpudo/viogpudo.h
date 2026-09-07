@@ -866,6 +866,8 @@ class VioGpuDod
     volatile LONG m_NativeContextLifecycleHolderRva;
     volatile LONG m_NativeContextDestroyCurrentStage;
     volatile LONG m_NativeContextLifecycleTimeoutStage;
+    volatile LONG64 m_NativeContextLifecycleAcquireTime;
+    volatile LONG m_NativeContextLifecycleHeldMs;
     volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_ResetDeviceCallerRva;
     volatile LONG m_ResetDeviceCount;
@@ -1292,6 +1294,27 @@ class VioGpuDod
         {
             InterlockedExchange(&m_NativeContextLifecycleHolderRva, static_cast<LONG>(callerRva));
         }
+        InterlockedExchange64(&m_NativeContextLifecycleAcquireTime,
+                              static_cast<LONG64>(KeQueryInterruptTime()));
+    }
+    /* How long the present holder has held the mutex when a waiter gives up on
+     * an attempt.  The holder RVA alone cannot say whether one hold is long or
+     * many short holds are starving the waiter. */
+    VOID RecordNativeContextLifecycleHeld(void)
+    {
+        LONG64 acquired = InterlockedCompareExchange64(&m_NativeContextLifecycleAcquireTime, 0, 0);
+        if (acquired == 0)
+        {
+            return;
+        }
+        ULONGLONG now = KeQueryInterruptTime();
+        ULONGLONG heldMs = now > static_cast<ULONGLONG>(acquired) ? (now - static_cast<ULONGLONG>(acquired)) / 10000
+                                                                 : 0;
+        LONG previous = InterlockedCompareExchange(&m_NativeContextLifecycleHeldMs, 0, 0);
+        if (heldMs <= MAXLONG && static_cast<LONG>(heldMs) > previous)
+        {
+            InterlockedExchange(&m_NativeContextLifecycleHeldMs, static_cast<LONG>(heldMs));
+        }
     }
     DWORD ReadNativeContextLifecycleTimeoutCount(void)
     {
@@ -1308,6 +1331,10 @@ class VioGpuDod
     DWORD ReadNativeContextLifecycleTimeoutStage(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextLifecycleTimeoutStage, 0, 0));
+    }
+    DWORD ReadNativeContextLifecycleHeldMs(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextLifecycleHeldMs, 0, 0));
     }
     /* Every path into the reset latch runs through NotifyNativeSubmissionFault,
      * which already records the return address of whichever of its callers ran
