@@ -5636,6 +5636,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayFlipFlushResult = ReadDisplayCounter(19);
     DWORD displayPrimaryNonZeroPages = ReadDisplayCounter(20);
     DWORD displayPrimaryFirstPixel = ReadDisplayCounter(21);
+    DWORD displayPresentCalls = ReadDisplayCounter(22);
+    DWORD displayPresentRejectFlags = ReadDisplayCounter(23);
+    DWORD displayPresentRejectOther = ReadDisplayCounter(24);
+    DWORD displayFlipRejectNative = ReadDisplayCounter(25);
+    DWORD displayPresentLastRejectFlags = ReadDisplayCounter(26);
+    DWORD displayFlipRejectKind = ReadDisplayCounter(27);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5949,6 +5955,18 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayPrimaryNonZeroPages},
                                                                                                         {L"NativeDisplayPrimaryFirstPixel",
                                                                                                          &displayPrimaryFirstPixel},
+                                                                                                        {L"NativeDisplayPresentCalls",
+                                                                                                         &displayPresentCalls},
+                                                                                                        {L"NativeDisplayPresentRejectFlags",
+                                                                                                         &displayPresentRejectFlags},
+                                                                                                        {L"NativeDisplayPresentRejectOther",
+                                                                                                         &displayPresentRejectOther},
+                                                                                                        {L"NativeDisplayFlipRejectNative",
+                                                                                                         &displayFlipRejectNative},
+                                                                                                        {L"NativeDisplayPresentLastRejectFlags",
+                                                                                                         &displayPresentLastRejectFlags},
+                                                                                                        {L"NativeDisplayFlipRejectKind",
+                                                                                                         &displayFlipRejectKind},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",

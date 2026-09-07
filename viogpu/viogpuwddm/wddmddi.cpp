@@ -8185,6 +8185,21 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext, DXGKARG_PRESENT *present)
 {
     VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(hContext);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (context != NULL && context->Device != NULL && context->Device->Adapter != NULL)
+    {
+        VioGpuDod *presentAdapter = context->Device->Adapter;
+        presentAdapter->CountDisplayEvent(22);
+        if (present != NULL && (present->Flags.Value != 1U || !present->Flags.Blt))
+        {
+            /* DWM's frames arrive as Flip or multi-flag presents; a pure-Blt
+             * gate sends them back as STATUS_INVALID_PARAMETER before any
+             * present diagnostic is recorded, so nothing else sees them. */
+            presentAdapter->CountDisplayEvent(23);
+            presentAdapter->RecordDisplayValue(26, static_cast<LONG>(present->Flags.Value));
+        }
+    }
+#endif
     if (context == NULL || present == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || present->pDmaBuffer == NULL ||
         present->pDmaBufferPrivateData == NULL ||
         present->DmaBufferPrivateDataSize < sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) || present->pAllocationList == NULL ||
@@ -8199,6 +8214,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
          * debugger, and a present dxgkrnl issues but this driver refuses leaves
          * the desktop black with nothing at all written down. */
         RecordPresentEntryRejection(context, present, VioGpuWddmPresentDiagnosticEntryRejected);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        if (context != NULL && context->Device != NULL && context->Device->Adapter != NULL)
+        {
+            context->Device->Adapter->CountDisplayEvent(24);
+        }
+#endif
         return STATUS_INVALID_PARAMETER;
     }
     if (present->DmaSize < sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) || present->PatchLocationListOutSize < 2)
@@ -9633,6 +9654,12 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
         allocation->Resource2DState != VioGpu2DResourceBackingAttached || !allocation->PlacementValid ||
         static_cast<ULONGLONG>(setVidPnSourceAddress->PrimaryAddress.QuadPart) != allocation->PlacementOffset)
     {
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        /* A primary that is not a standard 2D resource -- i.e. a native,
+         * GPU-rendered allocation -- cannot be bound by this path. */
+        adapter->CountDisplayEvent(25);
+        adapter->RecordDisplayValue(27, static_cast<LONG>(allocation->BlobId != 0 ? 2 : (allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START ? 1 : 3)));
+#endif
         status = STATUS_INVALID_PARAMETER;
     }
     else
