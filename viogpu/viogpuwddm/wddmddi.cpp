@@ -6636,7 +6636,13 @@ static NTSTATUS CompletePagingBufferOperation(_In_opt_ VioGpuDod *adapter, _In_ 
     }
     if (adapter != NULL)
     {
-        adapter->RecordNativeApertureFailure(stage, status);
+        /* Stage zero means the callee already attributed the refusal to a more
+         * specific gate; recording again here would overwrite it with the
+         * dispatch-level stage and double-count the failure. */
+        if (stage != 0)
+        {
+            adapter->RecordNativeApertureFailure(stage, status);
+        }
         adapter->CountNativePagingReset();
         adapter->RequestHardwareResetAtAnyIrql();
     }
@@ -6667,7 +6673,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
                                                    pagingBuffer->MapApertureSegment.NumberOfPages,
                                                    pagingBuffer->MapApertureSegment.pMdl,
                                                    pagingBuffer->MapApertureSegment.MdlOffset);
-        return CompletePagingBufferOperation(adapter, mapStatus, VioGpuApertureStageMapValidate);
+        return CompletePagingBufferOperation(adapter, mapStatus, 0);
     }
 
     if (pagingBuffer->Operation == DXGK_OPERATION_UNMAP_APERTURE_SEGMENT)
