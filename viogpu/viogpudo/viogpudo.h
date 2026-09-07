@@ -642,6 +642,12 @@ class VioGpuAdapter : IVioGpuPCI
     static BOOLEAN DereferenceNativeContextAllocation(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
     static BOOLEAN IsNativeContextAllocationBindingRetired(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
     static void ReleaseNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
+    /* Every lifecycle-mutex wait in this driver used a ten-second timeout and
+     * answered STATUS_TIMEOUT with FailNativeContextAtAnyIrql, which bumps the
+     * context generation, poisons the control queue and sets the boot-lifetime
+     * reset latch.  A slow holder is not a broken GPU: wait again, and if the
+     * holder still will not let go fail only the operation that asked. */
+    __declspec(code_seg(".text")) __declspec(noinline) NTSTATUS WaitNativeContextLifecycle(void);
     static VioGpuAdapter *ReferenceNativeContextAdapter(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
     static void DereferenceNativeContextAdapter(_In_ VioGpuAdapter *adapter);
     static BOOLEAN IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
@@ -853,6 +859,9 @@ class VioGpuDod
     volatile LONG m_HardwareResetFirstCallerRva;
     volatile LONG m_NativeContextFailFirstCallerRva;
     volatile LONG m_NativeContextFailCount;
+    volatile LONG m_NativeContextLifecycleTimeoutCount;
+    volatile LONG m_NativeContextLifecycleGaveUpCount;
+    volatile LONG m_NativeContextLifecycleHolderRva;
     volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_ResetDeviceCallerRva;
     volatile LONG m_ResetDeviceCount;
@@ -1257,6 +1266,35 @@ class VioGpuDod
     DWORD ReadNativeContextFailCount(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailCount, 0, 0));
+    }
+    VOID RecordNativeContextLifecycleTimeout(void)
+    {
+        InterlockedIncrement(&m_NativeContextLifecycleTimeoutCount);
+    }
+    VOID RecordNativeContextLifecycleGaveUp(void)
+    {
+        InterlockedIncrement(&m_NativeContextLifecycleGaveUpCount);
+    }
+    /* Last path to take the mutex.  A leaked mutex times every later waiter
+     * out, and this names the path that is still holding it. */
+    VOID RecordNativeContextLifecycleHolder(_In_ ULONG_PTR callerRva)
+    {
+        if (callerRva != 0 && callerRva <= MAXULONG)
+        {
+            InterlockedExchange(&m_NativeContextLifecycleHolderRva, static_cast<LONG>(callerRva));
+        }
+    }
+    DWORD ReadNativeContextLifecycleTimeoutCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextLifecycleTimeoutCount, 0, 0));
+    }
+    DWORD ReadNativeContextLifecycleGaveUpCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextLifecycleGaveUpCount, 0, 0));
+    }
+    DWORD ReadNativeContextLifecycleHolderRva(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextLifecycleHolderRva, 0, 0));
     }
     /* Every path into the reset latch runs through NotifyNativeSubmissionFault,
      * which already records the return address of whichever of its callers ran

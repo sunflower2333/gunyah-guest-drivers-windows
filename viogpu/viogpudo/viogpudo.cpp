@@ -204,6 +204,9 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_HardwareResetFirstCallerRva = 0;
     m_NativeContextFailFirstCallerRva = 0;
     m_NativeContextFailCount = 0;
+    m_NativeContextLifecycleTimeoutCount = 0;
+    m_NativeContextLifecycleGaveUpCount = 0;
+    m_NativeContextLifecycleHolderRva = 0;
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
     m_NativeSubmissionFaultExecutionDiagnosticState = 0;
@@ -5520,6 +5523,9 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD hardwareResetFirstCallerRva = ReadHardwareResetFirstCallerRva();
     DWORD nativeContextFailFirstCallerRva = ReadNativeContextFailFirstCallerRva();
     DWORD nativeContextFailCount = ReadNativeContextFailCount();
+    DWORD lifecycleTimeoutCount = ReadNativeContextLifecycleTimeoutCount();
+    DWORD lifecycleGaveUpCount = ReadNativeContextLifecycleGaveUpCount();
+    DWORD lifecycleHolderRva = ReadNativeContextLifecycleHolderRva();
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5757,6 +5763,18 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                         {L"NativeContex"
                                                                                                          L"tFailCount",
                                                                                                          &nativeContextFailCount},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tLifecycleTim"
+                                                                                                         L"eoutCount",
+                                                                                                         &lifecycleTimeoutCount},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tLifecycleGav"
+                                                                                                         L"eUpCount",
+                                                                                                         &lifecycleGaveUpCount},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tLifecycleHol"
+                                                                                                         L"derRva",
+                                                                                                         &lifecycleHolderRva},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -7841,12 +7859,9 @@ BOOLEAN VioGpuAdapter::BeginNativeContextInitialization(void)
     {
         return FALSE;
     }
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_NativeContextLifecycleMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = WaitNativeContextLifecycle();
     if (status != STATUS_SUCCESS)
     {
-        FailNativeContextAtAnyIrql();
         return FALSE;
     }
 
@@ -8553,12 +8568,9 @@ UINT VioGpuAdapter::AllocateNativeResourceId(_In_ ULONGLONG expectedResetGenerat
         return 0;
     }
 
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_NativeContextLifecycleMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = WaitNativeContextLifecycle();
     if (status != STATUS_SUCCESS)
     {
-        FailNativeContextAtAnyIrql();
         return 0;
     }
 
@@ -9155,12 +9167,9 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
         return STATUS_INVALID_PARAMETER;
     }
 
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_NativeContextLifecycleMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = WaitNativeContextLifecycle();
     if (status != STATUS_SUCCESS)
     {
-        FailNativeContextAtAnyIrql();
         if (m_pVioGpuDod != NULL)
         {
             m_pVioGpuDod->RecordNativeContextCreateDiagnostic(VioGpuNativeContextCreateMutex, status, 0);
@@ -9547,12 +9556,9 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
     }
 #endif
 
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_NativeContextLifecycleMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = WaitNativeContextLifecycle();
     if (status != STATUS_SUCCESS)
     {
-        FailNativeContextAtAnyIrql();
 #if defined(VIOGPU_NATIVE_CONTEXT)
         if (m_pVioGpuDod != NULL)
         {
@@ -9893,6 +9899,40 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
     return status;
 }
 
+__declspec(code_seg(".text")) __declspec(noinline) NTSTATUS VioGpuAdapter::WaitNativeContextLifecycle(void)
+{
+    ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    ULONG_PTR returnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+    ULONG_PTR callerRva = returnAddress >= imageBase ? returnAddress - imageBase : 0;
+    for (UINT attempt = 0; attempt < 3; ++attempt)
+    {
+        LARGE_INTEGER lifecycleTimeout;
+        lifecycleTimeout.QuadPart = -10LL * 10 * 1000 * 1000;
+        NTSTATUS waitStatus = KeWaitForSingleObject(&m_NativeContextLifecycleMutex,
+                                                    Executive,
+                                                    KernelMode,
+                                                    FALSE,
+                                                    &lifecycleTimeout);
+        if (waitStatus == STATUS_SUCCESS)
+        {
+            if (m_pVioGpuDod != NULL)
+            {
+                m_pVioGpuDod->RecordNativeContextLifecycleHolder(callerRva);
+            }
+            return waitStatus;
+        }
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->RecordNativeContextLifecycleTimeout();
+        }
+    }
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextLifecycleGaveUp();
+    }
+    return STATUS_TIMEOUT;
+}
+
 __declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::AcquireNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
                                                                                   _Out_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot)
 {
@@ -9908,16 +9948,9 @@ __declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::AcquireNativeContextSnapsho
         return FALSE;
     }
 
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&adapter->m_NativeContextLifecycleMutex,
-                                            Executive,
-                                            KernelMode,
-                                            FALSE,
-                                            &timeout);
+    NTSTATUS status = adapter->WaitNativeContextLifecycle();
     if (status != STATUS_SUCCESS)
     {
-        adapter->FailNativeContextAtAnyIrql();
         DereferenceNativeContextAdapter(adapter);
         return FALSE;
     }
@@ -9981,12 +10014,9 @@ __declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::AcquireNativeContextSnapsho
         return FALSE;
     }
 
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_NativeContextLifecycleMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = WaitNativeContextLifecycle();
     if (status != STATUS_SUCCESS)
     {
-        FailNativeContextAtAnyIrql();
         ExReleaseRundownProtection(&m_NativeContextReferences);
         return FALSE;
     }
@@ -11924,9 +11954,7 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransport(void)
         return STATUS_DEVICE_NOT_READY;
     }
 
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -10LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_NativeContextLifecycleMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = WaitNativeContextLifecycle();
     if (status != STATUS_SUCCESS)
     {
         FailNativeContextAtAnyIrql();

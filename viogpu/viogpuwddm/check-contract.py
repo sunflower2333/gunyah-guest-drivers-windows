@@ -6766,7 +6766,7 @@ def check_native_context_destroy_diagnostics() -> None:
             "initialOwnerState=static_cast<DWORD>(context->Owner->State);",
             "KeReleaseSpinLock(&context->BindingLock,diagnosticIrql)",
             "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyEntered",
-            "KeWaitForSingleObject(&m_NativeContextLifecycleMutex",
+            "WaitNativeContextLifecycle()",
             "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyRundown",
         ),
         "adapter destroy must snapshot early ownership under the binding lock before diagnostics",
@@ -9478,9 +9478,24 @@ def check_wddm_context_lifetime() -> None:
     snapshot = function_body("VioGpuAdapter::AcquireNativeContextSnapshot", VIOGPU_CODE)
     snapshot_compact = canonical_code(snapshot)
     irql_guard = snapshot_compact.find("KeGetCurrentIrql()!=PASSIVE_LEVEL")
-    wait = snapshot_compact.find("KeWaitForSingleObject(&adapter->m_NativeContextLifecycleMutex")
+    wait = snapshot_compact.find("adapter->WaitNativeContextLifecycle()")
     if irql_guard < 0 or wait < 0 or irql_guard > wait:
         fail("native-context snapshot acquisition must reject non-PASSIVE callers before waiting")
+
+    # A lifecycle-mutex wait timeout means the current holder is slow, not that
+    # the GPU is gone.  Failing the native context there increments the context
+    # generation, poisons the control queue and sets the boot-lifetime reset
+    # latch, which made every later AcquireNativeContextSnapshot refuse with
+    # detail 0x200 and killed D3D11 for the rest of the boot.  The bounded wait
+    # must retry and then fail only the operation that asked.
+    lifecycle_wait = canonical_code(function_body("VioGpuAdapter::WaitNativeContextLifecycle", VIOGPU_CODE))
+    if "FailNativeContextAtAnyIrql" in lifecycle_wait:
+        fail("the bounded lifecycle wait must not fail the native context on a wait timeout")
+    if "KeWaitForSingleObject(&m_NativeContextLifecycleMutex" not in lifecycle_wait:
+        fail("the bounded lifecycle wait must be the only place that waits on the lifecycle mutex")
+    if lifecycle_wait.count("RecordNativeContextLifecycleTimeout()") != 1 or \
+       lifecycle_wait.count("RecordNativeContextLifecycleGaveUp()") != 1:
+        fail("the bounded lifecycle wait must count its timeouts and its give-ups")
 
     generation_current = canonical_code(
         function_body("VioGpuAdapter::IsNativeContextGenerationCurrent", VIOGPU_CODE)
