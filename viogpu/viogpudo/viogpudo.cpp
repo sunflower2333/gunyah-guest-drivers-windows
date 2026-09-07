@@ -804,6 +804,18 @@ struct VIOGPU_FENCE_TRACE
 /* "VGFTRACE" little-endian. */
 static VIOGPU_FENCE_TRACE g_VioGpuFenceTrace = {0x4543415254464756ULL, VioGpuFenceTraceCapacity, 0, {}};
 
+/* Published to the driver key from RecordNativeAllocationDestroyDiagnostic(),
+ * which runs on every allocation destroy.  A kernel dump located the ring but
+ * found Index == 0 even though the tracer's stores are present in the shipped
+ * binary and the traced package was the bound one, so the captured page may not
+ * have been the live .data.  Surfacing Index through a channel already proven to
+ * reach the registry mid-run separates "the tracer never executes" from "the
+ * dump captured the wrong page". */
+DWORD VioGpuReadFenceTraceIndex(void);
+DWORD VioGpuReadFenceTraceLastEvent(void);
+DWORD VioGpuReadFenceTraceLastFenceId(void);
+DWORD VioGpuReadFenceTraceLastSubmitted(void);
+
 static VOID VioGpuTraceFence(_In_ UINT32 event, _In_ UINT32 fenceId, _In_ UINT32 completed)
 {
     LONG slot = InterlockedIncrement(&g_VioGpuFenceTrace.Index) - 1;
@@ -813,6 +825,41 @@ static VOID VioGpuTraceFence(_In_ UINT32 event, _In_ UINT32 fenceId, _In_ UINT32
     entry->Irql = static_cast<UINT32>(KeGetCurrentIrql());
     KeMemoryBarrier();
     entry->Event = event;
+}
+
+DWORD VioGpuReadFenceTraceIndex(void)
+{
+    return static_cast<DWORD>(InterlockedCompareExchange(&g_VioGpuFenceTrace.Index, 0, 0));
+}
+
+DWORD VioGpuReadFenceTraceLastEvent(void)
+{
+    LONG slot = InterlockedCompareExchange(&g_VioGpuFenceTrace.Index, 0, 0);
+    if (slot <= 0)
+    {
+        return 0;
+    }
+    return g_VioGpuFenceTrace.Entries[(slot - 1) & (VioGpuFenceTraceCapacity - 1)].Event;
+}
+
+DWORD VioGpuReadFenceTraceLastFenceId(void)
+{
+    LONG slot = InterlockedCompareExchange(&g_VioGpuFenceTrace.Index, 0, 0);
+    if (slot <= 0)
+    {
+        return 0;
+    }
+    return g_VioGpuFenceTrace.Entries[(slot - 1) & (VioGpuFenceTraceCapacity - 1)].FenceId;
+}
+
+DWORD VioGpuReadFenceTraceLastSubmitted(void)
+{
+    LONG slot = InterlockedCompareExchange(&g_VioGpuFenceTrace.Index, 0, 0);
+    if (slot <= 0)
+    {
+        return 0;
+    }
+    return g_VioGpuFenceTrace.Entries[(slot - 1) & (VioGpuFenceTraceCapacity - 1)].Completed;
 }
 
 BOOLEAN VioGpuDod::RecordNativeSubmissionFence(_In_ UINT fenceId)
@@ -5421,6 +5468,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD completionDroppedFence = ReadNativeCompletionDroppedFenceId();
     DWORD resetDeviceCallerRva = ReadResetDeviceCallerRva();
     DWORD resetDeviceCount = ReadResetDeviceCount();
+    DWORD fenceTraceIndex = VioGpuReadFenceTraceIndex();
+    DWORD fenceTraceLastEvent = VioGpuReadFenceTraceLastEvent();
+    DWORD fenceTraceLastFenceId = VioGpuReadFenceTraceLastFenceId();
+    DWORD fenceTraceLastSubmitted = VioGpuReadFenceTraceLastSubmitted();
     struct VALUE_WRITE
     {
         PCWSTR Name;
@@ -5572,6 +5623,19 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"estroyRangeL"
                                                                                                          L"engthHigh",
                                                                                                          &lengthHigh},
+                                                                                                        {L"NativeFenceT"
+                                                                                                         L"raceIndex",
+                                                                                                         &fenceTraceIndex},
+                                                                                                        {L"NativeFenceT"
+                                                                                                         L"raceLastEvent",
+                                                                                                         &fenceTraceLastEvent},
+                                                                                                        {L"NativeFenceT"
+                                                                                                         L"raceLastFence",
+                                                                                                         &fenceTraceLastFenceId},
+                                                                                                        {L"NativeFenceT"
+                                                                                                         L"raceLastSubmi"
+                                                                                                         L"tted",
+                                                                                                         &fenceTraceLastSubmitted},
     };
     NTSTATUS writeStatus = STATUS_SUCCESS;
     for (UINT index = 0; index < ARRAYSIZE(writes); ++index)
