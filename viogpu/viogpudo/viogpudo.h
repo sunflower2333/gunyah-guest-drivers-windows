@@ -1212,6 +1212,19 @@ class VioGpuDod
             InterlockedExchange(&m_ResetDeviceCallerRva, static_cast<LONG>(callerRva));
         }
     }
+    /* IsNativeContextGenerationCurrent() begins with !IsHardwareResetRequested(),
+     * so once this latch is set every AcquireNativeContextSnapshot fails for
+     * every context, for the rest of the boot -- which presents as a map-side
+     * snapshot refusal with a perfectly consistent allocation.  The caller RVA
+     * that set it was recorded but never published; publish it. */
+    DWORD ReadHardwareResetState(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetState, 0, 0));
+    }
+    DWORD ReadHardwareResetCallerRva(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetCallerRva, 0, 0));
+    }
     DWORD ReadResetDeviceCallerRva(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_ResetDeviceCallerRva, 0, 0));
