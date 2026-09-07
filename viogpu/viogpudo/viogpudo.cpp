@@ -5670,6 +5670,14 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayPresentSrcNative = ReadDisplayCounter(29);
     DWORD displayPresentSrcNativeMaxNonZero = ReadDisplayCounter(30);
     DWORD displayPresentSrcStandardMaxNonZero = ReadDisplayCounter(31);
+    DWORD displayEscapeCalls = ReadDisplayCounter(32);
+    DWORD displayPresentBlitCalls = ReadDisplayCounter(33);
+    DWORD displayPresentBlitReject = ReadDisplayCounter(34);
+    DWORD displayPresentBlitStatus = ReadDisplayCounter(35);
+    DWORD displayPresentBlitWidth = ReadDisplayCounter(36);
+    DWORD displayPresentBlitHeight = ReadDisplayCounter(37);
+    DWORD displayPublishCalls = ReadDisplayCounter(38);
+    DWORD displayPublishStatus = ReadDisplayCounter(39);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -6003,6 +6011,22 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayPresentSrcNativeMaxNonZero},
                                                                                                         {L"NativeDisplayPresentSrcStandardMaxNonZero",
                                                                                                          &displayPresentSrcStandardMaxNonZero},
+                                                                                                        {L"NativeDisplayEscapeCalls",
+                                                                                                         &displayEscapeCalls},
+                                                                                                        {L"NativeDisplayPresentBlitCalls",
+                                                                                                         &displayPresentBlitCalls},
+                                                                                                        {L"NativeDisplayPresentBlitReject",
+                                                                                                         &displayPresentBlitReject},
+                                                                                                        {L"NativeDisplayPresentBlitStatus",
+                                                                                                         &displayPresentBlitStatus},
+                                                                                                        {L"NativeDisplayPresentBlitWidth",
+                                                                                                         &displayPresentBlitWidth},
+                                                                                                        {L"NativeDisplayPresentBlitHeight",
+                                                                                                         &displayPresentBlitHeight},
+                                                                                                        {L"NativeDisplayPublishCalls",
+                                                                                                         &displayPublishCalls},
+                                                                                                        {L"NativeDisplayPublishStatus",
+                                                                                                         &displayPublishStatus},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -8413,6 +8437,8 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
     {
         return STATUS_DEVICE_NOT_READY;
     }
+
+    m_pVioGpuDod->CountDisplayEvent(38);
 
     for (UINT row = 0; row < height; ++row)
     {

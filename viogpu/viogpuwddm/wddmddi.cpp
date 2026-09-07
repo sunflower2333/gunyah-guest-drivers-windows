@@ -4457,6 +4457,8 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
         return STATUS_INVALID_PARAMETER;
     }
 
+    adapter->CountDisplayEvent(33);
+
     VIOGPU_WDDM_PRESENT_BLIT request = {};
     __try
     {
@@ -4470,6 +4472,7 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
     if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
         request.Opcode != VIOGPU_WDDM_ESCAPE_PRESENT_BLIT)
     {
+        adapter->RecordDisplayValue(34, 1);
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
 
@@ -4478,11 +4481,13 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
         request.PayloadSize == 0 ||
         request.PayloadSize != escape->PrivateDriverDataSize - sizeof(VIOGPU_WDDM_PRESENT_BLIT))
     {
+        adapter->RecordDisplayValue(34, 2);
         return STATUS_INVALID_PARAMETER;
     }
 
     if (!adapter->IsDriverActive())
     {
+        adapter->RecordDisplayValue(34, 3);
         return STATUS_DEVICE_NOT_READY;
     }
 
@@ -4498,8 +4503,13 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
+        adapter->RecordDisplayValue(34, 4);
         return STATUS_INVALID_USER_BUFFER;
     }
+    adapter->RecordDisplayValue(35, static_cast<LONG>(status));
+    adapter->RecordDisplayValue(36, static_cast<LONG>(request.Width));
+    adapter->RecordDisplayValue(37, static_cast<LONG>(request.Height));
+    adapter->RecordDisplayValue(39, static_cast<LONG>(status));
     return status;
 }
 
@@ -4511,6 +4521,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
     {
         return STATUS_INVALID_PARAMETER;
     }
+
+    reinterpret_cast<VioGpuDod *>(hAdapter)->CountDisplayEvent(32);
 
     if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_FENCE_INFO))
     {
