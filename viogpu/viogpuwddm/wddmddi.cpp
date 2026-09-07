@@ -3272,6 +3272,34 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
         {
             PUCHAR sourceBase = static_cast<PUCHAR>(source->ApertureAddress);
             PUCHAR destinationBase = static_cast<PUCHAR>(destination->ApertureAddress);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+            /* The one-shot copy probe saw a standard source with zero pixels.
+             * DWM's steady-state source may be a native guest-alloc blob whose
+             * shared pages should already carry the frame, or a standard 2D
+             * resource whose host texture is never read back; the fix differs.
+             * Classify every present and keep the largest non-zero sample per
+             * class, so the two cases can be told apart from the driver key. */
+            {
+                VioGpuDod *classifyAdapter = transaction->Adapter;
+                BOOLEAN classifyNative = IsNativeAllocation(source);
+                LONG nonZero = 0;
+                SIZE_T span = static_cast<SIZE_T>(source->Pitch) * transaction->SourceRect.bottom;
+                if (span > 0x100000) span = 0x100000;
+                for (SIZE_T offset = 0; offset < span; offset += 4096)
+                {
+                    if (sourceBase[offset] != 0 || sourceBase[offset + 1] != 0 || sourceBase[offset + 2] != 0)
+                    {
+                        ++nonZero;
+                    }
+                }
+                classifyAdapter->CountDisplayEvent(classifyNative ? 29 : 28);
+                ULONG maxIndex = classifyNative ? 30 : 31;
+                if (static_cast<LONG>(classifyAdapter->ReadDisplayCounter(maxIndex)) < nonZero)
+                {
+                    classifyAdapter->RecordDisplayValue(maxIndex, nonZero);
+                }
+            }
+#endif
             for (UINT index = 0; index < transaction->RectCount; ++index)
             {
                 const RECT *destinationRect = &transaction->DestinationSubRects[index];

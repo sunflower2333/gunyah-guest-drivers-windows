@@ -5642,6 +5642,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayFlipRejectNative = ReadDisplayCounter(25);
     DWORD displayPresentLastRejectFlags = ReadDisplayCounter(26);
     DWORD displayFlipRejectKind = ReadDisplayCounter(27);
+    DWORD displayPresentSrcStandard = ReadDisplayCounter(28);
+    DWORD displayPresentSrcNative = ReadDisplayCounter(29);
+    DWORD displayPresentSrcNativeMaxNonZero = ReadDisplayCounter(30);
+    DWORD displayPresentSrcStandardMaxNonZero = ReadDisplayCounter(31);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5967,6 +5971,14 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayPresentLastRejectFlags},
                                                                                                         {L"NativeDisplayFlipRejectKind",
                                                                                                          &displayFlipRejectKind},
+                                                                                                        {L"NativeDisplayPresentSrcStandard",
+                                                                                                         &displayPresentSrcStandard},
+                                                                                                        {L"NativeDisplayPresentSrcNative",
+                                                                                                         &displayPresentSrcNative},
+                                                                                                        {L"NativeDisplayPresentSrcNativeMaxNonZero",
+                                                                                                         &displayPresentSrcNativeMaxNonZero},
+                                                                                                        {L"NativeDisplayPresentSrcStandardMaxNonZero",
+                                                                                                         &displayPresentSrcStandardMaxNonZero},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
