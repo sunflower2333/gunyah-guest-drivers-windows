@@ -214,6 +214,10 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
     m_NativeSubmittedFence = 0;
     m_NativeCompletedFence = 0;
+    m_NativeApertureFailureStage = 0;
+    m_NativeApertureFailureStatus = 0;
+    m_NativeApertureFailureCount = 0;
+    m_NativePagingResetCount = 0;
     KeInitializeSpinLock(&m_NativePassiveLock);
     InitializeListHead(&m_NativePassiveQueue);
     ExInitializeWorkItem(&m_NativePassiveWorkItem, NativePassiveWorker, this);
@@ -5472,6 +5476,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD fenceTraceLastEvent = VioGpuReadFenceTraceLastEvent();
     DWORD fenceTraceLastFenceId = VioGpuReadFenceTraceLastFenceId();
     DWORD fenceTraceLastSubmitted = VioGpuReadFenceTraceLastSubmitted();
+    DWORD apertureFailureStage = ReadNativeApertureFailureStage();
+    DWORD apertureFailureStatus = ReadNativeApertureFailureStatus();
+    DWORD apertureFailureCount = ReadNativeApertureFailureCount();
+    DWORD pagingResetCount = ReadNativePagingResetCount();
     struct VALUE_WRITE
     {
         PCWSTR Name;
@@ -5636,6 +5644,18 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"raceLastSubmi"
                                                                                                          L"tted",
                                                                                                          &fenceTraceLastSubmitted},
+                                                                                                        {L"NativeApertu"
+                                                                                                         L"reFailStage",
+                                                                                                         &apertureFailureStage},
+                                                                                                        {L"NativeApertu"
+                                                                                                         L"reFailStatus",
+                                                                                                         &apertureFailureStatus},
+                                                                                                        {L"NativeApertu"
+                                                                                                         L"reFailCount",
+                                                                                                         &apertureFailureCount},
+                                                                                                        {L"NativePaging"
+                                                                                                         L"ResetCount",
+                                                                                                         &pagingResetCount},
     };
     NTSTATUS writeStatus = STATUS_SUCCESS;
     for (UINT index = 0; index < ARRAYSIZE(writes); ++index)

@@ -6061,12 +6061,17 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
         offsetInPages >= (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) ||
         numberOfPages > (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) - offsetInPages)
     {
+        if (adapter != NULL)
+        {
+            adapter->RecordNativeApertureFailure(VioGpuApertureStageMapArguments, STATUS_INVALID_PARAMETER);
+        }
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
     NTSTATUS status = AcquireAllocationLifecycle(allocation);
     if (status != STATUS_SUCCESS)
     {
+        adapter->RecordNativeApertureFailure(VioGpuApertureStageMapLifecycle, status);
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
@@ -6076,9 +6081,11 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     if (nativeAllocation && !snapshotAcquired)
     {
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+        adapter->RecordNativeApertureFailure(VioGpuApertureStageMapSnapshot, STATUS_DEVICE_NOT_READY);
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
+    DWORD failureStage = VioGpuApertureStageMapValidate;
     SIZE_T allocationPageCount = BYTES_TO_PAGES(allocation->BackingSize);
     SIZE_T mdlPageCount = ADDRESS_AND_SIZE_TO_SPAN_PAGES(MmGetMdlVirtualAddress(mdl), MmGetMdlByteCount(mdl));
     SIZE_T allocationPage = static_cast<SIZE_T>(mdlOffset);
@@ -6114,6 +6121,10 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     {
         status = EnsureAperturePageState(allocation);
         valid = NT_SUCCESS(status);
+        if (!valid)
+        {
+            failureStage = VioGpuApertureStageMapPageState;
+        }
     }
     else
     {
@@ -6213,6 +6224,10 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
         {
             VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
         }
+        if (!NT_SUCCESS(status))
+        {
+            adapter->RecordNativeApertureFailure(VioGpuApertureStageMapPlacement, status);
+        }
         return NT_SUCCESS(status) ? STATUS_SUCCESS : STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
@@ -6225,8 +6240,13 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
         {
             status = EnsureApertureCpuMapping(allocation);
         }
+        if (!NT_SUCCESS(status))
+        {
+            failureStage = VioGpuApertureStageMapBacking;
+        }
     }
 
+    BOOLEAN hostAttempted = NT_SUCCESS(status);
     if (NT_SUCCESS(status))
     {
         if (nativeAllocation)
@@ -6302,6 +6322,10 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     if (snapshotAcquired)
     {
         VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        adapter->RecordNativeApertureFailure(hostAttempted ? VioGpuApertureStageMapHost : failureStage, status);
     }
     return NT_SUCCESS(status) ? STATUS_SUCCESS : STATUS_GRAPHICS_ALLOCATION_BUSY;
 }
@@ -6594,13 +6618,38 @@ NTSTATUS BuildSoftwarePagingTransaction(_In_ VioGpuDod *adapter,
     return status == STATUS_SUCCESS ? STATUS_SUCCESS : STATUS_GRAPHICS_ALLOCATION_BUSY;
 }
 
+/* dxgmms1!VIDMM_GLOBAL::CompleteBuildPagingBufferIteration accepts exactly two
+ * answers from DxgkDdiBuildPagingBuffer: any NT_SUCCESS status, or
+ * STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER, which makes VidMm enlarge the paging
+ * buffer and reissue the identical operation without bound.  Every other status
+ * reaches KeBugCheckEx(0x0000010E, 0xB, &DXGKARG_BUILDPAGINGBUFFER, status, ...)
+ * with no driver frame left on the stack, which is how a transient refusal from
+ * the aperture path became an unrecoverable VIDEO_MEMORY_MANAGEMENT_INTERNAL
+ * bugcheck.  A paging operation this driver cannot honour is reported as
+ * complete and the adapter is driven into reset instead, so recovery runs
+ * through DxgkDdiResetFromTimeout rather than a bugcheck. */
+static NTSTATUS CompletePagingBufferOperation(_In_opt_ VioGpuDod *adapter, _In_ NTSTATUS status, _In_ DWORD stage)
+{
+    if (NT_SUCCESS(status) || status == STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER)
+    {
+        return status;
+    }
+    if (adapter != NULL)
+    {
+        adapter->RecordNativeApertureFailure(stage, status);
+        adapter->CountNativePagingReset();
+        adapter->RequestHardwareResetAtAnyIrql();
+    }
+    return STATUS_SUCCESS;
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDLE hAdapter,
                                                                      DXGKARG_BUILDPAGINGBUFFER *pagingBuffer)
 {
     VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
     if (adapter == NULL || pagingBuffer == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
-        return STATUS_GRAPHICS_ALLOCATION_BUSY;
+        return CompletePagingBufferOperation(adapter, STATUS_INVALID_PARAMETER, VioGpuApertureStageDispatch);
     }
 
     if (pagingBuffer->Operation == DXGK_OPERATION_MAP_APERTURE_SEGMENT)
@@ -6610,14 +6659,15 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
             allocation->Adapter != adapter || pagingBuffer->MapApertureSegment.SegmentId != VIOGPU_WDDM_SEGMENT_ID ||
             (pagingBuffer->MapApertureSegment.Flags.Value & ~1U) != 0)
         {
-            return STATUS_GRAPHICS_ALLOCATION_BUSY;
+            return CompletePagingBufferOperation(adapter, STATUS_INVALID_PARAMETER, VioGpuApertureStageDispatch);
         }
-        return MapApertureAllocation(adapter,
-                                     allocation,
-                                     pagingBuffer->MapApertureSegment.OffsetInPages,
-                                     pagingBuffer->MapApertureSegment.NumberOfPages,
-                                     pagingBuffer->MapApertureSegment.pMdl,
-                                     pagingBuffer->MapApertureSegment.MdlOffset);
+        NTSTATUS mapStatus = MapApertureAllocation(adapter,
+                                                   allocation,
+                                                   pagingBuffer->MapApertureSegment.OffsetInPages,
+                                                   pagingBuffer->MapApertureSegment.NumberOfPages,
+                                                   pagingBuffer->MapApertureSegment.pMdl,
+                                                   pagingBuffer->MapApertureSegment.MdlOffset);
+        return CompletePagingBufferOperation(adapter, mapStatus, VioGpuApertureStageMapValidate);
     }
 
     if (pagingBuffer->Operation == DXGK_OPERATION_UNMAP_APERTURE_SEGMENT)
@@ -6627,19 +6677,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
             allocation->Adapter != adapter || pagingBuffer->UnmapApertureSegment.SegmentId != VIOGPU_WDDM_SEGMENT_ID)
         {
             adapter->RequestHardwareResetAtAnyIrql();
-            return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;
+            return CompletePagingBufferOperation(adapter, STATUS_INVALID_PARAMETER, VioGpuApertureStageUnmap);
         }
         NTSTATUS status = UnmapApertureAllocation(adapter,
                                                   allocation,
                                                   pagingBuffer->UnmapApertureSegment.OffsetInPages,
                                                   pagingBuffer->UnmapApertureSegment.NumberOfPages,
                                                   pagingBuffer->UnmapApertureSegment.DummyPage);
-        if (!NT_SUCCESS(status))
-        {
-            adapter->RequestHardwareResetAtAnyIrql();
-            return STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;
-        }
-        return STATUS_SUCCESS;
+        return CompletePagingBufferOperation(adapter, status, VioGpuApertureStageUnmap);
     }
 
     if (pagingBuffer->pDmaBuffer == NULL || pagingBuffer->pDmaBufferPrivateData == NULL ||
@@ -6666,7 +6711,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
             mdlOffset = pagingBuffer->Transfer.MdlOffset;
             if ((pagingBuffer->Transfer.Flags.Value & ~0x1CU) != 0)
             {
-                return STATUS_GRAPHICS_ALLOCATION_BUSY;
+                return CompletePagingBufferOperation(adapter, STATUS_INVALID_PARAMETER, VioGpuApertureStageSoftware);
             }
             if (pagingBuffer->Transfer.Source.SegmentId == 0 &&
                 pagingBuffer->Transfer.Destination.SegmentId == VIOGPU_WDDM_SEGMENT_ID)
@@ -6684,7 +6729,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
             }
             else
             {
-                return STATUS_GRAPHICS_ALLOCATION_BUSY;
+                return CompletePagingBufferOperation(adapter, STATUS_INVALID_PARAMETER, VioGpuApertureStageSoftware);
             }
             if (pagingBuffer->Transfer.Flags.TransferStart)
             {
@@ -6704,7 +6749,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
             allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(pagingBuffer->Fill.hAllocation);
             if (pagingBuffer->Fill.Destination.SegmentId != VIOGPU_WDDM_SEGMENT_ID)
             {
-                return STATUS_GRAPHICS_ALLOCATION_BUSY;
+                return CompletePagingBufferOperation(adapter, STATUS_INVALID_PARAMETER, VioGpuApertureStageSoftware);
             }
             segmentAddress = pagingBuffer->Fill.Destination.SegmentAddress;
             transferSize = pagingBuffer->Fill.FillSize;
@@ -6716,7 +6761,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
             allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(pagingBuffer->DiscardContent.hAllocation);
             if ((pagingBuffer->DiscardContent.Flags.Value & ~1U) != 0)
             {
-                return STATUS_GRAPHICS_ALLOCATION_BUSY;
+                return CompletePagingBufferOperation(adapter, STATUS_INVALID_PARAMETER, VioGpuApertureStageSoftware);
             }
             if (pagingBuffer->DiscardContent.SegmentId != VIOGPU_WDDM_SEGMENT_ID)
             {
@@ -6731,24 +6776,25 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
             break;
 
         default:
-            return STATUS_GRAPHICS_ALLOCATION_BUSY;
+            return CompletePagingBufferOperation(adapter, STATUS_NOT_SUPPORTED, VioGpuApertureStageSoftware);
     }
 
     if (allocation == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
         allocation->Adapter != adapter)
     {
-        return STATUS_GRAPHICS_ALLOCATION_BUSY;
+        return CompletePagingBufferOperation(adapter, STATUS_INVALID_PARAMETER, VioGpuApertureStageSoftware);
     }
-    return BuildSoftwarePagingTransaction(adapter,
-                                          pagingBuffer,
-                                          allocation,
-                                          segmentAddress,
-                                          transferMdl,
-                                          mdlOffset,
-                                          transferOffset,
-                                          transferSize,
-                                          fillPattern,
-                                          packetFlags);
+    NTSTATUS softwareStatus = BuildSoftwarePagingTransaction(adapter,
+                                                             pagingBuffer,
+                                                             allocation,
+                                                             segmentAddress,
+                                                             transferMdl,
+                                                             mdlOffset,
+                                                             transferOffset,
+                                                             transferSize,
+                                                             fillPattern,
+                                                             packetFlags);
+    return CompletePagingBufferOperation(adapter, softwareStatus, VioGpuApertureStageSoftware);
 }
 
 BOOLEAN ResolvePagingBatchOffset(_In_ UINT base,

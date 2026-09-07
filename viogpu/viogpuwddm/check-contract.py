@@ -4565,7 +4565,7 @@ def check_wddm_standard_paging() -> None:
         "returnSTATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER;",
         "(pagingBuffer->Transfer.Flags.Value&~0x1C)!=0",
         "(pagingBuffer->DiscardContent.Flags.Value&~1)!=0",
-        "returnBuildSoftwarePagingTransaction(adapter,",
+        "BuildSoftwarePagingTransaction(adapter,",
     ):
         if fragment not in build:
             fail(f"aperture paging must use VidMm MDLs and the shared software transaction path: {fragment}")
@@ -8065,7 +8065,7 @@ def check_wddm_paging_transaction_gate() -> None:
         if fragment not in paging_header:
             fail(f"paging transaction ABI must expose {fragment}")
     build_dispatch = canonical_code(function_body("VioGpuWddmBuildPagingBuffer", WDDM_DDI_CODE))
-    if "returnBuildSoftwarePagingTransaction(adapter," not in build_dispatch:
+    if "BuildSoftwarePagingTransaction(adapter," not in build_dispatch:
         fail("BuildPagingBuffer must route standard and native software records through one ownership helper")
     build = canonical_code(function_body("BuildSoftwarePagingTransaction", WDDM_DDI_CODE))
     if build.count("AcquireAllocationSubmissionReference(allocation,adapter)") != 1:
@@ -9074,6 +9074,44 @@ def check_allocation_lifecycle_wait_status_contract() -> None:
     software_return = canonical_code(function_body("BuildSoftwarePagingTransaction", WDDM_DDI_CODE))
     if "returnstatus==STATUS_SUCCESS?STATUS_SUCCESS:STATUS_GRAPHICS_ALLOCATION_BUSY;" not in software_return:
         fail("BuildSoftwarePagingTransaction must not convert a positive wait result into success")
+
+
+def check_paging_buffer_status_contract() -> None:
+    """DxgkDdiBuildPagingBuffer may answer only success or a DMA-buffer retry.
+
+    dxgmms1!VIDMM_GLOBAL::CompleteBuildPagingBufferIteration tests the value the
+    miniport returned: an NT_SUCCESS status completes the iteration, exactly
+    STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER enlarges the paging buffer and
+    reissues the same operation, and every other status reaches
+    KeBugCheckEx(0x0000010E, 0xB, pagingBuffer, status, ...).  The miniport has
+    already returned by then, so no driver frame appears in the dump.  Route
+    every refusal through the sanitizing helper instead, which reports the
+    operation complete and drives the adapter into reset.
+    """
+
+    dispatch = canonical_code(function_body("VioGpuWddmBuildPagingBuffer", WDDM_DDI_CODE))
+    if "STATUS_GRAPHICS_ALLOCATION_BUSY" in dispatch:
+        fail("BuildPagingBuffer must never return STATUS_GRAPHICS_ALLOCATION_BUSY: VidMm bugchecks 0x10E on it")
+    for returned in re.findall(r"return([A-Za-z0-9_]+)[;(]", dispatch):
+        if returned in ("STATUS_SUCCESS", "STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER", "CompletePagingBufferOperation"):
+            continue
+        fail(f"BuildPagingBuffer returned an unvetted status: {returned}")
+
+    helper = canonical_code(function_body("CompletePagingBufferOperation", WDDM_DDI_CODE))
+    for fragment in (
+        "if(NT_SUCCESS(status)||status==STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER)",
+        "returnstatus;",
+        "adapter->RecordNativeApertureFailure(stage,status);",
+        "adapter->CountNativePagingReset();",
+        "adapter->RequestHardwareResetAtAnyIrql();",
+        "returnSTATUS_SUCCESS;",
+    ):
+        if fragment not in helper:
+            fail(f"the paging-buffer status helper must fail closed into a reset: {fragment}")
+
+    aperture = canonical_code(function_body("MapApertureAllocation", WDDM_DDI_CODE))
+    if aperture.count("adapter->RecordNativeApertureFailure(") < 5:
+        fail("MapApertureAllocation must attribute every refusal to a stage")
 
 
 def check_wddm_context_lifetime() -> None:
@@ -12295,6 +12333,7 @@ def main() -> None:
     check_native_guest_allocation_extent_math()
     check_wddm_guest_allocation_lifecycle()
     check_allocation_lifecycle_wait_status_contract()
+    check_paging_buffer_status_contract()
     check_wddm_context_lifetime()
     check_wddm_submission_lifetime()
     check_deferred_software_fence_model()

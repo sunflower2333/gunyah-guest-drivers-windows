@@ -106,6 +106,21 @@ enum : UINT
     VioGpuFenceTraceRetireMiss = 4,
     VioGpuFenceTracePagingQueue = 5,
     VioGpuFenceTracePagingDrop = 6,
+    /* Gate that refused an aperture paging operation.  MapApertureAllocation
+     * has several failure exits and every one of them used to leave
+     * DxgkDdiBuildPagingBuffer answering STATUS_GRAPHICS_ALLOCATION_BUSY, so
+     * the dump could not say which one fired. */
+    VioGpuApertureStageMapArguments = 1,
+    VioGpuApertureStageMapLifecycle = 2,
+    VioGpuApertureStageMapSnapshot = 3,
+    VioGpuApertureStageMapPageState = 4,
+    VioGpuApertureStageMapValidate = 5,
+    VioGpuApertureStageMapPlacement = 6,
+    VioGpuApertureStageMapBacking = 7,
+    VioGpuApertureStageMapHost = 8,
+    VioGpuApertureStageUnmap = 9,
+    VioGpuApertureStageDispatch = 10,
+    VioGpuApertureStageSoftware = 11,
     VioGpuNativeContextDestroyDiagnosticSlotCount = 64,
 };
 
@@ -1004,6 +1019,16 @@ class VioGpuDod
      * (0xC01E0102) is reached.  Count the drops so the condition is visible. */
     volatile LONG m_NativeCompletionDroppedCount;
     volatile LONG m_NativeCompletionDroppedFenceId;
+    /* DxgkDdiBuildPagingBuffer may answer only STATUS_SUCCESS or
+     * STATUS_GRAPHICS_INSUFFICIENT_DMA_BUFFER.  VidMm retries the latter
+     * without bound and bugchecks 0x0000010E on anything else, so a paging
+     * operation this driver cannot honour is reported as done and the adapter
+     * is driven into reset.  Record which gate refused it so the condition
+     * stays diagnosable from the driver key. */
+    volatile LONG m_NativeApertureFailureStage;
+    volatile LONG m_NativeApertureFailureStatus;
+    volatile LONG m_NativeApertureFailureCount;
+    volatile LONG m_NativePagingResetCount;
     VOID ArmCrtcVsyncTimer(void);
     VOID DisarmCrtcVsyncTimer(void);
     VOID DeliverCrtcVsync(void);
@@ -1253,6 +1278,32 @@ class VioGpuDod
     {
         InterlockedIncrement(&m_NativeCompletionDroppedCount);
         InterlockedExchange(&m_NativeCompletionDroppedFenceId, static_cast<LONG>(fenceId));
+    }
+    DWORD ReadNativeApertureFailureStage(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeApertureFailureStage, 0, 0));
+    }
+    DWORD ReadNativeApertureFailureStatus(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeApertureFailureStatus, 0, 0));
+    }
+    DWORD ReadNativeApertureFailureCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeApertureFailureCount, 0, 0));
+    }
+    DWORD ReadNativePagingResetCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativePagingResetCount, 0, 0));
+    }
+    VOID RecordNativeApertureFailure(_In_ DWORD stage, _In_ NTSTATUS status)
+    {
+        InterlockedExchange(&m_NativeApertureFailureStage, static_cast<LONG>(stage));
+        InterlockedExchange(&m_NativeApertureFailureStatus, static_cast<LONG>(status));
+        InterlockedIncrement(&m_NativeApertureFailureCount);
+    }
+    VOID CountNativePagingReset(void)
+    {
+        InterlockedIncrement(&m_NativePagingResetCount);
     }
     VOID CountNativePreemptReset(void)
     {
