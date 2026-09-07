@@ -6341,12 +6341,17 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
         offsetInPages >= (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) ||
         numberOfPages > (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) - offsetInPages)
     {
+        if (adapter != NULL)
+        {
+            adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapArguments, STATUS_INVALID_PARAMETER);
+        }
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
     NTSTATUS status = AcquireAllocationLifecycle(allocation);
     if (status != STATUS_SUCCESS)
     {
+        adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapLifecycle, status);
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
@@ -6360,8 +6365,12 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
     if (nativeAllocation && !snapshotAcquired && !resetRetired)
     {
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+        adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapSnapshot, STATUS_DEVICE_NOT_READY);
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
+
+    DWORD unmapStage = VioGpuApertureStageUnmap;
+    DWORD unmapDetail = 0;
 
     SIZE_T allocationPage = allocation->ApertureBaseValid && offsetInPages >= allocation->ApertureBasePage ? offsetInPages - allocation->ApertureBasePage
                                                                                                            : MAXULONG_PTR;
@@ -6375,6 +6384,12 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
          !resetRetired))
     {
         status = STATUS_DEVICE_NOT_READY;
+        unmapStage = VioGpuApertureStageUnmapValidate;
+        unmapDetail = (allocation->ApertureBaseValid ? 0x1u : 0u) | (allocation->Destroying ? 0x2u : 0u) |
+                      (allocation->AperturePfns != NULL ? 0x4u : 0u) |
+                      (allocation->ApertureMappedPages != NULL ? 0x8u : 0u) | (snapshotAcquired ? 0x10u : 0u) |
+                      (resetRetired ? 0x20u : 0u) | (allocationPage > allocation->AperturePageCount ? 0x40u : 0u) |
+                      (static_cast<DWORD>(allocation->HostState) << 8);
     }
 
     SIZE_T mappedPagesToRemove = 0;
@@ -6384,6 +6399,8 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
         if (pageState > VioGpuWddmAperturePageDummy)
         {
             status = STATUS_INVALID_DEVICE_STATE;
+            unmapStage = VioGpuApertureStageUnmapPageState;
+            unmapDetail = pageState;
         }
         else if (pageState == VioGpuWddmAperturePageMapped)
         {
@@ -6393,6 +6410,8 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
     if (NT_SUCCESS(status) && mappedPagesToRemove > allocation->ApertureMappedPageCount)
     {
         status = STATUS_INVALID_DEVICE_STATE;
+        unmapStage = VioGpuApertureStageUnmapPageState;
+        unmapDetail = 0x100u;
     }
 
     BOOLEAN released = FALSE;
@@ -6415,6 +6434,11 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
                                                                                                allocation->ResourceId,
                                                                                                &released);
             status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+            if (!NT_SUCCESS(status))
+            {
+                unmapStage = VioGpuApertureStageUnmapHost;
+                unmapDetail = (static_cast<DWORD>(result) << 4) | (released ? 1u : 0u);
+            }
             if (released)
             {
                 ClearAllocationHostBinding(allocation);
@@ -6434,6 +6458,11 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
                 BOOLEAN detached = FALSE;
                 VIOGPU_HOST_CONTEXT_RESULT result = adapter->Detach2DScanoutResource(allocation->ResourceId, &detached);
                 status = result == VioGpuHostContextConfirmed && detached ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+                if (!NT_SUCCESS(status))
+                {
+                    unmapStage = VioGpuApertureStageUnmapScanout;
+                    unmapDetail = (static_cast<DWORD>(result) << 4) | (detached ? 1u : 0u);
+                }
             }
             if (NT_SUCCESS(status))
             {
@@ -6442,6 +6471,11 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
                                                                                &allocation->Resource2DResetGeneration,
                                                                                &released);
                 status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+                if (!NT_SUCCESS(status))
+                {
+                    unmapStage = VioGpuApertureStageUnmapStandard;
+                    unmapDetail = (static_cast<DWORD>(result) << 4) | (released ? 1u : 0u);
+                }
             }
         }
     }
@@ -6470,6 +6504,10 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
     if (snapshotAcquired)
     {
         VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        adapter->RecordNativeApertureFailure(unmapStage, status, unmapDetail);
     }
     return NT_SUCCESS(status) ? STATUS_SUCCESS : STATUS_GRAPHICS_ALLOCATION_BUSY;
 }
@@ -6690,7 +6728,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
                                                   pagingBuffer->UnmapApertureSegment.OffsetInPages,
                                                   pagingBuffer->UnmapApertureSegment.NumberOfPages,
                                                   pagingBuffer->UnmapApertureSegment.DummyPage);
-        return CompletePagingBufferOperation(adapter, status, VioGpuApertureStageUnmap);
+        return CompletePagingBufferOperation(adapter, status, 0);
     }
 
     if (pagingBuffer->pDmaBuffer == NULL || pagingBuffer->pDmaBufferPrivateData == NULL ||

@@ -121,6 +121,14 @@ enum : UINT
     VioGpuApertureStageUnmap = 9,
     VioGpuApertureStageDispatch = 10,
     VioGpuApertureStageSoftware = 11,
+    VioGpuApertureStageUnmapArguments = 12,
+    VioGpuApertureStageUnmapLifecycle = 13,
+    VioGpuApertureStageUnmapSnapshot = 14,
+    VioGpuApertureStageUnmapValidate = 15,
+    VioGpuApertureStageUnmapPageState = 16,
+    VioGpuApertureStageUnmapHost = 17,
+    VioGpuApertureStageUnmapScanout = 18,
+    VioGpuApertureStageUnmapStandard = 19,
     VioGpuNativeContextDestroyDiagnosticSlotCount = 64,
 };
 
@@ -1027,6 +1035,7 @@ class VioGpuDod
      * stays diagnosable from the driver key. */
     volatile LONG m_NativeApertureFailureStage;
     volatile LONG m_NativeApertureFailureStatus;
+    volatile LONG m_NativeApertureFailureDetail;
     volatile LONG m_NativeApertureFailureCount;
     volatile LONG m_NativePagingResetCount;
     VOID ArmCrtcVsyncTimer(void);
@@ -1295,11 +1304,16 @@ class VioGpuDod
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativePagingResetCount, 0, 0));
     }
-    VOID RecordNativeApertureFailure(_In_ DWORD stage, _In_ NTSTATUS status)
+    VOID RecordNativeApertureFailure(_In_ DWORD stage, _In_ NTSTATUS status, _In_ DWORD detail = 0)
     {
         InterlockedExchange(&m_NativeApertureFailureStage, static_cast<LONG>(stage));
         InterlockedExchange(&m_NativeApertureFailureStatus, static_cast<LONG>(status));
+        InterlockedExchange(&m_NativeApertureFailureDetail, static_cast<LONG>(detail));
         InterlockedIncrement(&m_NativeApertureFailureCount);
+    }
+    DWORD ReadNativeApertureFailureDetail(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeApertureFailureDetail, 0, 0));
     }
     VOID CountNativePagingReset(void)
     {

@@ -216,6 +216,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativeCompletedFence = 0;
     m_NativeApertureFailureStage = 0;
     m_NativeApertureFailureStatus = 0;
+    m_NativeApertureFailureDetail = 0;
     m_NativeApertureFailureCount = 0;
     m_NativePagingResetCount = 0;
     KeInitializeSpinLock(&m_NativePassiveLock);
@@ -5478,6 +5479,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD fenceTraceLastSubmitted = VioGpuReadFenceTraceLastSubmitted();
     DWORD apertureFailureStage = ReadNativeApertureFailureStage();
     DWORD apertureFailureStatus = ReadNativeApertureFailureStatus();
+    DWORD apertureFailureDetail = ReadNativeApertureFailureDetail();
     DWORD apertureFailureCount = ReadNativeApertureFailureCount();
     DWORD pagingResetCount = ReadNativePagingResetCount();
     struct VALUE_WRITE
@@ -5650,6 +5652,9 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                         {L"NativeApertu"
                                                                                                          L"reFailStatus",
                                                                                                          &apertureFailureStatus},
+                                                                                                        {L"NativeApertu"
+                                                                                                         L"reFailDetail",
+                                                                                                         &apertureFailureDetail},
                                                                                                         {L"NativeApertu"
                                                                                                          L"reFailCount",
                                                                                                          &apertureFailureCount},
