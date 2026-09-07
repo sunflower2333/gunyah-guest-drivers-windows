@@ -978,8 +978,7 @@ static DWORD DescribeAllocationNativeContextSnapshotFailure(_In_ VIOGPU_WDDM_ALL
     }
     else if (allocation->PrivateData.RequestedIova < probe.VaStart ||
              (ULONGLONG)allocation->BackingSize > probe.VaSize ||
-             allocation->PrivateData.RequestedIova >
-                 probe.VaStart + probe.VaSize - (ULONGLONG)allocation->BackingSize)
+             allocation->PrivateData.RequestedIova > probe.VaStart + probe.VaSize - (ULONGLONG)allocation->BackingSize)
     {
         detail |= 0x8000u;
     }
@@ -6172,8 +6171,8 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
          * Leave the host binding clear and report the mapping done; the aperture
          * state stays idle, which the unmap path already retires as a no-op. */
         adapter->RecordNativeApertureFailure(VioGpuApertureStageMapSnapshot,
-                                            STATUS_DEVICE_NOT_READY,
-                                            DescribeAllocationNativeContextSnapshotFailure(allocation));
+                                             STATUS_DEVICE_NOT_READY,
+                                             DescribeAllocationNativeContextSnapshotFailure(allocation));
         adapter->CountNativeApertureMapSkip();
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
         return STATUS_SUCCESS;
