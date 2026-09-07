@@ -7590,11 +7590,18 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         if escape_dispatch.count(fragment) != 1:
             fail(f"Escape must dispatch the exact context completion endpoint: {fragment}")
     for fragment in (
-        "escape->PrivateDriverDataSize>sizeof(VIOGPU_WDDM_PRESENT_BLIT)",
+        "constBOOLEANpresentBlit=IsPresentBlitRequest(escape);",
+        "if(presentBlit)",
         "returnPresentBlit(reinterpret_cast<VioGpuDod*>(hAdapter),escape);",
     ):
         if escape_dispatch.count(fragment) != 1:
             fail(f"Escape must dispatch the frame publication endpoint exactly once: {fragment}")
+    blit_probe = canonical_code(function_body("IsPresentBlitRequest", WDDM_DDI_CODE))
+    for fragment in (
+        "IsCurrentAbiHeader(&probe.Header,sizeof(probe))&&probe.Opcode==VIOGPU_WDDM_ESCAPE_PRESENT_BLIT;",
+    ):
+        if blit_probe.count(fragment) != 1:
+            fail(f"an escape may only be claimed as frame publication by its own header: {fragment}")
     present_blit = canonical_code(function_body("PresentBlit", WDDM_DDI_CODE))
     for fragment in (
         "escape->hContext!=NULL",

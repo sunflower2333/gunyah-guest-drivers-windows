@@ -4443,6 +4443,34 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRenderKm(CONST HANDLE hContex
 #endif
 }
 
+/* Claim an escape only when it identifies itself as frame publication.
+ * Sizing alone would swallow every other private escape larger than this
+ * request -- including ones this miniport must still pass through to the
+ * legacy handler. */
+static BOOLEAN IsPresentBlitRequest(CONST DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+
+    if (escape->pPrivateDriverData == NULL ||
+        escape->PrivateDriverDataSize <= sizeof(VIOGPU_WDDM_PRESENT_BLIT))
+    {
+        return FALSE;
+    }
+
+    VIOGPU_WDDM_PRESENT_BLIT probe = {};
+    __try
+    {
+        RtlCopyMemory(&probe, escape->pPrivateDriverData, sizeof(probe));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return FALSE;
+    }
+
+    return IsCurrentAbiHeader(&probe.Header, sizeof(probe)) &&
+           probe.Opcode == VIOGPU_WDDM_ESCAPE_PRESENT_BLIT;
+}
+
 static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
 {
     PAGED_CODE();
@@ -4532,7 +4560,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
     {
         return QueryContextInfo(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
     }
-    if (escape->PrivateDriverDataSize > sizeof(VIOGPU_WDDM_PRESENT_BLIT))
+    const BOOLEAN presentBlit = IsPresentBlitRequest(escape);
+    if (presentBlit)
     {
         return PresentBlit(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
     }
