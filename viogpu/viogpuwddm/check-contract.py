@@ -4692,10 +4692,10 @@ def check_wddm_standard_paging() -> None:
         "adapter->Detach2DScanoutResource(allocation->ResourceId,&detached)",
         "nativeAllocation&&allocation->HostState!=VioGpuWddmAllocationHostNone&&!snapshotAcquired",
         "BOOLEANresetRetired=nativeAllocation&&AllocationResetRetired(allocation);",
-        "nativeAllocation&&allocation->HostState!=VioGpuWddmAllocationHostNone&&!snapshotAcquired&&!resetRetired",
+        "BOOLEANcontextRetired=nativeAllocation&&!snapshotAcquired;",
         "BOOLEANreleased=FALSE;",
         "if(allocation->HostState==VioGpuWddmAllocationHostNone){released=TRUE;}",
-        "elseif(resetRetired){ClearAllocationHostBinding(allocation);released=TRUE;}",
+        "elseif(resetRetired||contextRetired){ClearAllocationHostBinding(allocation);released=TRUE;}",
         "if(allocation->Resource2DState==VioGpu2DResourceNone){released=TRUE;}",
         "ReleaseApertureCpuMapping(allocation);",
         "static_cast<ULONGLONG>(dummyPage.QuadPart)>>PAGE_SHIFT",
@@ -4712,10 +4712,17 @@ def check_wddm_standard_paging() -> None:
         (
             "BOOLEANsnapshotAcquired=nativeAllocation&&AcquireAllocationNativeContextSnapshot(allocation,&snapshot);",
             "BOOLEANresetRetired=nativeAllocation&&AllocationResetRetired(allocation);",
-            "if(nativeAllocation&&!snapshotAcquired&&!resetRetired)",
+            "BOOLEANcontextRetired=nativeAllocation&&!snapshotAcquired;",
         ),
-        "aperture unmap must evaluate confirmed reset retirement before rejecting a dead registration",
+        "aperture unmap must classify a dead registration as retired before releasing ownership",
     )
+    # VidMm's UNMAP_APERTURE_SEGMENT is a notification, not a request: the pages
+    # are already gone from the allocation.  Refusing one only returns an
+    # illegal status from DxgkDdiBuildPagingBuffer, which bugchecks 0x10E.
+    if "returnSTATUS_GRAPHICS_ALLOCATION_BUSY;" in unmap_allocation[
+        unmap_allocation.find("BOOLEANcontextRetired") : unmap_allocation.find("BOOLEANreleased=FALSE;")
+    ]:
+        fail("aperture unmap must not reject a dead registration: VidMm cannot accept a refusal here")
 
     allocation_retirement = canonical_code(
         function_body_with_parameters(

@@ -6362,11 +6362,17 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
      * reset. Keep this narrow path available for VidMm bookkeeping while
      * every other snapshot failure remains busy. */
     BOOLEAN resetRetired = nativeAllocation && AllocationResetRetired(allocation);
-    if (nativeAllocation && !snapshotAcquired && !resetRetired)
+    /* A registration that cannot yield a live snapshot is a context that is
+     * gone or superseded, and the host frees a context's resources with the
+     * context, so there is no UNREF left to submit.  VidMm's unmap is a
+     * notification rather than a request -- it has already taken these aperture
+     * pages away from the allocation -- and refusing it only pushes an illegal
+     * status back into DxgkDdiBuildPagingBuffer, which bugchecks 0x10E.  Retire
+     * the binding locally instead, exactly as a confirmed reset does. */
+    BOOLEAN contextRetired = nativeAllocation && !snapshotAcquired;
+    if (contextRetired && !resetRetired)
     {
-        KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
-        adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapSnapshot, STATUS_DEVICE_NOT_READY);
-        return STATUS_GRAPHICS_ALLOCATION_BUSY;
+        adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapSnapshot, STATUS_SUCCESS);
     }
 
     DWORD unmapStage = VioGpuApertureStageUnmap;
@@ -6381,7 +6387,7 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
         !ValidateAperturePageState(allocation, FALSE) || allocationPage > allocation->AperturePageCount ||
         numberOfPages > allocation->AperturePageCount - allocationPage ||
         (nativeAllocation && allocation->HostState != VioGpuWddmAllocationHostNone && !snapshotAcquired &&
-         !resetRetired))
+         !resetRetired && !contextRetired))
     {
         status = STATUS_DEVICE_NOT_READY;
         unmapStage = VioGpuApertureStageUnmapValidate;
@@ -6421,10 +6427,11 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
         {
             released = TRUE;
         }
-        else if (resetRetired)
+        else if (resetRetired || contextRetired)
         {
-            /* The device reset is the ownership proof.  No old-generation
-             * UNREF can be submitted after the context has been retired. */
+            /* The retired context is the ownership proof.  No old-generation
+             * UNREF can be submitted once the registration it belonged to is
+             * gone, and the host has already dropped the resource with it. */
             ClearAllocationHostBinding(allocation);
             released = TRUE;
         }
