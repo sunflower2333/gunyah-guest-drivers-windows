@@ -9124,12 +9124,14 @@ def check_paging_buffer_status_contract() -> None:
     if aperture.count("adapter->RecordNativeApertureFailure(") < 4:
         fail("MapApertureAllocation must attribute every refusal to a stage")
     if "adapter->CountNativeApertureMapSkip();" not in aperture:
-        fail("MapApertureAllocation must count, not refuse, a map whose owning context is gone")
-    snapshot_gate = aperture.find("if(nativeAllocation&&!snapshotAcquired)")
-    if snapshot_gate < 0 or "returnSTATUS_GRAPHICS_ALLOCATION_BUSY;" in aperture[
-        snapshot_gate : aperture.find("DWORDfailureStage")
-    ]:
-        fail("a map whose owning context is gone must not be refused: VidMm cannot accept a refusal")
+        fail("MapApertureAllocation must count every map refused for a non-live owning context")
+    # Reporting the map done without performing it was measured worse, not
+    # better: 0/40 against 23/40, because the skipped mappings are ones the
+    # adapter needs (see report section 44).  The refusal stands until the
+    # non-live-context window itself is fixed; a0e38b46 keeps it from
+    # bugchecking either way.
+    if "DescribeAllocationNativeContextSnapshotFailure(allocation)" not in aperture:
+        fail("a refused map must record which snapshot condition failed")
 
 
 def check_wddm_context_lifetime() -> None:

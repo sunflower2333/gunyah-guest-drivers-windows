@@ -6175,7 +6175,7 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
                                              DescribeAllocationNativeContextSnapshotFailure(allocation));
         adapter->CountNativeApertureMapSkip();
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
-        return STATUS_SUCCESS;
+        return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
     DWORD failureStage = VioGpuApertureStageMapValidate;
