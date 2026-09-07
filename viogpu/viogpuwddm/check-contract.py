@@ -7641,8 +7641,11 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         if publish.count(fragment) != 1:
             fail(f"frame publication must target the scanned-out surface: {fragment}")
     set_source_address = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
-    if set_source_address.count("adapter->IsUmdPresentActive()") != 2:
-        fail("a flip must not re-point or republish the scanout once frames are being published")
+    # The compositor owns the scanout whenever it flips; latching it to the
+    # user-mode driver's published surface froze the desktop on the last frame
+    # an application published.
+    if set_source_address.count("adapter->IsUmdPresentActive()") != 0:
+        fail("a flip must bind the surface the compositor asks for")
     completed_fence_query = canonical_code(function_body("QueryCompletedFenceInfo", WDDM_DDI_CODE))
     for fragment in (
         "escape->hDevice==NULL",
