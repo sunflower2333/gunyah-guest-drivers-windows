@@ -6162,17 +6162,20 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     BOOLEAN snapshotAcquired = nativeAllocation && AcquireAllocationNativeContextSnapshot(allocation, &snapshot);
     if (nativeAllocation && !snapshotAcquired)
     {
-        /* The owning context is not live.  That is not a reason to refuse the
-         * mapping and it is not a reason to abandon it either: the guest-side
-         * aperture bookkeeping below is exactly what VidMm is asking for and is
-         * correct regardless, and skipping it -- as the reverted 5dc9b275 did --
-         * leaves VidMm believing pages are mapped that this driver has no record
-         * of.  Carry on and record the PFNs; only the host round-trip is
-         * skipped, further down, because there is no context to make it on. */
+        /* The context that owns this allocation is gone or superseded, so there
+         * is no host to create the guest allocation on -- and no GPU work left
+         * that could reference it, because the work belonged to that context.
+         * Refusing is not available: DxgkDdiBuildPagingBuffer cannot return a
+         * failure, and driving the adapter into reset over one dead allocation
+         * costs the whole boot (the reset latch is never cleared at runtime).
+         * Leave the host binding clear and report the mapping done; the aperture
+         * state stays idle, which the unmap path already retires as a no-op. */
         adapter->RecordNativeApertureFailure(VioGpuApertureStageMapSnapshot,
                                              STATUS_DEVICE_NOT_READY,
                                              DescribeAllocationNativeContextSnapshotFailure(allocation));
         adapter->CountNativeApertureMapSkip();
+        KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+        return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
     DWORD failureStage = VioGpuApertureStageMapValidate;
@@ -6339,15 +6342,7 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     BOOLEAN hostAttempted = NT_SUCCESS(status);
     if (NT_SUCCESS(status))
     {
-        if (nativeAllocation && !snapshotAcquired)
-        {
-            /* No live context to create the guest allocation on.  The aperture
-             * pages are recorded, the host binding stays clear, and the GPU work
-             * that could have referenced this allocation belonged to the context
-             * that is gone. */
-            status = STATUS_SUCCESS;
-        }
-        else if (nativeAllocation)
+        if (nativeAllocation)
         {
             UINT msmFlags = MSM_BO_CACHED_COHERENT;
             if ((allocation->Flags & VIOGPU_WDDM_ALLOCATION_GPU_READ_ONLY) != 0)
