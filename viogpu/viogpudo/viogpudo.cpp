@@ -217,6 +217,9 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativeApertureFailureStage = 0;
     m_NativeApertureFailureStatus = 0;
     m_NativeApertureFailureDetail = 0;
+    m_NativeApertureFailureRecorded = 0;
+    m_NativeApertureRetireCount = 0;
+    m_NativeApertureIdleCount = 0;
     m_NativeApertureFailureCount = 0;
     m_NativePagingResetCount = 0;
     KeInitializeSpinLock(&m_NativePassiveLock);
@@ -5480,6 +5483,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD apertureFailureStage = ReadNativeApertureFailureStage();
     DWORD apertureFailureStatus = ReadNativeApertureFailureStatus();
     DWORD apertureFailureDetail = ReadNativeApertureFailureDetail();
+    DWORD apertureRetireCount = ReadNativeApertureRetireCount();
+    DWORD apertureIdleCount = ReadNativeApertureIdleCount();
     DWORD apertureFailureCount = ReadNativeApertureFailureCount();
     DWORD pagingResetCount = ReadNativePagingResetCount();
     struct VALUE_WRITE
@@ -5661,6 +5666,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                         {L"NativePaging"
                                                                                                          L"ResetCount",
                                                                                                          &pagingResetCount},
+                                                                                                        {L"NativeApertu"
+                                                                                                         L"reRetireCount",
+                                                                                                         &apertureRetireCount},
+                                                                                                        {L"NativeApertu"
+                                                                                                         L"reIdleCount",
+                                                                                                         &apertureIdleCount},
     };
     NTSTATUS writeStatus = STATUS_SUCCESS;
     for (UINT index = 0; index < ARRAYSIZE(writes); ++index)

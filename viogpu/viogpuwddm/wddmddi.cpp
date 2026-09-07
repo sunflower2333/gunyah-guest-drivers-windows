@@ -6372,7 +6372,7 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
     BOOLEAN contextRetired = nativeAllocation && !snapshotAcquired;
     if (contextRetired && !resetRetired)
     {
-        adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapSnapshot, STATUS_SUCCESS);
+        adapter->CountNativeApertureRetire();
     }
 
     DWORD unmapStage = VioGpuApertureStageUnmap;
@@ -6394,7 +6394,7 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
                                         : allocation->Resource2DState == VioGpu2DResourceNone;
     if (identityValid && apertureIdle && hostIdle)
     {
-        adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapIdle, STATUS_SUCCESS, 0);
+        adapter->CountNativeApertureIdle();
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
         if (snapshotAcquired)
         {

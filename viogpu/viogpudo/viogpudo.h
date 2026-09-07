@@ -1037,6 +1037,9 @@ class VioGpuDod
     volatile LONG m_NativeApertureFailureStage;
     volatile LONG m_NativeApertureFailureStatus;
     volatile LONG m_NativeApertureFailureDetail;
+    volatile LONG m_NativeApertureFailureRecorded;
+    volatile LONG m_NativeApertureRetireCount;
+    volatile LONG m_NativeApertureIdleCount;
     volatile LONG m_NativeApertureFailureCount;
     volatile LONG m_NativePagingResetCount;
     VOID ArmCrtcVsyncTimer(void);
@@ -1305,12 +1308,36 @@ class VioGpuDod
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativePagingResetCount, 0, 0));
     }
+    /* Keep the FIRST refusal, not the last.  The first one latches the adapter
+     * reset and every later record is its consequence, so a last-writer-wins
+     * field reports the aftermath instead of the cause. */
     VOID RecordNativeApertureFailure(_In_ DWORD stage, _In_ NTSTATUS status, _In_ DWORD detail = 0)
     {
-        InterlockedExchange(&m_NativeApertureFailureStage, static_cast<LONG>(stage));
-        InterlockedExchange(&m_NativeApertureFailureStatus, static_cast<LONG>(status));
-        InterlockedExchange(&m_NativeApertureFailureDetail, static_cast<LONG>(detail));
+        if (InterlockedCompareExchange(&m_NativeApertureFailureRecorded, 1, 0) == 0)
+        {
+            InterlockedExchange(&m_NativeApertureFailureStage, static_cast<LONG>(stage));
+            InterlockedExchange(&m_NativeApertureFailureStatus, static_cast<LONG>(status));
+            InterlockedExchange(&m_NativeApertureFailureDetail, static_cast<LONG>(detail));
+        }
         InterlockedIncrement(&m_NativeApertureFailureCount);
+    }
+    /* Handled outcomes get their own counters: routing them through the failure
+     * fields buried the refusal that actually mattered. */
+    VOID CountNativeApertureRetire(void)
+    {
+        InterlockedIncrement(&m_NativeApertureRetireCount);
+    }
+    VOID CountNativeApertureIdle(void)
+    {
+        InterlockedIncrement(&m_NativeApertureIdleCount);
+    }
+    DWORD ReadNativeApertureRetireCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeApertureRetireCount, 0, 0));
+    }
+    DWORD ReadNativeApertureIdleCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeApertureIdleCount, 0, 0));
     }
     DWORD ReadNativeApertureFailureDetail(void)
     {
