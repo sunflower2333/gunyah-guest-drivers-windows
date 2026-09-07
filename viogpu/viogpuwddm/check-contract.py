@@ -12284,7 +12284,7 @@ def check_installation_contract() -> None:
         "AddService=VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog",
         "ServiceBinary=%INX_PLATFORM_DRIVERS_DIR%\\viogpuwddm.sys",
         "AddReg=VioGpuWddm_ServiceSettings",
-        "[VioGpuWddm_ServiceSettings]HKR,Parameters,RenderOnly,%REG_DWORD%,1",
+        "[VioGpuWddm_ServiceSettings]HKR,Parameters,RenderOnly,%REG_DWORD%,0",
         "MSISupported,%REG_DWORD%,1",
         "MessageNumberLimit,%REG_DWORD%,4",
         'UserModeDriverName,%REG_MULTI_SZ%,"%13%\\viogpud3d.dll",'
@@ -12295,12 +12295,16 @@ def check_installation_contract() -> None:
     for fragment in required:
         if compact.count(fragment) != 1:
             fail(f"full-miniport INX must contain exactly one installation contract fragment: {fragment}")
+    # The shipped default enables the display path: the goal is a VioGPU that
+    # both scans out and renders, and the registration-time switch plus the
+    # device value still allow a render-only install. Both values must agree,
+    # or DriverCaps and the VidPn topology describe different adapters.
     render_only_defaults = re.findall(
-        r"(?im)^HKR\s*,\s*(?:Parameters)?\s*,\s*RenderOnly\s*,\s*%REG_DWORD%\s*,\s*1\s*$",
+        r"(?im)^HKR\s*,\s*(?:Parameters)?\s*,\s*RenderOnly\s*,\s*%REG_DWORD%\s*,\s*(0|1)\s*$",
         source,
     )
-    if len(render_only_defaults) != 2:
-        fail("full-miniport INX must default both service and device RenderOnly values to one")
+    if len(render_only_defaults) != 2 or len(set(render_only_defaults)) != 1:
+        fail("full-miniport INX must give the service and device RenderOnly values the same default")
     device_section = re.search(
         r"(?ims)^\[VioGpuWddm_DeviceSettings\]\s*$([\s\S]*?)(?=^\[|\Z)", source
     )
