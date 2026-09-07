@@ -202,6 +202,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     KeInitializeSpinLock(&m_NativeFenceLock);
     m_HardwareResetCallerRva = 0;
     m_HardwareResetFirstCallerRva = 0;
+    m_NativeContextFailFirstCallerRva = 0;
+    m_NativeContextFailCount = 0;
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
     m_NativeSubmissionFaultExecutionDiagnosticState = 0;
@@ -5516,6 +5518,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD hardwareResetState = ReadHardwareResetState();
     DWORD hardwareResetCallerRva = ReadHardwareResetCallerRva();
     DWORD hardwareResetFirstCallerRva = ReadHardwareResetFirstCallerRva();
+    DWORD nativeContextFailFirstCallerRva = ReadNativeContextFailFirstCallerRva();
+    DWORD nativeContextFailCount = ReadNativeContextFailCount();
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -5746,6 +5750,13 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"reResetFirstC"
                                                                                                          L"allerRva",
                                                                                                          &hardwareResetFirstCallerRva},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tFailFirstCal"
+                                                                                                         L"lerRva",
+                                                                                                         &nativeContextFailFirstCallerRva},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tFailCount",
+                                                                                                         &nativeContextFailCount},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",

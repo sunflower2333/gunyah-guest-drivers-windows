@@ -851,6 +851,8 @@ class VioGpuDod
 #if defined(VIOGPU_NATIVE_CONTEXT)
     volatile LONG m_HardwareResetCallerRva;
     volatile LONG m_HardwareResetFirstCallerRva;
+    volatile LONG m_NativeContextFailFirstCallerRva;
+    volatile LONG m_NativeContextFailCount;
     volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_ResetDeviceCallerRva;
     volatile LONG m_ResetDeviceCount;
@@ -1195,9 +1197,17 @@ class VioGpuDod
      * name the fault that closes the submission gate. */
     VOID RecordNativeContextFailProvenance(_In_ ULONG_PTR callerRva)
     {
+        InterlockedIncrement(&m_NativeContextFailCount);
         if (callerRva != 0 && callerRva <= MAXULONG)
         {
             InterlockedExchange(&m_NativeContextFailCallerRva, static_cast<LONG>(callerRva));
+            /* Last-writer only names whoever re-failed an already dead context.
+             * NativeHardwareResetFirstCallerRva resolves to
+             * FailNativeContextAtAnyIrql+0xB8, and NotifyNativeSubmissionFault
+             * requests the reset before it calls that function, so the origin
+             * is one of the direct call sites and only a first-writer field
+             * can name it. */
+            InterlockedCompareExchange(&m_NativeContextFailFirstCallerRva, static_cast<LONG>(callerRva), 0);
         }
     }
     /* Every ResetDevice() path reaches FailNativeContextAtAnyIrql through the
@@ -1239,6 +1249,14 @@ class VioGpuDod
     DWORD ReadNativeContextFailCallerRva(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailCallerRva, 0, 0));
+    }
+    DWORD ReadNativeContextFailFirstCallerRva(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailFirstCallerRva, 0, 0));
+    }
+    DWORD ReadNativeContextFailCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailCount, 0, 0));
     }
     /* Every path into the reset latch runs through NotifyNativeSubmissionFault,
      * which already records the return address of whichever of its callers ran
