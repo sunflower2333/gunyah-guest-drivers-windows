@@ -7597,7 +7597,6 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             fail(f"Escape must dispatch the frame publication endpoint exactly once: {fragment}")
     present_blit = canonical_code(function_body("PresentBlit", WDDM_DDI_CODE))
     for fragment in (
-        "escape->hDevice==NULL",
         "escape->hContext!=NULL",
         "escape->Flags.Value!=0",
         "escape->PrivateDriverDataSize<=sizeof(VIOGPU_WDDM_PRESENT_BLIT)",

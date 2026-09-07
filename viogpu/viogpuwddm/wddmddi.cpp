@@ -4447,8 +4447,11 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
 {
     PAGED_CODE();
 
-    if (adapter == NULL || escape == NULL || escape->hDevice == NULL || escape->hContext != NULL ||
-        escape->Flags.Value != 0 || escape->pPrivateDriverData == NULL ||
+    /* Frame publication is adapter scoped: it names no context and no device,
+     * so a user-mode driver may send it through pfnEscapeCb without holding a
+     * D3DKMT device of its own. */
+    if (adapter == NULL || escape == NULL || escape->hContext != NULL || escape->Flags.Value != 0 ||
+        escape->pPrivateDriverData == NULL ||
         escape->PrivateDriverDataSize <= sizeof(VIOGPU_WDDM_PRESENT_BLIT))
     {
         return STATUS_INVALID_PARAMETER;
