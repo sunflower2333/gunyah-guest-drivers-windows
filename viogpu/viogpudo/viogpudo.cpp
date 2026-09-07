@@ -824,6 +824,7 @@ DWORD VioGpuReadFenceTraceIndex(void);
 DWORD VioGpuReadFenceTraceLastEvent(void);
 DWORD VioGpuReadFenceTraceLastFenceId(void);
 DWORD VioGpuReadFenceTraceLastSubmitted(void);
+DWORD VioGpuCountFenceTraceEvent(_In_ UINT32 event);
 
 static VOID VioGpuTraceFence(_In_ UINT32 event, _In_ UINT32 fenceId, _In_ UINT32 completed)
 {
@@ -834,6 +835,27 @@ static VOID VioGpuTraceFence(_In_ UINT32 event, _In_ UINT32 fenceId, _In_ UINT32
     entry->Irql = static_cast<UINT32>(KeGetCurrentIrql());
     KeMemoryBarrier();
     entry->Event = event;
+}
+
+/* The ring keeps the last VioGpuFenceTraceCapacity events, but only its most
+ * recent entry was ever published, which is why a RetireMiss -- a completion for
+ * a fence the tracker never recorded -- stayed invisible.  That is the event
+ * NotifyNativeSubmissionCompletion turns into NotifyNativeSubmissionFault, which
+ * fails the native context and latches the hardware reset.  Count occurrences of
+ * one event across the retained window. */
+DWORD VioGpuCountFenceTraceEvent(_In_ UINT32 event)
+{
+    LONG index = InterlockedCompareExchange(&g_VioGpuFenceTrace.Index, 0, 0);
+    LONG retained = index < VioGpuFenceTraceCapacity ? index : VioGpuFenceTraceCapacity;
+    DWORD count = 0;
+    for (LONG slot = 0; slot < retained; ++slot)
+    {
+        if (g_VioGpuFenceTrace.Entries[slot & (VioGpuFenceTraceCapacity - 1)].Event == event)
+        {
+            ++count;
+        }
+    }
+    return count;
 }
 
 DWORD VioGpuReadFenceTraceIndex(void)
@@ -5490,6 +5512,9 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD hardwareResetState = ReadHardwareResetState();
     DWORD hardwareResetCallerRva = ReadHardwareResetCallerRva();
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
+    DWORD fenceRetireMissCount = VioGpuCountFenceTraceEvent(VioGpuFenceTraceRetireMiss);
+    DWORD fenceRenderRejectCount = VioGpuCountFenceTraceEvent(VioGpuFenceTraceRenderReject);
+    DWORD fencePagingDropCount = VioGpuCountFenceTraceEvent(VioGpuFenceTracePagingDrop);
     DWORD apertureFailureCount = ReadNativeApertureFailureCount();
     DWORD pagingResetCount = ReadNativePagingResetCount();
     struct VALUE_WRITE
@@ -5692,6 +5717,18 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"tFailCallerRv"
                                                                                                          L"a",
                                                                                                          &nativeContextFailCallerRva},
+                                                                                                        {L"NativeFenceR"
+                                                                                                         L"etireMissCoun"
+                                                                                                         L"t",
+                                                                                                         &fenceRetireMissCount},
+                                                                                                        {L"NativeFenceR"
+                                                                                                         L"enderRejectCo"
+                                                                                                         L"unt",
+                                                                                                         &fenceRenderRejectCount},
+                                                                                                        {L"NativeFenceP"
+                                                                                                         L"agingDropCoun"
+                                                                                                         L"t",
+                                                                                                         &fencePagingDropCount},
     };
     NTSTATUS writeStatus = STATUS_SUCCESS;
     for (UINT index = 0; index < ARRAYSIZE(writes); ++index)
