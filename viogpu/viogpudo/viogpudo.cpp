@@ -5678,6 +5678,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayPresentBlitHeight = ReadDisplayCounter(37);
     DWORD displayPublishCalls = ReadDisplayCounter(38);
     DWORD displayPublishStatus = ReadDisplayCounter(39);
+    DWORD displayTeardownDegraded = ReadDisplayCounter(40);
+    DWORD displayTeardownDestroyFail = ReadDisplayCounter(41);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -6027,6 +6029,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayPublishCalls},
                                                                                                         {L"NativeDisplayPublishStatus",
                                                                                                          &displayPublishStatus},
+                                                                                                        {L"NativeDisplayTeardownDegraded",
+                                                                                                         &displayTeardownDegraded},
+                                                                                                        {L"NativeDisplayTeardownDestroyFail",
+                                                                                                         &displayTeardownDestroyFail},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -9361,17 +9367,27 @@ VioGpuAdapter::DestroyNativeContextHostObjectsLocked(_Inout_ VIOGPU_NATIVE_CONTE
         return VioGpuHostContextUnknown;
     }
 
+    /* The Host renderer owns only 64 native contexts.  Teardown used to stop at
+     * the first stage the Host did not confirm, which left the context itself
+     * alive: a client that died while a control request went unanswered leaked
+     * a slice permanently, and after 64 of them every CtxCreate failed with
+     * "out of VA slices" -- which reaches the guest as VK_ERROR_DEVICE_LOST and
+     * takes the desktop down with it.  Every stage below is therefore best
+     * effort: record that it did not complete, keep the ownership flag set so
+     * nothing is double-freed, and go on to destroy the context. */
+    BOOLEAN degraded = FALSE;
+
     if (owner->SubmitQueueCreated)
     {
         VIOGPU_HOST_CONTEXT_RESULT result = CloseNativeSubmitQueueLocked(owner);
         if (result != VioGpuHostContextConfirmed)
         {
-            return VioGpuHostContextUnknown;
+            degraded = TRUE;
         }
     }
     else if (owner->SubmitQueueId != 0)
     {
-        return VioGpuHostContextUnknown;
+        degraded = TRUE;
     }
 
     if (owner->ControlMapped)
@@ -9379,13 +9395,16 @@ VioGpuAdapter::DestroyNativeContextHostObjectsLocked(_Inout_ VIOGPU_NATIVE_CONTE
         VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.UnmapNativeControlBlob(owner->ControlResourceId);
         if (result != VioGpuHostContextConfirmed && result != VioGpuHostContextRejected)
         {
-            return VioGpuHostContextUnknown;
+            degraded = TRUE;
         }
-        owner->ControlMapped = FALSE;
-        if (result == VioGpuHostContextRejected)
+        else
         {
-            owner->ControlResourceCreated = FALSE;
-            owner->ControlResourceId = 0;
+            owner->ControlMapped = FALSE;
+            if (result == VioGpuHostContextRejected)
+            {
+                owner->ControlResourceCreated = FALSE;
+                owner->ControlResourceId = 0;
+            }
         }
     }
 
@@ -9394,10 +9413,13 @@ VioGpuAdapter::DestroyNativeContextHostObjectsLocked(_Inout_ VIOGPU_NATIVE_CONTE
         NTSTATUS status = m_PciResources.UnmapHostVisibleAddress(owner->ControlAddress);
         if (!NT_SUCCESS(status))
         {
-            return VioGpuHostContextUnknown;
+            degraded = TRUE;
         }
-        owner->ControlBarOffset = 0;
-        owner->ControlAddress = NULL;
+        else
+        {
+            owner->ControlBarOffset = 0;
+            owner->ControlAddress = NULL;
+        }
     }
 
     if (owner->ControlResourceCreated)
@@ -9405,18 +9427,31 @@ VioGpuAdapter::DestroyNativeContextHostObjectsLocked(_Inout_ VIOGPU_NATIVE_CONTE
         VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.UnrefNativeResource(owner->ControlResourceId);
         if (result != VioGpuHostContextConfirmed && result != VioGpuHostContextRejected)
         {
-            return VioGpuHostContextUnknown;
+            degraded = TRUE;
         }
-        owner->ControlResourceCreated = FALSE;
-        owner->ControlResourceId = 0;
+        else
+        {
+            owner->ControlResourceCreated = FALSE;
+            owner->ControlResourceId = 0;
+        }
     }
 
+    /* The context is the scarce Host resource: release it whatever happened
+     * above.  Only a Host that will not answer this request keeps ownership. */
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.DestroyNativeContext(owner->ContextId);
     if (result != VioGpuHostContextConfirmed && result != VioGpuHostContextRejected)
     {
+        if (m_pVioGpuDod != NULL)
+        {
+            m_pVioGpuDod->CountDisplayEvent(41);
+        }
         return VioGpuHostContextUnknown;
     }
     owner->ContextId = 0;
+    if (degraded && m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->CountDisplayEvent(40);
+    }
     return VioGpuHostContextConfirmed;
 }
 

@@ -6577,10 +6577,24 @@ def check_native_context_ownership() -> None:
     )
     if min(cleanup_sequence) < 0 or list(cleanup_sequence) != sorted(cleanup_sequence):
         fail("normal native teardown must close submitqueue, unmap blob and BAR, unref, then destroy the Host context")
-    if cleanup.count("returnVioGpuHostContextUnknown;") != 7 or cleanup.count(
+    # The Host renderer owns only 64 native contexts. Teardown that stops at the
+    # first unconfirmed stage leaks the context itself, and 64 leaks take the GPU
+    # down for every client, so each stage is best effort and only an unanswered
+    # context destroy may retain ownership.
+    if cleanup.count("returnVioGpuHostContextUnknown;") != 2 or cleanup.count(
         "returnVioGpuHostContextConfirmed;"
     ) != 1:
-        fail("native teardown must retain ownership after every non-confirmed cleanup stage")
+        fail("native teardown must reach the Host context destroy from every cleanup stage")
+    destroy_call = cleanup.find("m_CtrlQueue.DestroyNativeContext(owner->ContextId)")
+    for stage in (
+        "CloseNativeSubmitQueueLocked(owner)",
+        "m_CtrlQueue.UnmapNativeControlBlob(owner->ControlResourceId)",
+        "m_PciResources.UnmapHostVisibleAddress(owner->ControlAddress)",
+        "m_CtrlQueue.UnrefNativeResource(owner->ControlResourceId)",
+    ):
+        offset = cleanup.find(stage)
+        if cleanup.find("returnVioGpuHostContextUnknown;", offset, destroy_call) >= 0:
+            fail(f"a cleanup stage must not abandon the Host context destroy: {stage}")
 
     partial_cleanup_stages = (
         (
