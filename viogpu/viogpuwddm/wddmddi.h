@@ -426,6 +426,7 @@ struct VIOGPU_WDDM_PRESENT_TRANSACTION
     ULONGLONG DestinationResetGeneration;
     UINT FenceId;
     BOOLEAN FullyPrepatched;
+    BOOLEAN CopyOnly;
 };
 
 struct VIOGPU_WDDM_SUBMISSION_REFERENCE

@@ -7,6 +7,9 @@ VOID ReleaseApertureMapping(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation);
 NTSTATUS AllocateApertureBackingEntries(_In_ const VIOGPU_WDDM_ALLOCATION *allocation,
                                         _Outptr_result_buffer_(*entryCount) GPU_MEM_ENTRY **entries,
                                         _Out_ PUINT entryCount);
+static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *present, BOOLEAN copyOnly);
+static_assert(DXGK_PRESENT_SOURCE_INDEX == 0 && DXGK_PRESENT_DESTINATION_INDEX == 1,
+              "allocation copy indices must match the blit builder");
 
 namespace
 {
@@ -222,7 +225,8 @@ BOOLEAN ValidatePresentDmaPacket(_In_ const VIOGPU_WDDM_KMD_DMA_PRIVATE *private
         privateData->Signature != VIOGPU_WDDM_DMA_SIGNATURE || privateData->Version != VioGpuWddmDmaPrivateVersion ||
         privateData->Kind != VioGpuWddmDmaKindPresent || privateData->DmaBuffer == NULL ||
         privateData->DmaBufferSize < sizeof(*packet) || privateData->CommandLength != sizeof(*packet) ||
-        privateData->Flags != 1U || privateData->Packet != privateData->DmaBuffer || privateData->Packet != packet ||
+        privateData->Flags != (transaction->CopyOnly ? 2U : 1U) ||
+        privateData->Packet != privateData->DmaBuffer || privateData->Packet != packet ||
         privateData->PacketLength != sizeof(*packet) || privateData->Reserved != 0 ||
         privateData->Submission != transaction || transaction->Signature != VIOGPU_WDDM_PRESENT_TRANSACTION_SIGNATURE ||
         transaction->ReferenceCount <= 0 || transaction->Context == NULL || transaction->Adapter == NULL ||
@@ -233,7 +237,7 @@ BOOLEAN ValidatePresentDmaPacket(_In_ const VIOGPU_WDDM_KMD_DMA_PRIVATE *private
         (state != VioGpuWddmPresentBuilt && state != VioGpuWddmPresentPatched && state != VioGpuWddmPresentQueued &&
          state != VioGpuWddmPresentExecuting) ||
         packet->Signature != VIOGPU_WDDM_PRESENT_DMA_SIGNATURE || packet->Version != VioGpuWddmDmaPrivateVersion ||
-        packet->Size != sizeof(*packet) || packet->Flags != 1U ||
+        packet->Size != sizeof(*packet) || packet->Flags != privateData->Flags ||
         packet->SourceResourceId != transaction->Source->ResourceId ||
         packet->DestinationResourceId != transaction->Destination->ResourceId ||
         packet->RectCount != transaction->RectCount || packet->Reserved != 0 ||
@@ -3212,7 +3216,8 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
             status = STATUS_DEVICE_NOT_READY;
             *failureStage = VioGpuWddmPresentExecuteDestinationObject;
         }
-        else if (NT_SUCCESS(status) && !IsStandardPrimaryAllocation(destination))
+        else if (NT_SUCCESS(status) &&
+                 !(transaction->CopyOnly ? IsGdiSourceAllocation(destination) : IsStandardPrimaryAllocation(destination)))
         {
             status = STATUS_DEVICE_NOT_READY;
             *failureStage = VioGpuWddmPresentExecuteDestinationPrimary;
@@ -3329,7 +3334,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
         status = STATUS_CANCELLED;
         *failureStage = VioGpuWddmPresentExecuteCancelled;
     }
-    if (NT_SUCCESS(status))
+    if (NT_SUCCESS(status) && !transaction->CopyOnly)
     {
         // Classic virglrenderer accepted partial transfers for this SG-backed primary but left its
         // scanout texture black. Publish the complete backing while retaining dirty CPU copies above.
@@ -7468,8 +7473,78 @@ _Use_decl_annotations_ VOID NativePagingBatchWorker(PVOID callbackContext)
     }
 }
 
+static NTSTATUS TryBuildAllocationCopy(CONST HANDLE hContext, DXGKARG_RENDER *render, BOOLEAN *handled)
+{
+    *handled = FALSE;
+    /* Standard-context copies use the same paging, references, cancellation,
+     * passive worker and real VidSch completion as display blits. Only the
+     * final scanout publication differs. Native MSM submits stay separate. */
+    if (render != NULL && render->pCommand != NULL && KeGetCurrentIrql() == PASSIVE_LEVEL &&
+        render->CommandLength == sizeof(VIOGPU_WDDM_ALLOCATION_COPY))
+    {
+        VIOGPU_WDDM_ALLOCATION_COPY copy = {};
+        __try
+        {
+            ProbeForRead(const_cast<PVOID>(render->pCommand), sizeof(copy), 1);
+            RtlCopyMemory(&copy, render->pCommand, sizeof(copy));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            *handled = TRUE;
+            return STATUS_INVALID_USER_BUFFER;
+        }
+        if (copy.Opcode == VIOGPU_WDDM_RENDER_ALLOCATION_COPY)
+        {
+            *handled = TRUE;
+            if (!IsCurrentAbiHeader(&copy.Header, sizeof(copy)) || copy.Flags != 0 ||
+                copy.Width == 0 || copy.Width > MAXLONG || copy.Height == 0 || copy.Height > MAXLONG ||
+                render->AllocationListSize != 2 || render->pAllocationList == NULL ||
+                render->PatchLocationListInSize != 0 || render->MultipassOffset != 0)
+            {
+                return STATUS_INVALID_PARAMETER;
+            }
+            for (UINT index = 0; index < ARRAYSIZE(copy.Reserved); ++index)
+            {
+                if (copy.Reserved[index] != 0)
+                {
+                    return STATUS_INVALID_PARAMETER;
+                }
+            }
+            DXGKARG_PRESENT blit = {};
+            blit.pDmaBuffer = render->pDmaBuffer;
+            blit.DmaSize = render->DmaSize;
+            blit.pDmaBufferPrivateData = render->pDmaBufferPrivateData;
+            blit.DmaBufferPrivateDataSize = render->DmaBufferPrivateDataSize;
+            blit.pAllocationList = render->pAllocationList;
+            blit.pPatchLocationListOut = render->pPatchLocationListOut;
+            blit.PatchLocationListOutSize = render->PatchLocationListOutSize;
+            blit.DmaBufferSegmentId = render->DmaBufferSegmentId;
+            blit.Flags.Blt = TRUE;
+            blit.SrcRect.right = static_cast<LONG>(copy.Width);
+            blit.SrcRect.bottom = static_cast<LONG>(copy.Height);
+            blit.DstRect = blit.SrcRect;
+            NTSTATUS status = BuildAllocationBlit(hContext, &blit, TRUE);
+            if (status == STATUS_SUCCESS)
+            {
+                render->pDmaBuffer = blit.pDmaBuffer;
+                render->pDmaBufferPrivateData = blit.pDmaBufferPrivateData;
+                render->DmaBufferPrivateDataSize = blit.DmaBufferPrivateDataSize;
+                render->pPatchLocationListOut = blit.pPatchLocationListOut;
+            }
+            return status;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext, DXGKARG_RENDER *render)
 {
+    BOOLEAN copyHandled = FALSE;
+    NTSTATUS copyStatus = TryBuildAllocationCopy(hContext, render, &copyHandled);
+    if (copyHandled)
+    {
+        return copyStatus;
+    }
     VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(hContext);
     if (context == NULL || render == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || render->pCommand == NULL ||
         render->CommandLength < sizeof(VIOGPU_WDDM_RENDER_COMMAND) ||
@@ -8059,7 +8134,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                             sourceOpen->Allocation == source && destinationOpen->Allocation == destination &&
                             source->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
                             destination->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE && source->Adapter == adapter &&
-                            destination->Adapter == adapter && IsStandardPrimaryAllocation(destination) &&
+                            destination->Adapter == adapter &&
+                            (transaction->CopyOnly ? IsGdiSourceAllocation(destination) : IsStandardPrimaryAllocation(destination)) &&
                             source->PlacementValid && source->ApertureAddress != NULL &&
                             EnsureStandard2DAllocationBacking(destination) &&
                             destination->Resource2DState == VioGpu2DResourceBackingAttached &&
@@ -8329,7 +8405,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
     return STATUS_SUCCESS;
 }
 
-_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext, DXGKARG_PRESENT *present)
+static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *present, BOOLEAN copyOnly)
 {
     VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(hContext);
 #if defined(VIOGPU_NATIVE_CONTEXT)
@@ -8401,6 +8477,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Device == NULL ||
         context->Device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || context->Device->Adapter == NULL ||
         (context->Type != VioGpuWddmContextNative && context->Type != VioGpuWddmContextGdi) ||
+        (copyOnly && context->Type != VioGpuWddmContextGdi) ||
         context->NodeOrdinal != 0 || context->EngineAffinity != 1)
     {
         status = STATUS_INVALID_HANDLE;
@@ -8417,7 +8494,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
             sourceOpen->Allocation == NULL || destinationOpen->Allocation == NULL || destinationOpen->ReadOnly ||
             sourceOpen->Allocation == destinationOpen->Allocation ||
             !IsOwnedAllocation(sourceOpen->Allocation, context->Device->Adapter) ||
-            !IsOwnedAllocation(destinationOpen->Allocation, context->Device->Adapter))
+            !IsOwnedAllocation(destinationOpen->Allocation, context->Device->Adapter) ||
+            (copyOnly && !IsGdiSourceAllocation(sourceOpen->Allocation)))
         {
             status = STATUS_INVALID_HANDLE;
         }
@@ -8561,7 +8639,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
             reason = VioGpuWddmPresentDiagnosticSourceObject;
         }
         else if (destination->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
-                 destination->Adapter != context->Device->Adapter || !IsStandardPrimaryAllocation(destination))
+                 destination->Adapter != context->Device->Adapter ||
+                 !(copyOnly ? IsGdiSourceAllocation(destination) : IsStandardPrimaryAllocation(destination)))
         {
             reason = VioGpuWddmPresentDiagnosticDestinationObject;
         }
@@ -8648,6 +8727,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
         transaction->DestinationSubRects = subRects;
         transaction->RectCount = rectCount;
         transaction->FullyPrepatched = sourcePrepatched && destinationPrepatched;
+        transaction->CopyOnly = copyOnly;
         if (sourcePrepatched)
         {
             transaction->SourcePlacementOffset = source->PlacementOffset;
@@ -8663,7 +8743,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
         packet->Signature = VIOGPU_WDDM_PRESENT_DMA_SIGNATURE;
         packet->Version = VioGpuWddmDmaPrivateVersion;
         packet->Size = sizeof(*packet);
-        packet->Flags = present->Flags.Value;
+        packet->Flags = copyOnly ? 2U : present->Flags.Value;
         packet->SourceResourceId = source->ResourceId;
         packet->DestinationResourceId = destination->ResourceId;
         packet->RectCount = rectCount;
@@ -8681,7 +8761,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
         privateData->ContextId = source->ContextId;
         privateData->Generation = source->ContextGeneration;
         privateData->ResetGeneration = source->ContextResetGeneration;
-        privateData->Flags = present->Flags.Value;
+        privateData->Flags = packet->Flags;
         privateData->Packet = packet;
         privateData->PacketLength = sizeof(*packet);
         privateData->Submission = transaction;
@@ -8792,6 +8872,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext
     delete[] subRects;
     ExReleaseRundownProtection(&context->Operations);
     return status;
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext, DXGKARG_PRESENT *present)
+{
+    return BuildAllocationBlit(hContext, present, FALSE);
 }
 
 VOID RetireUnsubmittedDmaOwner(_In_ VioGpuDod *adapter, _In_ const DXGKARG_SUBMITCOMMAND *submitCommand)
@@ -9079,7 +9164,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
              * belongs to this CPU-copy Present path. */
             const UINT presentSubmitFlags = 0x6U;
             BOOLEAN presentFlagsValid = submitCommand->Flags.Value == 0U ||
-                                        (submitCommand->Flags.Present != 0 &&
+                                        (!transaction->CopyOnly && submitCommand->Flags.Present != 0 &&
                                          (submitCommand->Flags.Value & ~presentSubmitFlags) == 0);
             submitFailureDetail |= !presentFlagsValid ? 1U << 1 : 0;
             submitFailureDetail |= privateLength != sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) ? 1U << 2 : 0;

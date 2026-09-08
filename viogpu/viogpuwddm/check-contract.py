@@ -2487,7 +2487,7 @@ def check_native_present_diagnostics() -> None:
        VIOGPU_HEADER_SOURCE.count("__declspec(noinline) void NotifyNativeSubmissionFault(") != 1:
         fail("submission-fault provenance capture must remain nonpaged and preserve its caller frame")
 
-    present = canonical_code(function_body("VioGpuWddmPresent", WDDM_DDI_CODE))
+    present = canonical_code(function_body("BuildAllocationBlit", WDDM_DDI_CODE))
     if "STATUS_NOT_SUPPORTED" in present:
         fail(
             "Present must not return STATUS_NOT_SUPPORTED: dxgkrnl rejects it as an "
@@ -4936,6 +4936,54 @@ def check_wddm_standard_primary_scanout() -> None:
         fail("the synchronous PASSIVE_LEVEL scanout path must not advertise MMIO flip capability")
 
 
+def check_shared_allocation_copy_contract() -> None:
+    wrapper = canonical_code(function_body("VioGpuWddmPresent", WDDM_DDI_CODE))
+    if wrapper != "returnBuildAllocationBlit(hContext,present,FALSE);":
+        fail("display DDI must always select scanout publication")
+    copy = canonical_code(function_body("TryBuildAllocationCopy", WDDM_DDI_CODE))
+    for fragment in (
+        "ProbeForRead(const_cast<PVOID>(render->pCommand),sizeof(copy),1);",
+        "RtlCopyMemory(&copy,render->pCommand,sizeof(copy));",
+        "!IsCurrentAbiHeader(&copy.Header,sizeof(copy))",
+        "copy.Flags!=0", "copy.Width==0||copy.Width>MAXLONG",
+        "copy.Height==0||copy.Height>MAXLONG", "copy.Reserved[index]!=0",
+        "render->AllocationListSize!=2", "render->PatchLocationListInSize!=0",
+        "render->MultipassOffset!=0", "BuildAllocationBlit(hContext,&blit,TRUE)",
+        "if(status==STATUS_SUCCESS)",
+    ):
+        if fragment not in copy:
+            fail(f"scheduled allocation copy must validate its untrusted command: {fragment}")
+    build = canonical_code(function_body("BuildAllocationBlit", WDDM_DDI_CODE))
+    for fragment in (
+        "copyOnly&&context->Type!=VioGpuWddmContextGdi",
+        "copyOnly&&!IsGdiSourceAllocation(sourceOpen->Allocation)",
+        "copyOnly?IsGdiSourceAllocation(destination):IsStandardPrimaryAllocation(destination)",
+        "destinationOpen->ReadOnly", "transaction->CopyOnly=copyOnly;",
+        "packet->Flags=copyOnly?2:present->Flags.Value;", "privateData->Flags=packet->Flags;",
+    ):
+        if fragment not in build:
+            fail(f"copy builder must preserve allocation access and display separation: {fragment}")
+    execute = canonical_code(function_body("ExecutePresentTransaction", WDDM_DDI_CODE))
+    require_order(execute, (
+        "AcquirePresentAllocationLifecycles(", "source->ApertureAddress==NULL",
+        "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
+        "KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);",
+        "if(NT_SUCCESS(status)&&!transaction->CopyOnly)",
+        "transaction->Adapter->Present2DResource(",
+    ), "shared copies must execute against pinned backing and never publish scanout")
+    validate = canonical_code(function_body_with_parameters(
+        "ValidatePresentDmaPacket",
+        "_In_ const VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData, "
+        "_In_ const VIOGPU_WDDM_PRESENT_DMA_PACKET *packet, "
+        "_In_ const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction",
+        WDDM_DDI_CODE,
+    ))
+    for fragment in ("privateData->Flags!=(transaction->CopyOnly?2:1)",
+                     "packet->Flags!=privateData->Flags"):
+        if fragment not in validate:
+            fail("DMA packet mode must match the KMD-owned transaction")
+
+
 def check_wddm_present_contract() -> None:
     header = canonical_code(WDDM_DDI_HEADER_CODE)
     present_display = canonical_code(function_body("VioGpuAdapter::ExecutePresentDisplayOnly", VIOGPU_CODE))
@@ -5396,7 +5444,7 @@ def check_wddm_present_contract() -> None:
     ):
         fail("the display DPC must convert a DIRQL drain request into a passive worker")
 
-    present_body = function_body("VioGpuWddmPresent", WDDM_DDI_CODE)
+    present_body = function_body("BuildAllocationBlit", WDDM_DDI_CODE)
     present = canonical_code(present_body)
     present_lifecycle = canonical_code(function_body("AcquirePresentAllocationLifecycles", WDDM_DDI_CODE))
     require_order(
@@ -5611,11 +5659,11 @@ def check_wddm_present_contract() -> None:
         if len(re.findall(rf"1<<{bit}(?![0-9])", present_submit)) != 1:
             fail(f"Present Submit contract failure mask must retain bit {bit}")
     if "constUINTpresentSubmitFlags=0x6;" not in present_submit or \
-       "BOOLEANpresentFlagsValid=submitCommand->Flags.Value==0||(submitCommand->Flags.Present!=0&&" not in present_submit or \
+       "BOOLEANpresentFlagsValid=submitCommand->Flags.Value==0||(!transaction->CopyOnly&&submitCommand->Flags.Present!=0&&" not in present_submit or \
        "(submitCommand->Flags.Value&~presentSubmitFlags)==0)" not in present_submit or \
        "if(submitFailureDetail!=0){submitFailureDetail|=(submitCommand->Flags.Value&0xFFFF)<<16;" not in present_submit or \
        "submitFailureDetail|=!presentFlagsValid?1<<1:0" not in present_submit:
-        fail("Present Submit must accept legacy zero, Present, or Present|RedirectedPresent flags only")
+        fail("Present Submit must retain display flags and require zero flags for allocation copies")
 
     worker = canonical_code(function_body("NativePresentWorker", WDDM_DDI_CODE))
     executing_claim = worker.find(
@@ -7399,6 +7447,14 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT32 CommandStreamSize;
             VIOGPU_WDDM_UINT32 Reserved[4];
         """,
+        "VIOGPU_WDDM_ALLOCATION_COPY": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            VIOGPU_WDDM_UINT32 Opcode;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT32 Width;
+            VIOGPU_WDDM_UINT32 Height;
+            VIOGPU_WDDM_UINT32 Reserved[8];
+        """,
         "VIOGPU_WDDM_PRESENT_BLIT": """
             VIOGPU_WDDM_ABI_HEADER Header;
             VIOGPU_WDDM_UINT32 Opcode;
@@ -9129,7 +9185,7 @@ def check_allocation_lifecycle_wait_status_contract() -> None:
         if software.count(fragment) == 0:
             fail(f"BuildSoftwarePagingTransaction must keep mutex ownership exact: {fragment}")
 
-    for function_name in ("ExecutePresentTransaction", "VioGpuWddmPresent"):
+    for function_name in ("ExecutePresentTransaction", "BuildAllocationBlit"):
         body = canonical_code(function_body(function_name, WDDM_DDI_CODE))
         call = body.find("AcquirePresentAllocationLifecycles(")
         if call < 0 or body.find("status!=STATUS_SUCCESS", call) < 0:
@@ -12427,6 +12483,7 @@ def main() -> None:
     check_wddm_2d_resource_ownership()
     check_wddm_standard_paging()
     check_wddm_standard_primary_scanout()
+    check_shared_allocation_copy_contract()
     check_wddm_present_contract()
     check_native_context_ownership()
     check_native_context_destroy_diagnostics()
