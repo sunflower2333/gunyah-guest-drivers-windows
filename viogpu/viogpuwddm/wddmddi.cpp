@@ -8,8 +8,8 @@ NTSTATUS AllocateApertureBackingEntries(_In_ const VIOGPU_WDDM_ALLOCATION *alloc
                                         _Outptr_result_buffer_(*entryCount) GPU_MEM_ENTRY **entries,
                                         _Out_ PUINT entryCount);
 static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *present, BOOLEAN copyOnly);
-static_assert(DXGK_PRESENT_SOURCE_INDEX == 0 && DXGK_PRESENT_DESTINATION_INDEX == 1,
-              "allocation copy indices must match the blit builder");
+static_assert(DXGK_PRESENT_SOURCE_INDEX == 1 && DXGK_PRESENT_DESTINATION_INDEX == 2,
+              "Present allocation list must retain its reserved first entry");
 
 namespace
 {
@@ -7510,12 +7510,18 @@ static NTSTATUS TryBuildAllocationCopy(CONST HANDLE hContext, DXGKARG_RENDER *re
                     return STATUS_INVALID_PARAMETER;
                 }
             }
+            /* Present reserves allocation slot zero; Render's compact list
+             * does not. The builder consumes this local Present-shaped list,
+             * but retains Render's original indices in its transaction/patches. */
+            DXGK_ALLOCATIONLIST allocations[3] = {};
+            allocations[DXGK_PRESENT_SOURCE_INDEX] = render->pAllocationList[0];
+            allocations[DXGK_PRESENT_DESTINATION_INDEX] = render->pAllocationList[1];
             DXGKARG_PRESENT blit = {};
             blit.pDmaBuffer = render->pDmaBuffer;
             blit.DmaSize = render->DmaSize;
             blit.pDmaBufferPrivateData = render->pDmaBufferPrivateData;
             blit.DmaBufferPrivateDataSize = render->DmaBufferPrivateDataSize;
-            blit.pAllocationList = render->pAllocationList;
+            blit.pAllocationList = allocations;
             blit.pPatchLocationListOut = render->pPatchLocationListOut;
             blit.PatchLocationListOutSize = render->PatchLocationListOutSize;
             blit.DmaBufferSegmentId = render->DmaBufferSegmentId;
@@ -8720,8 +8726,8 @@ static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *pres
         transaction->DmaBufferSize = present->DmaSize;
         transaction->PrivateData = privateData;
         transaction->PrivateDataSize = sizeof(*privateData);
-        transaction->SourceAllocationIndex = DXGK_PRESENT_SOURCE_INDEX;
-        transaction->DestinationAllocationIndex = DXGK_PRESENT_DESTINATION_INDEX;
+        transaction->SourceAllocationIndex = copyOnly ? 0U : DXGK_PRESENT_SOURCE_INDEX;
+        transaction->DestinationAllocationIndex = copyOnly ? 1U : DXGK_PRESENT_DESTINATION_INDEX;
         transaction->SourceRect = present->SrcRect;
         transaction->DestinationRect = present->DstRect;
         transaction->DestinationSubRects = subRects;
@@ -8776,9 +8782,9 @@ static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *pres
         D3DDDI_PATCHLOCATIONLIST *destinationPatch = &present->pPatchLocationListOut[1];
         RtlZeroMemory(sourcePatch, sizeof(*sourcePatch));
         RtlZeroMemory(destinationPatch, sizeof(*destinationPatch));
-        sourcePatch->AllocationIndex = DXGK_PRESENT_SOURCE_INDEX;
+        sourcePatch->AllocationIndex = transaction->SourceAllocationIndex;
         sourcePatch->PatchOffset = FIELD_OFFSET(VIOGPU_WDDM_PRESENT_DMA_PACKET, SourcePlacementOffset);
-        destinationPatch->AllocationIndex = DXGK_PRESENT_DESTINATION_INDEX;
+        destinationPatch->AllocationIndex = transaction->DestinationAllocationIndex;
         destinationPatch->PatchOffset = FIELD_OFFSET(VIOGPU_WDDM_PRESENT_DMA_PACKET, DestinationPlacementOffset);
 
         buildReference = ReferencePresentTransaction(transaction);

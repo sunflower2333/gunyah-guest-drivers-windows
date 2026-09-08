@@ -4949,6 +4949,9 @@ def check_shared_allocation_copy_contract() -> None:
         "copy.Height==0||copy.Height>MAXLONG", "copy.Reserved[index]!=0",
         "render->AllocationListSize!=2", "render->PatchLocationListInSize!=0",
         "render->MultipassOffset!=0", "BuildAllocationBlit(hContext,&blit,TRUE)",
+        "allocations[DXGK_PRESENT_SOURCE_INDEX]=render->pAllocationList[0];",
+        "allocations[DXGK_PRESENT_DESTINATION_INDEX]=render->pAllocationList[1];",
+        "blit.pAllocationList=allocations;",
         "if(status==STATUS_SUCCESS)",
     ):
         if fragment not in copy:
@@ -4960,6 +4963,10 @@ def check_shared_allocation_copy_contract() -> None:
         "copyOnly?IsGdiSourceAllocation(destination):IsStandardPrimaryAllocation(destination)",
         "destinationOpen->ReadOnly", "transaction->CopyOnly=copyOnly;",
         "packet->Flags=copyOnly?2:present->Flags.Value;", "privateData->Flags=packet->Flags;",
+        "transaction->SourceAllocationIndex=copyOnly?0:DXGK_PRESENT_SOURCE_INDEX;",
+        "transaction->DestinationAllocationIndex=copyOnly?1:DXGK_PRESENT_DESTINATION_INDEX;",
+        "sourcePatch->AllocationIndex=transaction->SourceAllocationIndex;",
+        "destinationPatch->AllocationIndex=transaction->DestinationAllocationIndex;",
     ):
         if fragment not in build:
             fail(f"copy builder must preserve allocation access and display separation: {fragment}")
