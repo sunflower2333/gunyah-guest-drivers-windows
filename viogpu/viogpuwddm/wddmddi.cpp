@@ -9902,17 +9902,20 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
     }
     else
     {
-        /* The compositor owns the scanout whenever it is alive. This used to
-         * stay latched to the user-mode driver's published surface after the
-         * first frame, which was right only while dwm.exe could not run at all
-         * -- it left the desktop frozen on whichever frame an application
-         * published last. A flip means the compositor is presenting, so bind
-         * what it asks for. */
-        VIOGPU_HOST_CONTEXT_RESULT result = adapter->Set2DScanout(0,
-                                                                  allocation->ResourceId,
-                                                                  allocation->Width,
-                                                                  allocation->Height,
-                                                                  &previousResourceId);
+        /* Arbitrate between the compositor's flips and published frames. DWM
+         * renders on the host, so the primary it flips to is empty; binding it
+         * over a frame just published made the desktop appear and immediately
+         * go black. Yield the scanout to the flip only when nothing was
+         * published since the previous flip, which also releases it as soon as
+         * publication stops rather than latching forever. */
+        const BOOLEAN publicationWins = adapter->PublicationSupersedesFlip();
+        VIOGPU_HOST_CONTEXT_RESULT result = publicationWins
+                                                ? VioGpuHostContextConfirmed
+                                                : adapter->Set2DScanout(0,
+                                                                        allocation->ResourceId,
+                                                                        allocation->Width,
+                                                                        allocation->Height,
+                                                                        &previousResourceId);
         if (result == VioGpuHostContextConfirmed)
         {
             /* The vsync report carries the primary dxgkrnl programmed here. */
@@ -9925,11 +9928,13 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
              * bind was the only thing the host ever saw -- HostPresentCount
              * stuck at 1 against a scanout that stayed black.  Publish the
              * newly bound primary. */
-            VIOGPU_HOST_CONTEXT_RESULT flush = adapter->Flush2DResource(allocation->ResourceId,
-                                                                        allocation->Width,
-                                                                        allocation->Height,
-                                                                        &allocation->Resource2DState,
-                                                                        &allocation->Resource2DResetGeneration);
+            VIOGPU_HOST_CONTEXT_RESULT flush =
+                publicationWins ? VioGpuHostContextConfirmed
+                                : adapter->Flush2DResource(allocation->ResourceId,
+                                                           allocation->Width,
+                                                           allocation->Height,
+                                                           &allocation->Resource2DState,
+                                                           &allocation->Resource2DResetGeneration);
 #if defined(VIOGPU_NATIVE_CONTEXT)
             adapter->CountDisplayEvent(18);
             adapter->RecordDisplayValue(19, static_cast<LONG>(flush));

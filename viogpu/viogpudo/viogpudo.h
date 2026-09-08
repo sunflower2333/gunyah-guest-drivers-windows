@@ -896,6 +896,8 @@ class VioGpuDod
      * which DDI Windows stops at.  One array rather than a dozen members. */
     volatile LONG m_DisplayCounters[48];
     volatile LONG m_UmdPresentActive;
+    volatile LONG m_PublishSequence;
+    volatile LONG m_PublishSequenceAtFlip;
     volatile LONG m_NativeContextFailCallerRva;
     volatile LONG m_ResetDeviceCallerRva;
     volatile LONG m_ResetDeviceCount;
@@ -1184,6 +1186,19 @@ class VioGpuDod
     VOID SetUmdPresentActive(void)
     {
         InterlockedExchange(&m_UmdPresentActive, 1);
+        InterlockedIncrement(&m_PublishSequence);
+    }
+
+    /* A flip must not blank a frame the user-mode driver has just published.
+     * DWM renders on the host, so the primary it flips to is empty: binding it
+     * over a published frame is what made the desktop appear and immediately go
+     * black. Let the flip through only when nothing was published since the
+     * previous one, so the compositor regains the scanout as soon as
+     * publication stops. */
+    BOOLEAN PublicationSupersedesFlip(void)
+    {
+        LONG sequence = InterlockedCompareExchange(&m_PublishSequence, 0, 0);
+        return InterlockedExchange(&m_PublishSequenceAtFlip, sequence) != sequence;
     }
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,

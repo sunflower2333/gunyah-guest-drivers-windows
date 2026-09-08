@@ -215,6 +215,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_ScanoutWaitGaveUpCount = 0;
     m_ScanoutWaitHolderRva = 0;
     m_UmdPresentActive = 0;
+    m_PublishSequence = 0;
+    m_PublishSequenceAtFlip = 0;
     RtlZeroMemory((void *)m_DisplayCounters, sizeof(m_DisplayCounters));
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
