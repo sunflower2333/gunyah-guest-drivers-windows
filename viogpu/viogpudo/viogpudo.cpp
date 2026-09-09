@@ -8480,29 +8480,19 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
                       copyBytes);
     }
 
-    /* Re-assert the scanout: a flip may have pointed the host at DWM's blank
-     * standard primary before the first frame arrived.  Only when the binding
-     * actually changed, though.  SET_SCANOUT makes the host drop its imported
-     * surface and build a new one, so re-issuing it per frame paid for a full
-     * scanout teardown on every present. */
+    /* Re-assert the scanout on every published frame.  Caching the binding and
+     * skipping the re-bind saved a command the host answers in well under the
+     * millisecond this whole routine costs, and it made the display depend on
+     * a cached id being right: when it was not, the frames still published and
+     * still reported success while the scanout stayed on whatever was bound
+     * before them, so the screen kept the firmware's image. Correctness here is
+     * worth far more than the command. */
     const UINT resourceId = m_pFrameBuf->GetId();
     const UINT scanoutWidth = m_FrameBufWidth;
     const UINT scanoutHeight = m_FrameBufHeight;
-    if (m_PublishedScanoutResourceId != resourceId)
-    {
-        if (!m_CtrlQueue.SetScanout(0, resourceId, scanoutWidth, scanoutHeight, 0, 0))
-        {
-            return STATUS_DEVICE_NOT_READY;
-        }
-        m_PublishedScanoutResourceId = resourceId;
-        m_pVioGpuDod->CountDisplayEvent(47);
-    }
-
-    /* Publish the rectangle the frame actually wrote.  The host reads the rows
-     * at the resource's own stride, so a window smaller than the desktop moves
-     * its own pixels instead of the whole surface. */
-    if (!m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0) ||
-        !m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0))
+    if (!m_CtrlQueue.SetScanout(0, resourceId, scanoutWidth, scanoutHeight, 0, 0) ||
+        !m_CtrlQueue.TransferToHost2D(resourceId, 0, scanoutWidth, scanoutHeight, 0, 0) ||
+        !m_CtrlQueue.ResFlush(resourceId, scanoutWidth, scanoutHeight, 0, 0))
     {
         return STATUS_DEVICE_NOT_READY;
     }
@@ -8555,7 +8545,6 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
         return VioGpuHostContextNotSubmitted;
     }
 
-    m_PublishedScanoutResourceId = 0;
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(scanoutId, resourceId, width, height, 0, 0);
     if (result == VioGpuHostContextConfirmed)
     {
@@ -8608,7 +8597,6 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Detach2DScanoutResource(_In_ UINT reso
         return VioGpuHostContextNotSubmitted;
     }
 
-    m_PublishedScanoutResourceId = 0;
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(0, 0, 0, 0, 0, 0);
     if (result == VioGpuHostContextConfirmed)
     {
@@ -12382,8 +12370,7 @@ void VioGpuAdapter::DestroyFrameBufferObj(BOOLEAN bReset, BOOLEAN bKeepBuffer)
             if (bReset == TRUE)
             {
                 m_CtrlQueue.SetScanout(0, 0, 0, 0, 0, 0);
-                m_PublishedScanoutResourceId = 0;
-            }
+                        }
         }
 
         if (bKeepBuffer)
@@ -12956,7 +12943,6 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
              ("---> %s - (%d -> %d)\n", __FUNCTION__, pCurrentMode->DispInfo.ColorFormat, format));
     m_FrameBufWidth = 0;
     m_FrameBufHeight = 0;
-    m_PublishedScanoutResourceId = 0;
     resid = m_Idr.GetId();
     if (!m_CtrlQueue.CreateResource(resid, format, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight))
     {
@@ -12982,7 +12968,6 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
         delete obj;
         return FALSE;
     }
-    m_PublishedScanoutResourceId = 0;
     if (!m_CtrlQueue.SetScanout(0, resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||
         !m_CtrlQueue.TransferToHost2D(resid, 0, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||
         !m_CtrlQueue.ResFlush(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0))
