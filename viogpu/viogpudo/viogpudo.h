@@ -916,7 +916,7 @@ class VioGpuDod
     /* Windows persists no VidPn path for this adapter even with the display
      * DDIs registered and the child reporting connected, so the question is
      * which DDI Windows stops at.  One array rather than a dozen members. */
-    volatile LONG m_DisplayCounters[52];
+    volatile LONG m_DisplayCounters[64];
     volatile LONG m_UmdPresentActive;
     volatile LONG m_PublishSequence;
     volatile LONG m_PublishSequenceAtFlip;
@@ -1460,6 +1460,23 @@ class VioGpuDod
         if (index < ARRAYSIZE(m_DisplayCounters))
         {
             InterlockedExchange(&m_DisplayCounters[index], value);
+        }
+    }
+    VOID RecordDisplayMaximum(_In_ ULONG index, _In_ LONG value)
+    {
+        if (index >= ARRAYSIZE(m_DisplayCounters))
+        {
+            return;
+        }
+        LONG observed = InterlockedCompareExchange(&m_DisplayCounters[index], 0, 0);
+        while (value > observed)
+        {
+            LONG previous = InterlockedCompareExchange(&m_DisplayCounters[index], value, observed);
+            if (previous == observed)
+            {
+                break;
+            }
+            observed = previous;
         }
     }
     DWORD ReadDisplayCounter(_In_ ULONG index)

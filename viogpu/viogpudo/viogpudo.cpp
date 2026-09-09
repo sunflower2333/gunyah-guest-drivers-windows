@@ -5702,6 +5702,18 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayPresentGeometryRejects = ReadDisplayCounter(49);
     DWORD displayExpectedScanoutWidth = ReadDisplayCounter(50);
     DWORD displayExpectedScanoutHeight = ReadDisplayCounter(51);
+    DWORD displayPresent2DStage = ReadDisplayCounter(52);
+    DWORD displayPresent2DTransferStarts = ReadDisplayCounter(53);
+    DWORD displayPresent2DTransferCompletions = ReadDisplayCounter(54);
+    DWORD displayPresent2DTransferLastUsec = ReadDisplayCounter(55);
+    DWORD displayPresent2DTransferMaxUsec = ReadDisplayCounter(56);
+    DWORD displayPresent2DTransferResult = ReadDisplayCounter(57);
+    DWORD displayPresent2DFlushStarts = ReadDisplayCounter(58);
+    DWORD displayPresent2DFlushCompletions = ReadDisplayCounter(59);
+    DWORD displayPresent2DFlushLastUsec = ReadDisplayCounter(60);
+    DWORD displayPresent2DFlushMaxUsec = ReadDisplayCounter(61);
+    DWORD displayPresent2DFlushResult = ReadDisplayCounter(62);
+    DWORD displayPresent2DResourceId = ReadDisplayCounter(63);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -6075,6 +6087,30 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayExpectedScanoutWidth},
                                                                                                         {L"NativeDisplayExpectedScanoutHeight",
                                                                                                          &displayExpectedScanoutHeight},
+                                                                                                        {L"NativeDisplayPresent2DStage",
+                                                                                                         &displayPresent2DStage},
+                                                                                                        {L"NativeDisplayPresent2DTransferStarts",
+                                                                                                         &displayPresent2DTransferStarts},
+                                                                                                        {L"NativeDisplayPresent2DTransferCompletions",
+                                                                                                         &displayPresent2DTransferCompletions},
+                                                                                                        {L"NativeDisplayPresent2DTransferLastUsec",
+                                                                                                         &displayPresent2DTransferLastUsec},
+                                                                                                        {L"NativeDisplayPresent2DTransferMaxUsec",
+                                                                                                         &displayPresent2DTransferMaxUsec},
+                                                                                                        {L"NativeDisplayPresent2DTransferResult",
+                                                                                                         &displayPresent2DTransferResult},
+                                                                                                        {L"NativeDisplayPresent2DFlushStarts",
+                                                                                                         &displayPresent2DFlushStarts},
+                                                                                                        {L"NativeDisplayPresent2DFlushCompletions",
+                                                                                                         &displayPresent2DFlushCompletions},
+                                                                                                        {L"NativeDisplayPresent2DFlushLastUsec",
+                                                                                                         &displayPresent2DFlushLastUsec},
+                                                                                                        {L"NativeDisplayPresent2DFlushMaxUsec",
+                                                                                                         &displayPresent2DFlushMaxUsec},
+                                                                                                        {L"NativeDisplayPresent2DFlushResult",
+                                                                                                         &displayPresent2DFlushResult},
+                                                                                                        {L"NativeDisplayPresent2DResourceId",
+                                                                                                         &displayPresent2DResourceId},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -8970,16 +9006,47 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Present2DResource(_In_ UINT resourceId
         return VioGpuHostContextNotSubmitted;
     }
 
+    LARGE_INTEGER frequency = {0};
+    m_pVioGpuDod->RecordDisplayValue(63, static_cast<LONG>(resourceId));
+    m_pVioGpuDod->RecordDisplayValue(52, 1);
+    m_pVioGpuDod->CountDisplayEvent(53);
+    const LONGLONG transferStart = KeQueryPerformanceCounter(&frequency).QuadPart;
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.TransferToHost2DSynchronous(resourceId,
                                                                                 offset,
                                                                                 width,
                                                                                 height,
                                                                                 x,
                                                                                 y);
+    const LONGLONG transferEnd = KeQueryPerformanceCounter(NULL).QuadPart;
+    LONG transferUsec = 0;
+    if (frequency.QuadPart > 0 && transferEnd > transferStart)
+    {
+        const LONGLONG usec = ((transferEnd - transferStart) * 1000000LL) / frequency.QuadPart;
+        transferUsec = static_cast<LONG>(usec > MAXLONG ? MAXLONG : usec);
+    }
+    m_pVioGpuDod->RecordDisplayValue(55, transferUsec);
+    m_pVioGpuDod->RecordDisplayMaximum(56, transferUsec);
+    m_pVioGpuDod->RecordDisplayValue(57, static_cast<LONG>(result));
+    m_pVioGpuDod->CountDisplayEvent(54);
     if (result == VioGpuHostContextConfirmed)
     {
+        m_pVioGpuDod->RecordDisplayValue(52, 2);
+        m_pVioGpuDod->CountDisplayEvent(58);
+        const LONGLONG flushStart = KeQueryPerformanceCounter(&frequency).QuadPart;
         result = m_CtrlQueue.FlushResourceSynchronous(resourceId, width, height, x, y);
+        const LONGLONG flushEnd = KeQueryPerformanceCounter(NULL).QuadPart;
+        LONG flushUsec = 0;
+        if (frequency.QuadPart > 0 && flushEnd > flushStart)
+        {
+            const LONGLONG usec = ((flushEnd - flushStart) * 1000000LL) / frequency.QuadPart;
+            flushUsec = static_cast<LONG>(usec > MAXLONG ? MAXLONG : usec);
+        }
+        m_pVioGpuDod->RecordDisplayValue(60, flushUsec);
+        m_pVioGpuDod->RecordDisplayMaximum(61, flushUsec);
+        m_pVioGpuDod->RecordDisplayValue(62, static_cast<LONG>(result));
+        m_pVioGpuDod->CountDisplayEvent(59);
     }
+    m_pVioGpuDod->RecordDisplayValue(52, 0);
     if (result == VioGpuHostContextUnknown)
     {
         /* An unanswered 2D round trip has already poisoned the synchronous

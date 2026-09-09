@@ -7772,7 +7772,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if geometry_reject < 0 or geometry_count < geometry_reject or \
        geometry_success < geometry_count or first_copy < geometry_success:
         fail("mismatched present geometry must succeed without copying or publishing")
-    if "volatileLONGm_DisplayCounters[52];" not in canonical_code(VIOGPU_HEADER_CODE):
+    if "volatileLONGm_DisplayCounters[64];" not in canonical_code(VIOGPU_HEADER_CODE):
         fail("display diagnostics must keep independent slots for geometry and timing")
     for fragment in (
         "adapter->RecordDisplayValue(46,static_cast<LONG>(request.ReadbackUsec>MAXLONG?MAXLONG:request.ReadbackUsec));",
@@ -7782,9 +7782,42 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         'L"NativeDisplayPresentGeometryRejects"',
         'L"NativeDisplayExpectedScanoutWidth"',
         'L"NativeDisplayExpectedScanoutHeight"',
+        'L"NativeDisplayPresent2DStage"',
+        'L"NativeDisplayPresent2DTransferStarts"',
+        'L"NativeDisplayPresent2DTransferCompletions"',
+        'L"NativeDisplayPresent2DTransferLastUsec"',
+        'L"NativeDisplayPresent2DTransferMaxUsec"',
+        'L"NativeDisplayPresent2DTransferResult"',
+        'L"NativeDisplayPresent2DFlushStarts"',
+        'L"NativeDisplayPresent2DFlushCompletions"',
+        'L"NativeDisplayPresent2DFlushLastUsec"',
+        'L"NativeDisplayPresent2DFlushMaxUsec"',
+        'L"NativeDisplayPresent2DFlushResult"',
+        'L"NativeDisplayPresent2DResourceId"',
     ):
         if fragment not in canonical_code(WDDM_DDI_CODE + VIOGPU_SOURCE):
             fail(f"display diagnostics must keep distinct counter ownership: {fragment}")
+    present_2d = canonical_code(function_body("VioGpuAdapter::Present2DResource", VIOGPU_SOURCE))
+    for fragment in (
+        "m_pVioGpuDod->RecordDisplayValue(52,1);",
+        "m_pVioGpuDod->CountDisplayEvent(53);",
+        "m_CtrlQueue.TransferToHost2DSynchronous(",
+        "m_pVioGpuDod->RecordDisplayValue(55,transferUsec);",
+        "m_pVioGpuDod->RecordDisplayMaximum(56,transferUsec);",
+        "m_pVioGpuDod->RecordDisplayValue(57,static_cast<LONG>(result));",
+        "m_pVioGpuDod->CountDisplayEvent(54);",
+        "m_pVioGpuDod->RecordDisplayValue(52,2);",
+        "m_pVioGpuDod->CountDisplayEvent(58);",
+        "m_CtrlQueue.FlushResourceSynchronous(",
+        "m_pVioGpuDod->RecordDisplayValue(60,flushUsec);",
+        "m_pVioGpuDod->RecordDisplayMaximum(61,flushUsec);",
+        "m_pVioGpuDod->RecordDisplayValue(62,static_cast<LONG>(result));",
+        "m_pVioGpuDod->CountDisplayEvent(59);",
+        "m_pVioGpuDod->RecordDisplayValue(52,0);",
+        "m_pVioGpuDod->RecordDisplayValue(63,static_cast<LONG>(resourceId));",
+    ):
+        if present_2d.count(fragment) != 1:
+            fail(f"Present2D timing must retain exactly one stage marker: {fragment}")
     # The cached binding skips a scanout rebuild per frame, but only stays safe
     # while it starts at zero and every other path that re-points scanout 0
     # drops it: an uninitialised value that matched the framebuffer once made
