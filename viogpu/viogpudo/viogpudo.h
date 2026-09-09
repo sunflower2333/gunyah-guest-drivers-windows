@@ -845,6 +845,13 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuObj *m_pFrameBuf;
     UINT m_FrameBufWidth;
     UINT m_FrameBufHeight;
+    /* Resource bound to scanout 0 by the publication path.  SET_SCANOUT makes
+     * the host drop its imported surface and build a new one, so re-issuing it
+     * per frame costs a scanout rebuild per frame.  Must be initialised in the
+     * constructor: an uninitialised value that happens to match the framebuffer
+     * makes the first publication skip its bind, and the frames then publish
+     * onto whatever was bound before them while reporting success. */
+    UINT m_PublishedScanoutResourceId;
     VioGpuObj *m_pCursorBuf;
     VioGpuMemSegment m_CursorSegment;
     VioGpuMemSegment m_FrameSegment;

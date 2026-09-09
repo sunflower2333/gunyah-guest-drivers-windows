@@ -7697,17 +7697,23 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     publish = canonical_code(function_body("VioGpuAdapter::PublishPresentBlit", VIOGPU_SOURCE))
     for fragment in (
         "width>m_FrameBufWidth||height>m_FrameBufHeight",
+        "m_PublishedScanoutResourceId!=resourceId",
         "m_CtrlQueue.SetScanout(0,resourceId,scanoutWidth,scanoutHeight,0,0)",
+        "m_PublishedScanoutResourceId=resourceId;",
         "m_CtrlQueue.TransferToHost2D(resourceId,0,scanoutWidth,scanoutHeight,0,0)",
         "m_CtrlQueue.ResFlush(resourceId,scanoutWidth,scanoutHeight,0,0)",
     ):
         if publish.count(fragment) != 1:
             fail(f"frame publication must target the scanned-out surface: {fragment}")
-    # A published frame re-asserts the binding unconditionally.  Tracking it
-    # instead let a stale id skip the bind, and the frames then published and
-    # reported success onto a scanout that was still showing something else.
-    if canonical_code(VIOGPU_SOURCE).count("m_PublishedScanoutResourceId"):
-        fail("frame publication must not cache the scanout binding")
+    # The cached binding skips a scanout rebuild per frame, but only stays safe
+    # while it starts at zero and every other path that re-points scanout 0
+    # drops it: an uninitialised value that matched the framebuffer once made
+    # the first publication skip its bind and paint onto the firmware's image.
+    if canonical_code(function_body("VioGpuAdapter::VioGpuAdapter", VIOGPU_SOURCE)).count(
+            "m_PublishedScanoutResourceId=0;") != 1:
+        fail("the cached scanout binding must be initialised in the constructor")
+    if VIOGPU_SOURCE.count("m_PublishedScanoutResourceId = 0;") != 5:
+        fail("every scanout re-bind outside the publication path must drop the cached binding")
     set_source_address = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
     # The compositor owns the scanout whenever it flips; latching it to the
     # user-mode driver's published surface froze the desktop on the last frame

@@ -7615,6 +7615,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_ModeCount = 0;
     m_Id = g_InstanceId++;
     m_pFrameBuf = NULL;
+    m_PublishedScanoutResourceId = 0;
     m_pCursorBuf = NULL;
     m_PendingWorks = 0;
     m_bStopWorkThread = FALSE;
@@ -8511,8 +8512,15 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
     const UINT resourceId = m_pFrameBuf->GetId();
     const UINT scanoutWidth = m_FrameBufWidth;
     const UINT scanoutHeight = m_FrameBufHeight;
-    if (!m_CtrlQueue.SetScanout(0, resourceId, scanoutWidth, scanoutHeight, 0, 0) ||
-        !m_CtrlQueue.TransferToHost2D(resourceId, 0, scanoutWidth, scanoutHeight, 0, 0) ||
+    if (m_PublishedScanoutResourceId != resourceId)
+    {
+        if (!m_CtrlQueue.SetScanout(0, resourceId, scanoutWidth, scanoutHeight, 0, 0))
+        {
+            return STATUS_DEVICE_NOT_READY;
+        }
+        m_PublishedScanoutResourceId = resourceId;
+    }
+    if (!m_CtrlQueue.TransferToHost2D(resourceId, 0, scanoutWidth, scanoutHeight, 0, 0) ||
         !m_CtrlQueue.ResFlush(resourceId, scanoutWidth, scanoutHeight, 0, 0))
     {
         return STATUS_DEVICE_NOT_READY;
@@ -8566,6 +8574,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
         return VioGpuHostContextNotSubmitted;
     }
 
+    m_PublishedScanoutResourceId = 0;
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(scanoutId, resourceId, width, height, 0, 0);
     if (result == VioGpuHostContextConfirmed)
     {
@@ -8618,6 +8627,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Detach2DScanoutResource(_In_ UINT reso
         return VioGpuHostContextNotSubmitted;
     }
 
+    m_PublishedScanoutResourceId = 0;
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(0, 0, 0, 0, 0, 0);
     if (result == VioGpuHostContextConfirmed)
     {
@@ -12391,6 +12401,7 @@ void VioGpuAdapter::DestroyFrameBufferObj(BOOLEAN bReset, BOOLEAN bKeepBuffer)
             if (bReset == TRUE)
             {
                 m_CtrlQueue.SetScanout(0, 0, 0, 0, 0, 0);
+                m_PublishedScanoutResourceId = 0;
                         }
         }
 
@@ -12962,6 +12973,7 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
     format = ColorFormat(pCurrentMode->DispInfo.ColorFormat);
     DbgPrint(TRACE_LEVEL_INFORMATION,
              ("---> %s - (%d -> %d)\n", __FUNCTION__, pCurrentMode->DispInfo.ColorFormat, format));
+    m_PublishedScanoutResourceId = 0;
     m_FrameBufWidth = 0;
     m_FrameBufHeight = 0;
     resid = m_Idr.GetId();
