@@ -8127,7 +8127,9 @@ __declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::AcquireNativeSubmitOperatio
     return acquired;
 }
 
-void VioGpuAdapter::ReleaseNativeSubmitOperation(void) const
+/* SubmitCommand releases this rundown at DISPATCH_LEVEL. Keep the helper
+ * resident just like acquisition, despite the surrounding PAGE segment. */
+__declspec(code_seg(".text")) void VioGpuAdapter::ReleaseNativeSubmitOperation(void) const
 {
     ExReleaseRundownProtection(&m_NativeSubmitRundown);
 }

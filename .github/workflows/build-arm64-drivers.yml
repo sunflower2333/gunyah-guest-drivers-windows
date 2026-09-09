@@ -491,6 +491,9 @@ jobs:
           }
 
           $requiredTextSymbols = @(
+            @{ Name = 'VioGpuDod::AcquireNativeSubmissionOperation'; Pattern = '?AcquireNativeSubmissionOperation@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::ReleaseNativeSubmissionOperation'; Pattern = '?ReleaseNativeSubmissionOperation@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuAdapter::ReleaseNativeSubmitOperation'; Pattern = '?ReleaseNativeSubmitOperation@VioGpuAdapter@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::QueryNativeContextReadiness'; Pattern = '?QueryNativeContextReadiness@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuAdapter::QueryNativeContextReadiness'; Pattern = '?QueryNativeContextReadiness@VioGpuAdapter@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuBuf::AllocateMemory'; Pattern = '?AllocateMemory@VioGpuBuf@@'; Object = '*viogpu_queue.obj' },
