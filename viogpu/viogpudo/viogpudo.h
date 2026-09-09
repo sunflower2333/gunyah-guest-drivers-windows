@@ -598,6 +598,11 @@ class VioGpuAdapter : IVioGpuPCI
      * the surface this adapter already scans out.  The guest pages behind the
      * UMD's back buffer are never written, so the frame has to arrive as
      * pixels rather than as a resource reference. */
+    /* Called from the vsync path: the compositor programs its primary once and
+     * then draws into that memory, so the binding has to be republished on the
+     * display's cadence for anything to reach the host. */
+    VOID RequestScanoutRefresh(void);
+    VOID RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
     NTSTATUS PublishPresentBlit(_In_ UINT width,
                                 _In_ UINT height,
                                 _In_ UINT sourcePitch,
@@ -786,8 +791,6 @@ class VioGpuAdapter : IVioGpuPCI
     void static ThreadWork(_In_ PVOID Context);
     void ThreadWorkRoutine(void);
     void RefreshActiveScanout(void);
-    VOID RequestScanoutRefresh(void);
-    VOID RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
     void ConfigChanged(void);
     NTSTATUS VirtIoDeviceInit(void);
     VOID CreateResolutionEvent(VOID);
