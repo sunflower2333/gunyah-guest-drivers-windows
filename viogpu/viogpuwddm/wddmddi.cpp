@@ -2767,7 +2767,12 @@ BOOLEAN ValidatePresentGeometry(_In_ const VIOGPU_WDDM_ALLOCATION *source,
 {
     if (source == NULL || destination == NULL || sourceRect == NULL || destinationRect == NULL ||
         destinationSubRects == NULL || rectCount == 0 || rectCount > VIOGPU_WDDM_PRESENT_RECTS_PER_PASS ||
-        source->Format != destination->Format || !IsSupportedSurfaceFormat(source->Format) ||
+        // Window redirection also copies A8R8G8B8 into X8R8G8B8. The RGB bytes
+        // have the same layout and destination alpha is ignored. The reverse
+        // conversion needs opaque alpha insertion and is not a raw copy.
+        (source->Format != destination->Format &&
+         !(source->Format == D3DDDIFMT_A8R8G8B8 && destination->Format == D3DDDIFMT_X8R8G8B8)) ||
+        !IsSupportedSurfaceFormat(source->Format) ||
         static_cast<ULONGLONG>(source->Pitch) < static_cast<ULONGLONG>(source->Width) * 4 ||
         static_cast<ULONGLONG>(destination->Pitch) < static_cast<ULONGLONG>(destination->Width) * 4 ||
         static_cast<ULONGLONG>(source->Pitch) * source->Height > source->BackingSize ||
@@ -3258,8 +3263,8 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
             status = STATUS_DEVICE_NOT_READY;
             *failureStage = VioGpuWddmPresentExecuteDestinationObject;
         }
-        else if (NT_SUCCESS(status) && !(IsStandardPrimaryAllocation(destination) ||
-                                         IsGdiSourceAllocation(destination)))
+        else if (NT_SUCCESS(status) &&
+                 !(IsStandardPrimaryAllocation(destination) || IsGdiSourceAllocation(destination)))
         {
             status = STATUS_DEVICE_NOT_READY;
             *failureStage = VioGpuWddmPresentExecuteDestinationPrimary;
