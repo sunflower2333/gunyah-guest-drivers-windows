@@ -9902,14 +9902,29 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
     }
     else
     {
-        /* Arbitrate between the compositor's flips and published frames. DWM
-         * renders on the host, so the primary it flips to is empty; binding it
-         * over a frame just published made the desktop appear and immediately
-         * go black. Yield the scanout to the flip only when nothing was
-         * published since the previous flip, which also releases it as soon as
-         * publication stops rather than latching forever. */
-        const BOOLEAN publicationWins = adapter->PublicationSupersedesFlip();
-        VIOGPU_HOST_CONTEXT_RESULT result = publicationWins
+        /* Decide from the primary's own content, not from timing. The
+         * compositor renders on the host, so the primary it flips to can be
+         * entirely empty; binding that over a published frame blanks the
+         * desktop the moment the compositor idles, while suppressing flips
+         * outright freezes it. Sample first and only bind a primary that
+         * actually holds something. */
+        LONG primaryNonZero = -1;
+        if (allocation->ApertureAddress != NULL && allocation->BackingSize >= 0x1000)
+        {
+            const BYTE *sample = static_cast<const BYTE *>(allocation->ApertureAddress);
+            SIZE_T sampleSpan = allocation->BackingSize < 0x100000 ? allocation->BackingSize : 0x100000;
+            LONG seen = 0;
+            for (SIZE_T offset = 0; offset < sampleSpan; offset += 4096)
+            {
+                if (sample[offset] != 0 || sample[offset + 1] != 0 || sample[offset + 2] != 0)
+                {
+                    ++seen;
+                }
+            }
+            primaryNonZero = seen;
+        }
+        const BOOLEAN keepPublishedFrame = primaryNonZero == 0 && adapter->HasPublishedFrame();
+        VIOGPU_HOST_CONTEXT_RESULT result = keepPublishedFrame
                                                 ? VioGpuHostContextConfirmed
                                                 : adapter->Set2DScanout(0,
                                                                         allocation->ResourceId,
@@ -9929,12 +9944,12 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
              * stuck at 1 against a scanout that stayed black.  Publish the
              * newly bound primary. */
             VIOGPU_HOST_CONTEXT_RESULT flush =
-                publicationWins ? VioGpuHostContextConfirmed
-                                : adapter->Flush2DResource(allocation->ResourceId,
-                                                           allocation->Width,
-                                                           allocation->Height,
-                                                           &allocation->Resource2DState,
-                                                           &allocation->Resource2DResetGeneration);
+                keepPublishedFrame ? VioGpuHostContextConfirmed
+                                   : adapter->Flush2DResource(allocation->ResourceId,
+                                                              allocation->Width,
+                                                              allocation->Height,
+                                                              &allocation->Resource2DState,
+                                                              &allocation->Resource2DResetGeneration);
 #if defined(VIOGPU_NATIVE_CONTEXT)
             adapter->CountDisplayEvent(18);
             adapter->RecordDisplayValue(19, static_cast<LONG>(flush));
@@ -9944,16 +9959,7 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
             if (allocation->ApertureAddress != NULL && allocation->BackingSize >= 0x1000)
             {
                 const BYTE *pixels = static_cast<const BYTE *>(allocation->ApertureAddress);
-                SIZE_T span = allocation->BackingSize < 0x100000 ? allocation->BackingSize : 0x100000;
-                LONG nonZero = 0;
-                for (SIZE_T offset = 0; offset < span; offset += 4096)
-                {
-                    if (pixels[offset] != 0 || pixels[offset + 1] != 0 || pixels[offset + 2] != 0)
-                    {
-                        ++nonZero;
-                    }
-                }
-                adapter->RecordDisplayValue(20, nonZero);
+                adapter->RecordDisplayValue(20, primaryNonZero);
                 adapter->RecordDisplayValue(21, static_cast<LONG>(pixels[0]) |
                                                     (static_cast<LONG>(pixels[1]) << 8) |
                                                     (static_cast<LONG>(pixels[2]) << 16));

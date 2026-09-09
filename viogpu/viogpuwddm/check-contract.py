@@ -7707,9 +7707,9 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     # The compositor owns the scanout whenever it flips; latching it to the
     # user-mode driver's published surface froze the desktop on the last frame
     # an application published.
-    if set_source_address.count("adapter->PublicationSupersedesFlip();") != 1 or \
-       set_source_address.count("publicationWins") != 3:
-        fail("a flip must yield to a frame published since the previous flip")
+    if set_source_address.count("adapter->HasPublishedFrame();") != 1 or \
+       set_source_address.count("keepPublishedFrame") != 3:
+        fail("a flip must not replace a published frame with an empty primary")
     completed_fence_query = canonical_code(function_body("QueryCompletedFenceInfo", WDDM_DDI_CODE))
     for fragment in (
         "escape->hDevice==NULL",

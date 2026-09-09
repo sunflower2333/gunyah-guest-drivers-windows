@@ -1189,16 +1189,12 @@ class VioGpuDod
         InterlockedIncrement(&m_PublishSequence);
     }
 
-    /* A flip must not blank a frame the user-mode driver has just published.
-     * DWM renders on the host, so the primary it flips to is empty: binding it
-     * over a published frame is what made the desktop appear and immediately go
-     * black. Let the flip through only when nothing was published since the
-     * previous one, so the compositor regains the scanout as soon as
-     * publication stops. */
-    BOOLEAN PublicationSupersedesFlip(void)
+    /* Has the user-mode driver ever published a frame? The compositor renders
+     * on the host, so its primary can be empty while the published surface
+     * holds the real desktop. */
+    BOOLEAN HasPublishedFrame(void)
     {
-        LONG sequence = InterlockedCompareExchange(&m_PublishSequence, 0, 0);
-        return InterlockedExchange(&m_PublishSequenceAtFlip, sequence) != sequence;
+        return InterlockedCompareExchange(&m_UmdPresentActive, 0, 0) != 0;
     }
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,
