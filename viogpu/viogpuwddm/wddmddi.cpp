@@ -3216,9 +3216,8 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
             status = STATUS_DEVICE_NOT_READY;
             *failureStage = VioGpuWddmPresentExecuteDestinationObject;
         }
-        else if (NT_SUCCESS(status) &&
-                 !(IsStandardPrimaryAllocation(destination) ||
-                   (transaction->CopyOnly && IsGdiSourceAllocation(destination))))
+        else if (NT_SUCCESS(status) && !(IsStandardPrimaryAllocation(destination) ||
+                                         (transaction->CopyOnly && IsGdiSourceAllocation(destination))))
         {
             status = STATUS_DEVICE_NOT_READY;
             *failureStage = VioGpuWddmPresentExecuteDestinationPrimary;
@@ -8735,8 +8734,7 @@ static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *pres
         }
         else if (destination->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
                  destination->Adapter != context->Device->Adapter ||
-                 !(IsStandardPrimaryAllocation(destination) ||
-                   (copyOnly && IsGdiSourceAllocation(destination))))
+                 !(IsStandardPrimaryAllocation(destination) || (copyOnly && IsGdiSourceAllocation(destination))))
         {
             reason = VioGpuWddmPresentDiagnosticDestinationObject;
         }
