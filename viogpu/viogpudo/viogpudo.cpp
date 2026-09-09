@@ -5687,7 +5687,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayStandardAllocStatus = ReadDisplayCounter(44);
     DWORD displayBlitKernelUsec = ReadDisplayCounter(45);
     DWORD displayBlitReadbackUsec = ReadDisplayCounter(46);
-    DWORD displayScanoutRebinds = ReadDisplayCounter(47);
+    DWORD displayBlitPayloadNonBlack = ReadDisplayCounter(47);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -6051,8 +6051,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayBlitKernelUsec},
                                                                                                         {L"NativeDisplayBlitReadbackUsec",
                                                                                                          &displayBlitReadbackUsec},
-                                                                                                        {L"NativeDisplayScanoutRebinds",
-                                                                                                         &displayScanoutRebinds},
+                                                                                                        {L"NativeDisplayBlitPayloadNonBlack",
+                                                                                                         &displayBlitPayloadNonBlack},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -8469,6 +8469,27 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
     }
 
     m_pVioGpuDod->CountDisplayEvent(38);
+
+    /* Sample what actually arrived.  A frame can publish, transfer and flush
+     * cleanly and still leave the screen black, because the pixels the caller
+     * read back were never written.  Counting the non-black samples separates
+     * "the frame did not reach the scanout" from "the frame was empty". */
+    {
+        const SIZE_T sampleSpan = static_cast<SIZE_T>(payloadSize);
+        SIZE_T sampleOffset = 0;
+        UINT sampled = 0;
+        UINT nonBlack = 0;
+        while (sampleOffset + 4 <= sampleSpan && sampled < 4096)
+        {
+            if (payload[sampleOffset] || payload[sampleOffset + 1] || payload[sampleOffset + 2])
+            {
+                ++nonBlack;
+            }
+            ++sampled;
+            sampleOffset += 4096;
+        }
+        m_pVioGpuDod->RecordDisplayValue(47, static_cast<LONG>(nonBlack));
+    }
 
     LARGE_INTEGER frequency = {0};
     const LONGLONG startTicks = KeQueryPerformanceCounter(&frequency).QuadPart;
