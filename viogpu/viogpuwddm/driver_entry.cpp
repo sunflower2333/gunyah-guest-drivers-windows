@@ -17,6 +17,17 @@ BOOLEAN VioGpuWddmIsRenderOnlyRegistration()
 static_assert(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WIN8,
               "viogpuwddm requires Win8 declarations for its internal Native Context callbacks");
 
+/* PROBE, not for merge. Windows 11 will not composite on a WDDM 1.2 adapter,
+ * so dwm.exe draws on WARP and nothing it composes reaches this scanout. Moving
+ * to WDDM 2.0 is the only route, and the first thing that needs establishing is
+ * what the toolchain actually offers: which interface version the WDK selects
+ * by default here, and what the 2.0 constant is. Ask the compiler rather than
+ * guessing the numbers -- an undefined template instantiated on the value puts
+ * both in the diagnostic. */
+template <int Version> struct VioGpuDdiVersionProbe;
+static VioGpuDdiVersionProbe<DXGKDDI_INTERFACE_VERSION> vioGpuSelectedDdiVersion;
+static VioGpuDdiVersionProbe<DXGKDDI_INTERFACE_VERSION_WDDM2_0> vioGpuWddm20DdiVersion;
+
 /* Registration and DriverCaps must describe the same selected runtime mode. */
 static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
 {
