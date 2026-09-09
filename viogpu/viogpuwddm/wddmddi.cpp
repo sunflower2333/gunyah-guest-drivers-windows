@@ -9928,14 +9928,22 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
             }
             primaryNonZero = seen;
         }
-        const BOOLEAN keepPublishedFrame = primaryNonZero == 0 && adapter->HasPublishedFrame();
-        VIOGPU_HOST_CONTEXT_RESULT result = keepPublishedFrame
-                                                ? VioGpuHostContextConfirmed
-                                                : adapter->Set2DScanout(0,
-                                                                        allocation->ResourceId,
-                                                                        allocation->Width,
-                                                                        allocation->Height,
-                                                                        &previousResourceId);
+        /* Bind the compositor's primary even when it samples empty right now.
+         * Declining was right while the compositor drew on the GPU and never
+         * wrote these guest pages -- binding an empty primary blanked a desktop
+         * that a client had published. It composites on WARP here, because
+         * Windows will not composite on a WDDM 1.2 adapter, so it writes this
+         * memory on the processor every frame and a sample taken before its
+         * first draw says nothing about the frames that follow. Keeping the
+         * last published frame instead left the desktop frozen on it: eight
+         * captures of a moving desktop came back as one distinct image while
+         * the scanout was being refreshed sixty-two times a second. */
+        const BOOLEAN keepPublishedFrame = FALSE;
+        VIOGPU_HOST_CONTEXT_RESULT result = adapter->Set2DScanout(0,
+                                                                  allocation->ResourceId,
+                                                                  allocation->Width,
+                                                                  allocation->Height,
+                                                                  &previousResourceId);
         if (result == VioGpuHostContextConfirmed)
         {
             /* The vsync report carries the primary dxgkrnl programmed here. */

@@ -7734,9 +7734,14 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     # The compositor owns the scanout whenever it flips; latching it to the
     # user-mode driver's published surface froze the desktop on the last frame
     # an application published.
-    if set_source_address.count("adapter->HasPublishedFrame();") != 1 or \
-       set_source_address.count("keepPublishedFrame") != 3:
-        fail("a flip must not replace a published frame with an empty primary")
+    # The compositor's primary is always bound now. Declining it was right while
+    # the compositor drew on the GPU and never wrote those guest pages; it
+    # composites on WARP here and writes them on the processor every frame, so
+    # keeping a published frame instead froze the desktop on it.
+    if set_source_address.count("adapter->Set2DScanout(0,allocation->ResourceId,") != 1:
+        fail("a flip must bind the compositor's primary")
+    if canonical_code(WDDM_DDI_CODE).count("primaryNonZero==0&&adapter->HasPublishedFrame()"):
+        fail("a flip must not decline the primary on an empty sample")
     completed_fence_query = canonical_code(function_body("QueryCompletedFenceInfo", WDDM_DDI_CODE))
     for fragment in (
         "escape->hDevice==NULL",
