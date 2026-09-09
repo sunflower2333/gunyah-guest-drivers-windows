@@ -12829,7 +12829,8 @@ void VioGpuAdapter::RefreshActiveScanout(void)
     const UINT resourceId = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutResourceId, 0, 0));
     const UINT width = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutWidth, 0, 0));
     const UINT height = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutHeight, 0, 0));
-    if (resourceId == 0 || width == 0 || height == 0 || !IsDriverActive())
+    if (resourceId == 0 || width == 0 || height == 0 || m_pVioGpuDod == NULL ||
+        !m_pVioGpuDod->IsDriverActive())
     {
         return;
     }
