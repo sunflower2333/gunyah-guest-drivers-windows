@@ -942,11 +942,13 @@ def check_arm64_workflow_contract() -> None:
             "$requiredTextSymbols = @(",
             "'?QueryNativeContextReadiness@VioGpuDod@@'",
             "'?QueryNativeContextReadiness@VioGpuAdapter@@'",
+            "'?AllocateMemory@VioGpuBuf@@'",
+            "'?FreeMemory@VioGpuBuf@@'",
             "$textSectionIds -notcontains $sectionId",
-            "$tokens[-1] -notlike '*viogpudo.obj'",
+            "$tokens[-1] -notlike $symbol.Object",
         ):
             if source.count(fragment) != 1:
-                fail(f"{label} workflow must prove readiness routines are linked into default .text: {fragment}")
+                fail(f"{label} workflow must prove DISPATCH routines are linked into default .text: {fragment}")
     if not PRESENT_DIAGNOSTIC_TEST_PATH.is_file():
         fail("Native Present diagnostic decoder fixture is missing")
     if sources["Native Context full-miniport"].count(

@@ -265,8 +265,10 @@ jobs:
           }
 
           $requiredTextSymbols = @(
-            @{ Name = 'VioGpuDod::QueryNativeContextReadiness'; Pattern = '?QueryNativeContextReadiness@VioGpuDod@@' },
-            @{ Name = 'VioGpuAdapter::QueryNativeContextReadiness'; Pattern = '?QueryNativeContextReadiness@VioGpuAdapter@@' }
+            @{ Name = 'VioGpuDod::QueryNativeContextReadiness'; Pattern = '?QueryNativeContextReadiness@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuAdapter::QueryNativeContextReadiness'; Pattern = '?QueryNativeContextReadiness@VioGpuAdapter@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuBuf::AllocateMemory'; Pattern = '?AllocateMemory@VioGpuBuf@@'; Object = '*viogpu_queue.obj' },
+            @{ Name = 'VioGpuBuf::FreeMemory'; Pattern = '?FreeMemory@VioGpuBuf@@'; Object = '*viogpu_queue.obj' }
           )
           foreach ($symbol in $requiredTextSymbols) {
             $symbolLines = @($mapLines | Where-Object { $_.Contains($symbol.Pattern) })
@@ -279,10 +281,10 @@ jobs:
               throw "cannot parse linker-map section for $($symbol.Name): $($symbolLines[0])"
             }
             $sectionId = $Matches.Section.ToUpperInvariant()
-            if ($textSectionIds -notcontains $sectionId -or $tokens[-1] -notlike '*viogpudo.obj') {
-              throw "$($symbol.Name) must resolve from viogpudo.obj into default .text, got: $($symbolLines[0])"
+            if ($textSectionIds -notcontains $sectionId -or $tokens[-1] -notlike $symbol.Object) {
+              throw "$($symbol.Name) must resolve from $($symbol.Object) into default .text, got: $($symbolLines[0])"
             }
-            Write-Host "nonpaged readiness: $($symbolLines[0])"
+            Write-Host "nonpaged routine: $($symbolLines[0])"
           }
 
           $initializeLines

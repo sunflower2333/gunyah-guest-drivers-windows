@@ -2730,6 +2730,11 @@ VioGpuBuf::~VioGpuBuf()
     DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s\n", __FUNCTION__));
 }
 
+PAGED_CODE_SEG_END
+
+// GetBuf allocates while holding m_SpinLock, and the completion DPC calls
+// FreeBuf. Both pool helpers must remain resident even when their allocation
+// is nonpaged: a PAGE function can fault before reaching ExFreePoolWithTag.
 PVOID VioGpuBuf::AllocateMemory(SIZE_T size, SIZE_T alignment)
 {
     UNREFERENCED_PARAMETER(alignment);
@@ -2750,6 +2755,7 @@ void VioGpuBuf::FreeMemory(PVOID address)
     ExFreePoolWithTag(address, VIOGPUTAG);
 }
 
+PAGED_CODE_SEG_BEGIN
 VioGpuMemSegment::VioGpuMemSegment(void)
 {
     PAGED_CODE();
