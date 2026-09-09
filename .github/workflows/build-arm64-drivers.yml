@@ -265,13 +265,19 @@ jobs:
           # The driver package names the user-mode driver viogpud3d.dll, so the
           # file goes in under that name and is catalogued as the real thing.
           Copy-Item $library.FullName (Join-Path 'mesa-umd' 'viogpud3d.dll') -Force
+          $symbols = Get-ChildItem -Path $library.DirectoryName -File -Filter 'viogpud3d_zink*.pdb' |
+            Select-Object -First 1
+          if ($null -eq $symbols) { throw 'the Mesa UMD has no matching PDB to stage' }
+          python .install_scripts/verify-pe-pdb.py $library.FullName $symbols.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'Mesa UMD/PDB identity mismatch' }
+          Copy-Item $symbols.FullName (Join-Path 'mesa-umd' 'viogpud3d.pdb') -Force
           Get-FileHash (Join-Path 'mesa-umd' 'viogpud3d.dll') -Algorithm SHA256 | Format-List
 
       - name: Upload the Mesa user-mode driver
         uses: actions/upload-artifact@v4
         with:
           name: mesa-viogpud3d-arm64
-          path: mesa-umd/viogpud3d.dll
+          path: mesa-umd/
           if-no-files-found: error
 
   build:
@@ -579,7 +585,7 @@ jobs:
             @{ n='pvmpower';  root='pvmpower';  bins=@('pvmpower.sys'); inf='pvmpower.inf' }
           )
           $nativeDebugRoot = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'
-          $nativeDebugFiles = @('viogpuwddm.pdb', 'viogpuwddm.map', 'viogpud3d.pdb')
+          $nativeDebugFiles = @('viogpuwddm.pdb', 'viogpuwddm.map')
           # 在 root 下找最佳檔案：優先路徑含 ARM64、最新修改
           function Pick($root,$file) {
             Get-ChildItem $root -Recurse -Filter $file -File -EA SilentlyContinue |
@@ -686,6 +692,12 @@ jobs:
                 }
                 Copy-Item -LiteralPath $debugSource -Destination $dest -Force
               }
+              # The installed UMD is Mesa, so its symbols must come from that
+              # same link rather than the separately built D3D shim.
+              $mesaPdb = Join-Path $env:GITHUB_WORKSPACE 'mesa-umd/viogpud3d.pdb'
+              Copy-Item -LiteralPath $mesaPdb -Destination $dest -Force
+              python .install_scripts/verify-pe-pdb.py (Join-Path $dest 'viogpud3d.dll') (Join-Path $dest 'viogpud3d.pdb')
+              if ($LASTEXITCODE -ne 0) { throw 'Packaged Mesa UMD/PDB identity mismatch' }
             }
             $has = (Get-ChildItem "$dest" | ForEach-Object Name) -join ' '
             Write-Host "packed $($d.n): $has"

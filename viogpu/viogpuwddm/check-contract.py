@@ -977,10 +977,13 @@ def check_arm64_workflow_contract() -> None:
                 fail(f"{label} workflow must not emit the retired display-only package {display_only_name}")
     product_debug_fragments = (
         "$nativeDebugRoot = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'",
-        "$nativeDebugFiles = @('viogpuwddm.pdb', 'viogpuwddm.map', 'viogpud3d.pdb')",
+        "$nativeDebugFiles = @('viogpuwddm.pdb', 'viogpuwddm.map')",
         "$debugSource = Join-Path $nativeDebugRoot $debugFile",
         'throw "Native Context product debug file is missing or empty: $debugSource"',
         "Copy-Item -LiteralPath $debugSource -Destination $dest -Force",
+        "$mesaPdb = Join-Path $env:GITHUB_WORKSPACE 'mesa-umd/viogpud3d.pdb'",
+        "Copy-Item -LiteralPath $mesaPdb -Destination $dest -Force",
+        "throw 'Packaged Mesa UMD/PDB identity mismatch'",
     )
     for fragment in product_debug_fragments:
         if sources["product drivers"].count(fragment) != 1:
