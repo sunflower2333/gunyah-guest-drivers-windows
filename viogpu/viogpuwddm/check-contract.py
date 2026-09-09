@@ -7558,6 +7558,14 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     ):
         if manifest_entries.count(fence_info_assertion) != 1:
             fail(f"WDDM private ABI fixture must lock the fence-info contract: {fence_info_assertion}")
+    for present_blit_assertion in (
+        "ABI_VALUE(escape.opcode.present_blit, VIOGPU_WDDM_ESCAPE_PRESENT_BLIT, 3);",
+        "ABI_SIZE(size.present_blit, VIOGPU_WDDM_PRESENT_BLIT, 48);",
+        "ABI_OFFSET(offset.present_blit.payload_size, VIOGPU_WDDM_PRESENT_BLIT, PayloadSize, 40);",
+        "ABI_OFFSET(offset.present_blit.readback_usec, VIOGPU_WDDM_PRESENT_BLIT, ReadbackUsec, 44);",
+    ):
+        if manifest_entries.count(present_blit_assertion) != 1:
+            fail(f"WDDM private ABI fixture must lock the present-blit contract: {present_blit_assertion}")
     local_runner_path = WDDM_ABI_FIXTURE_DIR / "run-local.sh"
     local_runner = local_runner_path.read_text(encoding="utf-8")
     msvc_runner = (WDDM_ABI_FIXTURE_DIR / "run-msvc.cmd").read_text(encoding="utf-8")
