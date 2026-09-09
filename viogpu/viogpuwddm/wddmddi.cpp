@@ -4510,7 +4510,7 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
     }
 
     if (request.Flags != VIOGPU_WDDM_ESCAPE_FLAGS_NONE || request.Format != VIOGPU_WDDM_FORMAT_B8G8R8A8_UNORM ||
-        request.Reserved != 0 || request.Width == 0 || request.Height == 0 || request.SourcePitch == 0 ||
+        request.Width == 0 || request.Height == 0 || request.SourcePitch == 0 ||
         request.PayloadSize == 0 ||
         request.PayloadSize != escape->PrivateDriverDataSize - sizeof(VIOGPU_WDDM_PRESENT_BLIT))
     {
@@ -4542,6 +4542,11 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
     adapter->RecordDisplayValue(35, static_cast<LONG>(status));
     adapter->RecordDisplayValue(36, static_cast<LONG>(request.Width));
     adapter->RecordDisplayValue(37, static_cast<LONG>(request.Height));
+    /* The caller measures how long it waited for the host to hand the finished
+     * frame back; without it the kernel timer alone cannot say which side of
+     * the escape the frame interval is spent on. */
+    adapter->RecordDisplayValue(46,
+                                static_cast<LONG>(request.ReadbackUsec > MAXLONG ? MAXLONG : request.ReadbackUsec));
     adapter->RecordDisplayValue(39, static_cast<LONG>(status));
     return status;
 }

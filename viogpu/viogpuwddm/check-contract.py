@@ -7471,7 +7471,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT32 SourcePitch;
             VIOGPU_WDDM_UINT32 Format;
             VIOGPU_WDDM_UINT32 PayloadSize;
-            VIOGPU_WDDM_UINT32 Reserved;
+            VIOGPU_WDDM_UINT32 ReadbackUsec;
         """,
         "VIOGPU_WDDM_ALLOCATION_REFERENCE": """
             VIOGPU_WDDM_UINT32 AllocationIndex;
@@ -7697,12 +7697,19 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     publish = canonical_code(function_body("VioGpuAdapter::PublishPresentBlit", VIOGPU_SOURCE))
     for fragment in (
         "width>m_FrameBufWidth||height>m_FrameBufHeight",
+        "m_PublishedScanoutResourceId!=resourceId",
         "m_CtrlQueue.SetScanout(0,resourceId,scanoutWidth,scanoutHeight,0,0)",
-        "m_CtrlQueue.TransferToHost2D(resourceId,0,scanoutWidth,scanoutHeight,0,0)",
-        "m_CtrlQueue.ResFlush(resourceId,scanoutWidth,scanoutHeight,0,0)",
+        "m_PublishedScanoutResourceId=resourceId;",
+        "m_CtrlQueue.TransferToHost2D(resourceId,0,width,height,0,0)",
+        "m_CtrlQueue.ResFlush(resourceId,width,height,0,0)",
     ):
         if publish.count(fragment) != 1:
             fail(f"frame publication must target the scanned-out surface: {fragment}")
+    # Binding a surface the host has already imported costs a scanout teardown
+    # per frame, so the binding is cached -- every other path that re-points
+    # scanout 0 has to drop that cache or the next publication skips its bind.
+    if VIOGPU_SOURCE.count("m_PublishedScanoutResourceId = 0;") != 5:
+        fail("every scanout re-bind outside the publication path must invalidate the cached binding")
     set_source_address = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
     # The compositor owns the scanout whenever it flips; latching it to the
     # user-mode driver's published surface froze the desktop on the last frame

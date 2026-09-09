@@ -845,6 +845,10 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuObj *m_pFrameBuf;
     UINT m_FrameBufWidth;
     UINT m_FrameBufHeight;
+    /* Resource currently bound to scanout 0 by the frame publication path.
+     * Re-binding an already-bound surface makes the host tear the scanout
+     * down and import it again for every published frame. */
+    UINT m_PublishedScanoutResourceId;
     VioGpuObj *m_pCursorBuf;
     VioGpuMemSegment m_CursorSegment;
     VioGpuMemSegment m_FrameSegment;

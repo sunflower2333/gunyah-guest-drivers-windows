@@ -5685,6 +5685,9 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayStandardAllocCalls = ReadDisplayCounter(42);
     DWORD displayStandardAllocRejects = ReadDisplayCounter(43);
     DWORD displayStandardAllocStatus = ReadDisplayCounter(44);
+    DWORD displayBlitKernelUsec = ReadDisplayCounter(45);
+    DWORD displayBlitReadbackUsec = ReadDisplayCounter(46);
+    DWORD displayScanoutRebinds = ReadDisplayCounter(47);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -6044,6 +6047,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayStandardAllocRejects},
                                                                                                         {L"NativeDisplayStandardAllocStatus",
                                                                                                          &displayStandardAllocStatus},
+                                                                                                        {L"NativeDisplayBlitKernelUsec",
+                                                                                                         &displayBlitKernelUsec},
+                                                                                                        {L"NativeDisplayBlitReadbackUsec",
+                                                                                                         &displayBlitReadbackUsec},
+                                                                                                        {L"NativeDisplayScanoutRebinds",
+                                                                                                         &displayScanoutRebinds},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -8461,6 +8470,9 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
 
     m_pVioGpuDod->CountDisplayEvent(38);
 
+    LARGE_INTEGER frequency = {0};
+    const LONGLONG startTicks = KeQueryPerformanceCounter(&frequency).QuadPart;
+
     for (UINT row = 0; row < height; ++row)
     {
         RtlCopyMemory(destination + static_cast<SIZE_T>(row) * destinationPitch,
@@ -8469,15 +8481,38 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
     }
 
     /* Re-assert the scanout: a flip may have pointed the host at DWM's blank
-     * standard primary before the first frame arrived. */
+     * standard primary before the first frame arrived.  Only when the binding
+     * actually changed, though.  SET_SCANOUT makes the host drop its imported
+     * surface and build a new one, so re-issuing it per frame paid for a full
+     * scanout teardown on every present. */
     const UINT resourceId = m_pFrameBuf->GetId();
     const UINT scanoutWidth = m_FrameBufWidth;
     const UINT scanoutHeight = m_FrameBufHeight;
-    if (!m_CtrlQueue.SetScanout(0, resourceId, scanoutWidth, scanoutHeight, 0, 0) ||
-        !m_CtrlQueue.TransferToHost2D(resourceId, 0, scanoutWidth, scanoutHeight, 0, 0) ||
-        !m_CtrlQueue.ResFlush(resourceId, scanoutWidth, scanoutHeight, 0, 0))
+    if (m_PublishedScanoutResourceId != resourceId)
+    {
+        if (!m_CtrlQueue.SetScanout(0, resourceId, scanoutWidth, scanoutHeight, 0, 0))
+        {
+            return STATUS_DEVICE_NOT_READY;
+        }
+        m_PublishedScanoutResourceId = resourceId;
+        m_pVioGpuDod->CountDisplayEvent(47);
+    }
+
+    /* Publish the rectangle the frame actually wrote.  The host reads the rows
+     * at the resource's own stride, so a window smaller than the desktop moves
+     * its own pixels instead of the whole surface. */
+    if (!m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0) ||
+        !m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0))
     {
         return STATUS_DEVICE_NOT_READY;
+    }
+
+    const LONGLONG endTicks = KeQueryPerformanceCounter(NULL).QuadPart;
+    if (frequency.QuadPart > 0 && endTicks > startTicks)
+    {
+        m_pVioGpuDod->RecordDisplayValue(
+            45,
+            static_cast<LONG>(((endTicks - startTicks) * 1000000LL) / frequency.QuadPart));
     }
 
     return STATUS_SUCCESS;
@@ -8520,6 +8555,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
         return VioGpuHostContextNotSubmitted;
     }
 
+    m_PublishedScanoutResourceId = 0;
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(scanoutId, resourceId, width, height, 0, 0);
     if (result == VioGpuHostContextConfirmed)
     {
@@ -8572,6 +8608,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Detach2DScanoutResource(_In_ UINT reso
         return VioGpuHostContextNotSubmitted;
     }
 
+    m_PublishedScanoutResourceId = 0;
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(0, 0, 0, 0, 0, 0);
     if (result == VioGpuHostContextConfirmed)
     {
@@ -12345,6 +12382,7 @@ void VioGpuAdapter::DestroyFrameBufferObj(BOOLEAN bReset, BOOLEAN bKeepBuffer)
             if (bReset == TRUE)
             {
                 m_CtrlQueue.SetScanout(0, 0, 0, 0, 0, 0);
+                m_PublishedScanoutResourceId = 0;
             }
         }
 
@@ -12918,6 +12956,7 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
              ("---> %s - (%d -> %d)\n", __FUNCTION__, pCurrentMode->DispInfo.ColorFormat, format));
     m_FrameBufWidth = 0;
     m_FrameBufHeight = 0;
+    m_PublishedScanoutResourceId = 0;
     resid = m_Idr.GetId();
     if (!m_CtrlQueue.CreateResource(resid, format, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight))
     {
@@ -12943,6 +12982,7 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
         delete obj;
         return FALSE;
     }
+    m_PublishedScanoutResourceId = 0;
     if (!m_CtrlQueue.SetScanout(0, resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||
         !m_CtrlQueue.TransferToHost2D(resid, 0, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||
         !m_CtrlQueue.ResFlush(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0))
