@@ -3217,7 +3217,8 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
             *failureStage = VioGpuWddmPresentExecuteDestinationObject;
         }
         else if (NT_SUCCESS(status) &&
-                 !(transaction->CopyOnly ? IsGdiSourceAllocation(destination) : IsStandardPrimaryAllocation(destination)))
+                 !(IsStandardPrimaryAllocation(destination) ||
+                   (transaction->CopyOnly && IsGdiSourceAllocation(destination))))
         {
             status = STATUS_DEVICE_NOT_READY;
             *failureStage = VioGpuWddmPresentExecuteDestinationPrimary;
@@ -8227,7 +8228,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                             source->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
                             destination->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE && source->Adapter == adapter &&
                             destination->Adapter == adapter &&
-                            (transaction->CopyOnly ? IsGdiSourceAllocation(destination) : IsStandardPrimaryAllocation(destination)) &&
+                            (IsStandardPrimaryAllocation(destination) ||
+                             (transaction->CopyOnly && IsGdiSourceAllocation(destination))) &&
                             source->PlacementValid && source->ApertureAddress != NULL &&
                             EnsureStandard2DAllocationBacking(destination) &&
                             destination->Resource2DState == VioGpu2DResourceBackingAttached &&
@@ -8587,7 +8589,8 @@ static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *pres
             sourceOpen->Allocation == destinationOpen->Allocation ||
             !IsOwnedAllocation(sourceOpen->Allocation, context->Device->Adapter) ||
             !IsOwnedAllocation(destinationOpen->Allocation, context->Device->Adapter) ||
-            (copyOnly && !IsGdiSourceAllocation(sourceOpen->Allocation)))
+            (copyOnly && !IsGdiSourceAllocation(sourceOpen->Allocation) &&
+             !IsStandardPrimaryAllocation(sourceOpen->Allocation)))
         {
             status = STATUS_INVALID_HANDLE;
         }
@@ -8732,7 +8735,8 @@ static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *pres
         }
         else if (destination->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
                  destination->Adapter != context->Device->Adapter ||
-                 !(copyOnly ? IsGdiSourceAllocation(destination) : IsStandardPrimaryAllocation(destination)))
+                 !(IsStandardPrimaryAllocation(destination) ||
+                   (copyOnly && IsGdiSourceAllocation(destination))))
         {
             reason = VioGpuWddmPresentDiagnosticDestinationObject;
         }

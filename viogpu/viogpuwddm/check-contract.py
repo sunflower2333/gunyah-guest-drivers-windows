@@ -5000,8 +5000,8 @@ def check_shared_allocation_copy_contract() -> None:
     build = canonical_code(function_body("BuildAllocationBlit", WDDM_DDI_CODE))
     for fragment in (
         "copyOnly&&context->Type!=VioGpuWddmContextGdi",
-        "copyOnly&&!IsGdiSourceAllocation(sourceOpen->Allocation)",
-        "copyOnly?IsGdiSourceAllocation(destination):IsStandardPrimaryAllocation(destination)",
+        "copyOnly&&!IsGdiSourceAllocation(sourceOpen->Allocation)&&!IsStandardPrimaryAllocation(sourceOpen->Allocation)",
+        "IsStandardPrimaryAllocation(destination)||(copyOnly&&IsGdiSourceAllocation(destination))",
         "destinationOpen->ReadOnly", "transaction->CopyOnly=copyOnly;",
         "packet->Flags=copyOnly?2:present->Flags.Value;", "privateData->Flags=packet->Flags;",
         "transaction->SourceAllocationIndex=copyOnly?0:DXGK_PRESENT_SOURCE_INDEX;",
@@ -5012,6 +5012,10 @@ def check_shared_allocation_copy_contract() -> None:
         if fragment not in build:
             fail(f"copy builder must preserve allocation access and display separation: {fragment}")
     execute = canonical_code(function_body("ExecutePresentTransaction", WDDM_DDI_CODE))
+    patch = canonical_code(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))
+    for stage in (execute, patch):
+        if "IsStandardPrimaryAllocation(destination)||(transaction->CopyOnly&&IsGdiSourceAllocation(destination))" not in stage:
+            fail("scheduled copies must preserve primary access through Patch and Execute")
     require_order(execute, (
         "AcquirePresentAllocationLifecycles(", "source->ApertureAddress==NULL",
         "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
