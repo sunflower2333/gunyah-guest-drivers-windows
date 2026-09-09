@@ -858,12 +858,11 @@ class VioGpuAdapter : IVioGpuPCI
      * makes the first publication skip its bind, and the frames then publish
      * onto whatever was bound before them while reporting success. */
     UINT m_PublishedScanoutResourceId;
-    /* Whatever is bound to scanout 0 right now, and its size. The compositor
-     * programs a primary address once and then writes into that memory every
-     * frame, expecting hardware to scan it out; this adapter has to be told to
-     * move the pixels, so the binding is republished on the display's own
-     * cadence rather than only when something presents. */
+    /* Legacy in-place writes need periodic transfer/flush until this binding
+     * receives a confirmed scheduled Present, which explicitly publishes its
+     * contents. Avoid re-uploading that primary on every idle vblank. */
     volatile LONG m_ActiveScanoutResourceId;
+    volatile LONG m_ExplicitPresentResourceId;
     volatile LONG m_ActiveScanoutWidth;
     volatile LONG m_ActiveScanoutHeight;
     volatile LONG m_ScanoutRefreshRequested;

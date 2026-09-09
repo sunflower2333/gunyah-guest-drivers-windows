@@ -7845,6 +7845,17 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if VIOGPU_SOURCE.count("RecordActiveScanout(") < 5:
         fail("every scanout binding must be recorded for the periodic refresh")
     refresh = canonical_code(function_body("VioGpuAdapter::RefreshActiveScanout", VIOGPU_SOURCE))
+    request_refresh = canonical_code(function_body("VioGpuAdapter::RequestScanoutRefresh", VIOGPU_SOURCE))
+    record_scanout = canonical_code(function_body("VioGpuAdapter::RecordActiveScanout", VIOGPU_SOURCE))
+    if "m_ExplicitPresentResourceId=0;" not in canonical_code(function_body("VioGpuAdapter::VioGpuAdapter", VIOGPU_SOURCE)) or \
+       "InterlockedExchange(&m_ExplicitPresentResourceId,0);" not in record_scanout:
+        fail("a new scanout binding must retain legacy refresh until a confirmed explicit Present")
+    if "result==VioGpuHostContextConfirmed&&offset==0&&x==0&&y==0&&static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutResourceId,0,0))==resourceId&&static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutWidth,0,0))==width&&static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutHeight,0,0))==height" not in present_2d or \
+       "InterlockedExchange(&m_ExplicitPresentResourceId,static_cast<LONG>(resourceId));" not in present_2d:
+        fail("only a confirmed Present to the active binding may suppress duplicate refresh")
+    for body in (request_refresh, refresh):
+        if "InterlockedCompareExchange(&m_ExplicitPresentResourceId,0,0)" not in body:
+            fail("both refresh scheduling and its queued worker must honor explicit primary publication")
     for fragment in (
         "InterlockedExchange(&m_ScanoutRefreshRequested,0)==0",
         "m_CtrlQueue.TransferToHost2D(resourceId,0,width,height,0,0)",

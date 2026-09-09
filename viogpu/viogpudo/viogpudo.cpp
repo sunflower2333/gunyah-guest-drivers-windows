@@ -7675,6 +7675,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_pFrameBuf = NULL;
     m_PublishedScanoutResourceId = 0;
     m_ActiveScanoutResourceId = 0;
+    m_ExplicitPresentResourceId = 0;
     m_ActiveScanoutWidth = 0;
     m_ActiveScanoutHeight = 0;
     m_ScanoutRefreshRequested = 0;
@@ -9045,6 +9046,17 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Present2DResource(_In_ UINT resourceId
         m_pVioGpuDod->RecordDisplayMaximum(61, flushUsec);
         m_pVioGpuDod->RecordDisplayValue(62, static_cast<LONG>(result));
         m_pVioGpuDod->CountDisplayEvent(59);
+    }
+    if (result == VioGpuHostContextConfirmed && offset == 0 && x == 0 && y == 0 &&
+        static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutResourceId, 0, 0)) == resourceId &&
+        static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutWidth, 0, 0)) == width &&
+        static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutHeight, 0, 0)) == height)
+    {
+        /* Every scheduled update transfers and flushes the complete primary.
+         * Polling the same unchanged backing at each vblank only competes
+         * with those updates on the control queue. Keep legacy refresh until
+         * this binding has actually completed such a Present. */
+        InterlockedExchange(&m_ExplicitPresentResourceId, static_cast<LONG>(resourceId));
     }
     m_pVioGpuDod->RecordDisplayValue(52, 0);
     if (result == VioGpuHostContextUnknown)
@@ -12901,6 +12913,7 @@ void VioGpuAdapter::ThreadWork(_In_ PVOID Context)
 
 VOID VioGpuAdapter::RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height)
 {
+    InterlockedExchange(&m_ExplicitPresentResourceId, 0);
     InterlockedExchange(&m_ActiveScanoutWidth, static_cast<LONG>(width));
     InterlockedExchange(&m_ActiveScanoutHeight, static_cast<LONG>(height));
     InterlockedExchange(&m_ActiveScanoutResourceId, static_cast<LONG>(resourceId));
@@ -12908,8 +12921,13 @@ VOID VioGpuAdapter::RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _
 
 VOID VioGpuAdapter::RequestScanoutRefresh(void)
 {
-    /* Called from the vsync DPC. Coalesce: one refresh in flight at a time, so
-     * a slow host cannot make the work queue grow without bound. */
+    const LONG resourceId = InterlockedCompareExchange(&m_ActiveScanoutResourceId, 0, 0);
+    if (resourceId != 0 && InterlockedCompareExchange(&m_ExplicitPresentResourceId, 0, 0) == resourceId)
+    {
+        return;
+    }
+    /* Called from the vsync DPC. Coalesce pending worker notifications;
+     * the fallback worker submits its transfer/flush asynchronously. */
     if (InterlockedCompareExchange(&m_ScanoutRefreshRequested, 1, 0) == 0)
     {
         KeSetEvent(&m_ConfigUpdateEvent, IO_NO_INCREMENT, FALSE);
@@ -12926,8 +12944,8 @@ void VioGpuAdapter::RefreshActiveScanout(void)
     const UINT resourceId = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutResourceId, 0, 0));
     const UINT width = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutWidth, 0, 0));
     const UINT height = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutHeight, 0, 0));
-    if (resourceId == 0 || width == 0 || height == 0 || m_pVioGpuDod == NULL ||
-        !m_pVioGpuDod->IsDriverActive())
+    if (resourceId == 0 || width == 0 || height == 0 || m_pVioGpuDod == NULL || !m_pVioGpuDod->IsDriverActive() ||
+        static_cast<UINT>(InterlockedCompareExchange(&m_ExplicitPresentResourceId, 0, 0)) == resourceId)
     {
         return;
     }
