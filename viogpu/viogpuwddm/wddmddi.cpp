@@ -2946,6 +2946,14 @@ BOOLEAN ValidateRenderSubmitDmaRange(_In_ const VIOGPU_WDDM_SUBMISSION *submissi
            submission->DmaBufferSize == dmaBufferSize - submissionStart;
 }
 
+BOOLEAN ValidateAllocationBlitSchedulerFlags(UINT flags, BOOLEAN copyOnly)
+{
+    /* DXGK_PATCHFLAGS and DXGK_SUBMITCOMMANDFLAGS share Present (2) and
+     * RedirectedPresent (4). Preserve the legacy zero-flag form, and keep
+     * Render-based allocation copies separate from display submissions. */
+    return flags == 0 || (!copyOnly && (flags & 2U) != 0 && (flags & ~6U) == 0);
+}
+
 NTSTATUS ResolvePresentTransaction(PVOID privateDataBase,
                                    UINT privateDataSize,
                                    UINT submissionStart,
@@ -2953,8 +2961,17 @@ NTSTATUS ResolvePresentTransaction(PVOID privateDataBase,
                                    VioGpuDod *adapter,
                                    HANDLE runtimeContext,
                                    LONG expectedState,
-                                   VIOGPU_WDDM_PRESENT_TRANSACTION **transactionOut)
+                                   VIOGPU_WDDM_PRESENT_TRANSACTION **transactionOut,
+                                   DWORD *failureDetail = NULL)
 {
+    /* Resolve detail low byte: 1 input, 2 context signature, 3 retired owner,
+     * 4 closing context, 5 unlinked owner, 6 candidate/state, 7 packet/identity.
+     * For 6 the next byte is state; for 7 bits 8..13 identify failed checks.
+     * Submit adds its scheduler flags in the upper 16 bits on failure. */
+    if (failureDetail != NULL)
+    {
+        *failureDetail = 1; // Invalid input range or context handle.
+    }
     if (transactionOut == NULL)
     {
         return STATUS_INVALID_PARAMETER;
@@ -2972,12 +2989,20 @@ NTSTATUS ResolvePresentTransaction(PVOID privateDataBase,
                                                                                                submissionStart);
     if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || privateData->Submission == NULL)
     {
+        if (failureDetail != NULL)
+        {
+            *failureDetail = context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE ? 2U : 3U;
+        }
         return STATUS_DEVICE_NOT_READY;
     }
 
     VIOGPU_WDDM_PRESENT_TRANSACTION *transaction = NULL;
     KIRQL oldIrql;
     KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
+    if (failureDetail != NULL)
+    {
+        *failureDetail = context->SubmissionClosing ? 4U : 5U;
+    }
     for (PLIST_ENTRY link = context->PendingSubmissions.Flink;
          !context->SubmissionClosing && link != &context->PendingSubmissions;
          link = link->Flink)
@@ -2991,6 +3016,10 @@ NTSTATUS ResolvePresentTransaction(PVOID privateDataBase,
             VIOGPU_WDDM_PRESENT_TRANSACTION *candidate = static_cast<VIOGPU_WDDM_PRESENT_TRANSACTION *>(entry->Owner);
             LONG state = candidate == NULL ? VioGpuWddmPresentInvalid
                                            : InterlockedCompareExchange(&candidate->State, 0, 0);
+            if (failureDetail != NULL)
+            {
+                *failureDetail = 6U | (static_cast<DWORD>(state & 0xFF) << 8);
+            }
             if (candidate != NULL && candidate->ContextEntry.Owner == candidate &&
                 candidate->ContextEntry.Context == context &&
                 candidate->Signature == VIOGPU_WDDM_PRESENT_TRANSACTION_SIGNATURE && candidate->Context == context &&
@@ -3017,13 +3046,26 @@ NTSTATUS ResolvePresentTransaction(PVOID privateDataBase,
                           privateData->Generation == 0 && privateData->ResetGeneration == 0 &&
                           transaction->Source->ContextId == 0 && transaction->Source->ContextGeneration == 0 &&
                           transaction->Source->ContextResetGeneration == 0;
-    if (!ValidatePresentDmaPacket(privateData, packet, transaction) ||
-        transaction->PrivateDataSize != sizeof(*privateData) || (!nativeIdentity && !gdiIdentity))
+    BOOLEAN packetValid = ValidatePresentDmaPacket(privateData, packet, transaction);
+    if (!packetValid || transaction->PrivateDataSize != sizeof(*privateData) || (!nativeIdentity && !gdiIdentity))
     {
+        if (failureDetail != NULL)
+        {
+            *failureDetail = 7U | (!packetValid ? 1U << 8 : 0) |
+                             (transaction->PrivateDataSize != sizeof(*privateData) ? 1U << 9 : 0) |
+                             (!nativeIdentity && !gdiIdentity ? 1U << 10 : 0) |
+                             (transaction->PrivateData != privateData ? 1U << 11 : 0) |
+                             (transaction->DmaBuffer != privateData->DmaBuffer ? 1U << 12 : 0) |
+                             (static_cast<DWORD>(transaction->CopyOnly != FALSE) << 13);
+        }
         DereferencePresentTransaction(transaction);
         return STATUS_DEVICE_NOT_READY;
     }
 
+    if (failureDetail != NULL)
+    {
+        *failureDetail = 0;
+    }
     *transactionOut = transaction;
     return STATUS_SUCCESS;
 }
@@ -8145,8 +8187,19 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         return STATUS_SUCCESS;
     }
 
+    UINT candidatePrivateLength = patchArguments->DmaBufferPrivateDataSubmissionEndOffset -
+                                  patchArguments->DmaBufferPrivateDataSubmissionStartOffset;
+    VIOGPU_WDDM_KMD_DMA_PRIVATE *candidatePrivate = candidatePrivateLength < sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) ? NULL
+                                                                                                                 : reinterpret_cast<VIOGPU_WDDM_KMD_DMA_PRIVATE *>(static_cast<BYTE *>(patchArguments->pDmaBufferPrivateData) +
+                                                                                                                                                                   patchArguments->DmaBufferPrivateDataSubmissionStartOffset);
+    /* A display DMA may need Patch after paging. Rejecting its documented
+     * Present bits here retires the transaction, so the subsequent Submit
+     * can only see a missing owner and fault the adapter. */
+    BOOLEAN flagsValid = patchArguments->Flags.Value == 0 ||
+                         (candidatePrivate != NULL && candidatePrivate->Kind == VioGpuWddmDmaKindPresent &&
+                          ValidateAllocationBlitSchedulerFlags(patchArguments->Flags.Value, FALSE));
     if (patchArguments->hContext == NULL || patchArguments->pAllocationList == NULL ||
-        patchArguments->pPatchLocationList == NULL || patchArguments->Flags.Value != 0)
+        patchArguments->pPatchLocationList == NULL || !flagsValid)
     {
         RetirePatchDmaOwner(adapter, patchArguments);
         return STATUS_SUCCESS;
@@ -8158,11 +8211,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         return STATUS_SUCCESS;
     }
 
-    UINT candidatePrivateLength = patchArguments->DmaBufferPrivateDataSubmissionEndOffset -
-                                  patchArguments->DmaBufferPrivateDataSubmissionStartOffset;
-    VIOGPU_WDDM_KMD_DMA_PRIVATE *candidatePrivate = candidatePrivateLength < sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) ? NULL
-                                                                                                                 : reinterpret_cast<VIOGPU_WDDM_KMD_DMA_PRIVATE *>(static_cast<BYTE *>(patchArguments->pDmaBufferPrivateData) +
-                                                                                                                                                                   patchArguments->DmaBufferPrivateDataSubmissionStartOffset);
     if (candidatePrivate != NULL && candidatePrivate->Kind == VioGpuWddmDmaKindPresent)
     {
         VIOGPU_WDDM_PRESENT_TRANSACTION *transaction = NULL;
@@ -8176,7 +8224,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                                                     &transaction);
         UINT dmaLength = patchArguments->DmaBufferSubmissionEndOffset - patchArguments->DmaBufferSubmissionStartOffset;
         if (NT_SUCCESS(status) &&
-            (patchArguments->Flags.Value != 0 || dmaLength != sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) ||
+            (!ValidateAllocationBlitSchedulerFlags(patchArguments->Flags.Value, transaction->CopyOnly) ||
+             dmaLength != sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) ||
              patchArguments->DmaBufferPrivateDataSubmissionEndOffset - patchArguments->DmaBufferPrivateDataSubmissionStartOffset !=
                                                                                                                  sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) ||
              patchArguments->PatchLocationListSubmissionLength != 2 ||
@@ -9231,10 +9280,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                            adapter,
                                            submitCommand->hContext,
                                            -1,
-                                           &transaction);
+                                           &transaction,
+                                           &submitFailureDetail);
         if (!NT_SUCCESS(status))
         {
             submitFailureStage = VioGpuWddmPresentSubmitResolveTransaction;
+            submitFailureDetail |= (submitCommand->Flags.Value & 0xFFFFU) << 16;
         }
         BOOLEAN promotePrepatch = FALSE;
         if (NT_SUCCESS(status))
@@ -9251,15 +9302,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                                                   submitCommand->DmaBufferSubmissionStartOffset,
                                                                   submitCommand->DmaBufferSubmissionEndOffset);
             submitFailureDetail = submitCommand->hContext == NULL ? 1U << 0 : 0;
-            /* The Win7/WDDMv1 registration used by this miniport sends the
-             * legacy Present form with no SubmitCommand flag bits. Newer
-             * runtimes may add RedirectedPresent to the explicit Present bit;
-             * no paging, flip, null-rendering, context-switch, or reserved bit
-             * belongs to this CPU-copy Present path. */
-            const UINT presentSubmitFlags = 0x6U;
-            BOOLEAN presentFlagsValid = submitCommand->Flags.Value == 0U ||
-                                        (!transaction->CopyOnly && submitCommand->Flags.Present != 0 &&
-                                         (submitCommand->Flags.Value & ~presentSubmitFlags) == 0);
+            BOOLEAN presentFlagsValid = ValidateAllocationBlitSchedulerFlags(submitCommand->Flags.Value,
+                                                                             transaction->CopyOnly);
             submitFailureDetail |= !presentFlagsValid ? 1U << 1 : 0;
             submitFailureDetail |= privateLength != sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE) ? 1U << 2 : 0;
             submitFailureDetail |= dmaLength != sizeof(VIOGPU_WDDM_PRESENT_DMA_PACKET) ? 1U << 3 : 0;

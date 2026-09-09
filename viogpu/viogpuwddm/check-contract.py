@@ -5285,7 +5285,7 @@ def check_wddm_present_contract() -> None:
             "ResolvePresentTransaction",
             "PVOID privateDataBase, UINT privateDataSize, UINT submissionStart, UINT submissionEnd, "
             "VioGpuDod *adapter, HANDLE runtimeContext, LONG expectedState, "
-            "VIOGPU_WDDM_PRESENT_TRANSACTION **transactionOut",
+            "VIOGPU_WDDM_PRESENT_TRANSACTION **transactionOut, DWORD *failureDetail = NULL",
             WDDM_DDI_CODE,
         )
     )
@@ -5666,7 +5666,7 @@ def check_wddm_present_contract() -> None:
         present_submit,
         (
             "privateData->Kind==VioGpuWddmDmaKindPresent",
-            "-1,&transaction);",
+            "-1,&transaction,&submitFailureDetail);",
             "transaction->FullyPrepatched",
             "ValidatePresentSubmitDmaRange(transaction,",
             "transaction->FenceId=submitCommand->SubmissionFenceId;",
@@ -5710,12 +5710,15 @@ def check_wddm_present_contract() -> None:
     for bit in range(12):
         if len(re.findall(rf"1<<{bit}(?![0-9])", present_submit)) != 1:
             fail(f"Present Submit contract failure mask must retain bit {bit}")
-    if "constUINTpresentSubmitFlags=0x6;" not in present_submit or \
-       "BOOLEANpresentFlagsValid=submitCommand->Flags.Value==0||(!transaction->CopyOnly&&submitCommand->Flags.Present!=0&&" not in present_submit or \
-       "(submitCommand->Flags.Value&~presentSubmitFlags)==0)" not in present_submit or \
+    scheduler_flags = canonical_code(function_body_with_parameters(
+        "ValidateAllocationBlitSchedulerFlags", "UINT flags, BOOLEAN copyOnly", WDDM_DDI_CODE))
+    if "returnflags==0||(!copyOnly&&(flags&2)!=0&&(flags&~6)==0);" not in scheduler_flags or \
+       "ValidateAllocationBlitSchedulerFlags(submitCommand->Flags.Value,transaction->CopyOnly)" not in present_submit or \
+       "ValidateAllocationBlitSchedulerFlags(patchArguments->Flags.Value,transaction->CopyOnly)" not in patch or \
+       "ValidateAllocationBlitSchedulerFlags(patchArguments->Flags.Value,FALSE)" not in patch or \
        "if(submitFailureDetail!=0){submitFailureDetail|=(submitCommand->Flags.Value&0xFFFF)<<16;" not in present_submit or \
        "submitFailureDetail|=!presentFlagsValid?1<<1:0" not in present_submit:
-        fail("Present Submit must retain display flags and require zero flags for allocation copies")
+        fail("Present Patch and Submit must agree on display flags and require zero flags for allocation copies")
 
     worker = canonical_code(function_body("NativePresentWorker", WDDM_DDI_CODE))
     executing_claim = worker.find(
