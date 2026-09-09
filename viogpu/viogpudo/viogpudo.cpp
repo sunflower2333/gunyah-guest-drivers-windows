@@ -13034,7 +13034,7 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
     DbgPrint(TRACE_LEVEL_INFORMATION,
              ("---> %s - (%d -> %d)\n", __FUNCTION__, pCurrentMode->DispInfo.ColorFormat, format));
     m_PublishedScanoutResourceId = 0;
-    RecordActiveScanout(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight);
+    RecordActiveScanout(0, 0, 0);
     m_FrameBufWidth = 0;
     m_FrameBufHeight = 0;
     resid = m_Idr.GetId();
@@ -13062,6 +13062,7 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
         delete obj;
         return FALSE;
     }
+    RecordActiveScanout(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight);
     if (!m_CtrlQueue.SetScanout(0, resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||
         !m_CtrlQueue.TransferToHost2D(resid, 0, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||
         !m_CtrlQueue.ResFlush(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0))
