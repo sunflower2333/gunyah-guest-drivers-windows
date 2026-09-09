@@ -1115,6 +1115,16 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
     {
         InterlockedIncrement(&m_CrtcVsyncDeliveredCount);
     }
+
+    /* Nothing else moves the desktop's pixels. The compositor programs its
+     * primary address once and then draws into that memory every frame; on
+     * real hardware the display engine scans it out continuously, and here it
+     * has to be transferred and flushed. Do it on the display's own cadence. */
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (adapter != NULL)
+    {
+        adapter->RequestScanoutRefresh();
+    }
 }
 
 BOOLEAN VioGpuDod::NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
@@ -5686,7 +5696,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayStandardAllocRejects = ReadDisplayCounter(43);
     DWORD displayStandardAllocStatus = ReadDisplayCounter(44);
     DWORD displayBlitKernelUsec = ReadDisplayCounter(45);
-    DWORD displayBlitReadbackUsec = ReadDisplayCounter(46);
+    DWORD displayScanoutRefreshes = ReadDisplayCounter(46);
     DWORD displayBlitPayloadNonBlack = ReadDisplayCounter(47);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
@@ -6049,8 +6059,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayStandardAllocStatus},
                                                                                                         {L"NativeDisplayBlitKernelUsec",
                                                                                                          &displayBlitKernelUsec},
-                                                                                                        {L"NativeDisplayBlitReadbackUsec",
-                                                                                                         &displayBlitReadbackUsec},
+                                                                                                        {L"NativeDisplayScanoutRefreshes",
+                                                                                                         &displayScanoutRefreshes},
                                                                                                         {L"NativeDisplayBlitPayloadNonBlack",
                                                                                                          &displayBlitPayloadNonBlack},
                                                                                                         {L"NativeSubmis"
@@ -7616,6 +7626,10 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_Id = g_InstanceId++;
     m_pFrameBuf = NULL;
     m_PublishedScanoutResourceId = 0;
+    m_ActiveScanoutResourceId = 0;
+    m_ActiveScanoutWidth = 0;
+    m_ActiveScanoutHeight = 0;
+    m_ScanoutRefreshRequested = 0;
     m_pCursorBuf = NULL;
     m_PendingWorks = 0;
     m_bStopWorkThread = FALSE;
@@ -8520,6 +8534,7 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
         }
         m_PublishedScanoutResourceId = resourceId;
     }
+    RecordActiveScanout(resourceId, scanoutWidth, scanoutHeight);
     if (!m_CtrlQueue.TransferToHost2D(resourceId, 0, scanoutWidth, scanoutHeight, 0, 0) ||
         !m_CtrlQueue.ResFlush(resourceId, scanoutWidth, scanoutHeight, 0, 0))
     {
@@ -8575,6 +8590,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
     }
 
     m_PublishedScanoutResourceId = 0;
+    RecordActiveScanout(resourceId, width, height);
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(scanoutId, resourceId, width, height, 0, 0);
     if (result == VioGpuHostContextConfirmed)
     {
@@ -8628,6 +8644,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Detach2DScanoutResource(_In_ UINT reso
     }
 
     m_PublishedScanoutResourceId = 0;
+    RecordActiveScanout(0, 0, 0);
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(0, 0, 0, 0, 0, 0);
     if (result == VioGpuHostContextConfirmed)
     {
@@ -12785,6 +12802,47 @@ void VioGpuAdapter::ThreadWork(_In_ PVOID Context)
     pdev->ThreadWorkRoutine();
 }
 
+VOID VioGpuAdapter::RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height)
+{
+    InterlockedExchange(&m_ActiveScanoutWidth, static_cast<LONG>(width));
+    InterlockedExchange(&m_ActiveScanoutHeight, static_cast<LONG>(height));
+    InterlockedExchange(&m_ActiveScanoutResourceId, static_cast<LONG>(resourceId));
+}
+
+VOID VioGpuAdapter::RequestScanoutRefresh(void)
+{
+    /* Called from the vsync DPC. Coalesce: one refresh in flight at a time, so
+     * a slow host cannot make the work queue grow without bound. */
+    if (InterlockedCompareExchange(&m_ScanoutRefreshRequested, 1, 0) == 0)
+    {
+        KeSetEvent(&m_ConfigUpdateEvent, IO_NO_INCREMENT, FALSE);
+    }
+}
+
+void VioGpuAdapter::RefreshActiveScanout(void)
+{
+    if (InterlockedExchange(&m_ScanoutRefreshRequested, 0) == 0)
+    {
+        return;
+    }
+
+    const UINT resourceId = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutResourceId, 0, 0));
+    const UINT width = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutWidth, 0, 0));
+    const UINT height = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutHeight, 0, 0));
+    if (resourceId == 0 || width == 0 || height == 0 || !IsDriverActive())
+    {
+        return;
+    }
+
+    /* The compositor writes the primary in place and never tells us again, so
+     * move what is there now. Both commands are queued, not waited on. */
+    if (m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0) &&
+        m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0))
+    {
+        m_pVioGpuDod->CountDisplayEvent(46);
+    }
+}
+
 void VioGpuAdapter::ThreadWorkRoutine(void)
 {
     KeSetPriorityThread(KeGetCurrentThread(), LOW_REALTIME_PRIORITY);
@@ -12798,6 +12856,7 @@ void VioGpuAdapter::ThreadWorkRoutine(void)
             PsTerminateSystemThread(STATUS_SUCCESS);
             break;
         }
+        RefreshActiveScanout();
         ConfigChanged();
         if (!m_pVioGpuDod->IsRenderOnly())
         {
@@ -12974,6 +13033,7 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
     DbgPrint(TRACE_LEVEL_INFORMATION,
              ("---> %s - (%d -> %d)\n", __FUNCTION__, pCurrentMode->DispInfo.ColorFormat, format));
     m_PublishedScanoutResourceId = 0;
+    RecordActiveScanout(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight);
     m_FrameBufWidth = 0;
     m_FrameBufHeight = 0;
     resid = m_Idr.GetId();

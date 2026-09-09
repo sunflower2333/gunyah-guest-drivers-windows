@@ -785,6 +785,9 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN GpuObjectAttach(UINT res_id, VioGpuObj *obj);
     void static ThreadWork(_In_ PVOID Context);
     void ThreadWorkRoutine(void);
+    void RefreshActiveScanout(void);
+    VOID RequestScanoutRefresh(void);
+    VOID RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
     void ConfigChanged(void);
     NTSTATUS VirtIoDeviceInit(void);
     VOID CreateResolutionEvent(VOID);
@@ -852,6 +855,15 @@ class VioGpuAdapter : IVioGpuPCI
      * makes the first publication skip its bind, and the frames then publish
      * onto whatever was bound before them while reporting success. */
     UINT m_PublishedScanoutResourceId;
+    /* Whatever is bound to scanout 0 right now, and its size. The compositor
+     * programs a primary address once and then writes into that memory every
+     * frame, expecting hardware to scan it out; this adapter has to be told to
+     * move the pixels, so the binding is republished on the display's own
+     * cadence rather than only when something presents. */
+    volatile LONG m_ActiveScanoutResourceId;
+    volatile LONG m_ActiveScanoutWidth;
+    volatile LONG m_ActiveScanoutHeight;
+    volatile LONG m_ScanoutRefreshRequested;
     VioGpuObj *m_pCursorBuf;
     VioGpuMemSegment m_CursorSegment;
     VioGpuMemSegment m_FrameSegment;

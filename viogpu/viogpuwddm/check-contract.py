@@ -7714,6 +7714,22 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         fail("the cached scanout binding must be initialised in the constructor")
     if VIOGPU_SOURCE.count("m_PublishedScanoutResourceId = 0;") != 5:
         fail("every scanout re-bind outside the publication path must drop the cached binding")
+    # The compositor programs its primary once and then draws into that memory
+    # every frame. Nothing else moves those pixels, so the binding is recorded
+    # wherever scanout 0 is pointed and republished on the display's cadence.
+    if VIOGPU_SOURCE.count("RecordActiveScanout(") < 5:
+        fail("every scanout binding must be recorded for the periodic refresh")
+    refresh = canonical_code(function_body("VioGpuAdapter::RefreshActiveScanout", VIOGPU_SOURCE))
+    for fragment in (
+        "InterlockedExchange(&m_ScanoutRefreshRequested,0)==0",
+        "m_CtrlQueue.TransferToHost2D(resourceId,0,width,height,0,0)",
+        "m_CtrlQueue.ResFlush(resourceId,width,height,0,0)",
+    ):
+        if refresh.count(fragment) != 1:
+            fail(f"the periodic scanout refresh must move the bound surface: {fragment}")
+    if canonical_code(function_body("VioGpuDod::DeliverCrtcVsync", VIOGPU_SOURCE)).count(
+            "adapter->RequestScanoutRefresh();") != 1:
+        fail("the scanout refresh must run on the display's own cadence")
     set_source_address = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
     # The compositor owns the scanout whenever it flips; latching it to the
     # user-mode driver's published surface froze the desktop on the last frame
