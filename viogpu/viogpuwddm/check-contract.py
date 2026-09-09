@@ -5001,7 +5001,7 @@ def check_shared_allocation_copy_contract() -> None:
     for fragment in (
         "copyOnly&&context->Type!=VioGpuWddmContextGdi",
         "copyOnly&&!IsGdiSourceAllocation(sourceOpen->Allocation)&&!IsStandardPrimaryAllocation(sourceOpen->Allocation)",
-        "IsStandardPrimaryAllocation(destination)||(copyOnly&&IsGdiSourceAllocation(destination))",
+        "IsStandardPrimaryAllocation(destination)||IsGdiSourceAllocation(destination)",
         "destinationOpen->ReadOnly", "transaction->CopyOnly=copyOnly;",
         "packet->Flags=copyOnly?2:present->Flags.Value;", "privateData->Flags=packet->Flags;",
         "transaction->SourceAllocationIndex=copyOnly?0:DXGK_PRESENT_SOURCE_INDEX;",
@@ -5014,15 +5014,15 @@ def check_shared_allocation_copy_contract() -> None:
     execute = canonical_code(function_body("ExecutePresentTransaction", WDDM_DDI_CODE))
     patch = canonical_code(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))
     for stage in (execute, patch):
-        if "IsStandardPrimaryAllocation(destination)||(transaction->CopyOnly&&IsGdiSourceAllocation(destination))" not in stage:
-            fail("scheduled copies must preserve primary access through Patch and Execute")
+        if "IsStandardPrimaryAllocation(destination)||IsGdiSourceAllocation(destination)" not in stage:
+            fail("scheduled Present and copies must accept CPU-visible redirection destinations through Patch and Execute")
     require_order(execute, (
         "AcquirePresentAllocationLifecycles(", "source->ApertureAddress==NULL",
         "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
         "KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);",
-        "if(NT_SUCCESS(status)&&!transaction->CopyOnly)",
+        "if(NT_SUCCESS(status)&&!transaction->CopyOnly&&IsStandardPrimaryAllocation(destination))",
         "transaction->Adapter->Present2DResource(",
-    ), "shared copies must execute against pinned backing and never publish scanout")
+    ), "redirection and shared copies must execute against pinned backing; only Present to a primary publishes scanout")
     validate = canonical_code(function_body_with_parameters(
         "ValidatePresentDmaPacket",
         "_In_ const VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData, "
