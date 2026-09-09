@@ -556,7 +556,7 @@ class VioGpuAdapter : IVioGpuPCI
      * m_HardwareOperations open, but must still quiesce every WDDM native
      * submitter before the transport resets/deletes its virtqueues. */
     __declspec(code_seg(".text")) BOOLEAN AcquireNativeSubmitOperation(void) const;
-    __declspec(code_seg(".text")) void ReleaseNativeSubmitOperation(void) const;
+    __declspec(code_seg(".text")) __declspec(noinline) void ReleaseNativeSubmitOperation(void) const;
     __declspec(code_seg(".text")) void CompleteNativeSubmitRundown(void);
     __declspec(code_seg(".text")) BOOLEAN ReinitializeNativeSubmitRundown(void);
     UINT Allocate2DResourceId(void);
