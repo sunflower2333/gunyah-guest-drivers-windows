@@ -7692,11 +7692,18 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     ):
         if present_blit.count(fragment) != 1:
             fail(f"frame publication endpoint must validate its request before publishing: {fragment}")
-    # A frame published by the user-mode driver owns the scanout: re-binding it to
-    # DWM's blank standard primary on the next flip would blank the display.
+    # Only a composed frame matching the complete scanout may own it. A smaller
+    # application swapchain is a successful no-op: failing it makes the UMD
+    # reopen/back off the adapter, while copying it at the origin corrupts the
+    # desktop with stale right/bottom bands.
     publish = canonical_code(function_body("VioGpuAdapter::PublishPresentBlit", VIOGPU_SOURCE))
     for fragment in (
-        "width>m_FrameBufWidth||height>m_FrameBufHeight",
+        "constUINTscanoutWidth=m_FrameBufWidth;",
+        "constUINTscanoutHeight=m_FrameBufHeight;",
+        "m_pVioGpuDod->RecordDisplayValue(50,static_cast<LONG>(scanoutWidth));",
+        "m_pVioGpuDod->RecordDisplayValue(51,static_cast<LONG>(scanoutHeight));",
+        "if(width!=scanoutWidth||height!=scanoutHeight)",
+        "m_pVioGpuDod->CountDisplayEvent(49);",
         "m_PublishedScanoutResourceId!=resourceId",
         "m_CtrlQueue.SetScanout(0,resourceId,scanoutWidth,scanoutHeight,0,0)",
         "m_PublishedScanoutResourceId=resourceId;",
@@ -7705,6 +7712,26 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     ):
         if publish.count(fragment) != 1:
             fail(f"frame publication must target the scanned-out surface: {fragment}")
+    geometry_reject = publish.find("if(width!=scanoutWidth||height!=scanoutHeight)")
+    geometry_count = publish.find("m_pVioGpuDod->CountDisplayEvent(49);", geometry_reject)
+    geometry_success = publish.find("returnSTATUS_SUCCESS;", geometry_count)
+    first_copy = publish.find("RtlCopyMemory(")
+    if geometry_reject < 0 or geometry_count < geometry_reject or \
+       geometry_success < geometry_count or first_copy < geometry_success:
+        fail("mismatched present geometry must succeed without copying or publishing")
+    if "volatileLONGm_DisplayCounters[52];" not in canonical_code(VIOGPU_HEADER_CODE):
+        fail("display diagnostics must keep independent slots for geometry and timing")
+    for fragment in (
+        "adapter->RecordDisplayValue(46,static_cast<LONG>(request.ReadbackUsec>MAXLONG?MAXLONG:request.ReadbackUsec));",
+        "CountDisplayEvent(48);",
+        'L"NativeDisplayBlitReadbackUsec"',
+        'L"NativeDisplayScanoutRefreshes"',
+        'L"NativeDisplayPresentGeometryRejects"',
+        'L"NativeDisplayExpectedScanoutWidth"',
+        'L"NativeDisplayExpectedScanoutHeight"',
+    ):
+        if fragment not in canonical_code(WDDM_DDI_CODE + VIOGPU_SOURCE):
+            fail(f"display diagnostics must keep distinct counter ownership: {fragment}")
     # The cached binding skips a scanout rebuild per frame, but only stays safe
     # while it starts at zero and every other path that re-points scanout 0
     # drops it: an uninitialised value that matched the framebuffer once made

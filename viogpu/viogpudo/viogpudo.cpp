@@ -5696,8 +5696,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayStandardAllocRejects = ReadDisplayCounter(43);
     DWORD displayStandardAllocStatus = ReadDisplayCounter(44);
     DWORD displayBlitKernelUsec = ReadDisplayCounter(45);
-    DWORD displayScanoutRefreshes = ReadDisplayCounter(46);
+    DWORD displayBlitReadbackUsec = ReadDisplayCounter(46);
     DWORD displayBlitPayloadNonBlack = ReadDisplayCounter(47);
+    DWORD displayScanoutRefreshes = ReadDisplayCounter(48);
+    DWORD displayPresentGeometryRejects = ReadDisplayCounter(49);
+    DWORD displayExpectedScanoutWidth = ReadDisplayCounter(50);
+    DWORD displayExpectedScanoutHeight = ReadDisplayCounter(51);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -6059,10 +6063,18 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayStandardAllocStatus},
                                                                                                         {L"NativeDisplayBlitKernelUsec",
                                                                                                          &displayBlitKernelUsec},
-                                                                                                        {L"NativeDisplayScanoutRefreshes",
-                                                                                                         &displayScanoutRefreshes},
+                                                                                                        {L"NativeDisplayBlitReadbackUsec",
+                                                                                                         &displayBlitReadbackUsec},
                                                                                                         {L"NativeDisplayBlitPayloadNonBlack",
                                                                                                          &displayBlitPayloadNonBlack},
+                                                                                                        {L"NativeDisplayScanoutRefreshes",
+                                                                                                         &displayScanoutRefreshes},
+                                                                                                        {L"NativeDisplayPresentGeometryRejects",
+                                                                                                         &displayPresentGeometryRejects},
+                                                                                                        {L"NativeDisplayExpectedScanoutWidth",
+                                                                                                         &displayExpectedScanoutWidth},
+                                                                                                        {L"NativeDisplayExpectedScanoutHeight",
+                                                                                                         &displayExpectedScanoutHeight},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -8459,20 +8471,40 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
         return STATUS_INVALID_PARAMETER;
     }
 
-    /* The frame only has to fit the scanned-out surface. A window is rarely the
-     * size of the desktop -- the first real client published 853x683 against a
-     * 1280x1024 framebuffer -- so copy what arrives into the top left and leave
-     * the rest of the surface alone, publishing the whole thing afterwards. */
-    if (m_pFrameBuf == NULL || m_FrameBufWidth == 0 || m_FrameBufHeight == 0 ||
-        width > m_FrameBufWidth || height > m_FrameBufHeight)
+    if (m_pFrameBuf == NULL || m_FrameBufWidth == 0 || m_FrameBufHeight == 0)
     {
         return STATUS_DEVICE_NOT_READY;
     }
 
-    const UINT destinationPitch = m_FrameBufWidth * 4U;
+    const UINT scanoutWidth = m_FrameBufWidth;
+    const UINT scanoutHeight = m_FrameBufHeight;
+    if (width > MAXUINT / 4U || scanoutWidth > MAXUINT / 4U)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
     const UINT copyBytes = width * 4U;
-    if (sourcePitch < copyBytes || payloadSize / height < sourcePitch ||
-        m_pFrameBuf->GetSize() / m_FrameBufHeight < destinationPitch)
+    if (sourcePitch < copyBytes || payloadSize / height < sourcePitch)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    m_pVioGpuDod->RecordDisplayValue(50, static_cast<LONG>(scanoutWidth));
+    m_pVioGpuDod->RecordDisplayValue(51, static_cast<LONG>(scanoutHeight));
+
+    /* A swapchain present is not necessarily a composed desktop frame. Giving
+     * a smaller application surface ownership of scanout 0 places it at the
+     * origin and leaves stale pixels to its right and below. Treat that common
+     * case as a successful no-op so it neither corrupts the desktop nor makes
+     * the UMD reopen the adapter and back off future full-desktop frames. */
+    if (width != scanoutWidth || height != scanoutHeight)
+    {
+        m_pVioGpuDod->CountDisplayEvent(49);
+        return STATUS_SUCCESS;
+    }
+
+    const UINT destinationPitch = scanoutWidth * 4U;
+    if (m_pFrameBuf->GetSize() / scanoutHeight < destinationPitch)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -8524,8 +8556,6 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
      * before them, so the screen kept the firmware's image. Correctness here is
      * worth far more than the command. */
     const UINT resourceId = m_pFrameBuf->GetId();
-    const UINT scanoutWidth = m_FrameBufWidth;
-    const UINT scanoutHeight = m_FrameBufHeight;
     if (m_PublishedScanoutResourceId != resourceId)
     {
         if (!m_CtrlQueue.SetScanout(0, resourceId, scanoutWidth, scanoutHeight, 0, 0))
@@ -12840,7 +12870,7 @@ void VioGpuAdapter::RefreshActiveScanout(void)
     if (m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0) &&
         m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0))
     {
-        m_pVioGpuDod->CountDisplayEvent(46);
+        m_pVioGpuDod->CountDisplayEvent(48);
     }
 }
 
