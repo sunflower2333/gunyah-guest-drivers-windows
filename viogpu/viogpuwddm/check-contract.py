@@ -4606,7 +4606,7 @@ def check_wddm_standard_paging() -> None:
         "allocation->ApertureMappedPageCount!=allocation->AperturePageCount",
         "AllocateApertureBackingEntries(allocation,&entries,&entryCount)",
         "EnsureApertureCpuMapping(allocation)",
-        "snapshot.Adapter->CreateNativeGuestAllocation(",
+        "nativeIdentity.Adapter->CreateNativeGuestAllocation(",
         "adapter->Create2DResourceBacking(",
     ):
         if fragment not in map_allocation:
@@ -4687,7 +4687,7 @@ def check_wddm_standard_paging() -> None:
     for fragment in (
         "dummyPage.QuadPart<0",
         "numberOfPages>(VIOGPU_WDDM_APERTURE_SIZE>>PAGE_SHIFT)-offsetInPages",
-        "snapshot.Adapter->DestroyNativeGuestAllocation(",
+        "nativeIdentity.Adapter->DestroyNativeGuestAllocation(",
         "adapter->Destroy2DResource(",
         "adapter->Detach2DScanoutResource(allocation->ResourceId,&detached)",
         "nativeAllocation&&allocation->HostState!=VioGpuWddmAllocationHostNone&&!snapshotAcquired",
@@ -4716,6 +4716,27 @@ def check_wddm_standard_paging() -> None:
         ),
         "aperture unmap must classify a dead registration as retired before releasing ownership",
     )
+    for aperture_name, aperture_body, host_call in (
+        ("map", map_allocation, "nativeIdentity.Adapter->CreateNativeGuestAllocation(&nativeIdentity,"),
+        ("unmap", unmap_allocation, "nativeIdentity.Adapter->DestroyNativeGuestAllocation(&nativeIdentity,"),
+    ):
+        operation = aperture_body.find("BOOLEANnativeOperation=adapter->AcquireNativeSubmissionOperation();")
+        identity = aperture_body.find("VIOGPU_NATIVE_CONTEXT_SNAPSHOTnativeIdentity=snapshot;", operation)
+        release_snapshot = aperture_body.find("VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);", identity)
+        clear_snapshot = aperture_body.find("snapshotAcquired=FALSE;", release_snapshot)
+        host = aperture_body.find(host_call, clear_snapshot)
+        release_operation = aperture_body.find("adapter->ReleaseNativeSubmissionOperation();", host)
+        handoff = (operation, identity, release_snapshot, clear_snapshot, host, release_operation)
+        if min(handoff) < 0 or list(handoff) != sorted(handoff):
+            fail(f"aperture {aperture_name} must hand lifecycle ownership to submit rundown before its Host request")
+    for aperture_name, aperture_body in (
+        ("map", map_allocation),
+        ("unmap", unmap_allocation),
+    ):
+        if aperture_body.count("AcquireNativeSubmissionOperation()") != 1 or aperture_body.count(
+            "ReleaseNativeSubmissionOperation();"
+        ) != 1:
+            fail(f"aperture {aperture_name} must balance exactly one Host-operation rundown handoff")
     # VidMm's UNMAP_APERTURE_SEGMENT is a notification, not a request: the pages
     # are already gone from the allocation.  Refusing one only returns an
     # illegal status from DxgkDdiBuildPagingBuffer, which bugchecks 0x10E.
@@ -4738,7 +4759,7 @@ def check_wddm_standard_paging() -> None:
         if fragment not in allocation_retirement:
             fail(f"Native allocation reset retirement must require confirmed generation proof: {fragment}")
     host_release = min(
-        unmap_allocation.find("snapshot.Adapter->DestroyNativeGuestAllocation("),
+        unmap_allocation.find("nativeIdentity.Adapter->DestroyNativeGuestAllocation("),
         unmap_allocation.find("adapter->Destroy2DResource("),
     )
     release_mapping = unmap_allocation.find("ReleaseApertureCpuMapping(allocation);", host_release)
@@ -4749,15 +4770,30 @@ def check_wddm_standard_paging() -> None:
         fail("aperture unmap must not publish DummyPage state after a failed Host retirement")
 
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
-    destroy_host = destroy_allocation.find(
-        "status=ReleaseAllocationHostOwnership(allocation,&snapshot,snapshotAcquired);"
+    destroy_required = destroy_allocation.find("BOOLEANhostReleaseRequired=snapshotAcquired&&")
+    destroy_operation = destroy_allocation.find("nativeOperation=adapter->AcquireNativeSubmissionOperation();",
+                                                destroy_required)
+    destroy_identity = destroy_allocation.find("nativeIdentity=snapshot;", destroy_operation)
+    destroy_release_snapshot = destroy_allocation.find("VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);",
+                                                       destroy_identity)
+    destroy_clear_snapshot = destroy_allocation.find("snapshotAcquired=FALSE;", destroy_release_snapshot)
+    destroy_handoff = (
+        destroy_required,
+        destroy_operation,
+        destroy_identity,
+        destroy_release_snapshot,
+        destroy_clear_snapshot,
     )
+    destroy_host = destroy_allocation.find("status=ReleaseAllocationHostOwnership(allocation,",
+                                           destroy_clear_snapshot)
     destroy_placement = destroy_allocation.find("ClearNativePlacement(allocation);", destroy_host)
     destroy_mapping = destroy_allocation.find("ReleaseApertureMapping(allocation);", destroy_placement)
-    if min(destroy_host, destroy_placement, destroy_mapping) < 0 or not (
-        destroy_host < destroy_placement < destroy_mapping
+    destroy_release_operation = destroy_allocation.find("adapter->ReleaseNativeSubmissionOperation();", destroy_host)
+    if min(*destroy_handoff, destroy_host, destroy_release_operation, destroy_placement, destroy_mapping) < 0 or not (
+        list(destroy_handoff) == sorted(destroy_handoff)
+        and destroy_handoff[-1] < destroy_host < destroy_release_operation < destroy_placement < destroy_mapping
     ):
-        fail("native allocation destroy must release Host ownership, placement, and retained MDL state in order")
+        fail("native allocation destroy must hand off lifecycle ownership before Host release and retained-state cleanup")
 
     software = canonical_code(function_body("BuildSoftwarePagingTransaction", WDDM_DDI_CODE))
     for fragment in (
@@ -5819,20 +5855,29 @@ def check_wddm_present_contract() -> None:
             "VioGpuWddmPresentExecuteStateTransition",
         ):
             fail(f"Present execution must classify its first failure at {stage_name}")
-    require_order(
-        execute,
-        (
-            "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
-            "KeMemoryBarrier();",
-            "KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);",
-            "ProbePresentCopy(transaction,&copyProbe);",
-            "transaction->Adapter->Present2DResource(",
-            "transaction->Adapter->RecordNativePresentCopyProbe(&copyProbe);",
-            "BuildPresentExecutionDiagnostic(transaction,*failureStage,status,*failureDetail,executionDiagnostic);",
-            "KeReleaseMutex(&destination->LifecycleMutex,FALSE);",
-        ),
-        "Present must publish CPU row writes, notify Host, and snapshot execution while allocation state remains locked",
+    source_acquire = execute.find(
+        "sourceSnapshotAcquired=nativeSource&&AcquireAllocationNativeContextSnapshot(source,&sourceSnapshot);"
     )
+    source_release = execute.find("VioGpuAdapter::ReleaseNativeContextSnapshot(&sourceSnapshot);", source_acquire)
+    source_clear = execute.find("sourceSnapshotAcquired=FALSE;", source_release)
+    present_sequence = (
+        source_acquire,
+        source_release,
+        source_clear,
+        execute.find("RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);", source_clear),
+        execute.find("KeMemoryBarrier();", source_clear),
+        execute.find("KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);", source_clear),
+        execute.find("ProbePresentCopy(transaction,&copyProbe);", source_clear),
+        execute.find("transaction->Adapter->Present2DResource(", source_clear),
+        execute.find("transaction->Adapter->RecordNativePresentCopyProbe(&copyProbe);", source_clear),
+        execute.find("BuildPresentExecutionDiagnostic(transaction,*failureStage,status,*failureDetail,executionDiagnostic);",
+                     source_clear),
+        execute.find("KeReleaseMutex(&destination->LifecycleMutex,FALSE);", source_clear),
+    )
+    if min(present_sequence) < 0 or list(present_sequence) != sorted(present_sequence):
+        fail("Present must release context ownership before publishing CPU rows and notifying Host under allocation locks")
+    if execute.count("VioGpuAdapter::ReleaseNativeContextSnapshot(&sourceSnapshot);") != 2:
+        fail("Present must release its source snapshot through the early handoff or fallback cleanup")
     if execute.count("KeMemoryBarrier();") != 1:
         fail("Present must retain exactly one CPU-to-Host ordering barrier after its row-copy batch")
     if execute.count("KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);") != 1:
@@ -8175,7 +8220,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     )
     validate_call = render.find(
         "status=ValidateCommandHeader(command,render->CommandLength,context->Device,render->pAllocationList,"
-        "render->AllocationListSize,patchSnapshot,render->PatchLocationListInSize,&snapshot);"
+        "render->AllocationListSize,patchSnapshot,render->PatchLocationListInSize,&nativeContext);"
     )
     snapshot_sequence = (probe_command, copy_command, probe_patch, copy_patch, snapshot_command, validate_call)
     if min(snapshot_sequence) < 0 or list(snapshot_sequence) != sorted(snapshot_sequence):
@@ -8189,7 +8234,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
 
     generation_check = render.find(
         "if(NT_SUCCESS(status)&&"
-        "!snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation,snapshot.ResetGeneration))"
+        "!nativeContext.Adapter->IsNativeContextGenerationCurrent(nativeContext.Generation,nativeContext.ResetGeneration))"
     )
     if generation_check < 0 or generation_check < validate_call:
         fail("Render must revalidate its reset generation after private ABI validation")
@@ -8210,7 +8255,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "RtlZeroMemory(privateData,sizeof(*privateData));",
         "privateData->Signature=VIOGPU_WDDM_DMA_SIGNATURE;",
         "privateData->DmaBuffer=dmaBuffer;",
-        "privateData->ResetGeneration=snapshot.ResetGeneration;",
+        "privateData->ResetGeneration=nativeContext.ResetGeneration;",
         "render->pDmaBuffer=static_cast<BYTE*>(dmaBuffer)+render->CommandLength;",
         "render->pPatchLocationListOut=patchOutput+render->PatchLocationListInSize;",
         "render->MultipassOffset=render->CommandLength;",
@@ -8232,8 +8277,8 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         )
     ):
         fail("Render must never publish directly from mutable UMD input")
-    if render.count("snapshot.ResetGeneration") != 2 or render.count(
-        "privateData->ResetGeneration=snapshot.ResetGeneration;"
+    if render.count("nativeContext.ResetGeneration") != 2 or render.count(
+        "privateData->ResetGeneration=nativeContext.ResetGeneration;"
     ) != 1:
         fail("Render must validate and retain the exact context reset generation")
 
@@ -9730,8 +9775,8 @@ def check_wddm_context_lifetime() -> None:
         "ExReleaseRundownProtection(&context->Operations);returnSTATUS_INVALID_HANDLE;"
     ]:
         fail("Render must fail closed on rundown acquisition and release it after a bad signature")
-    if render.count("VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);") != 1:
-        fail("Render must release its native-context snapshot exactly once through unified cleanup")
+    if render.count("VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);") != 2:
+        fail("Render must release its native-context snapshot through the rundown handoff or fallback cleanup")
     if render.count("ExReleaseRundownProtection(&context->Operations);") != 4:
         fail("Render must release context operations on both acquisition failures and unified cleanup")
     cleanup_start = render.find("NTSTATUSstatus=STATUS_SUCCESS;")
@@ -9742,12 +9787,22 @@ def check_wddm_context_lifetime() -> None:
         "if(contextSubmissionReference){ReleaseContextSubmissionReference(context);}"
         "delete[]patchSnapshot;"
         "delete[]commandSnapshot;"
-        "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);"
+        "if(snapshotAcquired){VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);}"
         "if(hardwareOperation){context->Device->Adapter->ReleaseNativeSubmissionOperation();}"
         "ExReleaseRundownProtection(&context->Operations);returnstatus;"
     )
     if cleanup_start < acquire or render[cleanup_start:].count("return") != 1 or not render.endswith(render_cleanup):
         fail("Render must free both snapshots and release both lifetime guards through one tail path")
+    require_order(
+        render,
+        (
+            "BOOLEANhardwareOperation=context->Device->Adapter->AcquireNativeSubmissionOperation();",
+            "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);",
+            "snapshotAcquired=FALSE;",
+            "ProbeForRead(const_cast<PVOID>(render->pCommand),render->CommandLength,1);",
+        ),
+        "Render must hand lifecycle ownership to hardware rundown before touching pageable UMD input",
+    )
 
 
 def check_wddm_submission_lifetime() -> None:
@@ -10115,7 +10170,7 @@ def check_wddm_submission_lifetime() -> None:
             "ValidateNativeAllocationDestroyState(allocation)",
             "snapshotAcquired=AcquireAllocationNativeContextSnapshot(allocation,&snapshot);",
             "status=BeginAllocationDestroy(allocation);",
-            "status=ReleaseAllocationHostOwnership(allocation,&snapshot,snapshotAcquired);",
+            "status=ReleaseAllocationHostOwnership(allocation,",
             "if(status!=STATUS_SUCCESS)",
             "status=DetachAllocationNativeContext(allocation);",
             "InterlockedDecrement(&allocation->Resource->AllocationCount);",
@@ -10397,12 +10452,12 @@ def check_wddm_submission_lifetime() -> None:
     require_order(
         render,
         (
-            "ValidateNativeSubmitPacket(command,context->Device,render->pAllocationList,render->AllocationListSize,&snapshot)",
-            "!snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation,snapshot.ResetGeneration)",
+            "ValidateNativeSubmitPacket(command,context->Device,render->pAllocationList,render->AllocationListSize,&nativeContext)",
+            "!nativeContext.Adapter->IsNativeContextGenerationCurrent(nativeContext.Generation,nativeContext.ResetGeneration)",
             "status=AcquireContextSubmissionReference(context);",
             "status=AcquireRenderAllocationReferences(validatedCommand,",
             "status=ApplyRenderPrepatches(reinterpret_cast<VIOGPU_WDDM_RENDER_COMMAND*>(commandSnapshot),",
-            "PrepareNativeSubmit(snapshot.ContextId,commandStream,validatedCommand->CommandStreamSize)",
+            "PrepareNativeSubmit(nativeContext.ContextId,commandStream,validatedCommand->CommandStreamSize)",
             "submission=new(NonPagedPoolNx)VIOGPU_WDDM_SUBMISSION;",
             "RtlCopyMemory(dmaBuffer,commandSnapshot,render->CommandLength);",
             "status=PublishPreparedSubmission(submission,",

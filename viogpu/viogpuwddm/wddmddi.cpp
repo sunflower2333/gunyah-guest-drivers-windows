@@ -3266,6 +3266,16 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
         }
     }
 
+    /* The allocation lifecycles keep both objects stable for the CPU copy and
+     * Present2DResource owns its own hardware rundown.  The native snapshot is
+     * only needed to validate the source identity; retaining it across the
+     * Host round trip serializes every context behind one slow present. */
+    if (sourceSnapshotAcquired)
+    {
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&sourceSnapshot);
+        sourceSnapshotAcquired = FALSE;
+    }
+
     if (NT_SUCCESS(status))
     {
         if (source->ApertureAddress == NULL || destination->ApertureAddress == NULL)
@@ -5046,7 +5056,35 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
                     {
                         if (IsNativeAllocation(allocation))
                         {
-                            status = ReleaseAllocationHostOwnership(allocation, &snapshot, snapshotAcquired);
+                            VIOGPU_NATIVE_CONTEXT_SNAPSHOT nativeIdentity = {};
+                            BOOLEAN nativeOperation = FALSE;
+                            BOOLEAN hostReleaseRequired = snapshotAcquired &&
+                                                          allocation->HostState != VioGpuWddmAllocationHostNone &&
+                                                          !AllocationResetRetired(allocation);
+                            if (hostReleaseRequired)
+                            {
+                                nativeOperation = adapter->AcquireNativeSubmissionOperation();
+                                if (!nativeOperation)
+                                {
+                                    status = STATUS_DEVICE_NOT_READY;
+                                }
+                                else
+                                {
+                                    nativeIdentity = snapshot;
+                                    VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+                                    snapshotAcquired = FALSE;
+                                }
+                            }
+                            if (status == STATUS_SUCCESS)
+                            {
+                                status = ReleaseAllocationHostOwnership(allocation,
+                                                                        nativeOperation ? &nativeIdentity : &snapshot,
+                                                                        nativeOperation || snapshotAcquired);
+                            }
+                            if (nativeOperation)
+                            {
+                                adapter->ReleaseNativeSubmissionOperation();
+                            }
                             RecordNativeAllocationDestroyState(adapter,
                                                                VioGpuNativeAllocationDestroyHost,
                                                                status,
@@ -6501,38 +6539,51 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     {
         if (nativeAllocation)
         {
-            UINT msmFlags = MSM_BO_CACHED_COHERENT;
-            if ((allocation->Flags & VIOGPU_WDDM_ALLOCATION_GPU_READ_ONLY) != 0)
+            BOOLEAN nativeOperation = adapter->AcquireNativeSubmissionOperation();
+            if (!nativeOperation)
             {
-                msmFlags |= MSM_BO_GPU_READONLY;
+                status = STATUS_DEVICE_NOT_READY;
             }
-            UINT blobFlags = VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE;
-            if ((allocation->Flags & VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE) != 0)
+            else
             {
-                blobFlags |= VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE;
+                VIOGPU_NATIVE_CONTEXT_SNAPSHOT nativeIdentity = snapshot;
+                VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+                snapshotAcquired = FALSE;
+
+                UINT msmFlags = MSM_BO_CACHED_COHERENT;
+                if ((allocation->Flags & VIOGPU_WDDM_ALLOCATION_GPU_READ_ONLY) != 0)
+                {
+                    msmFlags |= MSM_BO_GPU_READONLY;
+                }
+                UINT blobFlags = VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE;
+                if ((allocation->Flags & VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE) != 0)
+                {
+                    blobFlags |= VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE;
+                }
+                BOOLEAN ownershipRetained = FALSE;
+                VIOGPU_HOST_CONTEXT_RESULT result = nativeIdentity.Adapter->CreateNativeGuestAllocation(&nativeIdentity,
+                                                                                                          allocation->ResourceId,
+                                                                                                          allocation->BlobId,
+                                                                                                          allocation->PrivateData.Size,
+                                                                                                          allocation->BackingSize,
+                                                                                                          allocation->PrivateData.RequestedIova,
+                                                                                                          entries,
+                                                                                                          entryCount,
+                                                                                                          msmFlags,
+                                                                                                          blobFlags,
+                                                                                                          &ownershipRetained);
+                if (ownershipRetained)
+                {
+                    PublishNativePlacement(allocation,
+                                           &nativeIdentity,
+                                           placementOffset,
+                                           result == VioGpuHostContextConfirmed ? VioGpuWddmAllocationHostLive
+                                                                                : VioGpuWddmAllocationHostUnknown);
+                }
+                status = result == VioGpuHostContextConfirmed && ownershipRetained ? STATUS_SUCCESS
+                                                                                   : STATUS_DEVICE_NOT_READY;
+                adapter->ReleaseNativeSubmissionOperation();
             }
-            BOOLEAN ownershipRetained = FALSE;
-            VIOGPU_HOST_CONTEXT_RESULT result = snapshot.Adapter->CreateNativeGuestAllocation(&snapshot,
-                                                                                              allocation->ResourceId,
-                                                                                              allocation->BlobId,
-                                                                                              allocation->PrivateData.Size,
-                                                                                              allocation->BackingSize,
-                                                                                              allocation->PrivateData.RequestedIova,
-                                                                                              entries,
-                                                                                              entryCount,
-                                                                                              msmFlags,
-                                                                                              blobFlags,
-                                                                                              &ownershipRetained);
-            if (ownershipRetained)
-            {
-                PublishNativePlacement(allocation,
-                                       &snapshot,
-                                       placementOffset,
-                                       result == VioGpuHostContextConfirmed ? VioGpuWddmAllocationHostLive
-                                                                            : VioGpuWddmAllocationHostUnknown);
-            }
-            status = result == VioGpuHostContextConfirmed && ownershipRetained ? STATUS_SUCCESS
-                                                                               : STATUS_DEVICE_NOT_READY;
         }
         else
         {
@@ -6712,18 +6763,32 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
         }
         else
         {
-            VIOGPU_HOST_CONTEXT_RESULT result = snapshot.Adapter->DestroyNativeGuestAllocation(&snapshot,
-                                                                                               allocation->ResourceId,
-                                                                                               &released);
-            status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
-            if (!NT_SUCCESS(status))
+            BOOLEAN nativeOperation = adapter->AcquireNativeSubmissionOperation();
+            if (!nativeOperation)
             {
+                status = STATUS_DEVICE_NOT_READY;
                 unmapStage = VioGpuApertureStageUnmapHost;
-                unmapDetail = (static_cast<DWORD>(result) << 4) | (released ? 1u : 0u);
             }
-            if (released)
+            else
             {
-                ClearAllocationHostBinding(allocation);
+                VIOGPU_NATIVE_CONTEXT_SNAPSHOT nativeIdentity = snapshot;
+                VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+                snapshotAcquired = FALSE;
+
+                VIOGPU_HOST_CONTEXT_RESULT result = nativeIdentity.Adapter->DestroyNativeGuestAllocation(&nativeIdentity,
+                                                                                                           allocation->ResourceId,
+                                                                                                           &released);
+                status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+                if (!NT_SUCCESS(status))
+                {
+                    unmapStage = VioGpuApertureStageUnmapHost;
+                    unmapDetail = (static_cast<DWORD>(result) << 4) | (released ? 1u : 0u);
+                }
+                if (released)
+                {
+                    ClearAllocationHostBinding(allocation);
+                }
+                adapter->ReleaseNativeSubmissionOperation();
             }
         }
     }
@@ -7591,6 +7656,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
         ExReleaseRundownProtection(&context->Operations);
         return STATUS_DEVICE_NOT_READY;
     }
+    VIOGPU_NATIVE_CONTEXT_SNAPSHOT nativeContext = snapshot;
+    BOOLEAN snapshotAcquired = TRUE;
 
     NTSTATUS status = STATUS_SUCCESS;
     BYTE *commandSnapshot = NULL;
@@ -7608,6 +7675,16 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
     if (!hardwareOperation)
     {
         status = STATUS_DEVICE_NOT_READY;
+    }
+    else
+    {
+        /* context->Operations blocks DestroyContext and the native submission
+         * operation blocks transport teardown.  Once both are held, the
+         * immutable identity can outlive this snapshot without retaining the
+         * device-global lifecycle mutex across user-memory probes and submit
+         * construction. */
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+        snapshotAcquired = FALSE;
     }
     if (NT_SUCCESS(status) &&
         (render->DmaSize < render->CommandLength || render->PatchLocationListOutSize < render->PatchLocationListInSize))
@@ -7640,14 +7717,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
                                            render->AllocationListSize,
                                            patchSnapshot,
                                            render->PatchLocationListInSize,
-                                           &snapshot);
+                                           &nativeContext);
             if (NT_SUCCESS(status))
             {
                 status = ValidateNativeSubmitPacket(command,
                                                     context->Device,
                                                     render->pAllocationList,
                                                     render->AllocationListSize,
-                                                    &snapshot);
+                                                    &nativeContext);
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -7657,7 +7734,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
     }
 
     if (NT_SUCCESS(status) &&
-        !snapshot.Adapter->IsNativeContextGenerationCurrent(snapshot.Generation, snapshot.ResetGeneration))
+        !nativeContext.Adapter->IsNativeContextGenerationCurrent(nativeContext.Generation,
+                                                                  nativeContext.ResetGeneration))
     {
         status = STATUS_DEVICE_NOT_READY;
     }
@@ -7690,7 +7768,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
                                        context->Device,
                                        render->pAllocationList,
                                        render->AllocationListSize,
-                                       &snapshot,
+                                       &nativeContext,
                                        &fullyPrepatched);
     }
 
@@ -7698,7 +7776,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
     {
         const BYTE *commandStream = reinterpret_cast<const BYTE *>(validatedCommand) +
                                     validatedCommand->CommandStreamOffset;
-        virtioBuffer = context->Device->Adapter->PrepareNativeSubmit(snapshot.ContextId,
+        virtioBuffer = context->Device->Adapter->PrepareNativeSubmit(nativeContext.ContextId,
                                                                      commandStream,
                                                                      validatedCommand->CommandStreamSize);
         if (virtioBuffer == NULL)
@@ -7730,9 +7808,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
         privateData->DmaBuffer = dmaBuffer;
         privateData->DmaBufferSize = render->DmaSize;
         privateData->CommandLength = render->CommandLength;
-        privateData->ContextId = snapshot.ContextId;
-        privateData->Generation = snapshot.Generation;
-        privateData->ResetGeneration = snapshot.ResetGeneration;
+        privateData->ContextId = nativeContext.ContextId;
+        privateData->Generation = nativeContext.Generation;
+        privateData->ResetGeneration = nativeContext.ResetGeneration;
         privateData->Packet = dmaBuffer;
         privateData->PacketLength = render->CommandLength;
         privateData->Reserved = 0;
@@ -7752,7 +7830,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
                                            render->CommandLength,
                                            virtioBuffer,
                                            fullyPrepatched,
-                                           &snapshot);
+                                           &nativeContext);
         if (NT_SUCCESS(status))
         {
             submissionPublished = TRUE;
@@ -7804,7 +7882,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
     }
     delete[] patchSnapshot;
     delete[] commandSnapshot;
-    VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+    if (snapshotAcquired)
+    {
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+    }
     if (hardwareOperation)
     {
         context->Device->Adapter->ReleaseNativeSubmissionOperation();
