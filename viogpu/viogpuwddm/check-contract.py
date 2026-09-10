@@ -10923,16 +10923,14 @@ def check_wddm_submission_lifetime() -> None:
     require_order(
         fault,
         (
-            "BOOLEANvalidIdentity=fenceId!=0&&nodeOrdinal==0&&engineOrdinal==0;",
             "RequestHardwareResetAtAnyIrql();",
             "InvalidateNativeFenceTracker();",
             "adapter->FailNativeContextAtAnyIrql();",
-            "if(!validIdentity){return;}",
-            "notify.InterruptType=DXGK_INTERRUPT_DMA_FAULTED;",
-            "NotifyNativeSchedulerInterrupt(&notify,queueDpc);",
         ),
-        "a malformed fault identity must still close outer and inner publication before suppressing the scheduler callback",
+        "every fault identity must close outer and inner publication before waiting for scheduler recovery",
     )
+    if "NotifyNativeSchedulerInterrupt(" in fault or "CompleteNativeFenceReset(" in fault:
+        fail("a submission fault must leave the packet incomplete for TDR, without reserved fault interrupts or fake completion")
 
     invalidate = canonical_code(function_body("VioGpuDod::InvalidateNativeFenceTracker", VIOGPU_CODE))
     if (

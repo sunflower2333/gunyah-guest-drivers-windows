@@ -1319,7 +1319,11 @@ __declspec(noinline) void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fence
         InterlockedExchange(&m_NativeSubmissionFaultDiagnosticRecorded, 2);
     }
 #endif
-    BOOLEAN validIdentity = fenceId != 0 && nodeOrdinal == 0 && engineOrdinal == 0;
+    UNREFERENCED_PARAMETER(fenceId);
+    UNREFERENCED_PARAMETER(status);
+    UNREFERENCED_PARAMETER(nodeOrdinal);
+    UNREFERENCED_PARAMETER(engineOrdinal);
+    UNREFERENCED_PARAMETER(queueDpc);
     RequestHardwareResetAtAnyIrql();
 #if defined(VIOGPU_NATIVE_CONTEXT)
     /* A fault invalidates every pending fence in this transport generation.
@@ -1337,18 +1341,14 @@ __declspec(noinline) void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fence
         }
         ExReleaseRundownProtection(&m_HardwareOperations);
     }
-    if (!validIdentity)
-    {
-        return;
-    }
-
-    DXGKARGCB_NOTIFY_INTERRUPT_DATA notify = {};
-    notify.InterruptType = DXGK_INTERRUPT_DMA_FAULTED;
-    notify.DmaFaulted.FaultedFenceId = fenceId;
-    notify.DmaFaulted.Status = status;
-    notify.DmaFaulted.NodeOrdinal = nodeOrdinal;
-    notify.DmaFaulted.EngineOrdinal = engineOrdinal;
-    NotifyNativeSchedulerInterrupt(&notify, queueDpc);
+    /* DXGK_INTERRUPT_DMA_FAULTED is reserved for the OS, not a public TDR
+     * request. Reporting it can retire the scheduler's failed packet while
+     * leaving our adapter-wide reset gate closed with nothing left to time
+     * out. This WDDM 1.2 driver cannot use the WDDM 2.x page-fault protocol.
+     * Leave the failed packet incomplete: QueryCurrentFence retains the last
+     * real completion, PreemptCommand cannot acknowledge the gated engine,
+     * and the scheduler's timeout invokes ResetFromTimeout/RestartFromTimeout.
+     * Only the completed reset may advance the abandoned fence endpoint. */
 }
 
 void VioGpuDod::NotifyNativeSoftwareCompletion(_In_ UINT fenceId, _In_ UINT nodeOrdinal, _In_ UINT engineOrdinal)

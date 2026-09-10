@@ -14,6 +14,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/power-recovery/**"
+      - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
@@ -35,6 +36,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/power-recovery/**"
+      - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
@@ -110,6 +112,9 @@ jobs:
       - name: Check production D0 recovery and fault interleavings
         shell: pwsh
         run: python viogpu/tests/power-recovery/run.py
+      - name: Execute fault recovery regression
+        shell: pwsh
+        run: python viogpu/tests/fault-recovery/run.py
 
       - name: Parse Native Context diagnostic readers
         shell: pwsh
