@@ -2360,7 +2360,8 @@ DbgPowerActionString(__in POWER_ACTION Type)
 
 NTSTATUS VioGpuDod::SetPowerState(_In_ ULONG HardwareUid,
                                   _In_ DEVICE_POWER_STATE DevicePowerState,
-                                  _In_ POWER_ACTION ActionType)
+                                  _In_ POWER_ACTION ActionType,
+                                  _In_ BOOLEAN acquirePostDisplayOwnership)
 {
     PAGED_CODE();
 
@@ -2380,7 +2381,7 @@ NTSTATUS VioGpuDod::SetPowerState(_In_ ULONG HardwareUid,
         BOOLEAN resetRecovery = FALSE;
         if (DevicePowerState == PowerDeviceD0)
         {
-            if (m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership)
+            if (acquirePostDisplayOwnership && m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership)
             {
                 Status = m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership(m_DxgkInterface.DeviceHandle,
                                                                            &m_SystemDisplayInfo);
@@ -2567,7 +2568,13 @@ NTSTATUS VioGpuDod::RestartFromTimeout(void)
         return STATUS_DEVICE_NOT_READY;
     }
 
-    NTSTATUS status = SetPowerState(DISPLAY_ADAPTER_HW_ID, PowerDeviceD0, PowerActionNone);
+    /* POST display handoff belongs to StartDevice or the OS's D0 power
+     * callback. TDR has already released the old display resources and is
+     * asking this adapter to rebuild its own transport. Calling the POST
+     * callback from RestartFromTimeout can reject that context and abort
+     * recovery before StartNativeContextTransport is reached. Preserve the
+     * checked D0 state machine, using the retained mode without POST handoff. */
+    NTSTATUS status = SetPowerState(DISPLAY_ADAPTER_HW_ID, PowerDeviceD0, PowerActionNone, FALSE);
     if (!NT_SUCCESS(status))
     {
         /* Keep all later DDI entry points fail-closed so a partial restart

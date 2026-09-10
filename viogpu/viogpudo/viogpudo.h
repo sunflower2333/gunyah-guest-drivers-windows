@@ -1076,7 +1076,8 @@ class VioGpuDod
     NTSTATUS DispatchIoRequest(_In_ ULONG VidPnSourceId, _In_ VIDEO_REQUEST_PACKET *pVideoRequestPacket);
     NTSTATUS SetPowerState(_In_ ULONG HardwareUid,
                            _In_ DEVICE_POWER_STATE DevicePowerState,
-                           _In_ POWER_ACTION ActionType);
+                           _In_ POWER_ACTION ActionType,
+                           _In_ BOOLEAN acquirePostDisplayOwnership = TRUE);
     NTSTATUS QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) DXGK_CHILD_DESCRIPTOR *pChildRelations,
                                  _In_ ULONG ChildRelationsSize);
     NTSTATUS QueryChildStatus(_Inout_ DXGK_CHILD_STATUS *pChildStatus, _In_ BOOLEAN NonDestructiveOnly);

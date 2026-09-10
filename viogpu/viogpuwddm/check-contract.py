@@ -11086,8 +11086,17 @@ def check_wddm_submission_lifetime() -> None:
         "D0 recovery must claim Active before publishing the reset fence and reopening submission",
     )
     restart_timeout = canonical_code(function_body("VioGpuDod::RestartFromTimeout", VIOGPU_CODE))
-    if "SetPowerState(DISPLAY_ADAPTER_HW_ID,PowerDeviceD0,PowerActionNone)" not in restart_timeout:
-        fail("RestartFromTimeout must reuse the checked D0 recovery state machine")
+    if "SetPowerState(DISPLAY_ADAPTER_HW_ID,PowerDeviceD0,PowerActionNone,FALSE)" not in restart_timeout:
+        fail("RestartFromTimeout must reuse checked D0 recovery without POST display handoff")
+    post_handoff_blocks = [
+        canonical_code(condition)
+        for condition, body, _, _ in if_blocks(set_power_body)
+        if "Status=m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership(" in canonical_code(body)
+        and canonical_code(condition) != "DevicePowerState==PowerDeviceD0"
+        and canonical_code(condition) != "HardwareUid==DISPLAY_ADAPTER_HW_ID"
+    ]
+    if post_handoff_blocks != ["acquirePostDisplayOwnership&&m_DxgkInterface.DxgkCbAcquirePostDisplayOwnership"]:
+        fail("POST display ownership must be conditional on the caller's actual power-transition context")
     if "ExAcquireRundownProtection(&m_HardwareOperations)" not in restart_timeout:
         fail("RestartFromTimeout must hold hardware rundown while recovering the adapter")
     if "InterlockedExchange(&m_HardwareResetState,VioGpuHardwareResetRequested);" not in restart_timeout:
