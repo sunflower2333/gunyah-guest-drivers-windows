@@ -17,8 +17,26 @@ env:
   PFX_PW: "droidvm"
 
 jobs:
+  zink-wait-tests:
+    name: Zink abandoned-batch recovery regression
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Execute production batch wait and reset-query paths
+        shell: pwsh
+        run: python external/mesa/src/gallium/drivers/zink/zink_batch_wait_test.py
+
   mesa-umd:
     name: Mesa D3D10 UMD (ARM64, cross-compiled)
+    needs: zink-wait-tests
     runs-on: windows-2025-vs2026
 
     steps:
