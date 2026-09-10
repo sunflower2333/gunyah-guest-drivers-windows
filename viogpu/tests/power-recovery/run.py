@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--revision', help='Read an older source revision for a negative control')
@@ -32,4 +33,15 @@ with tempfile.TemporaryDirectory(prefix='viogpu-power-recovery-') as output:
         exe = directory / 'power_recovery_test'
         command = ['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', str(unit), '-o', str(exe)]
     subprocess.run(command, cwd=directory, check=True)
-    raise SystemExit(subprocess.run([str(exe)], cwd=directory).returncode)
+    result = subprocess.run([str(exe)], cwd=directory).returncode
+    # Windows ARM64 may briefly retain the exited x64 image. Retry only the
+    # disposable executable; never replace the test result with cleanup noise.
+    for attempt in range(21):
+        try:
+            exe.unlink()
+            break
+        except PermissionError:
+            if attempt == 20:
+                raise
+            time.sleep(0.25)
+    raise SystemExit(result)
