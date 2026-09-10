@@ -212,6 +212,13 @@ jobs:
           Write-Host "experimental UMD DLL: $testUmd"
           Write-Host "experimental WDDM SYS: $testDriver"
 
+      - name: Preserve full-miniport link maps
+        uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-link-maps
+          path: viogpu/viogpuwddm/objfre_win11_arm64/arm64/*.map
+          if-no-files-found: error
+
       - name: Check registered full-miniport linkage
         shell: pwsh
         run: |
@@ -283,8 +290,8 @@ jobs:
           foreach ($symbol in $requiredTextSymbols) {
             $symbolLines = @($mapLines | Where-Object { $_.Contains($symbol.Pattern) })
             if ($symbolLines.Count -ne 1) {
-              $mapLines | Where-Object { $_ -match 'QueryNativeContextReadiness' } | ForEach-Object { Write-Host "MAP candidate: $_" }
-              throw "linker map must contain exactly one $($symbol.Name) symbol"
+              $symbolLines | ForEach-Object { Write-Host "MAP candidate: $_" }
+              throw "linker map must contain exactly one $($symbol.Name) symbol, found $($symbolLines.Count)"
             }
             $tokens = @($symbolLines[0] -split '\s+' | Where-Object { $_ })
             if ($tokens.Count -lt 2 -or $tokens[0] -notmatch '^(?<Section>[0-9A-Fa-f]{4}):') {
