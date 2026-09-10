@@ -12,7 +12,7 @@ using ULONG_PTR = uintptr_t;
 using NTSTATUS = int32_t;
 using BOOLEAN = bool;
 using KIRQL = unsigned;
-using HANDLE = void*;
+using HANDLE = void *;
 #ifndef _In_
 #define _In_
 #endif
@@ -24,44 +24,90 @@ using HANDLE = void*;
 #ifndef _MSC_VER
 #define __declspec(x)
 #endif
-#define _ReturnAddress() nullptr
-#define __ImageBase simulatedImageBase
-#define VIOGPU_NATIVE_CONTEXT 1
-#define TRUE true
-#define FALSE false
+#define _ReturnAddress()          nullptr
+#define __ImageBase               simulatedImageBase
+#define VIOGPU_NATIVE_CONTEXT     1
+#define TRUE                      true
+#define FALSE                     false
 #define UNREFERENCED_PARAMETER(x) ((void)(x))
-#define NT_SUCCESS(x) ((x) >= 0)
-#define RtlZeroMemory(p, n) std::memset(p, 0, n)
-#define KeMemoryBarrier() ((void)0)
-#define MAXULONG UINT32_MAX
+#define NT_SUCCESS(x)             ((x) >= 0)
+#define RtlZeroMemory(p, n)       std::memset(p, 0, n)
+#define KeMemoryBarrier()         ((void)0)
+#define MAXULONG                  UINT32_MAX
 constexpr NTSTATUS STATUS_SUCCESS = 0, STATUS_INVALID_PARAMETER = -1;
 constexpr unsigned DXGK_INTERRUPT_DMA_FAULTED = 4, DXGK_INTERRUPT_DMA_PREEMPTED = 2;
 char __ImageBase;
-LONG InterlockedExchange(LONG* p, LONG v) { LONG old = *p; *p = v; return old; }
-LONG InterlockedIncrement(LONG* p) { return ++*p; }
-LONG InterlockedCompareExchange(LONG* p, LONG v, LONG old)
-{ LONG result = *p; if (result == old) *p = v; return result; }
-void KeAcquireSpinLock(unsigned*, KIRQL* irql) { *irql = 0; }
-void KeReleaseSpinLock(unsigned*, KIRQL) {}
-bool ExAcquireRundownProtection(bool* available) { return *available; }
-void ExReleaseRundownProtection(bool*) {}
-struct DXGKARGCB_NOTIFY_INTERRUPT_DATA {
+LONG InterlockedExchange(LONG *p, LONG v)
+{
+    LONG old = *p;
+    *p = v;
+    return old;
+}
+LONG InterlockedIncrement(LONG *p)
+{
+    return ++*p;
+}
+LONG InterlockedCompareExchange(LONG *p, LONG v, LONG old)
+{
+    LONG result = *p;
+    if (result == old)
+    {
+        *p = v;
+    }
+    return result;
+}
+void KeAcquireSpinLock(unsigned *, KIRQL *irql)
+{
+    *irql = 0;
+}
+void KeReleaseSpinLock(unsigned *, KIRQL)
+{
+}
+bool ExAcquireRundownProtection(bool *available)
+{
+    return *available;
+}
+void ExReleaseRundownProtection(bool *)
+{
+}
+struct DXGKARGCB_NOTIFY_INTERRUPT_DATA
+{
     unsigned InterruptType;
-    struct { UINT FaultedFenceId; NTSTATUS Status; UINT NodeOrdinal, EngineOrdinal; } DmaFaulted;
-    struct { UINT PreemptionFenceId, LastCompletedFenceId, NodeOrdinal, EngineOrdinal; } DmaPreempted;
+    struct
+    {
+        UINT FaultedFenceId;
+        NTSTATUS Status;
+        UINT NodeOrdinal, EngineOrdinal;
+    } DmaFaulted;
+    struct
+    {
+        UINT PreemptionFenceId, LastCompletedFenceId, NodeOrdinal, EngineOrdinal;
+    } DmaPreempted;
 };
-struct DXGKARG_PREEMPTCOMMAND {
+struct DXGKARG_PREEMPTCOMMAND
+{
     UINT PreemptionFenceId = 50, NodeOrdinal = 0, EngineOrdinal = 0;
-    struct { unsigned Value = 0; } Flags;
+    struct
+    {
+        unsigned Value = 0;
+    } Flags;
 };
-struct DXGKARG_QUERYCURRENTFENCE { UINT NodeOrdinal = 0, EngineOrdinal = 0, CurrentFence = 0; };
-struct VioGpuAdapter {
+struct DXGKARG_QUERYCURRENTFENCE
+{
+    UINT NodeOrdinal = 0, EngineOrdinal = 0, CurrentFence = 0;
+};
+struct VioGpuAdapter
+{
     bool failed = false;
-    void FailNativeContextAtAnyIrql() { failed = true; }
+    void FailNativeContextAtAnyIrql()
+    {
+        failed = true;
+    }
 };
-struct VioGpuDod {
+struct VioGpuDod
+{
     VioGpuAdapter hardware;
-    VioGpuAdapter* m_pHWDevice = &hardware;
+    VioGpuAdapter *m_pHWDevice = &hardware;
     bool m_HardwareOperations = true, reset = false;
     LONG m_NativeSubmissionFaultDiagnosticRecorded = 0, m_NativePresentExecutionDiagnosticRecorded = 0;
     LONG m_NativeSubmissionFaultCallerRva = 0, m_NativeSubmissionFaultExecutionDiagnosticState = 0;
@@ -73,17 +119,47 @@ struct VioGpuDod {
     unsigned m_NativeFences[2] = {42, 0};
     bool pendingPreempt = true;
     std::vector<unsigned> notifications;
-    void RequestHardwareResetAtAnyIrql() { reset = true; }
-    bool IsHardwareResetRequested() const { return reset; }
-    ULONG QueryNativeFenceEpoch() const { return static_cast<ULONG>(m_NativeFenceEpoch); }
-    UINT QueryNativeCompletedFence() const { return static_cast<UINT>(m_NativeCompletedFence); }
-    bool IsNativeFenceQueueEmpty() const { return m_NativeFenceCount == 0; }
-    void CountNativePreemptReset() {}
-    void ResetDevice() { reset = true; }
-    bool DeferNativePreemption(UINT, ULONG) { pendingPreempt = true; return true; }
-    void DiscardDeferredNativePreemption() { pendingPreempt = false; }
-    bool NotifyNativeSchedulerInterrupt(DXGKARGCB_NOTIFY_INTERRUPT_DATA* data, BOOLEAN, ULONG = 0)
-    { notifications.push_back(data->InterruptType); return true; }
+    void RequestHardwareResetAtAnyIrql()
+    {
+        reset = true;
+    }
+    bool IsHardwareResetRequested() const
+    {
+        return reset;
+    }
+    ULONG QueryNativeFenceEpoch() const
+    {
+        return static_cast<ULONG>(m_NativeFenceEpoch);
+    }
+    UINT QueryNativeCompletedFence() const
+    {
+        return static_cast<UINT>(m_NativeCompletedFence);
+    }
+    bool IsNativeFenceQueueEmpty() const
+    {
+        return m_NativeFenceCount == 0;
+    }
+    void CountNativePreemptReset()
+    {
+    }
+    void ResetDevice()
+    {
+        reset = true;
+    }
+    bool DeferNativePreemption(UINT, ULONG)
+    {
+        pendingPreempt = true;
+        return true;
+    }
+    void DiscardDeferredNativePreemption()
+    {
+        pendingPreempt = false;
+    }
+    bool NotifyNativeSchedulerInterrupt(DXGKARGCB_NOTIFY_INTERRUPT_DATA *data, BOOLEAN, ULONG = 0)
+    {
+        notifications.push_back(data->InterruptType);
+        return true;
+    }
     void InvalidateNativeFenceTracker();
     void CompleteNativeFenceReset();
     void NotifyNativeSubmissionFault(UINT, NTSTATUS, UINT, UINT, BOOLEAN, DWORD = 0, NTSTATUS = 0, DWORD = 0);
@@ -93,16 +169,28 @@ struct VioGpuDod {
 int main()
 {
     unsigned checks = 0, failures = 0;
-    auto check = [&](bool ok, const char* label) {
+    auto check = [&](bool ok, const char *label) {
         ++checks;
-        if (!ok) { ++failures; std::printf("FAIL: %s\n", label); }
+        if (!ok)
+        {
+            ++failures;
+            std::printf("FAIL: %s\n", label);
+        }
     };
-    for (unsigned mode = 0; mode < 4; ++mode) {
+    for (unsigned mode = 0; mode < 4; ++mode)
+    {
         VioGpuDod device;
-        if (mode == 2) device.m_HardwareOperations = false;
-        if (mode == 3) device.m_pHWDevice = nullptr;
+        if (mode == 2)
+        {
+            device.m_HardwareOperations = false;
+        }
+        if (mode == 3)
+        {
+            device.m_pHWDevice = nullptr;
+        }
         device.NotifyNativeSubmissionFault(mode == 1 ? 0 : 42, -7, mode == 1 ? 9 : 0, 0, TRUE);
-        check(device.reset && device.m_NativeFenceNotificationClosed, "fault closes publication even without identity/transport");
+        check(device.reset && device.m_NativeFenceNotificationClosed,
+              "fault closes publication even without identity/transport");
         check(mode >= 2 || device.hardware.failed, "available host transport is invalidated");
         check(device.notifications.empty(), "fault emits no reserved DMA fault or success interrupt");
         DXGKARG_QUERYCURRENTFENCE query;
@@ -123,8 +211,8 @@ int main()
     VioGpuDod healthy;
     healthy.m_NativeFenceCount = 0;
     DXGKARG_PREEMPTCOMMAND preempt;
-    check(VioGpuWddmPreemptCommand(&healthy, &preempt) == STATUS_SUCCESS &&
-          healthy.notifications == std::vector<unsigned>{DXGK_INTERRUPT_DMA_PREEMPTED},
+    check(VioGpuWddmPreemptCommand(&healthy,
+                                   &preempt) == STATUS_SUCCESS && healthy.notifications == std::vector<unsigned>{DXGK_INTERRUPT_DMA_PREEMPTED},
           "healthy idle engine still acknowledges preemption");
     std::printf("Production fault recovery: %u/%u checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
