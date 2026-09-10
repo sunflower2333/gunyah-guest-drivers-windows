@@ -33,6 +33,9 @@ jobs:
       - name: Execute production batch wait and reset-query paths
         shell: pwsh
         run: python external/mesa/src/gallium/drivers/zink/zink_batch_wait_test.py
+      - name: Execute UMD query and flush device-loss regression
+        shell: pwsh
+        run: python external/mesa/src/gallium/frontends/d3d10umd/device_loss_test.py
       - name: Execute production fault and power recovery paths
         shell: pwsh
         run: |
