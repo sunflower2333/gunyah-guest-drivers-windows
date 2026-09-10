@@ -284,8 +284,7 @@ void DereferenceDevice(VIOGPU_WDDM_DEVICE *device)
 
 BOOLEAN IsSupportedSurfaceFormat(D3DDDIFORMAT format)
 {
-    return format == D3DDDIFMT_A8R8G8B8 || format == D3DDDIFMT_X8R8G8B8 ||
-           format == D3DDDIFMT_A8B8G8R8;
+    return format == D3DDDIFMT_A8R8G8B8 || format == D3DDDIFMT_X8R8G8B8 || format == D3DDDIFMT_A8B8G8R8;
 }
 
 VIOGPU_WDDM_UINT32 ToPrivateFormat(D3DDDIFORMAT format)
