@@ -95,6 +95,10 @@ jobs:
         shell: pwsh
         run: python viogpu/viogpuwddm/check-contract.py
 
+      - name: Check host EDID and rational display timings
+        shell: cmd
+        run: viogpu\tests\display-timing\run-msvc.cmd
+
       - name: Parse Native Context diagnostic readers
         shell: pwsh
         run: |

@@ -3037,62 +3037,47 @@ def check_render_only_contract() -> None:
 
 def check_vidpn_mode_contract() -> None:
     signal_info = canonical_code(function_body("BuildVideoSignalInfo", VIOGPU_CODE))
-    require_order(
-        signal_info,
-        (
-            "pVideoSignalInfo->TotalSize.cx=pModeInfo->VisScreenWidth;",
-            "pVideoSignalInfo->TotalSize.cy=pModeInfo->VisScreenHeight;",
-            "pVideoSignalInfo->ActiveSize=pVideoSignalInfo->TotalSize;",
-        ),
-        "video signal active size must be derived after constructing the total size",
-    )
-    if signal_info.count("pVideoSignalInfo->ActiveSize=pVideoSignalInfo->TotalSize;") != 1:
-        fail("video signal construction must assign its active size exactly once")
-    require_order(
-        signal_info,
-        (
-            "pVideoSignalInfo->VSyncFreq.Numerator=VIOGPU_DEFAULT_REFRESH_HZ;",
-            "pVideoSignalInfo->VSyncFreq.Denominator=1;",
-            "pVideoSignalInfo->HSyncFreq.Numerator=pModeInfo->VisScreenHeight*VIOGPU_DEFAULT_REFRESH_HZ;",
-            "pVideoSignalInfo->HSyncFreq.Denominator=1;",
-            "pVideoSignalInfo->PixelRate=static_cast<UINT64>(pModeInfo->VisScreenWidth)*pModeInfo->VisScreenHeight*VIOGPU_DEFAULT_REFRESH_HZ;",
-        ),
-        "target timing frequencies must form one exact progressive 60 Hz signal",
-    )
-    if signal_info.count("staticconstUINTVIOGPU_DEFAULT_REFRESH_HZ=60;") != 1:
-        fail("video signal construction must define its 60 Hz timing basis exactly once")
-    if "D3DKMDT_FREQUENCY_NOTSPECIFIED" in signal_info:
-        fail("full-WDDM target and monitor modes must not publish unspecified timing frequencies")
+    for required in (
+        "m_pHWDevice->GetModeTiming(pModeInfo->ModeIndex)",
+        "pVideoSignalInfo->TotalSize.cx=timing.TotalWidth;",
+        "pVideoSignalInfo->TotalSize.cy=timing.TotalHeight;",
+        "pVideoSignalInfo->ActiveSize.cx=timing.Width;",
+        "pVideoSignalInfo->ActiveSize.cy=timing.Height;",
+        "pVideoSignalInfo->VSyncFreq.Numerator=timing.PixelClock;",
+        "pVideoSignalInfo->VSyncFreq.Denominator=timing.TotalWidth*timing.TotalHeight;",
+        "pVideoSignalInfo->HSyncFreq.Numerator=timing.PixelClock;",
+        "pVideoSignalInfo->HSyncFreq.Denominator=timing.TotalWidth;",
+        "pVideoSignalInfo->PixelRate=timing.PixelClock;",
+    ):
+        if required not in signal_info:
+            fail(f"signal must preserve the selected EDID timing: {required}")
+    for forbidden in ("VIOGPU_DEFAULT_REFRESH_HZ", "D3DKMDT_FREQUENCY_NOTSPECIFIED"):
+        if forbidden in signal_info:
+            fail("monitor/target timing must not replace the host timing with a constant")
 
     target_modes = canonical_code(function_body("AddSingleTargetMode", VIOGPU_CODE))
-    if target_modes.count("m_pHWDevice->GetModeInfo(ModeIndex)") != 1:
-        fail("target mode selection must search only for a pinned source")
-    if target_modes.count("m_pHWDevice->GetModeInfo(m_pHWDevice->GetCurrentModeIndex())") != 1:
-        fail("unpinned target mode selection must use the selected current host mode")
-    if "m_pHWDevice->GetModeInfo(SourceId)" in target_modes:
-        fail("target mode selection must not use the source id as a mode index")
-    if "m_CurrentMode.DispInfo" in target_modes:
-        fail("unpinned target mode selection must not use stale post-display dimensions")
-    if "VideoSignalInfo.ActiveSize=" in target_modes:
-        fail("target mode construction must leave complete signal construction to BuildVideoSignalInfo")
-    if target_modes.count("pVidPnTargetModeSetInterface->pfnCreateNewModeInfo(") != 1:
-        fail("the cofunctional target set must create exactly one target mode")
-    if target_modes.count("pVidPnTargetModeSetInterface->pfnAddMode(") != 1:
-        fail("the cofunctional target set must add exactly one target mode")
-    if target_modes.count("pVidPnTargetModeInfo->Preference=D3DKMDT_MP_PREFERRED;") != 1:
-        fail("the single target mode must be preferred")
-    if "D3DKMDT_MP_NOTPREFERRED" in target_modes:
-        fail("the single target mode must not be marked non-preferred")
     for required in (
+        "ModeIndex<m_pHWDevice->GetModeCount()",
         "pVidPnPinnedSourceModeInfo->Type!=D3DKMDT_RMT_GRAPHICS",
-        "candidate->VisScreenWidth==pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cx",
-        "candidate->VisScreenHeight==pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cy",
-        "returnAddStatus==STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET?STATUS_SUCCESS:AddStatus;",
+        "candidate->VisScreenWidth!=pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cx",
+        "candidate->VisScreenHeight!=pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cy",
+        "BuildVideoSignalInfo(&pVidPnTargetModeInfo->VideoSignalInfo,candidate);",
+        "D3DKMDT_MP_NOTPREFERRED", "STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET",
     ):
-        if target_modes.count(required) != 1:
-            fail(f"target mode selection is missing its exact cofunctional contract: {required}")
-    if target_modes.count("returnSTATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;") != 2:
-        fail("target mode selection must reject non-graphics and unmatched pinned source modes")
+        if required not in target_modes:
+            fail(f"target enumeration must retain all cofunctional rates: {required}")
+
+    commit = canonical_code(function_body("VioGpuDod::CommitVidPn", VIOGPU_CODE))
+    for required in ("pfnAcquireTargetModeSet(", "pfnAcquirePinnedModeInfo(hTargetModeSet,&pPinnedTarget)",
+                     "&pPinnedTarget->VideoSignalInfo", "pfnReleaseTargetModeSet("):
+        if required not in commit:
+            fail(f"commit must consume and release pinned target timing: {required}")
+    mode_set = canonical_code(function_body("VioGpuDod::SetSourceModeAndPath", VIOGPU_CODE))
+    for required in ("signal.PixelRate==pTargetSignal->PixelRate", "signal.TotalSize.cx==pTargetSignal->TotalSize.cx",
+                     "signal.TotalSize.cy==pTargetSignal->TotalSize.cy",
+                     "SetCrtcTiming(m_pHWDevice->GetModeTiming(selected));"):
+        if required not in mode_set:
+            fail(f"mode selection must distinguish refresh rates: {required}")
 
     monitor_modes = canonical_code(function_body("AddSingleMonitorMode", VIOGPU_CODE))
     for required in (
@@ -3246,9 +3231,11 @@ def check_legacy_runtime_callback_contract() -> None:
     scanline = canonical_code(function_body("VioGpuDod::GetScanLine", VIOGPU_CODE))
     for fragment in (
         "pGetScanLine==NULL||pGetScanLine->VidPnTargetId!=0",
-        "KeQueryPerformanceCounter(&frequency)",
-        "pGetScanLine->InVerticalBlank=scanLine>=height;",
-        "pGetScanLine->ScanLine=static_cast<ULONG>(min(scanLine,totalLines-1));",
+        "KeQueryPerformanceCounter(NULL)",
+        "constLONGLONGepoch=m_CrtcEpoch;",
+        "constLONGLONGperiod=m_CrtcPeriodTicks;",
+        "pGetScanLine->InVerticalBlank=scanLine>=timing.Height;",
+        "pGetScanLine->ScanLine=scanLine;",
         "returnSTATUS_SUCCESS;",
     ):
         if fragment not in scanline:
@@ -3257,7 +3244,7 @@ def check_legacy_runtime_callback_contract() -> None:
     dod_interrupt = canonical_code(function_body("VioGpuDod::ControlInterrupt", VIOGPU_CODE))
     for fragment in (
         "InterlockedExchange(&m_CrtcVsyncEnabled,enableInterrupt?1:0);",
-        "ArmCrtcVsyncTimer();",
+        "ArmCrtcVsyncTimer()",
         "DisarmCrtcVsyncTimer();",
     ):
         if fragment not in dod_interrupt:
@@ -3283,14 +3270,15 @@ def check_legacy_runtime_callback_contract() -> None:
     arm_vsync = canonical_code(function_body("VioGpuDod::ArmCrtcVsyncTimer", VIOGPU_CODE))
     if "InterlockedExchange(&m_CrtcVsyncTimerArmed,1)==1" not in arm_vsync:
         fail("arming the software vertical-blank source must be idempotent")
-    if "KeSetTimerEx(&m_CrtcVsyncTimer,dueTime,VioGpuCrtcVsyncPeriodMs,&m_CrtcVsyncDpc);" not in arm_vsync:
-        fail("the software vertical-blank source must be a periodic timer")
+    for fragment in ("EX_TIMER_HIGH_RESOLUTION", "VioGpuTimingPeriod100ns(m_CrtcTiming)",
+                     "ExSetTimer(m_CrtcVsyncTimer,-period,period,NULL);"):
+        if fragment not in arm_vsync:
+            fail(f"vblank must use the selected timing at high resolution: {fragment}")
 
     disarm_vsync = canonical_code(function_body("VioGpuDod::DisarmCrtcVsyncTimer", VIOGPU_CODE))
     for fragment in (
         "InterlockedExchange(&m_CrtcVsyncTimerArmed,0)==0",
-        "KeCancelTimer(&m_CrtcVsyncTimer);",
-        "KeFlushQueuedDpcs();",
+        "ExDeleteTimer(m_CrtcVsyncTimer,TRUE,TRUE,NULL);",
     ):
         if fragment not in disarm_vsync:
             fail(f"disarming the software vertical-blank source must drain its queued DPC: {fragment}")
@@ -3300,7 +3288,7 @@ def check_legacy_runtime_callback_contract() -> None:
         fail("StopDevice must stop the software vertical-blank source before hardware teardown")
 
     dod_destructor = canonical_code(function_body("VioGpuDod::~VioGpuDod", VIOGPU_CODE))
-    for fragment in ("KeCancelTimer(&m_CrtcVsyncTimer);", "KeFlushQueuedDpcs();"):
+    for fragment in ("DisarmCrtcVsyncTimer();",):
         if fragment not in dod_destructor:
             fail(f"adapter teardown must not leave a queued vsync DPC behind: {fragment}")
 

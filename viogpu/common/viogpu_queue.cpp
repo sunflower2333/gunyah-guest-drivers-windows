@@ -654,10 +654,11 @@ BOOLEAN CtrlQueue::QueryEdidInfo(UINT id, _Out_writes_bytes_(EDID_RAW_BLOCK_SIZE
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) && vbuf->response_size == sizeof(GPU_RESP_EDID) &&
                       IsPlainControlResponse(&response->hdr, VIRTIO_GPU_RESP_OK_EDID) && response->padding == 0 &&
-                      response->size >= EDID_RAW_BLOCK_SIZE && response->size <= sizeof(response->edid);
+                      response->size >= EDID_V1_BLOCK_SIZE && response->size <= sizeof(response->edid) &&
+                      response->size % EDID_V1_BLOCK_SIZE == 0;
     if (success)
     {
-        RtlCopyMemory(edid, response->edid, EDID_RAW_BLOCK_SIZE);
+        RtlCopyMemory(edid, response->edid, min(response->size, EDID_RAW_BLOCK_SIZE));
     }
     if (releaseBuffer)
     {
