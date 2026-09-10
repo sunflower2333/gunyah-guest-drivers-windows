@@ -1183,7 +1183,7 @@ BOOLEAN VioGpuDod::PrepareNativeSchedulerNotificationAtDirql(
     if (activeEpoch != QueryNativeFenceEpoch() ||
         InterlockedCompareExchange(&m_NativeFenceNotificationClosed, 0, 0) || IsHardwareResetRequested())
         return FALSE;
-    uint32_t reported = 0;
+    UINT reported = 0;
     if (!m_NativeFencePublication.Prepare(fenceEpoch, activeEpoch, resetFloor, completed, preemption, reported))
         return FALSE;
     if (completion)

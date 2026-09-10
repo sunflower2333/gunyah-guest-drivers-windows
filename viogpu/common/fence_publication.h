@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #pragma once
-#include <stdint.h>
+
+// Keep this policy freestanding: pulling MSVC's user-mode stdint.h into the
+// WDK kernel CRT mixes runtime headers. UINT is 32 bits on every target here.
+static_assert(sizeof(unsigned) == 4, "scheduler fences require 32-bit unsigned");
 
 // Access only under the scheduler interrupt's synchronization lock. The
 // producer watermark is the contiguous retired prefix, never last-submitted.
@@ -8,16 +11,17 @@
 // the completed floor of the new epoch without emitting DMA_COMPLETED.
 struct VioGpuFencePublication
 {
-    uint32_t Epoch;
-    uint32_t Fence;
+    unsigned Epoch;
+    unsigned Fence;
 
-    static bool After(uint32_t candidate, uint32_t previous)
+    static bool After(unsigned candidate, unsigned previous)
     {
-        return candidate != 0 && (previous == 0 || static_cast<int32_t>(candidate - previous) > 0);
+        return candidate != 0 &&
+               (previous == 0 || (candidate != previous && candidate - previous < 0x80000000U));
     }
 
-    bool Prepare(uint32_t notificationEpoch, uint32_t activeEpoch, uint32_t resetFloor,
-                 uint32_t completed, bool preemption, uint32_t &reported)
+    bool Prepare(unsigned notificationEpoch, unsigned activeEpoch, unsigned resetFloor,
+                 unsigned completed, bool preemption, unsigned &reported)
     {
         if (notificationEpoch != activeEpoch)
             return false;
