@@ -284,7 +284,8 @@ void DereferenceDevice(VIOGPU_WDDM_DEVICE *device)
 
 BOOLEAN IsSupportedSurfaceFormat(D3DDDIFORMAT format)
 {
-    return format == D3DDDIFMT_A8R8G8B8 || format == D3DDDIFMT_X8R8G8B8;
+    return format == D3DDDIFMT_A8R8G8B8 || format == D3DDDIFMT_X8R8G8B8 ||
+           format == D3DDDIFMT_A8B8G8R8;
 }
 
 VIOGPU_WDDM_UINT32 ToPrivateFormat(D3DDDIFORMAT format)
@@ -295,6 +296,8 @@ VIOGPU_WDDM_UINT32 ToPrivateFormat(D3DDDIFORMAT format)
             return VIOGPU_WDDM_FORMAT_B8G8R8A8_UNORM;
         case D3DDDIFMT_X8R8G8B8:
             return VIOGPU_WDDM_FORMAT_B8G8R8X8_UNORM;
+        case D3DDDIFMT_A8B8G8R8:
+            return VIOGPU_WDDM_FORMAT_R8G8B8A8_UNORM;
         default:
             return VIOGPU_WDDM_FORMAT_NONE;
     }
@@ -308,6 +311,8 @@ D3DDDIFORMAT FromPrivateFormat(VIOGPU_WDDM_UINT32 format)
             return D3DDDIFMT_A8R8G8B8;
         case VIOGPU_WDDM_FORMAT_B8G8R8X8_UNORM:
             return D3DDDIFMT_X8R8G8B8;
+        case VIOGPU_WDDM_FORMAT_R8G8B8A8_UNORM:
+            return D3DDDIFMT_A8B8G8R8;
         default:
             return D3DDDIFMT_UNKNOWN;
     }
