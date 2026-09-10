@@ -2690,7 +2690,8 @@ VOID VioGpuDod::DisarmCrtcVsyncTimer(void)
         ExReleaseFastMutex(&m_CrtcTimerMutex);
         return;
     }
-    // Cancel AND wait at PASSIVE_LEVEL; neither a queued nor an executing
+    // Cancel AND wait at APC_LEVEL while holding the fast mutex (supported
+    // by ExDeleteTimer with Wait=TRUE); neither a queued nor an executing
     // callback may access the adapter/timing after a mode change or teardown.
     ExDeleteTimer(m_CrtcVsyncTimer, TRUE, TRUE, NULL);
     m_CrtcVsyncTimer = NULL;

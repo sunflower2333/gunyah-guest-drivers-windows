@@ -1075,7 +1075,7 @@ class VioGpuDod
                                  _In_ ULONG ChildRelationsSize);
     NTSTATUS QueryChildStatus(_Inout_ DXGK_CHILD_STATUS *pChildStatus, _In_ BOOLEAN NonDestructiveOnly);
     NTSTATUS QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVICE_DESCRIPTOR *pDeviceDescriptor);
-    __declspec(code_seg(".text")) NTSTATUS GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine);
+    __declspec(noinline) __declspec(code_seg(".text")) NTSTATUS GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine);
     NTSTATUS ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In_ BOOLEAN enableInterrupt);
     // Set of the CRTC vsync interrupt state dxgkrnl last requested.
     volatile LONG m_CrtcVsyncEnabled;
@@ -1121,11 +1121,13 @@ class VioGpuDod
     volatile LONG m_NativeApertureMapSkipCount;
     volatile LONG m_NativeApertureFailureCount;
     volatile LONG m_NativePagingResetCount;
-    __declspec(code_seg(".text")) NTSTATUS ArmCrtcVsyncTimer(void);
+    // Keep DISPATCH_LEVEL spinlock regions out of their pageable callers,
+    // including optimized builds that would otherwise inline these routines.
+    __declspec(noinline) __declspec(code_seg(".text")) NTSTATUS ArmCrtcVsyncTimer(void);
     VOID DisarmCrtcVsyncTimer(void);
     VOID DeliverCrtcVsync(void);
     VOID SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address);
-    __declspec(code_seg(".text")) NTSTATUS SetCrtcTiming(const VIOGPU_DISPLAY_TIMING &timing);
+    __declspec(noinline) __declspec(code_seg(".text")) NTSTATUS SetCrtcTiming(const VIOGPU_DISPLAY_TIMING &timing);
     DWORD ReadCrtcVsyncDeliveredCount(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_CrtcVsyncDeliveredCount, 0, 0));
