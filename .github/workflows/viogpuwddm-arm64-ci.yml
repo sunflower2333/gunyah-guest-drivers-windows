@@ -288,7 +288,12 @@ jobs:
             @{ Name = 'VioGpuBuf::FreeMemory'; Pattern = '?FreeMemory@VioGpuBuf@@'; Object = '*viogpu_queue.obj' }
           )
           foreach ($symbol in $requiredTextSymbols) {
-            $symbolLines = @($mapLines | Where-Object { $_.Contains($symbol.Pattern) })
+            $symbolLines = @($mapLines | Where-Object {
+              $row = @($_ -split '\s+' | Where-Object { $_ })
+              # CFG records such as __guard_fids_?ArmCrtcVsyncTimer contain
+              # the name too, but are metadata, not the executable symbol.
+              $row.Count -ge 2 -and $row[1].StartsWith($symbol.Pattern, [StringComparison]::Ordinal)
+            })
             if ($symbolLines.Count -ne 1) {
               $symbolLines | ForEach-Object { Write-Host "MAP candidate: $_" }
               throw "linker map must contain exactly one $($symbol.Name) symbol, found $($symbolLines.Count)"
