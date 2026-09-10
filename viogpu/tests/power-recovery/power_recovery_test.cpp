@@ -14,7 +14,9 @@ constexpr NTSTATUS STATUS_DEVICE_NOT_READY = static_cast<int32_t>(0xc00000a3u);
 constexpr NTSTATUS TeardownFailure = -17;
 constexpr ULONG DISPLAY_ADAPTER_HW_ID = 0;
 constexpr ULONG D3DDDI_ID_ALL = ~0u;
+#ifndef _In_
 #define _In_
+#endif
 #define TRUE true
 #define FALSE false
 #define VIOGPU_NATIVE_CONTEXT 1
