@@ -6011,7 +6011,9 @@ def check_wddm_present_contract() -> None:
     reset_recovery = power.find("if(resetState==VioGpuHardwareResetRequested)")
     d0_reset_drain = power.find("RequestWddmSubmissionDrainAtAnyIrql();", reset_recovery)
     d0_reset_wait = power.find("WaitForWddmSubmissionDrain()", d0_reset_drain)
-    d0_reset_adapter = power.find("m_pHWDevice->ResetDevice();", d0_reset_wait)
+    d0_reset_adapter = power.find(
+        "Status=m_pHWDevice->SetPowerState(&m_DeviceInfo,PowerDeviceD3,&m_CurrentMode);", d0_reset_wait
+    )
     d_state_condition = power.find(
         "if(DevicePowerState==PowerDeviceD1||DevicePowerState==PowerDeviceD2||"
         "DevicePowerState==PowerDeviceD3)",
@@ -12287,7 +12289,12 @@ def check_adapter_lifecycle() -> None:
     reset_flag = "resetRecovery=TRUE;"
     reset_drain = "RequestWddmSubmissionDrainAtAnyIrql();"
     reset_wait = "if(!WaitForWddmSubmissionDrain())"
-    reset_adapter = "m_pHWDevice->ResetDevice();"
+    reset_adapter = (
+        "Status=m_pHWDevice->SetPowerState(&m_DeviceInfo,PowerDeviceD3,&m_CurrentMode);"
+        "if(!NT_SUCCESS(Status)){"
+        "InterlockedCompareExchange(&m_HardwareResetState,VioGpuHardwareResetRequested,"
+        "VioGpuHardwareRecovering);returnStatus;}"
+    )
     reset_reject = "elseif(resetState!=VioGpuHardwareActive){returnSTATUS_DEVICE_NOT_READY;}"
     reset_failure = (
         "if(!NT_SUCCESS(Status)&&resetRecovery){"
@@ -12353,11 +12360,11 @@ def check_adapter_lifecycle() -> None:
     if (
         power_compact.count("BOOLEANresetRecovery=FALSE;") != 1
         or power_compact.count(reset_caller_clear) != 1
-        or power_compact.count("InterlockedCompareExchange(&m_HardwareResetState") != 6
-        or power_compact.count("m_pHWDevice->ResetDevice();") != 1
+        or power_compact.count("InterlockedCompareExchange(&m_HardwareResetState") != 7
+        or "m_pHWDevice->ResetDevice();" in power_compact
         or "InterlockedExchange(&m_HardwareResetState" in power_compact
     ):
-        fail("D0 reset recovery must use only the six checked three-state CAS operations")
+        fail("D0 reset recovery must use checked teardown and seven three-state CAS operations without re-requesting reset")
 
     publish_blocks = [
         (body, start_offset, end_offset)

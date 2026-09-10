@@ -2424,7 +2424,20 @@ NTSTATUS VioGpuDod::SetPowerState(_In_ ULONG HardwareUid,
                     return STATUS_DEVICE_NOT_READY;
                 }
 #endif
-                m_pHWDevice->ResetDevice();
+                /* ResetDevice is an any-IRQL fault notification: it requests
+                 * another reset and closes the outer interrupt gate. Calling
+                 * it after claiming Recovering prevents the new capset query
+                 * from completing. Use checked D3 teardown to retire the old
+                 * transport while preserving our recovery claim. A real fault
+                 * during teardown still requests a reset and fails closed. */
+                Status = m_pHWDevice->SetPowerState(&m_DeviceInfo, PowerDeviceD3, &m_CurrentMode);
+                if (!NT_SUCCESS(Status))
+                {
+                    InterlockedCompareExchange(&m_HardwareResetState,
+                                               VioGpuHardwareResetRequested,
+                                               VioGpuHardwareRecovering);
+                    return Status;
+                }
             }
             else if (resetState != VioGpuHardwareActive)
             {

@@ -13,6 +13,7 @@ on:
       - "viogpu/shared/viogpu_wddm_abi.h"
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
+      - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
@@ -33,6 +34,7 @@ on:
       - "viogpu/shared/viogpu_wddm_abi.h"
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
+      - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
@@ -104,6 +106,10 @@ jobs:
       - name: Check scheduler fence publication ordering
         shell: cmd
         run: viogpu\tests\fence-publication\run-msvc.cmd
+
+      - name: Check production D0 recovery and fault interleavings
+        shell: pwsh
+        run: python viogpu/tests/power-recovery/run.py
 
       - name: Parse Native Context diagnostic readers
         shell: pwsh
