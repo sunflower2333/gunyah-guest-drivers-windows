@@ -1,5 +1,5 @@
 [submodule "external/mesa"]
 	path = external/mesa
 	url = https://github.com/sunflower2333/mesa
-	branch = wip/turnip-wddm-assumenotinuse
+	branch = wip/rgba-shared-isolated
 	shallow = true
