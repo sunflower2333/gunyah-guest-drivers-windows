@@ -36,6 +36,9 @@ jobs:
       - name: Execute UMD query and flush device-loss regression
         shell: pwsh
         run: python external/mesa/src/gallium/frontends/d3d10umd/device_loss_test.py
+      - name: Execute empty-submit queue ordering regression
+        shell: pwsh
+        run: python external/mesa/src/freedreno/vulkan/tests/tu_wddm_empty_submit_test.py
       - name: Execute production fault and power recovery paths
         shell: pwsh
         run: |
