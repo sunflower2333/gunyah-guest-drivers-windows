@@ -10963,11 +10963,11 @@ def check_wddm_submission_lifetime() -> None:
             "adapter->ResetDevice();",
             "adapter->IsHardwareResetRequested()",
             "adapter->IsNativeFenceQueueEmpty()",
-            "adapter->DeferNativePreemption(preemptCommand->PreemptionFenceId)",
+            "adapter->DeferNativePreemption(preemptCommand->PreemptionFenceId,fenceEpoch)",
             "notify.InterruptType=DXGK_INTERRUPT_DMA_PREEMPTED;",
             "notify.DmaPreempted.PreemptionFenceId=preemptCommand->PreemptionFenceId;",
             "notify.DmaPreempted.LastCompletedFenceId=adapter->QueryNativeCompletedFence();",
-            "adapter->NotifyNativeSchedulerInterrupt(&notify,TRUE)",
+            "adapter->NotifyNativeSchedulerInterrupt(&notify,TRUE,fenceEpoch)",
         ),
         "preemption must reset only a malformed request, defer an in-flight queue, and notify an idle queue",
     )
@@ -10985,7 +10985,11 @@ def check_wddm_submission_lifetime() -> None:
         defer,
         (
             "preemptionFence==0",
-            "InterlockedCompareExchange(&m_NativePendingPreemptionFence,static_cast<LONG>(preemptionFence),0)!=0",
+            "KeAcquireSpinLock(&m_NativeFenceLock,&oldIrql);",
+            "fenceEpoch!=QueryNativeFenceEpoch()||IsHardwareResetRequested()",
+            "m_NativePendingPreemptionFence!=0",
+            "m_NativePendingPreemptionEpoch=fenceEpoch;",
+            "InterlockedExchange(&m_NativePendingPreemptionFence,static_cast<LONG>(preemptionFence));",
             "InterlockedIncrement(&m_NativePreemptDeferredCount);",
             "returnReportDeferredNativePreemption();",
         ),
@@ -10995,11 +10999,14 @@ def check_wddm_submission_lifetime() -> None:
     require_order(
         report,
         (
-            "pending==0||!IsNativeFenceQueueEmpty()",
-            "InterlockedCompareExchange(&m_NativePendingPreemptionFence,0,pending)!=pending",
+            "KeAcquireSpinLock(&m_NativeFenceLock,&oldIrql);",
+            "pending==0||m_NativeFenceCount!=0",
+            "ULONGfenceEpoch=m_NativePendingPreemptionEpoch;",
+            "InterlockedExchange(&m_NativePendingPreemptionFence,0);",
+            "m_NativePendingPreemptionEpoch=0;KeReleaseSpinLock(&m_NativeFenceLock,oldIrql);",
             "notify.InterruptType=DXGK_INTERRUPT_DMA_PREEMPTED;",
             "notify.DmaPreempted.PreemptionFenceId=static_cast<UINT>(pending);",
-            "NotifyNativeSchedulerInterrupt(&notify,TRUE)",
+            "NotifyNativeSchedulerInterrupt(&notify,TRUE,fenceEpoch)",
             "InterlockedIncrement(&m_NativePreemptReportedCount);",
         ),
         "a deferred preemption may only be reported once, and only after the native queue drains",
@@ -11022,7 +11029,7 @@ def check_wddm_submission_lifetime() -> None:
     notify_failure_blocks = [
         canonical_code(body)
         for condition, body, _, _ in if_blocks(function_body("VioGpuWddmPreemptCommand", WDDM_DDI_CODE))
-        if "!adapter->NotifyNativeSchedulerInterrupt(&notify,TRUE)" in canonical_code(condition)
+        if "!adapter->NotifyNativeSchedulerInterrupt(&notify,TRUE,fenceEpoch)" in canonical_code(condition)
     ]
     if len(notify_failure_blocks) != 1 or "adapter->ResetDevice();" not in notify_failure_blocks[0]:
         fail("a failed preemption interrupt notification must gate the adapter for TDR")
@@ -11211,6 +11218,34 @@ def check_wddm_submission_lifetime() -> None:
     dirql = canonical_code(function_body("VioGpuNotifyNativeSchedulerAtDirql", VIOGPU_CODE))
     if dirql.count("DxgkCbNotifyInterrupt(") != 1:
         fail("the synchronized DIRQL callback must own the only native scheduler interrupt call")
+    require_order(
+        dirql,
+        ("PrepareNativeSchedulerNotificationAtDirql(&notification->Data,notification->FenceEpoch)",
+         "DxgkCbNotifyInterrupt(notification->Interface->DeviceHandle,&notification->Data)"),
+        "fence ordering must be decided under the same interrupt lock as scheduler publication",
+    )
+    prepare = canonical_code(function_body("VioGpuDod::PrepareNativeSchedulerNotificationAtDirql", VIOGPU_CODE))
+    require_order(
+        prepare,
+        ("IsHardwareResetRequested()", "activeEpoch=QueryNativeFenceEpoch();",
+         "completed=QueryNativeCompletedFence();", "m_NativeFencePublication.Prepare(",
+         "notification->DmaCompleted.SubmissionFenceId=reported;",
+         "notification->DmaPreempted.LastCompletedFenceId=reported;"),
+        "completion and preemption must publish the actual contiguous prefix without regression",
+    )
+    if "KeAcquireSpinLock(" in prepare or "QueryNativeSubmittedFence" in prepare:
+        fail("DIRQL publication must neither take the DPC tracker lock nor substitute submitted work")
+    if "activeEpoch!=QueryNativeFenceEpoch()" not in prepare or \
+       prepare.count("InterlockedCompareExchange(&m_NativeFenceNotificationClosed,0,0)") != 2:
+        fail("DIRQL must reject a reset-gated or changing epoch snapshot without spinning")
+    require_order(
+        complete_reset,
+        ("InterlockedExchange(&m_NativeFenceNotificationClosed,1);",
+         "InterlockedExchange(&m_NativeFenceResetFloor,static_cast<LONG>(submitted));",
+         "InterlockedIncrement(&m_NativeFenceEpoch);", "DiscardDeferredNativePreemption();",
+         "InterlockedExchange(&m_NativeFenceNotificationClosed,0);"),
+        "reset must publish its floor and epoch and discard old preemption before reopening notifications",
+    )
     current_fence = canonical_code(function_body("VioGpuWddmQueryCurrentFence", WDDM_DDI_CODE))
     if "currentFence->CurrentFence=adapter->QueryNativeCompletedFence();" not in current_fence:
         fail("QueryCurrentFence must return the contiguous Host-retired node fence")

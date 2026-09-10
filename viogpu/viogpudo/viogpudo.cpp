@@ -122,18 +122,28 @@ static BOOLEAN VioGpuInterruptBarrier(_In_opt_ PVOID context)
 struct VIOGPU_NATIVE_SCHEDULER_NOTIFICATION
 {
     PDXGKRNL_INTERFACE Interface;
+    VioGpuDod *Owner;
+    ULONG FenceEpoch;
     DXGKARGCB_NOTIFY_INTERRUPT_DATA Data;
 };
 
 static BOOLEAN VioGpuNotifyNativeSchedulerAtDirql(_In_opt_ PVOID context)
 {
     VIOGPU_NATIVE_SCHEDULER_NOTIFICATION *notification = static_cast<VIOGPU_NATIVE_SCHEDULER_NOTIFICATION *>(context);
-    if (notification == NULL || notification->Interface == NULL ||
+    if (notification == NULL || notification->Owner == NULL || notification->Interface == NULL ||
         notification->Interface->DxgkCbNotifyInterrupt == NULL)
     {
         return FALSE;
     }
 
+    // Software DPCs and passive GPU completions may reach DIRQL in the
+    // opposite order to retirement. Select/deduplicate the contiguous fence
+    // here, under the same interrupt lock as the actual scheduler callback.
+    if (!notification->Owner->PrepareNativeSchedulerNotificationAtDirql(&notification->Data,
+                                                                         notification->FenceEpoch))
+    {
+        return TRUE; // obsolete notification is already satisfied or reset
+    }
     notification->Interface->DxgkCbNotifyInterrupt(notification->Interface->DeviceHandle, &notification->Data);
     return TRUE;
 }
@@ -224,6 +234,11 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
     m_NativeSubmittedFence = 0;
     m_NativeCompletedFence = 0;
+    m_NativeFenceEpoch = 1;
+    m_NativeFenceResetFloor = 0;
+    m_NativeFenceNotificationClosed = 0;
+    m_NativePendingPreemptionEpoch = 0;
+    m_NativeFencePublication = {};
     m_NativeApertureFailureStage = 0;
     m_NativeApertureFailureStatus = 0;
     m_NativeApertureFailureDetail = 0;
@@ -993,6 +1008,7 @@ BOOLEAN VioGpuDod::IsNativeFenceQueueEmpty(void)
 
 void VioGpuDod::ResetNativeFenceTracker(void)
 {
+    InterlockedExchange(&m_NativeFenceNotificationClosed, 1);
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
     m_NativeFenceHead = 0;
@@ -1000,16 +1016,21 @@ void VioGpuDod::ResetNativeFenceTracker(void)
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
     InterlockedExchange(&m_NativeSubmittedFence, 0);
     InterlockedExchange(&m_NativeCompletedFence, 0);
+    InterlockedExchange(&m_NativeFenceResetFloor, 0);
+    InterlockedIncrement(&m_NativeFenceEpoch);
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
+    InterlockedExchange(&m_NativeFenceNotificationClosed, 0);
 }
 
 void VioGpuDod::InvalidateNativeFenceTracker(void)
 {
+    InterlockedExchange(&m_NativeFenceNotificationClosed, 1);
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
     m_NativeFenceHead = 0;
     m_NativeFenceCount = 0;
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
+    InterlockedIncrement(&m_NativeFenceEpoch);
     /* Keep the submitted/completed endpoints.  An adapter-wide reset must
      * later advance completed to the last submitted fence instead of making
      * the scheduler observe a backwards fence. */
@@ -1018,6 +1039,7 @@ void VioGpuDod::InvalidateNativeFenceTracker(void)
 
 void VioGpuDod::CompleteNativeFenceReset(void)
 {
+    InterlockedExchange(&m_NativeFenceNotificationClosed, 1);
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
     UINT submitted = static_cast<UINT>(InterlockedCompareExchange(&m_NativeSubmittedFence, 0, 0));
@@ -1025,25 +1047,39 @@ void VioGpuDod::CompleteNativeFenceReset(void)
     m_NativeFenceCount = 0;
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
     InterlockedExchange(&m_NativeCompletedFence, static_cast<LONG>(submitted));
+    InterlockedExchange(&m_NativeFenceResetFloor, static_cast<LONG>(submitted));
+    InterlockedIncrement(&m_NativeFenceEpoch);
     KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
     /* An adapter-wide reset rebuilds the scheduler's view of this engine, so a
      * preemption latched before the reset has no packet left to report against.
      * Drop it rather than notify a fence the scheduler has already abandoned. */
     DiscardDeferredNativePreemption();
+    InterlockedExchange(&m_NativeFenceNotificationClosed, 0);
 }
 
-BOOLEAN VioGpuDod::DeferNativePreemption(_In_ UINT preemptionFence)
+BOOLEAN VioGpuDod::DeferNativePreemption(_In_ UINT preemptionFence, _In_ ULONG fenceEpoch)
 {
     if (preemptionFence == 0)
     {
         return FALSE;
     }
-    /* A second latch would lose the first fence, and dxgkrnl would wait on a
-     * preemption that can no longer be reported.  Refuse instead. */
-    if (InterlockedCompareExchange(&m_NativePendingPreemptionFence, static_cast<LONG>(preemptionFence), 0) != 0)
+    // Pair the ID and epoch under the tracker lock. Reset must never turn a
+    // preemption prepared in the old engine into a new-engine notification.
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
+    if (fenceEpoch != QueryNativeFenceEpoch() || IsHardwareResetRequested())
     {
+        KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
+        return TRUE;
+    }
+    if (m_NativePendingPreemptionFence != 0)
+    {
+        KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
         return FALSE;
     }
+    m_NativePendingPreemptionEpoch = fenceEpoch;
+    InterlockedExchange(&m_NativePendingPreemptionFence, static_cast<LONG>(preemptionFence));
+    KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
     InterlockedIncrement(&m_NativePreemptDeferredCount);
     /* The queue may have drained between the caller's emptiness test and the
      * latch above, in which case nothing else would ever report this fence. */
@@ -1052,17 +1088,18 @@ BOOLEAN VioGpuDod::DeferNativePreemption(_In_ UINT preemptionFence)
 
 BOOLEAN VioGpuDod::ReportDeferredNativePreemption(void)
 {
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
     LONG pending = InterlockedCompareExchange(&m_NativePendingPreemptionFence, 0, 0);
-    if (pending == 0 || !IsNativeFenceQueueEmpty())
+    if (pending == 0 || m_NativeFenceCount != 0)
     {
+        KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
         return TRUE;
     }
-    /* Claim the fence before notifying so a concurrent completion DPC cannot
-     * report the same preemption twice. */
-    if (InterlockedCompareExchange(&m_NativePendingPreemptionFence, 0, pending) != pending)
-    {
-        return TRUE;
-    }
+    ULONG fenceEpoch = m_NativePendingPreemptionEpoch;
+    InterlockedExchange(&m_NativePendingPreemptionFence, 0);
+    m_NativePendingPreemptionEpoch = 0;
+    KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
 
     DXGKARGCB_NOTIFY_INTERRUPT_DATA notify = {};
     notify.InterruptType = DXGK_INTERRUPT_DMA_PREEMPTED;
@@ -1070,7 +1107,7 @@ BOOLEAN VioGpuDod::ReportDeferredNativePreemption(void)
     notify.DmaPreempted.LastCompletedFenceId = QueryNativeCompletedFence();
     notify.DmaPreempted.NodeOrdinal = 0;
     notify.DmaPreempted.EngineOrdinal = 0;
-    if (!NotifyNativeSchedulerInterrupt(&notify, TRUE))
+    if (!NotifyNativeSchedulerInterrupt(&notify, TRUE, fenceEpoch))
     {
         return FALSE;
     }
@@ -1080,7 +1117,11 @@ BOOLEAN VioGpuDod::ReportDeferredNativePreemption(void)
 
 void VioGpuDod::DiscardDeferredNativePreemption(void)
 {
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativeFenceLock, &oldIrql);
     InterlockedExchange(&m_NativePendingPreemptionFence, 0);
+    m_NativePendingPreemptionEpoch = 0;
+    KeReleaseSpinLock(&m_NativeFenceLock, oldIrql);
 }
 
 VOID VioGpuDod::SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address)
@@ -1123,8 +1164,38 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
     }
 }
 
+BOOLEAN VioGpuDod::PrepareNativeSchedulerNotificationAtDirql(
+    _Inout_ DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification, _In_ ULONG fenceEpoch)
+{
+    const bool completion = notification->InterruptType == DXGK_INTERRUPT_DMA_COMPLETED;
+    const bool preemption = notification->InterruptType == DXGK_INTERRUPT_DMA_PREEMPTED;
+    if (!completion && !preemption)
+        return TRUE;
+    if (IsHardwareResetRequested() || InterlockedCompareExchange(&m_NativeFenceNotificationClosed, 0, 0))
+        return FALSE;
+
+    const ULONG activeEpoch = QueryNativeFenceEpoch();
+    const UINT resetFloor = static_cast<UINT>(InterlockedCompareExchange(&m_NativeFenceResetFloor, 0, 0));
+    const UINT completed = QueryNativeCompletedFence();
+    // Never spin on a seqlock at DIRQL: its DPC writer might be interrupted
+    // on this CPU. Reset owns abandoned notifications, so reject a changing
+    // or gated snapshot and let the new epoch's work notify normally.
+    if (activeEpoch != QueryNativeFenceEpoch() ||
+        InterlockedCompareExchange(&m_NativeFenceNotificationClosed, 0, 0) || IsHardwareResetRequested())
+        return FALSE;
+    uint32_t reported = 0;
+    if (!m_NativeFencePublication.Prepare(fenceEpoch, activeEpoch, resetFloor, completed, preemption, reported))
+        return FALSE;
+    if (completion)
+        notification->DmaCompleted.SubmissionFenceId = reported;
+    else
+        notification->DmaPreempted.LastCompletedFenceId = reported;
+    return TRUE;
+}
+
 BOOLEAN VioGpuDod::NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
-                                                  _In_ BOOLEAN queueDpc)
+                                                  _In_ BOOLEAN queueDpc,
+                                                  _In_ ULONG fenceEpoch)
 {
     if (notification == NULL || !ExAcquireRundownProtection(&m_HardwareOperations))
     {
@@ -1144,6 +1215,8 @@ BOOLEAN VioGpuDod::NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_IN
 
     VIOGPU_NATIVE_SCHEDULER_NOTIFICATION synchronized = {};
     synchronized.Interface = &m_DxgkInterface;
+    synchronized.Owner = this;
+    synchronized.FenceEpoch = fenceEpoch == 0 ? QueryNativeFenceEpoch() : fenceEpoch;
     synchronized.Data = *notification;
     BOOLEAN notified = FALSE;
     NTSTATUS status = m_DxgkInterface.DxgkCbSynchronizeExecution(m_DxgkInterface.DeviceHandle,

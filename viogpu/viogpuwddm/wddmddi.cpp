@@ -9793,6 +9793,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPreemptCommand(CONST HANDLE h
         return STATUS_SUCCESS;
     }
 
+    const ULONG fenceEpoch = adapter->QueryNativeFenceEpoch();
     BOOLEAN valid = preemptCommand != NULL && preemptCommand->PreemptionFenceId != 0 &&
                     preemptCommand->NodeOrdinal == 0 && preemptCommand->EngineOrdinal == 0 &&
                     preemptCommand->Flags.Value == 0;
@@ -9821,7 +9822,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPreemptCommand(CONST HANDLE h
          * with the cursor plane still live.  Latch the fence instead and report
          * it once the queue drains, when nothing from the preempted packet can
          * still reach guest memory. */
-        if (!adapter->DeferNativePreemption(preemptCommand->PreemptionFenceId))
+        if (!adapter->DeferNativePreemption(preemptCommand->PreemptionFenceId, fenceEpoch))
         {
             adapter->CountNativePreemptReset();
             adapter->ResetDevice();
@@ -9835,7 +9836,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPreemptCommand(CONST HANDLE h
     notify.DmaPreempted.LastCompletedFenceId = adapter->QueryNativeCompletedFence();
     notify.DmaPreempted.NodeOrdinal = preemptCommand->NodeOrdinal;
     notify.DmaPreempted.EngineOrdinal = preemptCommand->EngineOrdinal;
-    if (!adapter->NotifyNativeSchedulerInterrupt(&notify, TRUE))
+    if (!adapter->NotifyNativeSchedulerInterrupt(&notify, TRUE, fenceEpoch))
     {
         adapter->CountNativePreemptReset();
         adapter->ResetDevice();

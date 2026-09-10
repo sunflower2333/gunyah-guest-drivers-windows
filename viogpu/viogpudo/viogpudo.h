@@ -31,6 +31,7 @@
 
 #include "viogpu.h"
 #include "display_timing.h"
+#include "fence_publication.h"
 #include "viogpu_queue.h"
 
 #pragma pack(push)
@@ -940,6 +941,11 @@ class VioGpuDod
     volatile LONG m_NativeContextDestroyAttempt;
     KMUTEX m_NativeContextDestroyDiagnosticMutex;
     KSPIN_LOCK m_NativeFenceLock;
+    volatile LONG m_NativeFenceEpoch;
+    volatile LONG m_NativeFenceResetFloor;
+    volatile LONG m_NativeFenceNotificationClosed;
+    ULONG m_NativePendingPreemptionEpoch; // protected by m_NativeFenceLock
+    VioGpuFencePublication m_NativeFencePublication; // scheduler DIRQL only
     UINT m_NativeFenceHead;
     UINT m_NativeFenceCount;
     VIOGPU_NATIVE_FENCE_ENTRY m_NativeFences[VioGpuNativeFenceTrackerCapacity];
@@ -1554,7 +1560,15 @@ class VioGpuDod
                                        _In_ UINT engineOrdinal,
                                        _In_ BOOLEAN queueDpc);
     BOOLEAN NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
-                                           _In_ BOOLEAN queueDpc);
+                                           _In_ BOOLEAN queueDpc,
+                                           _In_ ULONG fenceEpoch = 0);
+    BOOLEAN PrepareNativeSchedulerNotificationAtDirql(_Inout_ DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
+                                                       _In_ ULONG fenceEpoch);
+    ULONG QueryNativeFenceEpoch(void) const
+    {
+        return static_cast<ULONG>(InterlockedCompareExchange(
+            const_cast<volatile LONG *>(&m_NativeFenceEpoch), 0, 0));
+    }
     BOOLEAN RecordNativeSubmissionFence(_In_ UINT fenceId);
     BOOLEAN RetireNativeSubmissionFence(_In_ UINT fenceId, _Out_ UINT *completedFence);
     BOOLEAN IsNativeFenceQueueEmpty(void);
@@ -1569,7 +1583,7 @@ class VioGpuDod
      * drains: by then nothing from the preempted packet can still reach guest
      * memory, which is the property the previous unconditional ResetDevice()
      * was protecting - at the cost of never reporting the preemption at all. */
-    BOOLEAN DeferNativePreemption(_In_ UINT preemptionFence);
+    BOOLEAN DeferNativePreemption(_In_ UINT preemptionFence, _In_ ULONG fenceEpoch);
     BOOLEAN ReportDeferredNativePreemption(void);
     void DiscardDeferredNativePreemption(void);
     DWORD ReadNativePreemptDeferredCount(void)

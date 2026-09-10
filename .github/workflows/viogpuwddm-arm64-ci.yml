@@ -12,6 +12,7 @@ on:
       - "viogpu/common/**"
       - "viogpu/shared/viogpu_wddm_abi.h"
       - "viogpu/tests/native-context-wire/**"
+      - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
@@ -31,6 +32,7 @@ on:
       - "viogpu/common/**"
       - "viogpu/shared/viogpu_wddm_abi.h"
       - "viogpu/tests/native-context-wire/**"
+      - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
@@ -98,6 +100,10 @@ jobs:
       - name: Check host EDID and rational display timings
         shell: cmd
         run: viogpu\tests\display-timing\run-msvc.cmd
+
+      - name: Check scheduler fence publication ordering
+        shell: cmd
+        run: viogpu\tests\fence-publication\run-msvc.cmd
 
       - name: Parse Native Context diagnostic readers
         shell: pwsh
