@@ -988,12 +988,28 @@ def check_arm64_workflow_contract() -> None:
     for fragment in product_debug_fragments:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
-    product_version_fragments = (
-        "$epoch = '00c0fd0217cd25ef61581f498dbcb5f40516d4f6'",
-        "$epochMinor = 58180",
-        "git merge-base --is-ancestor $epoch HEAD",
-        'git rev-list --count "$epoch..HEAD"',
-        "$minor = $epochMinor + [int]$n",
+    candidate_version_path = PROJECT_DIR.parent / "dxvk-umd" / "driver-version.txt"
+    if candidate_version_path.is_file():
+        # The isolated DXVK development package is explicitly versioned in
+        # source. Deriving a version from depth=1 history would be unstable.
+        candidate_version = candidate_version_path.read_text(encoding="utf-8").strip()
+        if not re.fullmatch(r"[0-9]+", candidate_version) or not 60000 <= int(candidate_version) <= 65535:
+            fail("DXVK development package version must be in the reserved 60000..65535 range")
+        version_source_fragments = (
+            "$versionText = (Get-Content viogpu/dxvk-umd/driver-version.txt -Raw).Trim()",
+            "if ($versionText -notmatch '^[0-9]+$')",
+            "$minor = [int]$versionText",
+            "if ($minor -lt 60000 -or $minor -gt 65535)",
+        )
+    else:
+        version_source_fragments = (
+            "$epoch = '00c0fd0217cd25ef61581f498dbcb5f40516d4f6'",
+            "$epochMinor = 58180",
+            "git merge-base --is-ancestor $epoch HEAD",
+            'git rev-list --count "$epoch..HEAD"',
+            "$minor = $epochMinor + [int]$n",
+        )
+    product_version_fragments = version_source_fragments + (
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
         "[int]$env:DROIDVM_DRIVER_MINOR -le 58180",
         'Native Context INF does not contain expected DriverVer $infVersion',
@@ -12680,7 +12696,13 @@ def check_project_safety(root: ET.Element) -> None:
         element.attrib.get("Include", "")
         for element in root.findall(".//msbuild:FilesToPackage[@Include]", NAMESPACE)
     ]
-    if package_inputs != ["$(TargetPath)", "$(OutDir)viogpud3d.dll"]:
+    expected_package_inputs = ["$(TargetPath)", "$(OutDir)viogpud3d.dll"]
+    if (PROJECT_DIR.parent / "dxvk-umd" / "driver-version.txt").is_file():
+        expected_package_inputs += [
+            "$(MSBuildThisFileDirectory)..\\..\\dxvk-umd\\" + name
+            for name in ("viogpudxvk.dll", "dxvk-umd-backend-probe.exe", "dxvk-umd-ddi-probe.exe")
+        ]
+    if package_inputs != expected_package_inputs:
         fail("full-miniport project must package its linked SYS and ARM64 D3D UMD DLL")
 
     output_dirs = [
