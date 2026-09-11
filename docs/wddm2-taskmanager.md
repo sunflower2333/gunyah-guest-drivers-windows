@@ -11,7 +11,9 @@ and memory counters, and stable Full Display+Render are still runtime gates.
   `/home/sunf/droidvm-repos/reference/codes/viogpu-wddm2-20260911`.
 - Branch: `viogpu-wddm2-taskmanager-20260911`.
 - Base KMD: `7648b72f0a0e8ec3699544508817f805de5f262c` (58373).
-- Candidate KMD code: `d63390f` (full source identity is also recorded in CI).
+- Candidate KMD code: `d63390fdc8033862ca56e9b9b09de88f51b6848f`.
+- Final CI/package source: `41ade6e6ad6af7ae33eb13605e5fd68761a51af6` (adds
+  this report and the regression test path to CI triggers).
 - Paired Mesa: `4ace9df987ea3c08469488618080498af4c7300d`, unchanged.
 - KMD origin: `https://github.com/sunflower2333/gunyah-guest-drivers-windows.git`.
 - Both KMD and nested Mesa use separate shallow object stores, without a
@@ -103,10 +105,10 @@ validation of this VIOGPU implementation.
   readiness, exact node metadata, and physical CPU-visible/GPU-only
   allocation policy. The harness extracts the implementation functions;
   mock WDK types are not a substitute for actual WDK compilation.
-- Local full-miniport contract checker: PASS at `eb36479`.
+- Local full-miniport contract checker: PASS at final `41ade6e`.
 - `git diff --check`: PASS.
-- ARM64 WDK workflow [34578959869](https://github.com/sunflower2333/gunyah-guest-drivers-windows/actions/runs/34578959869): PASS at `eb36479`. Final candidate workflow after removal of the reserved query handler is pending.
-- Paired Mesa/KMD signed product workflow: final candidate run and artifact identity are pending.
+- ARM64 WDK workflow [34579582312](https://github.com/sunflower2333/gunyah-guest-drivers-windows/actions/runs/34579582312): PASS at final `41ade6e`, including the 17 production-function tests, inherited regressions, full-miniport and guest-driver ARM64 compilation/link checks.
+- Paired Mesa/KMD signed product workflow [34579585440](https://github.com/sunflower2333/gunyah-guest-drivers-windows/actions/runs/34579585440): PASS at `41ade6e`, including Mesa, Zink recovery regression, KMD build, package validation and signing. Artifact identity is recorded separately below once downloaded.
 - Repository-wide clang-format CI reports inherited formatting debt. Only
   changed lines/new test code were formatted; no mass reformat was made.
 
@@ -147,3 +149,17 @@ the existing Full VIOGPU Display+Render VM.
 Version text or a visible GPU tile alone does not satisfy this acceptance.
 The source/CI candidate must not be described as a completed Task Manager or
 Full VIOGPU runtime result until these checks have passed.
+
+## Runnable acceptance tools
+
+`viogpu/tools/wddm-accounting/` now contains a native ARM64 KMT reader and a
+three-phase PowerShell collector. See its README for exact invocation, output
+schema and scope. Public KMT identity/node/segment-size queries and raw Windows
+GPU performance providers are the default path. An explicit diagnostic-only
+switch enables the system-reserved D3DKMT_QUERYSTATISTICS API for raw node and
+segment details; it never changes the KMD contract and failures remain visible.
+
+The standalone `wddm-accounting-tool.yml` workflow compiles/packages the tool
+and runs 10 delta boundary cases without rebuilding or changing the validated
+41ade6e paired driver package. Native tool runtime and actual Task Manager UI
+acceptance on the device still await the coordinated window.
