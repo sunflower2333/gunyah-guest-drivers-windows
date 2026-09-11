@@ -1,11 +1,13 @@
 name: Build DroidVM ARM64 drivers
 
-# Every emitted driver target below is ARM64.  x64 appears only for runner-side
-# MSBuild/signing tools used to cross-compile and package the ARM64 binaries.
+# Installed driver targets are ARM64; x86/x64 native D3D12 bridge candidates
+# are separately signed and packaged without runtime registration.
 
 # 可手動觸發，或被其他 workflow 重用（dev-release.yml 會 call 它）。
 # push 觸發移到 dev-release.yml，避免一次 push 重複建置兩次。
 on:
+  push:
+    branches: [viogpu-native-vkd3d-umd]
   workflow_dispatch:
   workflow_call:
 
@@ -17,13 +19,74 @@ env:
   PFX_PW: "droidvm"
 
 jobs:
+  vkd3d-backend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - run: git submodule update --init --recursive --depth 1 external/vkd3d-proton
+      - run: sudo apt-get update && sudo apt-get install -y meson ninja-build wine64-tools libwine-dev glslang-tools mesa-vulkan-drivers
+      - name: Build and execute embedded CPU Vulkan semantics
+        working-directory: external/vkd3d-proton
+        shell: bash
+        run: |
+          meson setup build-umd --buildtype debugoptimized -Denable_umd_bridge=true -Denable_umd_bridge_tests=true
+          meson compile -C build-umd -j 3 vkd3d-umd-backend-test
+          export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          if [ ! -f "$VK_DRIVER_FILES" ]; then export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json; fi
+          timeout 90 build-umd/libs/vkd3d-umd/vkd3d-umd-backend-test
+
+  vkd3d-umd:
+    runs-on: windows-2025-vs2026
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            msvc: x64_arm64
+          - arch: x64
+            msvc: x64
+          - arch: x86
+            msvc: x64_x86
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - run: git submodule update --init --recursive --depth 1 external/vkd3d-proton
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare embedded engine build tools
+        shell: pwsh
+        run: |
+          choco install strawberryperl -y --no-progress
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Invoke-WebRequest 'https://raw.githubusercontent.com/HansKristian-Work/vkd3d-proton-ci/9e54d0ea518003b6da3f1600c010840a5921e0aa/glslangValidator.exe' -OutFile C:\Strawberry\c\bin\glslangValidator.exe
+          'C:\Strawberry\c\bin' | Out-File $env:GITHUB_PATH -Append
+          pip install meson ninja
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build native WDK bridge and run host-compatible ABI tests
+        working-directory: external/vkd3d-proton
+        shell: pwsh
+        run: ./tools/build-windows-umd.ps1 -Architecture '${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paired-vkd3d-${{ matrix.arch }}
+          path: external/vkd3d-proton/build-umd-${{ matrix.arch }}/package/
+          if-no-files-found: error
+
   zink-wait-tests:
     name: Zink abandoned-batch recovery regression
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          fetch-depth: 1
+      - run: git submodule update --init --depth 1 external/mesa
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
@@ -70,7 +133,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: true
+          fetch-depth: 1
+      - run: git submodule update --init --depth 1 external/mesa
 
       - name: Set up MSVC and WDK
         uses: ilammy/msvc-dev-cmd@v1
@@ -327,13 +391,19 @@ jobs:
 
   build:
     runs-on: windows-11-arm
-    needs: mesa-umd
+    needs: [mesa-umd, vkd3d-backend, vkd3d-umd]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 需要完整歷史：driver 版號第四段用 commit 數（shallow 會變成 1）
+          fetch-depth: 1
+
+      - name: Download paired embedded D3D12 candidates
+        uses: actions/download-artifact@v4
+        with:
+          pattern: paired-vkd3d-*
+          path: vkd3d-umd
 
       - name: Download the Mesa user-mode driver
         uses: actions/download-artifact@v4
@@ -411,6 +481,8 @@ jobs:
 
       - name: Build ARM64 drivers
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
@@ -421,11 +493,13 @@ jobs:
           # revisions before another explicit epoch is required.
           $epoch = '00c0fd0217cd25ef61581f498dbcb5f40516d4f6'
           $epochMinor = 58180
-          & git merge-base --is-ancestor $epoch HEAD
-          if ($LASTEXITCODE -ne 0) {
-            throw "driver version epoch $epoch is not an ancestor of HEAD"
+          $comparison = & gh api "repos/$env:GITHUB_REPOSITORY/compare/$epoch...$env:GITHUB_SHA"
+          if ($LASTEXITCODE) { throw 'Cannot verify source ancestry using GitHub compare API' }
+          $comparison = $comparison | ConvertFrom-Json
+          if ($comparison.status -ne 'ahead' -or $comparison.merge_base_commit.sha -ne $epoch) {
+            throw "driver version epoch $epoch is not the verified merge base"
           }
-          $n = (& git rev-list --count "$epoch..HEAD" | Out-String).Trim()
+          $n = [string]$comparison.total_commits
           if (-not ($n -match '^[1-9][0-9]*$')) {
             throw "invalid driver version distance from $epoch to HEAD: '$n'"
           }
@@ -677,6 +751,11 @@ jobs:
               Copy-Item $mesaUmd (Join-Path $dest 'viogpud3d.dll') -Force
               $mesaHash = (Get-FileHash (Join-Path $dest 'viogpud3d.dll') -Algorithm SHA256).Hash
               Write-Host "viogpu: packaged Mesa UMD $mesaHash"
+              $vkd3d = Join-Path $env:GITHUB_WORKSPACE 'vkd3d-umd/paired-vkd3d-arm64'
+              Copy-Item (Join-Path $vkd3d 'viogpud3d12.dll') $dest
+              Copy-Item (Join-Path $vkd3d 'viogpud3d12.pdb') $dest
+              python .install_scripts/verify-pe-pdb.py (Join-Path $dest 'viogpud3d12.dll') (Join-Path $dest 'viogpud3d12.pdb')
+              if ($LASTEXITCODE) { throw 'Embedded D3D12 bridge PE/PDB mismatch' }
             }
             # 取 inf（優先 ARM64 已 stamp；否則 source 模板）
             $infF = PickInf $d.root $d.inf
@@ -758,6 +837,29 @@ jobs:
             $has = (Get-ChildItem "$dest" | ForEach-Object Name) -join ' '
             Write-Host "packed $($d.n): $has"
           }
+          foreach ($arch in @('arm64','x64','x86')) {
+            $source = "vkd3d-umd/paired-vkd3d-$arch"
+            $candidate = "out/candidates/vkd3d/$arch"
+            New-Item -ItemType Directory -Force $candidate | Out-Null
+            Copy-Item "$source/*" $candidate
+            foreach ($pe in (Get-ChildItem $candidate -File | Where-Object Extension -in @('.dll','.exe'))) {
+              & $signtool sign /fd SHA256 /f $pfx /p "$pfxPw" $pe.FullName
+              if ($LASTEXITCODE) { throw "Candidate signing failed: $($pe.FullName)" }
+            }
+            python .install_scripts/verify-pe-pdb.py "$candidate/viogpud3d12.dll" "$candidate/viogpud3d12.pdb"
+            if ($LASTEXITCODE) { throw "Candidate $arch PE/PDB mismatch" }
+            $identity = Get-Content "$candidate/source.json" -Raw | ConvertFrom-Json
+            $engine = ((& git ls-tree HEAD external/vkd3d-proton) -split '\s+')[2]
+            if ($identity.Source -ne $engine) { throw "Candidate $arch source is not the parent gitlink" }
+            $identity | Add-Member ParentSource $env:GITHUB_SHA
+            $identity | Add-Member MesaSource (((& git ls-tree HEAD external/mesa) -split '\s+')[2])
+            $identity | ConvertTo-Json -Depth 6 | Set-Content "$candidate/source.json"
+            Get-ChildItem $candidate -File | Where-Object Name -ne 'SHA256SUMS' | Get-FileHash -Algorithm SHA256 |
+              ForEach-Object { $_.Hash + '  ' + [IO.Path]::GetFileName($_.Path) } | Set-Content "$candidate/SHA256SUMS"
+          }
+          Copy-Item out/candidates/vkd3d/arm64/source.json out/drivers/viogpu/vkd3d-source.json
+          Get-ChildItem out/drivers/viogpu -File | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { $_.Hash + '  ' + [IO.Path]::GetFileName($_.Path) } | Set-Content out/drivers/viogpu/SHA256SUMS
           # --- bundle installer into the artifact (source: .install_scripts/) ---
           # INSTALL.cmd (UAC launcher) + install-drivers.ps1 install the pVM drivers
           # (viogpu/pvmpower/storage/input, then NetKVM last) and remove

@@ -3,3 +3,8 @@
 	url = https://github.com/sunflower2333/mesa
 	branch = wip/turnip-wddm-assumenotinuse
 	shallow = true
+[submodule "external/vkd3d-proton"]
+	path = external/vkd3d-proton
+	url = https://github.com/sunflower2333/vkd3d-proton.git
+	branch = viogpu-native-d3d12-umd
+	shallow = true

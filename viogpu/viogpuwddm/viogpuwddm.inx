@@ -20,6 +20,7 @@ DefaultDestDir = INX_PLATFORM_DRIVERS_DIR
 [SourceDisksFiles]
 viogpuwddm.sys = 1,,
 viogpud3d.dll = 1,,
+viogpud3d12.dll = 1,,
 
 [Manufacturer]
 %DroidVM% = VioGpuWddm,NT$ARCH$
@@ -37,6 +38,7 @@ DelReg = VioGpuWddm_RetiredDeviceSettings
 [VioGpuWddm_CopyFiles]
 viogpuwddm.sys,,,2
 viogpud3d.dll,,,2
+viogpud3d12.dll,,,2
 
 [VioGpuWddm_Install.NT.Services]
 AddService = VioGpuWddm,%SPSVCINST_ASSOCSERVICE%,VioGpuWddm_Service,VioGpuWddm_EventLog
