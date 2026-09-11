@@ -2658,12 +2658,19 @@ def check_native_driver_caps_contract() -> None:
         r"case\s+DXGKQAITYPE_DRIVERCAPS\s*:\s*\{\s*"
         r"#if\s+defined\(VIOGPU_NATIVE_CONTEXT\)\s*"
         r"status\s*=\s*VioGpuQueryNativeDriverCaps\(pQueryAdapterInfo,\s*IsPointerEnabled\(\),\s*IsRenderOnly\(\)\);\s*"
+        r"#if\s*\(DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\)\s*(?P<color>.*?)#endif\s*"
         r"#else(?P<display>.*?)#endif\s*break\s*;\s*\}",
         query_body,
         re.DOTALL,
     )
     if driver_caps_case is None:
         fail("DriverCaps dispatch must isolate the conditional Native Context output from the display-only structure")
+    color_caps = canonical_code(driver_caps_case.group("color"))
+    require_order(color_caps, ("pQueryAdapterInfo->OutputDataSize>=sizeof(DXGK_DRIVERCAPS)",
+                  "QueryDisplayColor(&colorCaps)&&IsNativeHdrModeAvailable()",
+                  "driverCaps->ColorTransformCaps.Gamma_Dxgi1=1;",
+                  "driverCaps->ColorTransformCaps.Transform_3x4Matrix_HighColor=1;"),
+                  "Advanced Color caps require a full reply and negotiated native HDR")
     display_caps = canonical_code(driver_caps_case.group("display"))
     for fragment in (
         "pQueryAdapterInfo->OutputDataSize<sizeof(DXGK_DRIVERCAPS)",
