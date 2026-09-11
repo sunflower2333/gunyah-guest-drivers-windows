@@ -17,6 +17,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+      - name: Parse installer and verify typed registration rollback
+        shell: pwsh
+        run: |
+          $scripts = @('.install_scripts/install-opengl-icd.ps1', '.install_scripts/opengl-registration.psm1', '.github/scripts/sign-opengl-sidecar.ps1')
+          foreach ($script in $scripts) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw "PowerShell parse failure: $script $errors" }
+          }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File viogpu/opengl/test-registration.ps1
+          if ($LASTEXITCODE) { throw 'Windows PowerShell registration/rollback regression failed' }
       - name: Download the exact successful three-architecture Mesa run
         shell: pwsh
         env:

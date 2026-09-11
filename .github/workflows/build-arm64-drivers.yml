@@ -9,6 +9,10 @@ on:
   workflow_dispatch:
   workflow_call:
 
+permissions:
+  contents: read
+  actions: read
+
 env:
   CONFIG: "Win11 Release"
   PLATFORM: "ARM64"
@@ -17,6 +21,9 @@ env:
   PFX_PW: "droidvm"
 
 jobs:
+  opengl-icd:
+    uses: ./.github/workflows/opengl-system-icd.yml
+
   zink-wait-tests:
     name: Zink abandoned-batch recovery regression
     runs-on: windows-2025-vs2026
@@ -327,7 +334,7 @@ jobs:
 
   build:
     runs-on: windows-11-arm
-    needs: mesa-umd
+    needs: [mesa-umd, opengl-icd]
 
     steps:
       - name: Checkout
@@ -340,6 +347,12 @@ jobs:
         with:
           name: mesa-viogpud3d-arm64
           path: mesa-umd
+
+      - name: Download the ABI-validated OpenGL system ICD payload
+        uses: actions/download-artifact@v4
+        with:
+          name: viogpu-opengl-system-unsigned
+          path: opengl-payload
 
       - name: Locate preinstalled Windows SDK and WDK
         shell: pwsh
@@ -757,6 +770,21 @@ jobs:
             }
             $has = (Get-ChildItem "$dest" | ForEach-Object Name) -join ' '
             Write-Host "packed $($d.n): $has"
+          }
+          # The system ICD is an explicit, cataloged sidecar. Preserve its
+          # architecture directories and bind it to these exact signed KMD/UMD
+          # files; never flatten dependencies into the DriverStore or overwrite
+          # Microsoft's opengl32.dll.
+          ./.github/scripts/sign-opengl-sidecar.ps1 -Payload opengl-payload `
+            -Output out/opengl -Kmd out/drivers/viogpu/viogpuwddm.sys `
+            -Umd out/drivers/viogpu/viogpud3d.dll -Pfx $pfx `
+            -PfxPassword $pfxPw -SignTool $signtool
+          foreach ($scriptName in @('install-opengl-icd.ps1','opengl-registration.psm1')) {
+            Copy-Item -LiteralPath (Join-Path '.install_scripts' $scriptName) -Destination out
+            $signedScript = Set-AuthenticodeSignature -FilePath (Join-Path 'out' $scriptName) -Certificate $cert -HashAlgorithm SHA256
+            if (!$signedScript.SignerCertificate -or $signedScript.SignerCertificate.Thumbprint -ne $cert.Thumbprint) {
+              throw "OpenGL installer signing failed: $scriptName"
+            }
           }
           # --- bundle installer into the artifact (source: .install_scripts/) ---
           # INSTALL.cmd (UAC launcher) + install-drivers.ps1 install the pVM drivers
