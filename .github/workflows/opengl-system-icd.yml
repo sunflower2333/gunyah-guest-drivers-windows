@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   workflow_call:
   push:
-    branches: [viogpu-opengl-icd-20260911, viogpu-opengl-integrated-20260911, viogpu-opengl-installer-file-20260911]
+    branches: [viogpu-opengl-icd-20260911, viogpu-opengl-integrated-20260911, viogpu-opengl-installer-file-20260911, viogpu-opengl-discovery-20260911]
 permissions:
   contents: read
   actions: read
@@ -75,4 +75,14 @@ jobs:
             & "$root/system-probe-$arch.exe" --load-only $root
             if ($LASTEXITCODE) { throw "Actual $arch ICD forwarding/load failed" }
           }
+          $isolated = Join-Path $env:RUNNER_TEMP 'opengl-probes-only'
+          New-Item -ItemType Directory $isolated | Out-Null
+          Copy-Item "$root/system-probe-*.exe" -Destination $isolated
+          Push-Location $isolated
+          try {
+            foreach ($arch in @('arm64','x64','x86')) {
+              & "$isolated/system-probe-$arch.exe" --load-default $root
+              if ($LASTEXITCODE) { throw "Default DLL search from external $arch probe failed" }
+            }
+          } finally { Pop-Location }
           Write-Host 'No adapter registration or graphics context: ABI proof only, system rendering still requires target validation.'

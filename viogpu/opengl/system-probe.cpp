@@ -12,13 +12,33 @@
 static int error(const char *what)
 {
     std::fprintf(stderr, "FAIL %s Win32=%lu\n", what, GetLastError());
+    const wchar_t *names[] = {L"viogpuopengl.dll",
+                              L"viogpuopengl_arm64.dll",
+                              L"viogpuopengl_x64.dll",
+                              L"viogpuopengl_x86.dll",
+                              L"libgallium_wgl.dll",
+                              L"vulkan-1.dll",
+                              L"vulkan_freedreno.dll"};
+    for (const wchar_t *name : names)
+    {
+        HMODULE module = GetModuleHandleW(name);
+        wchar_t path[32768];
+        if (module && GetModuleFileNameW(module, path, _countof(path)))
+        {
+            std::fwprintf(stderr, L"MODULE %ls=%ls\n", name, path);
+        }
+        else
+        {
+            std::fwprintf(stderr, L"MODULE %ls=not loaded\n", name);
+        }
+    }
     return 1;
 }
 int wmain(int argc, wchar_t **argv)
 {
     if (argc != 3)
     {
-        return error("usage: system-probe --load-only|--system <absolute package opengl directory>");
+        return error("usage: system-probe --load-only|--load-default|--system <absolute package opengl directory>");
     }
     wchar_t path[32768];
     if (!GetFullPathNameW(argv[2], _countof(path), path, nullptr))
@@ -39,13 +59,16 @@ int wmain(int argc, wchar_t **argv)
     const wchar_t *icd = L"viogpuopengl.dll";
     const wchar_t *arch = L"x64";
 #endif
-    if (!wcscmp(argv[1], L"--load-only"))
+    if (!wcscmp(argv[1], L"--load-only") || !wcscmp(argv[1], L"--load-default"))
     {
         if (wcscat_s(path, icd))
         {
             return error("ICD path length");
         }
-        HMODULE module = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+        HMODULE module = !wcscmp(argv[1], L"--load-default") ? LoadLibraryW(path)
+                                                             : LoadLibraryExW(path,
+                                                                              nullptr,
+                                                                              LOAD_WITH_ALTERED_SEARCH_PATH);
         if (!module)
         {
             return error("load system ICD proxy");
@@ -108,6 +131,11 @@ int wmain(int argc, wchar_t **argv)
         format.iPixelType = PFD_TYPE_RGBA;
         format.cColorBits = 32;
         int index = ChoosePixelFormat(dc, &format);
+        PIXELFORMATDESCRIPTOR selected = {};
+        if (index && DescribePixelFormat(dc, index, sizeof(selected), &selected))
+        {
+            std::printf("PIXEL_FORMAT=%d FLAGS=0x%08lx\n", index, selected.dwFlags);
+        }
         if (!index || !SetPixelFormat(dc, index, &format))
         {
             return error("system pixel format");
