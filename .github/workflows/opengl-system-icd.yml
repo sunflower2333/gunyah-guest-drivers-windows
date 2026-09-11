@@ -34,11 +34,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run watch 34595644367 --repo sunflower2333/mesa --exit-status --interval 30
+          gh run watch 34602261501 --repo sunflower2333/mesa --exit-status --interval 30
           if ($LASTEXITCODE) { throw 'Pinned Mesa run did not complete successfully' }
-          $source = gh run view 34595644367 --repo sunflower2333/mesa --json headSha --jq .headSha
-          if ($LASTEXITCODE -or $source.Trim() -ne '6144b82eabd05ccf56d9201e64455f05f562883b') { throw 'Pinned Mesa run source mismatch' }
-          gh run download 34595644367 --repo sunflower2333/mesa --dir mesa-opengl-artifacts
+          $source = gh run view 34602261501 --repo sunflower2333/mesa --json headSha --jq .headSha
+          if ($LASTEXITCODE -or $source.Trim() -ne 'e0caf8c6740638c1b12a5150edca095d01262805') { throw 'Pinned Mesa run source mismatch' }
+          gh run download 34602261501 --repo sunflower2333/mesa --dir mesa-opengl-artifacts
           if ($LASTEXITCODE) { throw 'Pinned Mesa artifact download failed' }
           python viogpu/opengl/package.py --payloads mesa-opengl-artifacts --verify-only
           if ($LASTEXITCODE) { throw 'Pinned Mesa source/hash/PE/export verification failed' }

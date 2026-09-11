@@ -1,4 +1,4 @@
-name: Build DroidVM ARM64 drivers
+name: Build integrated HDR candidate with native Mesa ARM64 drivers
 
 # Every emitted driver target below is ARM64.  x64 appears only for runner-side
 # MSBuild/signing tools used to cross-compile and package the ARM64 binaries.
@@ -476,7 +476,7 @@ jobs:
             @{ p='viogpu/viogpusc/viogpusc.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpures/viogpures.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpud3d/viogpud3d.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
-            @{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64' },
+            @{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64'; hdr=$true },
             @{ p='viostor/viostor.vcxproj';                 c='Win11 Release'; plat='ARM64' },
             @{ p='vioscsi/vioscsi.vcxproj';                 c='Win11 Release'; plat='ARM64' },
             @{ p='vioserial/sys/vioser.vcxproj';            c='Win11 Release'; plat='ARM64' },
@@ -488,7 +488,13 @@ jobs:
           $failed = @()
           foreach ($j in $jobs) {
             Write-Host "::group::build $($j.p) [$($j.c)|$($j.plat)]"
-            msbuild $j.p /p:Configuration="$($j.c)" /p:Platform="$($j.plat)" @common
+            $projectFlags = @()
+            if ($j.hdr) {
+              # This independent integration branch explicitly packages the
+              # guarded WDDM2.3 candidate with the pinned real Mesa UMD.
+              $projectFlags += '/p:VIOGPU_ADVANCED_COLOR=1'
+            }
+            msbuild $j.p /p:Configuration="$($j.c)" /p:Platform="$($j.plat)" @common @projectFlags
             if ($LASTEXITCODE -ne 0) {
               $failed += $j.p
               if ($j.dep) { Write-Host "::error::dependency $($j.p) failed — 後續驅動可能連不到" }
@@ -810,6 +816,25 @@ jobs:
           # older versions.
           Copy-Item .install_scripts\INSTALL.cmd, .install_scripts\install-drivers.ps1, .install_scripts\pvmpower-devnode.ps1 out\ -Force
           Write-Host "[pkg] bundled out\INSTALL.cmd + installer scripts"
+
+          $pairRoot = 'out/drivers/viogpu'
+          $pairIdentity = [ordered]@{
+            source_commit = $env:GITHUB_SHA
+            mesa_commit = 'e0caf8c6740638c1b12a5150edca095d01262805'
+            mesa_architecture_run = 34602261501
+            workflow_run = $env:GITHUB_RUN_ID
+            profile = 'WDDM 2.3 Advanced Color with native Mesa D3D10 UMD'
+            expected_driver_model = 2300
+            hdr_admitted = $false
+            runtime_validated = $false
+            driver_version = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
+            signer_thumbprint = $cert.Thumbprint
+            files = [ordered]@{}
+          }
+          foreach ($file in @('viogpuwddm.sys','viogpud3d.dll','viogpuwddm.inf','viogpuwddm.cat')) {
+            $pairIdentity.files[$file] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $pairRoot $file)).Hash
+          }
+          $pairIdentity | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath out/hdr-pair-identity.json -Encoding utf8
 
           Remove-Item $pfx -Force   # 不上傳私鑰
           Write-Host "=== staged ==="; Get-ChildItem -Recurse out -File | Select FullName
