@@ -294,6 +294,9 @@ jobs:
         run: |
           $hdrOutDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objhdr_win11_arm64/arm64/')
           New-Item -ItemType Directory -Path $hdrOutDir -Force | Out-Null
+          $hdrUmd = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.dll'
+          if (-not (Test-Path -LiteralPath $hdrUmd -PathType Leaf)) { throw 'No baseline UMD for Advanced Color candidate package' }
+          Copy-Item -LiteralPath $hdrUmd -Destination (Join-Path $hdrOutDir 'viogpud3d.dll') -Force
           msbuild viogpu/viogpuwddm/viogpuwddm.vcxproj /m `
             /p:Configuration="Win11 Release" /p:Platform=ARM64 `
             /p:WindowsTargetPlatformVersion="$env:DROIDVM_KIT_VERSION" `
