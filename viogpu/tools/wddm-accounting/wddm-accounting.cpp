@@ -25,6 +25,8 @@ static void JsonString(const wchar_t *value)
     std::putchar('"');
 }
 
+#include "display-color.h"
+
 static void Status(NTSTATUS status)
 {
     std::printf("\"ntstatus\":\"0x%08lx\"", static_cast<unsigned long>(status));
@@ -104,6 +106,7 @@ static void AdapterSnapshot(const D3DKMT_ADAPTERINFO &adapter, bool statistics, 
                 static_cast<unsigned long>(adapter.AdapterLuid.HighPart),
                 adapter.AdapterLuid.LowPart);
     Description(adapter.AdapterLuid);
+    DisplayColorSnapshot(adapter.AdapterLuid);
     D3DKMT_DRIVERVERSION version = {};
     NTSTATUS status = Query(adapter.hAdapter, KMTQAITYPE_DRIVERVERSION, &version);
     std::printf("\"driver_model\":{");
