@@ -6,10 +6,18 @@
 #include <cstring>
 #include <limits>
 #include <utility>
+#ifndef _In_
 #define _In_
+#endif
+#ifndef _Inout_
 #define _Inout_
+#endif
+#ifndef _Out_
 #define _Out_
+#endif
+#ifndef _In_reads_
 #define _In_reads_(n)
+#endif
 using UINT = uint32_t;
 using ULONG = uint32_t;
 using DWORD = uint32_t;
