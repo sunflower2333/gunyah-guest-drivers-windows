@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   workflow_call:
   push:
-    branches: [viogpu-opengl-icd-20260911, viogpu-opengl-integrated-20260911]
+    branches: [viogpu-opengl-icd-20260911, viogpu-opengl-integrated-20260911, viogpu-opengl-installer-file-20260911]
 permissions:
   contents: read
   actions: read
