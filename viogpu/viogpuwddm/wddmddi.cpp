@@ -4447,6 +4447,7 @@ struct VIOGPU_COLOR_PRESENT_WORK
     VIOGPU_SET_RESOURCE_COLOR Color;
     ULONGLONG PrimaryAddress;
     ULONGLONG PresentId;
+    ULONG FenceEpoch;
 };
 
 VOID VioGpuColorPresentWorker(_In_ PVOID context)
@@ -4458,7 +4459,8 @@ VOID VioGpuColorPresentWorker(_In_ PVOID context)
     if (status == STATUS_SUCCESS)
     {
         VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
-        if (IsStandardPrimaryAllocation(allocation) && allocation->PlacementValid &&
+        if (work->FenceEpoch == adapter->QueryNativeFenceEpoch() && !adapter->IsHardwareResetRequested() &&
+            IsStandardPrimaryAllocation(allocation) && allocation->PlacementValid &&
             allocation->PlacementOffset == work->PrimaryAddress && EnsureStandard2DAllocationBacking(allocation) &&
             allocation->Resource2DState == VioGpu2DResourceBackingAttached)
         {
@@ -4473,12 +4475,14 @@ VOID VioGpuColorPresentWorker(_In_ PVOID context)
     }
     if (status == STATUS_SUCCESS)
     {
-        adapter->SetCrtcVsyncPrimaryAddress(work->PrimaryAddress);
         // Publish only after RESOURCE_FLUSH retires all host input readers. The
         // existing synchronized VSync notification reports this exact PresentId.
-        InterlockedExchange64(&adapter->m_ColorPresentCompletedId, static_cast<LONG64>(work->PresentId));
+        if (!adapter->PublishColorPresentCompletion(work->PresentId, work->PrimaryAddress, work->FenceEpoch))
+        {
+            status = STATUS_DEVICE_NOT_READY;
+        }
     }
-    else
+    if (status != STATUS_SUCCESS)
     {
         // An accepted asynchronous flip cannot be silently discarded or reported
         // complete. Reset owns recovery if any queue/lifetime/generation step fails.
@@ -4486,7 +4490,7 @@ VOID VioGpuColorPresentWorker(_In_ PVOID context)
     }
     ReleaseAllocationSubmissionReference(allocation);
     delete work;
-    InterlockedExchange(&adapter->m_ColorPresentPending, 0);
+    adapter->EndColorStateOperation();
     adapter->ReleaseNativeSubmissionOperation();
 }
 #endif
@@ -10282,6 +10286,14 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
     }
 
     UINT previousResourceId = 0;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    VioGpuDod::ColorStateOperation colorOperation(adapter);
+    if (!colorOperation.Acquired())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    adapter->ClearColorPresentCompletion();
+#endif
     if (setVidPnSourceAddress->hAllocation == NULL)
     {
         if (setVidPnSourceAddress->PrimarySegment != 0 || setVidPnSourceAddress->PrimaryAddress.QuadPart != 0)
