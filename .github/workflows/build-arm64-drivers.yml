@@ -55,6 +55,13 @@ jobs:
       - name: Execute command stream pooling and range ownership regression
         shell: pwsh
         run: python external/mesa/src/freedreno/vulkan/tests/tu_cs_pool_test.py
+      - name: Execute bounded render reference and compute conversion regressions
+        shell: pwsh
+        run: |
+          python external/mesa/src/freedreno/vulkan/tests/tu_wddm_reference_test.py
+          if ($LASTEXITCODE) { throw 'Render reference regression failed' }
+          python external/mesa/src/freedreno/vulkan/tests/tu_compute_compile_failure_test.py
+          if ($LASTEXITCODE) { throw 'Compute conversion regression failed' }
       - name: Execute production fault and power recovery paths
         shell: pwsh
         run: |

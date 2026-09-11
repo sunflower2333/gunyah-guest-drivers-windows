@@ -33,7 +33,7 @@ evaluation. Direct Vulkan negotiation does not require the private loader.
 ## Build and package evidence
 
 `opengl-system-icd.yml` verifies all 39 hashes in each exact Mesa artifact from
-run 34579117645, commit `5b393c17d68bbdce44f185235d9da54328c6be3a`.
+run 34595644367, commit `6144b82eabd05ccf56d9201e64455f05f562883b`.
 It checks PE machines and real (not forwarded) Mesa ICD exports, builds the
 dispatch adapters, and executes load-only calls from all three architectures
 on a Windows ARM64 runner. The ARM64X native and x64 views have both passed
