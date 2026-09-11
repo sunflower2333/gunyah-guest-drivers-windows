@@ -1,6 +1,8 @@
 name: Audit signed integrated HDR OpenGL entry points
 on:
   workflow_dispatch:
+  push:
+    branches: [viogpu-opengl-hdr-audit-20260911]
 permissions:
   contents: read
   actions: read
