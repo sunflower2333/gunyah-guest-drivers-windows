@@ -5,6 +5,85 @@
 #include "../../external/mesa/bin/windows-opengl-probe.cpp"
 #undef main
 
+static void gles_diagnostic(HMODULE egl, HMODULE gl, int version)
+{
+    auto error = symbol<PFNEGLGETERRORPROC>(egl, "eglGetError");
+    auto check = [error](const char *stage, bool ok) {
+        const EGLint status = error();
+        std::printf("EGL stage=%s success=%d error=0x%04x\n", stage, ok, status);
+        std::fflush(stdout);
+        if (!ok || status != EGL_SUCCESS) std::exit(1);
+    };
+    HWND hwnd = window();
+    error();
+    EGLDisplay display = symbol<PFNEGLGETDISPLAYPROC>(egl, "eglGetDisplay")(EGL_DEFAULT_DISPLAY);
+    check("eglGetDisplay", display != EGL_NO_DISPLAY);
+    EGLint major = 0, minor = 0;
+    check("eglInitialize", symbol<PFNEGLINITIALIZEPROC>(egl, "eglInitialize")(display, &major, &minor) == EGL_TRUE);
+    std::printf("EGL version=%d.%d\n", major, minor);
+    check("eglBindAPI", symbol<PFNEGLBINDAPIPROC>(egl, "eglBindAPI")(EGL_OPENGL_ES_API) == EGL_TRUE);
+    const EGLint attributes[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE,
+        version == 2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_NONE};
+    EGLConfig config = nullptr;
+    EGLint count = 0;
+    const EGLBoolean chosen = symbol<PFNEGLCHOOSECONFIGPROC>(egl, "eglChooseConfig")(display, attributes, &config, 1, &count);
+    check("eglChooseConfig", chosen == EGL_TRUE);
+    std::printf("EGL config count=%d\n", count);
+    if (count != 1) std::exit(1);
+    const EGLint contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION, version, EGL_NONE};
+    EGLContext context = symbol<PFNEGLCREATECONTEXTPROC>(egl, "eglCreateContext")(display, config, EGL_NO_CONTEXT, contextAttributes);
+    check("eglCreateContext", context != EGL_NO_CONTEXT);
+    EGLSurface surface = symbol<PFNEGLCREATEWINDOWSURFACEPROC>(egl, "eglCreateWindowSurface")(display, config, hwnd, nullptr);
+    check("eglCreateWindowSurface", surface != EGL_NO_SURFACE);
+    auto current = symbol<PFNEGLMAKECURRENTPROC>(egl, "eglMakeCurrent");
+    check("eglMakeCurrent", current(display, surface, surface, context) == EGL_TRUE);
+    renderer(gl);
+    clear(gl);
+    const GLfloat vertices[] = {-1, -1, 1, -1, 0, 1};
+    GLuint program = 0;
+    if (version == 2) {
+        const char *sources[] = {"attribute vec2 pos; void main(){ gl_Position=vec4(pos,0.0,1.0); }",
+            "precision mediump float; void main(){ gl_FragColor=vec4(1.0,0.0,0.0,1.0); }"};
+        auto createShader = symbol<PFNGLCREATESHADERPROC>(gl, "glCreateShader");
+        auto shaderSource = symbol<PFNGLSHADERSOURCEPROC>(gl, "glShaderSource");
+        auto compileShader = symbol<PFNGLCOMPILESHADERPROC>(gl, "glCompileShader");
+        auto shaderiv = symbol<PFNGLGETSHADERIVPROC>(gl, "glGetShaderiv");
+        program = symbol<PFNGLCREATEPROGRAMPROC>(gl, "glCreateProgram")();
+        for (int i = 0; i < 2; i++) {
+            GLuint shader = createShader(i == 0 ? GL_VERTEX_SHADER : GL_FRAGMENT_SHADER);
+            shaderSource(shader, 1, &sources[i], nullptr);
+            compileShader(shader);
+            GLint ok = 0;
+            shaderiv(shader, GL_COMPILE_STATUS, &ok);
+            if (!ok) fail("GLES shader compile");
+            symbol<PFNGLATTACHSHADERPROC>(gl, "glAttachShader")(program, shader);
+            symbol<PFNGLDELETESHADERPROC>(gl, "glDeleteShader")(shader);
+        }
+        symbol<PFNGLBINDATTRIBLOCATIONPROC>(gl, "glBindAttribLocation")(program, 0, "pos");
+        symbol<PFNGLLINKPROGRAMPROC>(gl, "glLinkProgram")(program);
+        GLint ok = 0;
+        symbol<PFNGLGETPROGRAMIVPROC>(gl, "glGetProgramiv")(program, GL_LINK_STATUS, &ok);
+        if (!ok) fail("GLES program link");
+        symbol<PFNGLUSEPROGRAMPROC>(gl, "glUseProgram")(program);
+        symbol<PFNGLVERTEXATTRIBPOINTERPROC>(gl, "glVertexAttribPointer")(0, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+        symbol<PFNGLENABLEVERTEXATTRIBARRAYPROC>(gl, "glEnableVertexAttribArray")(0);
+    } else {
+        symbol<void (GL_APIENTRY *)(GLfloat, GLfloat, GLfloat, GLfloat)>(gl, "glColor4f")(1, 0, 0, 1);
+        symbol<void (GL_APIENTRY *)(GLint, GLenum, GLsizei, const void *)>(gl, "glVertexPointer")(2, GL_FLOAT, 0, vertices);
+        symbol<void (GL_APIENTRY *)(GLenum)>(gl, "glEnableClientState")(0x8074);
+    }
+    symbol<void (GL_APIENTRY *)(GLenum, GLint, GLsizei)>(gl, "glDrawArrays")(GL_TRIANGLES, 0, 3);
+    readback(gl);
+    check("eglSwapBuffers", symbol<PFNEGLSWAPBUFFERSPROC>(egl, "eglSwapBuffers")(display, surface) == EGL_TRUE);
+    if (program) symbol<PFNGLDELETEPROGRAMPROC>(gl, "glDeleteProgram")(program);
+    check("eglReleaseCurrent", current(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) == EGL_TRUE);
+    check("eglDestroySurface", symbol<PFNEGLDESTROYSURFACEPROC>(egl, "eglDestroySurface")(display, surface) == EGL_TRUE);
+    check("eglDestroyContext", symbol<PFNEGLDESTROYCONTEXTPROC>(egl, "eglDestroyContext")(display, context) == EGL_TRUE);
+    check("eglTerminate", symbol<PFNEGLTERMINATEPROC>(egl, "eglTerminate")(display) == EGL_TRUE);
+    DestroyWindow(hwnd);
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 3 ||
@@ -43,11 +122,11 @@ int main(int argc, char **argv)
 
     if (!std::strcmp(argv[1], "--gles1"))
     {
-        gles(egl, es1, 1);
+        gles_diagnostic(egl, es1, 1);
     }
     else if (!std::strcmp(argv[1], "--gles2"))
     {
-        gles(egl, es2, 2);
+        gles_diagnostic(egl, es2, 2);
     }
     std::printf("PASS %s architecture=%s (%zu-bit process)\n", argv[1], architecture, sizeof(void *) * 8);
     return 0;
