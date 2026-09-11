@@ -1285,11 +1285,46 @@ class VioGpuDod
                                                     UINT height,
                                                     ULONGLONG resetGeneration);
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
-    volatile LONG m_ColorPresentPending = 0;
+    // Slot and event are changed under the same lock. A configuration owns the
+    // same slot as a queued present, so an older worker cannot restore old modes.
+    LONG m_ColorPresentPending = 0;
+    KEVENT m_ColorPresentIdle;
+    volatile LONG m_ColorPresentActive = 0;
     volatile LONG64 m_ColorPresentCompletedId = 0;
-    volatile LONG64 m_ColorPresentLastQueuedId = 0;
+    volatile LONG m_ColorPresentCompletedEpoch = 0;
+    ULONGLONG m_ColorPresentLastQueuedId = 0;
+    ULONG m_ColorPresentQueuedEpoch = 0;
     KSPIN_LOCK m_ColorStateLock;
     VIOGPU_DISPLAY_COLOR_RESPONSE m_ColorCapabilities = {};
+    BOOLEAN BeginColorStateOperation(BOOLEAN wait);
+    VOID EndColorStateOperation();
+    VOID ClearColorPresentCompletion();
+    BOOLEAN PublishColorPresentCompletion(ULONGLONG presentId, ULONGLONG address, ULONG epoch);
+    class ColorStateOperation
+    {
+      public:
+        explicit ColorStateOperation(VioGpuDod *adapter)
+            : m_Adapter(adapter), m_Acquired(adapter->BeginColorStateOperation(TRUE))
+        {
+        }
+        ~ColorStateOperation()
+        {
+            if (m_Acquired)
+            {
+                m_Adapter->EndColorStateOperation();
+            }
+        }
+        BOOLEAN Acquired() const
+        {
+            return m_Acquired;
+        }
+        ColorStateOperation(const ColorStateOperation &) = delete;
+        ColorStateOperation &operator=(const ColorStateOperation &) = delete;
+
+      private:
+        VioGpuDod *m_Adapter;
+        BOOLEAN m_Acquired;
+    };
 #endif
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,

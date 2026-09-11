@@ -1395,18 +1395,29 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetResourceColor(_In_ const VIOGPU_SET_RES
         return VioGpuHostContextNotSubmitted;
     }
     PGPU_VBUFFER vbuf = NULL;
-    auto command = static_cast<VIOGPU_SET_RESOURCE_COLOR *>(AllocCmd(&vbuf, sizeof(*color)));
+    // Only the fixed query belongs in the 96-byte inline command. The rest is
+    // an owned descriptor payload, retained by VBUFFER through completion/reset.
+    auto command = static_cast<VIOGPU_GET_DISPLAY_COLOR *>(AllocCmd(&vbuf, sizeof(color->query)));
     if (command == NULL)
     {
         EndSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
-    *command = *color;
-    RtlZeroMemory(&command->query, sizeof(command->query));
-    command->query.hdr.type = VIOGPU_CMD_SET_RESOURCE_COLOR;
-    command->query.magic = VIOGPU_DISPLAY_COLOR_MAGIC;
-    command->query.version = VIOGPU_DISPLAY_COLOR_VERSION;
-    command->query.size = sizeof(*command);
+    const UINT payloadSize = sizeof(*color) - sizeof(color->query);
+    vbuf->data_buf = static_cast<char *>(AllocateMemory(payloadSize));
+    if (vbuf->data_buf == NULL)
+    {
+        ReleaseBuffer(vbuf);
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    vbuf->data_size = payloadSize;
+    RtlCopyMemory(vbuf->data_buf, reinterpret_cast<const BYTE *>(color) + sizeof(color->query), payloadSize);
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIOGPU_CMD_SET_RESOURCE_COLOR;
+    command->magic = VIOGPU_DISPLAY_COLOR_MAGIC;
+    command->version = VIOGPU_DISPLAY_COLOR_VERSION;
+    command->size = sizeof(*color);
     VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
     EndSynchronousRequest();
     return result;
@@ -2745,6 +2756,12 @@ BOOLEAN VioGpuBuf::Close(void)
 
 PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void *resp_buf)
 {
+
+    if (size <= 0 || size > MAX_INLINE_CMD_SIZE || resp_size <= 0 ||
+        (resp_size > MAX_INLINE_RESP_SIZE && resp_buf == NULL))
+    {
+        return NULL;
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
