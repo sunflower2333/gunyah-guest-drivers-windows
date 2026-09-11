@@ -1,4 +1,93 @@
 /* Included after the allocation/lifecycle helpers. Opt-in WDDM 2.3 candidate. */
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTargetGamma(CONST HANDLE hAdapter,
+                                                                  CONST DXGKARG_SETTARGETGAMMA *args)
+{
+    auto adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    if (adapter == NULL || args == NULL || args->TargetId != 0 || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    VioGpuDod::ColorStateOperation operation(adapter);
+    if (!operation.Acquired())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    auto transform = new (NonPagedPoolNx) VIOGPU_DISPLAY_TRANSFORM;
+    if (transform == NULL)
+    {
+        return STATUS_NO_MEMORY;
+    }
+    RtlZeroMemory(transform, sizeof(*transform));
+    transform->version = 1;
+    transform->size = sizeof(*transform);
+    // 0x3f800000 is float32 1.0. The kernel does no floating point work.
+    transform->scalar = 0x3f800000U;
+    transform->scale[0] = transform->scale[1] = transform->scale[2] = 0x3f800000U;
+    const auto &gamma = args->GammaRamp;
+    NTSTATUS status = STATUS_SUCCESS;
+    switch (gamma.Type)
+    {
+        case D3DDDI_GAMMARAMP_DEFAULT:
+            if (gamma.DataSize != 0 || gamma.Data.pRaw != NULL)
+            {
+                status = STATUS_INVALID_PARAMETER;
+            }
+            break;
+        case D3DDDI_GAMMARAMP_DXGI_1:
+            if (gamma.DataSize != sizeof(D3DDDI_GAMMA_RAMP_DXGI_1) || gamma.Data.pDxgi1 == NULL)
+            {
+                status = STATUS_INVALID_PARAMETER;
+            }
+            else
+            {
+                transform->kind = 1;
+                transform->lut_count = 1025;
+                RtlCopyMemory(transform->scale, &gamma.Data.pDxgi1->Scale, sizeof(transform->scale));
+                RtlCopyMemory(transform->offset, &gamma.Data.pDxgi1->Offset, sizeof(transform->offset));
+                RtlCopyMemory(transform->lut, gamma.Data.pDxgi1->GammaCurve, sizeof(gamma.Data.pDxgi1->GammaCurve));
+            }
+            break;
+        case D3DDDI_GAMMARAMP_MATRIX_3x4:
+            if (gamma.DataSize != sizeof(D3DKMDT_3x4_COLORSPACE_TRANSFORM) || gamma.Data.p3x4 == NULL)
+            {
+                status = STATUS_INVALID_PARAMETER;
+            }
+            else
+            {
+                transform->kind = 2;
+                transform->lut_count = 4096;
+                RtlCopyMemory(transform->matrix, gamma.Data.p3x4->ColorMatrix3x4, sizeof(transform->matrix));
+                RtlCopyMemory(&transform->scalar, &gamma.Data.p3x4->ScalarMultiplier, sizeof(transform->scalar));
+                RtlCopyMemory(transform->lut, gamma.Data.p3x4->LookupTable1D, sizeof(transform->lut));
+            }
+            break;
+        default:
+            status = STATUS_NOT_SUPPORTED;
+    }
+    if (status == STATUS_SUCCESS && !VioGpuValidDisplayTransform(transform))
+    {
+        status = STATUS_INVALID_PARAMETER;
+    }
+    VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+    if (status == STATUS_SUCCESS && !adapter->QueryDisplayColor(&caps))
+    {
+        status = STATUS_NOT_SUPPORTED;
+    }
+    if (status == STATUS_SUCCESS)
+    {
+        const auto result = adapter->SetTargetTransform(caps.generation, transform);
+        // Host applies this to the active resource immediately, including an
+        // idle desktop, and fences all readers before acknowledging the DDI.
+        status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+        if (result == VioGpuHostContextUnknown)
+        {
+            adapter->RequestHardwareResetAtAnyIrql();
+        }
+    }
+    delete transform;
+    return status;
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTargetAdjustedColorimetry(CONST HANDLE hAdapter,
                                                                                 D3DDDI_VIDEO_PRESENT_TARGET_ID target,
                                                                                 DXGK_COLORIMETRY adjusted)
