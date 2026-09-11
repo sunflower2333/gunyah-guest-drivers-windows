@@ -38,11 +38,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run watch 34612600265 -R sunflower2333/clvk --exit-status --interval 30
+          gh run watch 34613435673 -R sunflower2333/clvk --exit-status --interval 30
           if ($LASTEXITCODE) { throw 'OpenCL runtime CI failed' }
-          $source = gh run view 34612600265 -R sunflower2333/clvk --json headSha --jq .headSha
-          if ($LASTEXITCODE -or $source.Trim() -ne '3c713e78de22e8aa18e555c997ee03a5e0ea9637') { throw 'OpenCL source mismatch' }
-          gh run download 34612600265 -R sunflower2333/clvk --dir opencl-runtime
+          $source = gh run view 34613435673 -R sunflower2333/clvk --json headSha --jq .headSha
+          if ($LASTEXITCODE -or $source.Trim() -ne 'ee0ea93dfdad4e243016702c5757def99975fec5') { throw 'OpenCL source mismatch' }
+          gh run download 34613435673 -R sunflower2333/clvk --dir opencl-runtime
           if ($LASTEXITCODE) { throw 'OpenCL download failed' }
           python viogpu/opencl/package.py --runtime opencl-runtime --loaders opencl-loaders --output opencl-payload
           if ($LASTEXITCODE) { throw 'OpenCL package validation failed' }

@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import struct
 
-SOURCE = '3c713e78de22e8aa18e555c997ee03a5e0ea9637'
+SOURCE = 'ee0ea93dfdad4e243016702c5757def99975fec5'
 COMPILER = '79e236af8febd67fd02adfd93f81295c87e868e9fd861f71d03d1057e6be1f9d'
 MACHINES = {'arm64': 0xaa64, 'x64': 0x8664, 'x86': 0x14c, 'arm64x': 0xaa64}
 
@@ -92,7 +92,7 @@ def main():
         check = args.loaders / ('arm64' if arch == 'arm64x' else arch) / 'loader-check.exe'
         shutil.copy2(check, target / check.name)
     (args.output / 'sources.json').write_text(json.dumps({
-        'clvk': SOURCE, 'clvk_runtime_ci': 34612600265,
+        'clvk': SOURCE, 'clvk_runtime_ci': 34613435673,
         'compiler_original_sha256': COMPILER,
         'khronos_loader': 'f27c925e782499eebc4df20e121144358ccd5ac6',
         'headers': '386ca390b2f52efeb3e1a55a500690eb8013f60e',

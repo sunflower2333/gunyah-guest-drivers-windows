@@ -27,7 +27,7 @@ foreach ($arch in @('arm64','x64','x86','arm64ec')) {
     }
     if ($arch -ne 'arm64ec') {
         $capture = if ($arch -eq 'arm64') {"/LINKREPROFULLPATHRSP:`"$out/native.rsp`""} else {''}
-        $commands += "link /DLL /OUT:`"$out/$arch/OpenCL.dll`" /DEF:`"$sourceRoot/loader/windows/OpenCL.def`" `"$out/$arch/*.obj`" cfgmgr32.lib runtimeobject.lib advapi32.lib $capture"
+        $commands += "link /DLL /OUT:`"$out/$arch/OpenCL.dll`" /DEF:`"$sourceRoot/loader/windows/OpenCL.def`" `"$out/$arch/*.obj`" cfgmgr32.lib runtimeobject.lib advapi32.lib ole32.lib $capture"
         $probe = (Resolve-Path 'viogpu/opencl/loader-check.cpp').Path
         $commands += "cl /nologo /EHsc /MT `"$probe`" /Fo`"$out/$arch/check.obj`" /Fe:`"$out/$arch/loader-check.exe`""
     }
@@ -37,4 +37,4 @@ $native = @(Get-Content "$out/native.rsp" | Where-Object { $_ -match '(?i)\.(obj
 if (!$native.Count) { throw 'Missing native linker inputs' }
 $native | Set-Content "$out/native-merge.rsp" -Encoding ascii
 New-Item -ItemType Directory "$out/arm64x" | Out-Null
-Build arm64ec @("link /DLL /MACHINE:ARM64X `"$out/arm64ec/*.obj`" @`"$out/native-merge.rsp`" /DEFARM64NATIVE:`"$sourceRoot/loader/windows/OpenCL.def`" /DEF:`"$sourceRoot/loader/windows/OpenCL.def`" /OUT:`"$out/arm64x/OpenCL.dll`" cfgmgr32.lib runtimeobject.lib advapi32.lib")
+Build arm64ec @("link /DLL /MACHINE:ARM64X `"$out/arm64ec/*.obj`" @`"$out/native-merge.rsp`" /DEFARM64NATIVE:`"$sourceRoot/loader/windows/OpenCL.def`" /DEF:`"$sourceRoot/loader/windows/OpenCL.def`" /OUT:`"$out/arm64x/OpenCL.dll`" cfgmgr32.lib runtimeobject.lib advapi32.lib ole32.lib")
