@@ -2,7 +2,7 @@ name: Build WDDM accounting acceptance tool
 on:
   workflow_dispatch:
   push:
-    branches: [viogpu-wddm2-taskmanager-20260911]
+    branches: [viogpu-wddm2-taskmanager-20260911, work/hdr-20260911]
     paths: ['viogpu/tools/wddm-accounting/**', '.github/workflows/wddm-accounting-tool.yml']
   pull_request:
     paths: ['viogpu/tools/wddm-accounting/**', '.github/workflows/wddm-accounting-tool.yml']
