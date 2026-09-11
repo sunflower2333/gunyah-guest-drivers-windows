@@ -2762,8 +2762,10 @@ def check_callback_table() -> None:
     advanced_callbacks = re.compile(
         r"#if\s*\(DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\)\s*"
         r"initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3\s*=\s*VioGpuWddmSetVidPnSourceAddressMpo3;\s*"
+        r"initialData->DxgkDdiCheckMultiPlaneOverlaySupport3\s*=\s*VioGpuWddmCheckMultiPlaneOverlaySupport3;\s*"
         r"initialData->DxgkDdiSetTargetAdjustedColorimetry\s*=\s*VioGpuWddmSetTargetAdjustedColorimetry;\s*"
-        r"initialData->DxgkDdiSetTargetGamma\s*=\s*VioGpuWddmSetTargetGamma;\s*#endif"
+        r"initialData->DxgkDdiSetTargetGamma\s*=\s*VioGpuWddmSetTargetGamma;\s*"
+        r"initialData->DxgkDdiSetTimingsFromVidPn\s*=\s*VioGpuWddmSetTimingsFromVidPn;\s*#endif"
     )
     body, count = advanced_callbacks.subn("", body)
     if count != 1:
@@ -5055,7 +5057,16 @@ def check_wddm_standard_primary_scanout() -> None:
     ):
         if fragment not in bind_primary:
             fail(f"the shared primary bind must retain the exact standard primary contract: {fragment}")
-    if "STATUS_NOT_SUPPORTED" in set_ddi or "STATUS_NOT_SUPPORTED" in bind_primary:
+    # The shared bind (mode change and MMIO flip worker) refuses a ten-bit
+    # primary only in the Advanced Color build: neither path carries color.
+    hdr_legacy_guard = (
+        "#if(DXGKDDI_INTERFACE_VERSION>=DXGKDDI_INTERFACE_VERSION_WDDM2_3)"
+        "if(allocation->Format==D3DDDIFMT_A2B10G10R10||allocation->Format==D3DDDIFMT_A2R10G10B10)"
+        "{returnSTATUS_NOT_SUPPORTED;}#endif"
+    )
+    if bind_primary.count(hdr_legacy_guard) != 1:
+        fail("only MPO3 may bind high-precision primaries with explicit source color metadata")
+    if "STATUS_NOT_SUPPORTED" in set_ddi or "STATUS_NOT_SUPPORTED" in bind_primary.replace(hdr_legacy_guard, ""):
         fail("SetVidPnSourceAddress must no longer reject the completed standard primary mode-change path")
 
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))

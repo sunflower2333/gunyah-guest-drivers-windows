@@ -34,6 +34,14 @@ int main()
     corrupt = request;
     corrupt.min_mastering_luminance = 10000001;
     assert(!VioGpuValidDisplayMetadata(&corrupt));
+    corrupt.min_mastering_luminance = 10000000;
+    assert(!VioGpuValidDisplayMetadata(&corrupt)); // min == max is not a mastering range
+    corrupt = request;
+    corrupt.chromaticities[0] = corrupt.chromaticities[1] = 0;
+    assert(!VioGpuValidDisplayMetadata(&corrupt));
+    corrupt = {};
+    corrupt.encoding = VIOGPU_DISPLAY_COLOR_PQ;
+    assert(VioGpuValidDisplayMetadata(&corrupt)); // explicit metadata clear
     corrupt = request;
     corrupt.max_frame_average_light_level = 1001;
     assert(!VioGpuValidDisplayMetadata(&corrupt));
