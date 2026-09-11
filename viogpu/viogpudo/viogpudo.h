@@ -509,6 +509,9 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod);
     ~VioGpuAdapter(void);
     NTSTATUS SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode);
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    NTSTATUS ResumeFrameBuffer(CURRENT_MODE *pCurrentMode);
+#endif
     ULONG GetModeCount(void)
     {
         return m_ModeCount;
@@ -1275,6 +1278,8 @@ class VioGpuDod
     ULONG m_ColorPresentQueuedEpoch = 0;
     KSPIN_LOCK m_ColorStateLock;
     VIOGPU_DISPLAY_COLOR_RESPONSE m_ColorCapabilities = {};
+    DXGK_COLORIMETRY m_AdjustedColorimetry = {};
+    BOOLEAN m_ColorTargetPoweredOff = FALSE;
     volatile LONG m_ColorModeAvailable = 0;
     volatile LONG m_ColorModeEpoch = 0;
     BOOLEAN IsNativeHdrModeAvailable() const
@@ -1289,7 +1294,7 @@ class VioGpuDod
     // Caller owns ColorStateOperation so CommitVidPn cannot change this mode.
     BOOLEAN MatchesNativeHdrMode(UINT width, UINT height) const
     {
-        return IsNativeHdrModeAvailable() && m_CurrentMode.Flags.FrameBufferIsActive &&
+        return IsNativeHdrModeAvailable() && !m_ColorTargetPoweredOff && m_CurrentMode.Flags.FrameBufferIsActive &&
                m_CurrentMode.DispInfo.ColorFormat == D3DDDIFMT_A2B10G10R10 && m_CurrentMode.DispInfo.Width == width &&
                m_CurrentMode.DispInfo.Height == height;
     }

@@ -33,6 +33,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
         return STATUS_INVALID_PARAMETER;
     }
     const auto wire = path.SelectedWireFormat;
+    // This backend cannot prove preservation of a firmware-owned scanout
+    // across virtio device reset. Do not report success after replacing it.
+    if (path.Input.PreserveInherited)
+    {
+        return STATUS_NOT_SUPPORTED;
+    }
     const bool hdr = path.OutputWireColorSpace == D3DDDI_OUTPUT_WIRE_COLOR_SPACE_G2084_P2020;
     if (path.Input.Active &&
         (wire.YCbCr444 != 0 || wire.YCbCr422 != 0 || wire.YCbCr420 != 0 || wire.Intensity != 0 ||
@@ -44,8 +50,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
     if (path.Input.Active && hdr)
     {
         VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
-        if (path.Input.PreserveInherited || !adapter->QueryDisplayColor(&caps) ||
-            !(caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ))
+        if (!adapter->QueryDisplayColor(&caps) || !(caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ))
         {
             return STATUS_NOT_SUPPORTED;
         }
@@ -208,19 +213,13 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTargetAdjustedColorimetry(
     {
         return STATUS_DEVICE_NOT_READY;
     }
-    VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
-    if (!adapter->QueryDisplayColor(&caps))
-    {
-        return STATUS_NOT_SUPPORTED;
-    }
-    // An OS-adjusted monitor description cannot create new physical capabilities.
-    if (adjusted.StandardColorimetryFlags.ST2084 && !(caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ))
-    {
-        return STATUS_NOT_SUPPORTED;
-    }
+    // The OS has already validated this description. Capability fields are
+    // always zero in this notification, so they must not gate HDR admission.
+    // Our wire remains canonical PQ/2020 or SDR/709; OS color correction is
+    // delivered separately by SetTargetGamma, which applies within a frame.
     KIRQL oldIrql;
     KeAcquireSpinLock(&adapter->m_ColorStateLock, &oldIrql);
-    adapter->m_ColorCapabilities = caps;
+    adapter->m_AdjustedColorimetry = adjusted;
     KeReleaseSpinLock(&adapter->m_ColorStateLock, oldIrql);
     return STATUS_SUCCESS;
 }
