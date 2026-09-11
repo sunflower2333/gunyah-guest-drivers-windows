@@ -3239,6 +3239,39 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
 
     switch (pQueryAdapterInfo->Type)
     {
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        case DXGKQAITYPE_QUERYCOLORIMETRYOVERRIDES:
+            {
+                if (pQueryAdapterInfo->pInputData == NULL || pQueryAdapterInfo->pOutputData == NULL ||
+                    pQueryAdapterInfo->InputDataSize != sizeof(DXGK_QUERYCOLORIMETRYOVERRIDESIN) ||
+                    pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_COLORIMETRY))
+                {
+                    return STATUS_INVALID_PARAMETER;
+                }
+                const auto input = static_cast<const DXGK_QUERYCOLORIMETRYOVERRIDESIN *>(pQueryAdapterInfo->pInputData);
+                if (input->TargetId != 0 || IsRenderOnly())
+                {
+                    return STATUS_NOT_SUPPORTED;
+                }
+                auto output = static_cast<DXGK_COLORIMETRY *>(pQueryAdapterInfo->pOutputData);
+                RtlZeroMemory(output, sizeof(*output));
+                output->FormatBitDepths.Rgb = D3DKMDT_BITS_PER_COMPONENT_08;
+                VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+                if (QueryDisplayColor(&caps) && IsNativeHdrModeAvailable())
+                {
+                    output->FormatBitDepths.Rgb |= D3DKMDT_BITS_PER_COMPONENT_10;
+                    output->StandardColorimetryFlags.BT2020RGB = 1;
+                    output->StandardColorimetryFlags.ST2084 = 1;
+                    // Unknown values remain zero (no override). Display API
+                    // observations never manufacture physical chromaticities.
+                    output->MinLuminance = caps.min_luminance == MAXULONG ? 0 : caps.min_luminance;
+                    output->MaxLuminance = caps.max_luminance == MAXULONG ? 0 : caps.max_luminance;
+                    output->MaxFullFrameLuminance = caps.max_average_luminance == MAXULONG ? 0
+                                                                                           : caps.max_average_luminance;
+                }
+                return STATUS_SUCCESS;
+            }
+#endif
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_6)
         case DXGKQAITYPE_WDDMDEVICECAPS:
             {
@@ -4483,7 +4516,7 @@ NTSTATUS VioGpuDod::SetVidPnSourceVisibility(_In_ CONST DXGKARG_SETVIDPNSOURCEVI
     return STATUS_SUCCESS;
 }
 
-NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVidPn)
+NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVidPn, D3DDDIFORMAT requiredOutputFormat)
 {
     PAGED_CODE();
 
@@ -4536,7 +4569,18 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
 #if defined(VIOGPU_NATIVE_CONTEXT)
         CountDisplayEvent(16);
 #endif
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        UINT previousResource = 0;
+        const auto result = Set2DScanout(0, 0, 0, 0, &previousResource);
+        Status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+        if (NT_SUCCESS(Status))
+        {
+            DisarmCrtcVsyncTimer();
+            SetCrtcVsyncPrimaryAddress(0);
+        }
+#else
         Status = STATUS_SUCCESS;
+#endif
         goto CommitVidPnExit;
     }
 
@@ -4616,13 +4660,22 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
 #endif
     if (pPinnedVidPnSourceModeInfo == NULL)
     {
-        Status = STATUS_SUCCESS;
+        Status = requiredOutputFormat == D3DDDIFMT_UNKNOWN ? STATUS_SUCCESS
+                                                           : STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
         goto CommitVidPnExit;
     }
 
     Status = IsVidPnSourceModeFieldsValid(pPinnedVidPnSourceModeInfo);
     if (!NT_SUCCESS(Status))
     {
+        goto CommitVidPnExit;
+    }
+    if (requiredOutputFormat != D3DDDIFMT_UNKNOWN &&
+        pPinnedVidPnSourceModeInfo->Format.Graphics.PixelFormat != requiredOutputFormat)
+    {
+        // This single-plane path does not silently convert an eight-bit SDR
+        // primary into a ten-bit PQ output, or vice versa.
+        Status = STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
         goto CommitVidPnExit;
     }
 
@@ -4783,8 +4836,9 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
     NTSTATUS Status = STATUS_SUCCESS;
     CURRENT_MODE *pCurrentMode = &m_CurrentMode;
     const bool resize = !pCurrentMode->Flags.FrameBufferIsActive ||
-        pCurrentMode->DispInfo.Width != pSourceMode->Format.Graphics.PrimSurfSize.cx ||
-        pCurrentMode->DispInfo.Height != pSourceMode->Format.Graphics.PrimSurfSize.cy;
+                        pCurrentMode->DispInfo.ColorFormat != pSourceMode->Format.Graphics.PixelFormat ||
+                        pCurrentMode->DispInfo.Width != pSourceMode->Format.Graphics.PrimSurfSize.cx ||
+                        pCurrentMode->DispInfo.Height != pSourceMode->Format.Graphics.PrimSurfSize.cy;
     DbgPrint(TRACE_LEVEL_FATAL,
              ("---> %s (%dx%d)\n",
               __FUNCTION__,
@@ -4797,6 +4851,7 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
 
     pCurrentMode->DispInfo.Width = pSourceMode->Format.Graphics.PrimSurfSize.cx;
     pCurrentMode->DispInfo.Height = pSourceMode->Format.Graphics.PrimSurfSize.cy;
+    pCurrentMode->DispInfo.ColorFormat = pSourceMode->Format.Graphics.PixelFormat;
     pCurrentMode->DispInfo.Pitch = pSourceMode->Format.Graphics.PrimSurfSize.cx *
                                    BPPFromPixelFormat(pCurrentMode->DispInfo.ColorFormat) / BITS_PER_BYTE;
 
@@ -14010,6 +14065,27 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
         m_Idr.PutId(resid);
         delete obj;
         return FALSE;
+    }
+    // A ten-bit fallback primary is real PQ storage too. Tag it before the
+    // first binding/flush; an untagged import must never fall back to RGBA8.
+    if (pCurrentMode->DispInfo.ColorFormat == D3DDDIFMT_A2B10G10R10)
+    {
+        VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+        VIOGPU_SET_RESOURCE_COLOR color = {};
+        color.resource_id = resid;
+        color.format = VIOGPU_DISPLAY_FORMAT_AB30;
+        color.encoding = VIOGPU_DISPLAY_COLOR_PQ;
+        const BOOLEAN available = m_pVioGpuDod->QueryDisplayColor(&caps) &&
+                                  (caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ) != 0;
+        color.generation = caps.generation;
+        if (!available || m_CtrlQueue.SetResourceColor(&color) != VioGpuHostContextConfirmed)
+        {
+            m_CtrlQueue.DetachBacking(resid);
+            m_CtrlQueue.DestroyResource(resid);
+            m_Idr.PutId(resid);
+            delete obj;
+            return FALSE;
+        }
     }
     RecordActiveScanout(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight);
     if (!m_CtrlQueue.SetScanout(0, resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||

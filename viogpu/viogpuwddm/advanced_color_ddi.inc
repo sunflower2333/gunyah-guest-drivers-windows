@@ -1,4 +1,109 @@
 /* Included after the allocation/lifecycle helpers. Opt-in WDDM 2.3 candidate. */
+static BOOLEAN VioGpuSupportedHdrPlane(VioGpuDod *adapter,
+                                       VIOGPU_WDDM_ALLOCATION *allocation,
+                                       const DXGK_MULTIPLANE_OVERLAY_ATTRIBUTES3 &attr)
+{
+    return IsOwnedAllocation(allocation, adapter) && IsStandardPrimaryAllocation(allocation) &&
+           allocation->Width != 0 && allocation->Height != 0 && allocation->Width <= MAXLONG &&
+           allocation->Height <= MAXLONG && allocation->Format == D3DDDIFMT_A2B10G10R10 && attr.Flags.Value == 0 &&
+           attr.Blend.Value == 0 && attr.Rotation == D3DDDI_ROTATION_IDENTITY &&
+           attr.ColorSpaceType == D3DDDI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 && attr.SrcRect.left == 0 &&
+           attr.SrcRect.top == 0 && attr.SrcRect.right == static_cast<LONG>(allocation->Width) &&
+           attr.SrcRect.bottom == static_cast<LONG>(allocation->Height) &&
+           RtlCompareMemory(&attr.SrcRect, &attr.DstRect, sizeof(RECT)) == sizeof(RECT) &&
+           RtlCompareMemory(&attr.SrcRect, &attr.ClipRect, sizeof(RECT)) == sizeof(RECT);
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HANDLE hAdapter,
+                                                                       DXGKARG_SETTIMINGSFROMVIDPN *args)
+{
+    auto adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    if (adapter == NULL || args == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || args->SetFlags.Value != 0 ||
+        args->pResultsFlags == NULL || args->PathCount != 1 || args->pSetTimingPathInfo == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    args->pResultsFlags->Value = 0;
+    auto &path = args->pSetTimingPathInfo[0];
+    path.OutputFlags = 0;
+    path.DiagnosticInfo = 0;
+    if (path.VidPnTargetId != 0 || path.Input.Reserved != 0 || path.Input.IgnoreConnectivity ||
+        (path.Input.Active && path.Input.VidPnPathUpdates == DXGK_PATH_UPDATE_REMOVED))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    const auto wire = path.SelectedWireFormat;
+    const bool hdr = path.OutputWireColorSpace == D3DDDI_OUTPUT_WIRE_COLOR_SPACE_G2084_P2020;
+    if (path.Input.Active && (wire.YCbCr444 != 0 || wire.YCbCr422 != 0 || wire.YCbCr420 != 0 || wire.Intensity != 0 ||
+                              wire.Rgb != (hdr ? D3DKMDT_BITS_PER_COMPONENT_10 : D3DKMDT_BITS_PER_COMPONENT_08) ||
+                              (!hdr && path.OutputWireColorSpace != D3DDDI_OUTPUT_WIRE_COLOR_SPACE_G22_P709)))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (path.Input.Active && hdr)
+    {
+        VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+        if (path.Input.PreserveInherited || !adapter->QueryDisplayColor(&caps) ||
+            !(caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ))
+        {
+            return STATUS_NOT_SUPPORTED;
+        }
+    }
+    DXGKARG_COMMITVIDPN commit = {};
+    commit.hFunctionalVidPn = args->hFunctionalVidPn;
+    commit.AffectedVidPnSourceId = 0;
+    commit.Flags.PathPoweredOff = !path.Input.Active;
+    // Commit owns the color/configuration slot across pinned-mode validation,
+    // real framebuffer recreation, metadata, scanout and rational CRTC timing.
+    const auto status = adapter->CommitVidPn(&commit, hdr ? D3DDDIFMT_A2B10G10R10 : D3DDDIFMT_A8R8G8B8);
+    if (NT_SUCCESS(status))
+    {
+        // The fixed virtual child is also reported connected by QueryChildStatus.
+        // Its legacy connection has no numbered QueryConnectionChange packet.
+        RtlZeroMemory(&path.TargetState, sizeof(path.TargetState));
+        path.TargetState.TargetId = 0;
+        path.TargetState.ConnectionStatus = MonitorStatusConnected;
+        path.TargetState.MonitorConnect.LinkTargetType = D3DKMDT_VOT_INTERNAL;
+        path.Output.RecheckMPO = 1;
+        path.GlitchCause = DXGK_GLITCH_CAUSE_TIMING_CHANGE;
+        path.GlitchEffect = DXGK_GLITCH_EFFECT_BLACK_CONTENT;
+        path.GlitchDuration = DXGK_GLITCH_DURATION_INDEFINITE;
+    }
+    return status;
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY
+VioGpuWddmCheckMultiPlaneOverlaySupport3(CONST HANDLE hAdapter, DXGKARG_CHECKMULTIPLANEOVERLAYSUPPORT3 *args)
+{
+    auto adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    if (adapter == NULL || args == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    args->Supported = FALSE;
+    args->ReturnInfo.Value = 0;
+    if (args->PlaneCount != 1 || args->ppPlanes == NULL || args->ppPlanes[0] == NULL || args->PostCompositionCount != 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    const auto plane = args->ppPlanes[0];
+    auto allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(plane->hAllocation);
+    if (plane->VidPnSourceId != 0 || plane->LayerIndex != 0 ||
+        !VioGpuSupportedHdrPlane(adapter, allocation, plane->PlaneAttributes))
+    {
+        return STATUS_SUCCESS;
+    }
+    VioGpuDod::ColorStateOperation operation(adapter);
+    if (!operation.Acquired())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+    args->Supported = adapter->QueryDisplayColor(&caps) && (caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ) != 0 &&
+                      adapter->MatchesNativeHdrMode(allocation->Width, allocation->Height);
+    return STATUS_SUCCESS;
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTargetGamma(CONST HANDLE hAdapter,
                                                                   CONST DXGKARG_SETTARGETGAMMA *args)
 {
@@ -151,16 +256,8 @@ VioGpuWddmSetVidPnSourceAddressMpo3(CONST HANDLE hAdapter, DXGKARG_SETVIDPNSOURC
     }
     const auto primary = plane->ppContextData[0];
     auto allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(primary->hAllocation);
-    const auto &attr = plane->PlaneAttributes;
-    if (!IsOwnedAllocation(allocation, adapter) || !IsStandardPrimaryAllocation(allocation) ||
-        allocation->Width > MAXLONG || allocation->Height > MAXLONG || allocation->Format != D3DDDIFMT_A2B10G10R10 ||
-        primary->SegmentId != VIOGPU_WDDM_SEGMENT_ID || primary->SegmentAddress.QuadPart < 0 || attr.Flags.Value != 0 ||
-        attr.Blend.Value != 0 || attr.Rotation != D3DDDI_ROTATION_IDENTITY ||
-        attr.ColorSpaceType != D3DDDI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 || attr.SrcRect.left != 0 ||
-        attr.SrcRect.top != 0 || attr.SrcRect.right != static_cast<LONG>(allocation->Width) ||
-        attr.SrcRect.bottom != static_cast<LONG>(allocation->Height) ||
-        RtlCompareMemory(&attr.SrcRect, &attr.DstRect, sizeof(RECT)) != sizeof(RECT) ||
-        RtlCompareMemory(&attr.SrcRect, &attr.ClipRect, sizeof(RECT)) != sizeof(RECT))
+    if (!VioGpuSupportedHdrPlane(adapter, allocation, plane->PlaneAttributes) ||
+        primary->SegmentId != VIOGPU_WDDM_SEGMENT_ID || primary->SegmentAddress.QuadPart < 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -179,6 +276,11 @@ VioGpuWddmSetVidPnSourceAddressMpo3(CONST HANDLE hAdapter, DXGKARG_SETVIDPNSOURC
         return STATUS_RETRY;
     }
     const ULONG fenceEpoch = adapter->QueryNativeFenceEpoch();
+    if (!adapter->MatchesNativeHdrMode(allocation->Width, allocation->Height))
+    {
+        adapter->EndColorStateOperation();
+        return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+    }
     if (fenceEpoch == adapter->m_ColorPresentQueuedEpoch && plane->PresentId <= adapter->m_ColorPresentLastQueuedId)
     {
         adapter->EndColorStateOperation();
