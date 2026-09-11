@@ -14,8 +14,8 @@ BOOLEAN VioGpuWddmIsRenderOnlyRegistration()
 #pragma code_seg(push)
 #pragma code_seg("INIT")
 
-static_assert(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WIN8,
-              "viogpuwddm requires Win8 declarations for its internal Native Context callbacks");
+static_assert(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WDDM2_0,
+              "viogpuwddm requires WDDM 2.0 physical-engine declarations");
 
 /* Registration and DriverCaps must describe the same selected runtime mode. */
 static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
@@ -76,12 +76,10 @@ static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
 VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData, _In_ BOOLEAN renderOnly)
 {
     RtlZeroMemory(initialData, sizeof(*initialData));
-    /* DriverCaps publishes WDDM 1.2 and the render engine in both modes, so the
-     * registered interface has to be WDDM 1.2 in both modes too.  Registering
-     * WIN7 while claiming 1.2 hands dxgkrnl a callback table that contradicts
-     * the capabilities, and the D3D runtime then refuses the adapter before it
-     * ever loads a user-mode driver. */
-    initialData->Version = DXGKDDI_INTERFACE_VERSION_WIN8;
+    /* WDDM 2.0 permits physical-mode engines with allocation/patch lists.
+     * Register the matching table; host-owned GPU page tables are not exposed
+     * as a guest GpuMmu/IoMmu. VidSch retains the real submission timeline. */
+    initialData->Version = DXGKDDI_INTERFACE_VERSION_WDDM2_0;
 
     initialData->DxgkDdiAddDevice = VioGpuDodAddDevice;
     initialData->DxgkDdiStartDevice = VioGpuDodStartDevice;
@@ -137,6 +135,7 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiQueryDependentEngineGroup = VioGpuWddmQueryDependentEngineGroup;
     initialData->DxgkDdiQueryEngineStatus = VioGpuWddmQueryEngineStatus;
     initialData->DxgkDdiResetEngine = VioGpuWddmResetEngine;
+    initialData->DxgkDdiGetNodeMetadata = VioGpuWddmGetNodeMetadata;
 
     if (!renderOnly)
     {

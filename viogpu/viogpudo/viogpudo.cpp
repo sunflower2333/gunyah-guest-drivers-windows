@@ -2916,7 +2916,7 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
 
     DXGK_DRIVERCAPS *driverCaps = static_cast<DXGK_DRIVERCAPS *>(queryAdapterInfo->pOutputData);
     RtlZeroMemory(driverCaps, requiredSize);
-    driverCaps->WDDMVersion = DXGKDDI_WDDMv1_2;
+    driverCaps->WDDMVersion = DXGKDDI_WDDMv2;
     driverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
 
     if (pointerEnabled && !renderOnly)
@@ -2949,6 +2949,13 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
      * 0x80000003, twice, once the Direct3D path opened. */
     driverCaps->SchedulingCaps.CancelCommandAware = 0;
     driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes = 1;
+    /* This is a physical-mode WDDM2 engine. VidMm owns the guest aperture
+     * pages and the allocation/patch lists; Turnip/virgl own host GPU VA.
+     * Neither GpuMmu nor IoMmu may be advertised without the corresponding
+     * guest page-table and virtual-submit DDIs. */
+    driverCaps->MemoryManagementCaps.VirtualAddressingSupported = 0;
+    driverCaps->MemoryManagementCaps.GpuMmuSupported = 0;
+    driverCaps->MemoryManagementCaps.IoMmuSupported = 0;
 
     if (fullCaps)
     {
