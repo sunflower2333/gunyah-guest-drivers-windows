@@ -206,7 +206,8 @@ static void d3d11(IDXGIFactory4 *factory,
                   IDXGIAdapter1 *adapter,
                   bool warp,
                   const std::wstring &expectedUmd,
-                  const std::wstring &expectedHash)
+                  const std::wstring &expectedHash,
+                  D3D_FEATURE_LEVEL minimum)
 {
     HMODULE runtime = systemModule(L"d3d11.dll");
     const auto create = reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(GetProcAddress(runtime, "D3D11CreateDevice"));
@@ -214,19 +215,32 @@ static void d3d11(IDXGIFactory4 *factory,
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     D3D_FEATURE_LEVEL actual{};
-    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
+    const D3D_FEATURE_LEVEL supported[] = {D3D_FEATURE_LEVEL_11_1,
+                                           D3D_FEATURE_LEVEL_11_0,
+                                           D3D_FEATURE_LEVEL_10_1,
+                                           D3D_FEATURE_LEVEL_10_0};
+    std::vector<D3D_FEATURE_LEVEL> levels;
+    for (const auto level : supported)
+    {
+        if (level >= minimum)
+        {
+            levels.push_back(level);
+        }
+    }
+    std::printf("D3D11_REQUIRED_FEATURE_LEVEL=0x%04x\n", static_cast<unsigned>(minimum));
     checked(create(adapter,
                    D3D_DRIVER_TYPE_UNKNOWN,
                    nullptr,
                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                   levels,
-                   ARRAYSIZE(levels),
+                   levels.data(),
+                   static_cast<UINT>(levels.size()),
                    D3D11_SDK_VERSION,
                    &device,
                    &actual,
                    &context),
             "D3D11CreateDevice");
     std::printf("D3D11_FEATURE_LEVEL=0x%04x\n", static_cast<unsigned>(actual));
+    require(actual >= minimum, "unexpected-feature-level-downgrade");
     if (!warp)
     {
         verifyUmd(expectedUmd, expectedHash);
@@ -383,13 +397,18 @@ static void d3d11(IDXGIFactory4 *factory,
                    : "NATIVE_RUNTIME_PASS=D3D11 pixels=16384 presents=4 final_display_pixels=not_observed");
 }
 
-static void d3d12(IDXGIAdapter1 *adapter, bool warp, const std::wstring &expectedUmd, const std::wstring &expectedHash)
+static void d3d12(IDXGIAdapter1 *adapter,
+                  bool warp,
+                  const std::wstring &expectedUmd,
+                  const std::wstring &expectedHash,
+                  D3D_FEATURE_LEVEL minimum)
 {
     HMODULE runtime = systemModule(L"d3d12.dll");
     const auto create = reinterpret_cast<PFN_D3D12_CREATE_DEVICE>(GetProcAddress(runtime, "D3D12CreateDevice"));
     require(create != nullptr, "resolve-d3d12-runtime-entry");
     ComPtr<ID3D12Device> device;
-    checked(create(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)), "D3D12CreateDevice");
+    std::printf("D3D12_REQUIRED_FEATURE_LEVEL=0x%04x\n", static_cast<unsigned>(minimum));
+    checked(create(adapter, minimum, IID_PPV_ARGS(&device)), "D3D12CreateDevice");
     if (!warp)
     {
         verifyUmd(expectedUmd, expectedHash);
@@ -409,6 +428,7 @@ int wmain(int argc, wchar_t **argv)
     setvbuf(stdout, nullptr, _IONBF, 0);
     std::wstring api, expectedUmd, expectedHash;
     bool warp = false;
+    D3D_FEATURE_LEVEL minimum = D3D_FEATURE_LEVEL_11_0;
     try
     {
         for (int i = 1; i < argc; ++i)
@@ -430,12 +450,37 @@ int wmain(int argc, wchar_t **argv)
             {
                 expectedHash = argv[++i];
             }
+            else if (option == L"--minimum-feature-level" && i + 1 < argc)
+            {
+                const std::wstring value = argv[++i];
+                if (value == L"10_0")
+                {
+                    minimum = D3D_FEATURE_LEVEL_10_0;
+                }
+                else if (value == L"10_1")
+                {
+                    minimum = D3D_FEATURE_LEVEL_10_1;
+                }
+                else if (value == L"11_0")
+                {
+                    minimum = D3D_FEATURE_LEVEL_11_0;
+                }
+                else if (value == L"11_1")
+                {
+                    minimum = D3D_FEATURE_LEVEL_11_1;
+                }
+                else
+                {
+                    require(false, "invalid-minimum-feature-level");
+                }
+            }
             else
             {
                 require(false, "arguments");
             }
         }
         require(api == L"d3d11" || api == L"d3d12", "api-required");
+        require(api != L"d3d12" || minimum >= D3D_FEATURE_LEVEL_11_0, "d3d12-minimum-feature-level");
         if (warp)
         {
             require(expectedUmd.empty() && expectedHash.empty(), "self-test-not-hardware-acceptance");
@@ -457,11 +502,11 @@ int wmain(int argc, wchar_t **argv)
         const auto adapter = adapterFor(factory.Get(), warp);
         if (api == L"d3d11")
         {
-            d3d11(factory.Get(), adapter.Get(), warp, expectedUmd, expectedHash);
+            d3d11(factory.Get(), adapter.Get(), warp, expectedUmd, expectedHash, minimum);
         }
         else
         {
-            d3d12(adapter.Get(), warp, expectedUmd, expectedHash);
+            d3d12(adapter.Get(), warp, expectedUmd, expectedHash, minimum);
         }
         return 0;
     }

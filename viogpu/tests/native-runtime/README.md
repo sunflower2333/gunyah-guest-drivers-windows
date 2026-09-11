@@ -13,6 +13,13 @@ matching architecture and a bounded outer process timeout. Example:
 .\runtime-probe-arm64.exe --api d3d11 --expect-umd 'C:\Windows\System32\DriverStore\FileRepository\<installed-package>\viogpudxvk.dll' --expect-umd-sha256 '<actual signed DLL SHA256>'
 ```
 
+The default minimum feature level is11_0. To exercise an explicitly lower
+bring-up milestone, pass `--minimum-feature-level 10_0` (10_1 and11_1 are also
+accepted). The output records both required and actual levels and rejects an
+unexpected downgrade. D3D12 requires at least11_0. A lower bring-up pass does
+not satisfy higher feature-level acceptance; device creation at a level alone
+also does not prove that all features of that level work correctly.
+
 The D3D11 case creates a runtime device, compiles HLSL and performs four
 alternating red/green draws over a blue clear. All16384 pixels are checked
 through staging readback, and four windowed Present calls must return S_OK.
