@@ -34,9 +34,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
     }
     const auto wire = path.SelectedWireFormat;
     const bool hdr = path.OutputWireColorSpace == D3DDDI_OUTPUT_WIRE_COLOR_SPACE_G2084_P2020;
-    if (path.Input.Active && (wire.YCbCr444 != 0 || wire.YCbCr422 != 0 || wire.YCbCr420 != 0 || wire.Intensity != 0 ||
-                              wire.Rgb != (hdr ? D3DKMDT_BITS_PER_COMPONENT_10 : D3DKMDT_BITS_PER_COMPONENT_08) ||
-                              (!hdr && path.OutputWireColorSpace != D3DDDI_OUTPUT_WIRE_COLOR_SPACE_G22_P709)))
+    if (path.Input.Active &&
+        (wire.YCbCr444 != 0 || wire.YCbCr422 != 0 || wire.YCbCr420 != 0 || wire.Intensity != 0 ||
+         wire.Rgb != static_cast<UINT>(hdr ? D3DKMDT_BITS_PER_COMPONENT_10 : D3DKMDT_BITS_PER_COMPONENT_08) ||
+         (!hdr && path.OutputWireColorSpace != D3DDDI_OUTPUT_WIRE_COLOR_SPACE_G22_P709)))
     {
         return STATUS_INVALID_PARAMETER;
     }
