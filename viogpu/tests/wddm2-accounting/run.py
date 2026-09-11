@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 here = Path(__file__).resolve().parent
 root = here.parents[2]
@@ -37,3 +38,12 @@ with tempfile.TemporaryDirectory(prefix='viogpu-wddm2-accounting-') as output:
         command = ['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(exe)]
     subprocess.run(command, cwd=directory, check=True)
     subprocess.run([str(exe)], cwd=directory, check=True)
+    # The ARM64 CI host may briefly retain the emulated x64 image after exit.
+    for attempt in range(21):
+        try:
+            exe.unlink()
+            break
+        except PermissionError:
+            if attempt == 20:
+                raise
+            time.sleep(0.25)
