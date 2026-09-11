@@ -1,0 +1,55 @@
+name: Build installed-sidecar GLES probes
+on:
+  workflow_dispatch:
+  push:
+    branches: [viogpu-gles-probe-20260911]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Build three real architecture probes and record PE identities
+        shell: pwsh
+        run: ./viogpu/opengl/build-gles-probe.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gles-sidecar-probes
+          path: gles-probes/
+          if-no-files-found: error
+  native-load:
+    needs: build
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gles-sidecar-probes
+          path: gles-probes
+      - name: Load all three GLES architectures against exact signed sidecar
+        timeout-minutes: 40
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run watch 34596017472 --repo sunflower2333/gunyah-guest-drivers-windows --exit-status --interval 30
+          if ($LASTEXITCODE) { throw 'Integrated signed package did not succeed' }
+          gh run download 34596017472 --repo sunflower2333/gunyah-guest-drivers-windows --name droidvm-arm64-drivers --dir integrated
+          if ($LASTEXITCODE) { throw 'Integrated signed package download failed' }
+          $root = (Resolve-Path integrated/opengl/payload).Path
+          $binding = Get-Content "$root/package-binding.json" -Raw | ConvertFrom-Json
+          if ($binding.parent_commit -ne '2090e8531a5a30c422e81b321fcfd2b27adbf7c1') { throw 'Integrated package source mismatch' }
+          foreach ($file in $binding.files_after_signing.PSObject.Properties) {
+            if ((Get-FileHash (Join-Path $root $file.Name) -Algorithm SHA256).Hash -ne $file.Value) { throw "Signed payload hash mismatch: $($file.Name)" }
+          }
+          $identity = Get-Content gles-probes/probe-identity.json -Raw | ConvertFrom-Json
+          foreach ($arch in @('arm64','x64','x86')) {
+            $file = "gles-probe-$arch.exe"
+            if ((Get-FileHash "gles-probes/$file" -Algorithm SHA256).Hash -ne $identity.files.$file.sha256) { throw "Probe hash mismatch: $arch" }
+            & "./gles-probes/$file" --load-only $root
+            if ($LASTEXITCODE) { throw "Installed-sidecar GLES $arch load failed" }
+          }
+          Write-Host 'No EGL display/context or GPU work in load-only mode; GLES rendering remains a target check.'
