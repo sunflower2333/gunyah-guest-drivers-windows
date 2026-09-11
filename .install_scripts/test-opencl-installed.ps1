@@ -41,8 +41,8 @@ foreach ($iteration in 1..$Iterations) {
     Get-Content $stdout
     Get-Content $stderr
     if ($null -eq $process.ExitCode -or $process.ExitCode -ne 0 -or
-        !(Select-String $stdout -SimpleMatch 'PASS GPU kernel + copy + readback + events + compiler error propagation')) { throw "OpenCL iteration $iteration failed; stop device round" }
-    if (!(Select-String $stdout -Pattern 'module OpenCL.dll=.+\\(System32|SysWOW64)\\OpenCL.dll')) { throw 'Probe did not use a system OpenCL loader' }
+        !(Select-String -Path $stdout -SimpleMatch 'PASS GPU kernel + copy + readback + events + compiler error propagation')) { throw "OpenCL iteration $iteration failed; stop device round" }
+    if (!(Select-String -Path $stdout -Pattern 'module OpenCL.dll=.+\\(System32|SysWOW64)\\OpenCL.dll')) { throw 'Probe did not use a system OpenCL loader' }
     foreach ($name in @('viogpucl.dll','vulkan-1.dll')) {
         $expected = [IO.Path]::GetFullPath((Join-Path $payload "$Architecture/$name"))
         $line = @(Get-Content $stdout | Where-Object { $_.StartsWith("module $name=") })
