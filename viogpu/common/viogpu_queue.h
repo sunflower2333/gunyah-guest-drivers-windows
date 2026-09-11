@@ -493,6 +493,7 @@ class CtrlQueue : public VioGpuQueue
     VIOGPU_HOST_CONTEXT_RESULT UnrefResourceSynchronous(UINT resource_id);
     BOOLEAN QueryDisplayColor(_Out_ VIOGPU_DISPLAY_COLOR_RESPONSE *caps);
     VIOGPU_HOST_CONTEXT_RESULT SetResourceColor(_In_ const VIOGPU_SET_RESOURCE_COLOR *color);
+    VIOGPU_HOST_CONTEXT_RESULT SetTargetTransform(ULONGLONG generation, const VIOGPU_DISPLAY_TRANSFORM *transform);
     VIOGPU_HOST_CONTEXT_RESULT SetScanoutSynchronous(UINT scanout_id,
                                                      UINT resource_id,
                                                      UINT width,

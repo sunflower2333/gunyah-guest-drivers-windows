@@ -2750,7 +2750,8 @@ def check_callback_table() -> None:
     advanced_callbacks = re.compile(
         r"#if\s*\(DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\)\s*"
         r"initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3\s*=\s*VioGpuWddmSetVidPnSourceAddressMpo3;\s*"
-        r"initialData->DxgkDdiSetTargetAdjustedColorimetry\s*=\s*VioGpuWddmSetTargetAdjustedColorimetry;\s*#endif"
+        r"initialData->DxgkDdiSetTargetAdjustedColorimetry\s*=\s*VioGpuWddmSetTargetAdjustedColorimetry;\s*"
+        r"initialData->DxgkDdiSetTargetGamma\s*=\s*VioGpuWddmSetTargetGamma;\s*#endif"
     )
     body, count = advanced_callbacks.subn("", body)
     if count != 1:
@@ -7897,11 +7898,15 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if canonical_code(function_body("VioGpuAdapter::VioGpuAdapter", VIOGPU_SOURCE)).count(
             "m_PublishedScanoutResourceId=0;") != 1:
         fail("the cached scanout binding must be initialised in the constructor")
-    if VIOGPU_SOURCE.count("m_PublishedScanoutResourceId = 0;") != 6:
+    if VIOGPU_SOURCE.count("m_PublishedScanoutResourceId = 0;") != 7:
         fail("every scanout re-bind outside the publication path must drop the cached binding")
     color_present = canonical_code(function_body("VioGpuAdapter::PresentColorResource", VIOGPU_CODE))
     if color_present.count("m_PublishedScanoutResourceId=0;") != 1 or color_present.index("m_PublishedScanoutResourceId=0;") > color_present.index("m_CtrlQueue.SetScanoutSynchronous("):
         fail("the color present transaction must invalidate cached binding before changing scanout")
+    target_transform = canonical_code(function_body("VioGpuAdapter::SetTargetTransform", VIOGPU_CODE))
+    require_order(target_transform, ("WaitScanoutLifecycle()", "m_PublishedScanoutResourceId=0;",
+                  "m_CtrlQueue.SetTargetTransform(", "KeReleaseMutex(&m_2DScanoutMutex,FALSE);"),
+                  "a target transform must serialize and invalidate publication before host application")
     # The compositor programs its primary once and then draws into that memory
     # every frame. Nothing else moves those pixels, so the binding is recorded
     # wherever scanout 0 is pointed and republished on the display's cadence.

@@ -2254,6 +2254,19 @@ BOOLEAN VioGpuDod::QueryDisplayColor(_Out_ VIOGPU_DISPLAY_COLOR_RESPONSE *caps)
     return result;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::SetTargetTransform(ULONGLONG generation,
+                                                         const VIOGPU_DISPLAY_TRANSFORM *transform)
+{
+    if (!AcquireNativeSubmissionOperation())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    const auto result = m_pHWDevice != NULL ? m_pHWDevice->SetTargetTransform(generation, transform)
+                                            : VioGpuHostContextNotSubmitted;
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::SetResourceColor(_In_ const VIOGPU_SET_RESOURCE_COLOR *color)
 {
     if (color == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || !AcquireNativeSubmissionOperation())
@@ -8957,6 +8970,29 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
     }
 
     return STATUS_SUCCESS;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::SetTargetTransform(ULONGLONG generation,
+                                                             const VIOGPU_DISPLAY_TRANSFORM *transform)
+{
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL || generation == 0 || !VioGpuValidDisplayTransform(transform))
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    if (WaitScanoutLifecycle() != STATUS_SUCCESS)
+    {
+        return VioGpuHostContextUnknown;
+    }
+    Reconcile2DScanoutAfterResetLocked();
+    m_PublishedScanoutResourceId = 0;
+    const auto result = m_2DScanoutUnknown ? VioGpuHostContextUnknown
+                                           : m_CtrlQueue.SetTargetTransform(generation, transform);
+    if (result == VioGpuHostContextUnknown)
+    {
+        FailNativeContextAtAnyIrql();
+    }
+    KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+    return result;
 }
 
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::SetResourceColor(_In_ const VIOGPU_SET_RESOURCE_COLOR *color)

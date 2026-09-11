@@ -1249,6 +1249,42 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetResourceColor(_In_ const VIOGPU_SET_RES
     return result;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetTargetTransform(ULONGLONG generation,
+                                                         const VIOGPU_DISPLAY_TRANSFORM *transform)
+{
+    PAGED_CODE();
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL || generation == 0 || !VioGpuValidDisplayTransform(transform) ||
+        !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    PGPU_VBUFFER vbuf = NULL;
+    auto command = static_cast<VIOGPU_SET_TARGET_TRANSFORM *>(AllocCmd(&vbuf, sizeof(VIOGPU_SET_TARGET_TRANSFORM)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    vbuf->data_buf = m_pBuf->AllocateMemory(sizeof(*transform));
+    if (vbuf->data_buf == NULL)
+    {
+        ReleaseBuffer(vbuf);
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    vbuf->data_size = sizeof(*transform);
+    RtlCopyMemory(vbuf->data_buf, transform, sizeof(*transform));
+    RtlZeroMemory(command, sizeof(*command));
+    command->query.hdr.type = VIOGPU_CMD_SET_TARGET_TRANSFORM;
+    command->query.magic = VIOGPU_DISPLAY_COLOR_MAGIC;
+    command->query.version = VIOGPU_DISPLAY_COLOR_VERSION;
+    command->query.size = sizeof(*command) + sizeof(*transform);
+    command->generation = generation;
+    const auto result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
 BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info)
 {
     PAGED_CODE();

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 
 int main()
 {
@@ -39,5 +40,24 @@ int main()
     corrupt = request;
     corrupt.encoding = VIOGPU_DISPLAY_COLOR_HLG;
     assert(!VioGpuValidDisplayMetadata(&corrupt));
-    std::puts("DVCL wire and HDR10 metadata: PASS");
+    auto transform = std::make_unique<VIOGPU_DISPLAY_TRANSFORM>();
+    transform->version = 1;
+    transform->size = sizeof(*transform);
+    transform->kind = 2;
+    transform->lut_count = 4096;
+    transform->scalar = 0x3f800000U;
+    assert(VioGpuValidDisplayTransform(transform.get()));
+    transform->lut[4095][2] = 0x7f800000U;
+    assert(!VioGpuValidDisplayTransform(transform.get()));
+    transform->lut[4095][2] = 0;
+    transform->matrix[4] = 0x7fc00000U;
+    assert(!VioGpuValidDisplayTransform(transform.get()));
+    transform->matrix[4] = 0;
+    transform->kind = 1;
+    transform->lut_count = 1025;
+    assert(VioGpuValidDisplayTransform(transform.get()));
+    transform->lut[1025][0] = 0x3f800000U;
+    assert(!VioGpuValidDisplayTransform(transform.get()));
+    static_assert(offsetof(VIOGPU_DISPLAY_TRANSFORM, lut) == 96, "shader/wire LUT offset");
+    std::puts("DVCL wire, HDR10 metadata and float-bit transform validation: PASS");
 }
