@@ -1,0 +1,49 @@
+name: Audit signed integrated HDR OpenGL entry points
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native-audit:
+    runs-on: windows-11-arm
+    steps:
+      - name: Verify exact signed pair and external architecture probes
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh run watch 34603468255 --repo sunflower2333/gunyah-guest-drivers-windows --exit-status --interval 30
+          if ($LASTEXITCODE) { throw 'Signed HDR pair failed' }
+          gh run download 34603468255 --repo sunflower2333/gunyah-guest-drivers-windows --name droidvm-arm64-drivers --dir paired
+          if ($LASTEXITCODE) { throw 'Signed pair download failed' }
+          gh run download 34605826565 --repo sunflower2333/gunyah-guest-drivers-windows --name viogpu-opengl-system-unsigned --dir probe-source
+          if ($LASTEXITCODE) { throw 'Verified probe download failed' }
+          $probeHead = gh run view 34605826565 --repo sunflower2333/gunyah-guest-drivers-windows --json headSha --jq .headSha
+          if ($LASTEXITCODE -or $probeHead.Trim() -ne '4ffe1f27019dd94eff334020da43af16099514e4') { throw 'Wrong probe source' }
+          $root = (Resolve-Path paired/opengl/payload).Path
+          $binding = Get-Content "$root/package-binding.json" -Raw | ConvertFrom-Json
+          $source = Get-Content "$root/source-identity.json" -Raw | ConvertFrom-Json
+          if ($binding.parent_commit -ne '4c5e828db0c9d3ebd3c0112f16fe79d5e1fa7127' -or
+              $source.mesa_commit -ne '668d598875209397ffcb69a109017609a76744c1' -or $source.mesa_run -ne 34603394209) {
+            throw 'Wrong integrated source identities'
+          }
+          foreach ($file in $binding.files_after_signing.PSObject.Properties) {
+            if ((Get-FileHash (Join-Path $root $file.Name)).Hash -ne $file.Value) { throw "Signed payload hash mismatch: $($file.Name)" }
+          }
+          if ((Get-FileHash paired/drivers/viogpu/viogpuwddm.sys).Hash -ne $binding.kmd_sha256 -or
+              (Get-FileHash paired/drivers/viogpu/viogpud3d.dll).Hash -ne $binding.d3d_umd_sha256) { throw 'Signed pair binding mismatch' }
+          if ((Test-FileCatalog -Path $root -CatalogFilePath paired/opengl/opengl.cat) -ne 'Valid') { throw 'Full payload catalog mismatch' }
+          New-Item -ItemType Directory external-probes | Out-Null
+          Copy-Item probe-source/system-probe-*.exe,probe-source/gles-probe-*.exe -Destination external-probes
+          Push-Location external-probes
+          try {
+            foreach ($arch in @('arm64','x64','x86')) {
+              & "./system-probe-$arch.exe" --load-default $root
+              if ($LASTEXITCODE) { throw "Integrated signed $arch ICD global export/default-load failure" }
+              & "./gles-probe-$arch.exe" --load-only $root
+              if ($LASTEXITCODE) { throw "Integrated signed $arch EGL/GLES load failure" }
+            }
+          } finally { Pop-Location }
+          Write-Host 'PASS exact integrated signed pair, external native/x64/x86 modern Vulkan global entry points and GLES loads; no registry/instance/device/GPU work.'
