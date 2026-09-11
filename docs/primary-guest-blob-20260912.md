@@ -6,8 +6,9 @@ land in the guest primary; the blob path flushes those pages without a
 TRANSFER_TO_HOST_2D upload. It preserves the existing native render resources,
 Mesa/GL/OpenCL package pins, and resource reset/unknown ownership rules.
 
-Activation is the device-instance DWORD `GuestBlobScanout=1`, on a Full
-Display+Render registration. It defaults off until the matching host is
+Activation is DWORD `GuestBlobScanout=1` in the selected display driver class
+key (opened with `IoOpenDeviceRegistryKey(..., PLUGPLAY_REGKEY_DRIVER, ...)`),
+on a Full Display+Render registration. It defaults off until the matching host is
 installed and the paired Windows test is performed. The host prerequisite is
 crosvm9f84242 with Virglc30846b; its actual Android guest-memory/DMA-BUF alias
 and fence regressions passed before this Windows integration. A generic blob
@@ -27,8 +28,15 @@ An initially black guest primary is still bound: subsequent guest writes and
 flushes must reach it. The old published-frame heuristic is retained for the
 legacy resource path only.
 
-Local checks cover 15 layout boundaries plus the existing fragmented backing,
-Render, power and fault regressions. Actual WDK compilation and paired signed
+Local checks cover 15 layout boundaries and actual production command builders,
+protocol declarations and response classification. The packet fixture checks
+fixed protocol bytes, copied SG metadata, allocation/queue rejection, malformed
+response poisoning and outstanding packet retention after timeout/reset races.
+Transport wait results are injected; this fixture does not simulate the kernel
+or establish host/guest rendering correctness. Negative controls must reject
+an unsafe timeout release, permissive response acceptance and a wrong opcode.
+The existing fragmented backing, Render, power and fault regressions remain.
+Actual WDK compilation and paired signed
 package checks must pass before installation. The version epoch reserves
 58451 onward after the independently frozen58450 candidate.
 

@@ -18,6 +18,7 @@ on:
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/backing-entries/**"
+      - "viogpu/tests/guest-scanout/**"
       - "viogpu/tests/render-prepatch/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
@@ -44,6 +45,7 @@ on:
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/backing-entries/**"
+      - "viogpu/tests/guest-scanout/**"
       - "viogpu/tests/render-prepatch/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
@@ -128,7 +130,13 @@ jobs:
         run: python viogpu/tests/backing-entries/run.py
       - name: Execute guest scanout layout and backing bounds
         shell: pwsh
-        run: python viogpu/tests/guest-scanout/run.py
+        run: |
+          python viogpu/tests/guest-scanout/run.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($fault in @('timeout-release', 'malformed-success', 'scanout-opcode')) {
+            python viogpu/tests/guest-scanout/run.py --negative-control $fault
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Execute Render prepatch and final residency regression
         shell: pwsh
         run: python viogpu/tests/render-prepatch/run.py
