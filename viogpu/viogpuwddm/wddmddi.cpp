@@ -3810,25 +3810,6 @@ static NTSTATUS QuerySegment4(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS QueryPhysicalAdapterCaps(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
-{
-    if (queryAdapterInfo->pInputData == NULL || queryAdapterInfo->InputDataSize < sizeof(UINT) ||
-        *static_cast<const UINT *>(queryAdapterInfo->pInputData) != 0)
-    {
-        return STATUS_INVALID_PARAMETER;
-    }
-    if (queryAdapterInfo->pOutputData == NULL || queryAdapterInfo->OutputDataSize < sizeof(DXGK_PHYSICALADAPTERCAPS))
-    {
-        return STATUS_BUFFER_TOO_SMALL;
-    }
-    DXGK_PHYSICALADAPTERCAPS *caps = static_cast<DXGK_PHYSICALADAPTERCAPS *>(queryAdapterInfo->pOutputData);
-    RtlZeroMemory(caps, sizeof(*caps));
-    caps->NumExecutionNodes = 1;
-    caps->PagingNodeIndex = 0;
-    caps->DxgkPhysicalAdapterHandle = adapter->GetDxgkInterface()->DeviceHandle;
-    return STATUS_SUCCESS;
-}
-
 NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
 {
     /* Accept any buffer that can hold the ABI header rather than demanding an
@@ -4564,10 +4545,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     else if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT4)
     {
         status = QuerySegment4(adapter, pQueryAdapterInfo);
-    }
-    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_PHYSICALADAPTERCAPS)
-    {
-        status = QueryPhysicalAdapterCaps(adapter, pQueryAdapterInfo);
     }
     else if (pQueryAdapterInfo->Type == DXGKQAITYPE_64BITONLYCAPS)
     {

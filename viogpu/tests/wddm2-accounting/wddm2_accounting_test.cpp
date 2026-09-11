@@ -79,13 +79,6 @@ struct DXGK_QUERYSEGMENTOUT4
     UINT PagingBufferPrivateDataSize;
     SIZE_T SegmentDescriptorStride;
 };
-struct DXGK_PHYSICALADAPTERCAPS
-{
-    UINT NumExecutionNodes;
-    UINT PagingNodeIndex;
-    HANDLE DxgkPhysicalAdapterHandle;
-    UINT Flags;
-};
 struct DXGKARG_GETNODEMETADATA
 {
     UINT EngineType;
@@ -95,23 +88,14 @@ struct DXGKARG_GETNODEMETADATA
     BOOLEAN GpuMmuSupported;
     BOOLEAN IoMmuSupported;
 };
-struct Interface
-{
-    HANDLE DeviceHandle;
-};
 struct VioGpuDod
 {
     bool Ready = true;
     uint64_t Generation = 1;
-    Interface Iface{reinterpret_cast<HANDLE>(0x1234)};
     bool QueryNativeContextReadiness(GPU_CAPSET_DRM *, void *, void *, ULONGLONG *generation)
     {
         *generation = Generation;
         return Ready;
-    }
-    Interface *GetDxgkInterface()
-    {
-        return &Iface;
     }
 };
 #ifdef _MSC_VER
@@ -229,15 +213,6 @@ int main()
     adapter.Ready = false;
     check(QuerySegment4(&adapter, &query) == STATUS_DEVICE_NOT_READY, "unready host rejected");
     adapter.Ready = true;
-    DXGK_PHYSICALADAPTERCAPS caps;
-    std::memset(&caps, 0xa5, sizeof(caps));
-    query.pOutputData = &caps;
-    query.OutputDataSize = sizeof(caps);
-    check(QueryPhysicalAdapterCaps(&adapter,
-                                   &query) == STATUS_SUCCESS && caps.NumExecutionNodes == 1 && caps.PagingNodeIndex == 0 &&
-                                                                                                              caps.DxgkPhysicalAdapterHandle == adapter.Iface.DeviceHandle &&
-                                                                                                              caps.Flags == 0,
-          "real adapter handle, single paging node, no MMU fiction");
     DXGKARG_GETNODEMETADATA metadata;
     std::memset(&metadata, 0xa5, sizeof(metadata));
     check(VioGpuWddmGetNodeMetadata(&adapter,

@@ -22,7 +22,6 @@ def function(signature):
 production = '\n'.join(function(signature) for signature in (
     'VOID InitializeAllocationInfo(',
     'static NTSTATUS QuerySegment4(',
-    'static NTSTATUS QueryPhysicalAdapterCaps(',
     '_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetNodeMetadata(',
 ))
 unit = (here / 'wddm2_accounting_test.cpp').read_text().replace('// INSERT_PRODUCTION', production)
