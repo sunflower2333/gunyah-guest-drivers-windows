@@ -39,6 +39,34 @@ def verify_sums(root):
     return sums
 
 
+def imports(path):
+    """Read native-view imports to select the actual CRT dependency closure."""
+    data = path.read_bytes()
+    pe, = struct.unpack_from('<I', data, 0x3c)
+    sections, = struct.unpack_from('<H', data, pe + 6)
+    optional_size, = struct.unpack_from('<H', data, pe + 20)
+    optional = pe + 24
+    magic, = struct.unpack_from('<H', data, optional)
+    directories = optional + (112 if magic == 0x20b else 96)
+    import_rva, = struct.unpack_from('<I', data, directories + 8)
+    def offset(rva):
+        for index in range(sections):
+            size, address, raw_size, raw = struct.unpack_from('<IIII', data, optional + optional_size + index * 40 + 8)
+            if address <= rva < address + max(size, raw_size):
+                return raw + rva - address
+        raise ValueError(f'Invalid import RVA: {path}')
+    if not import_rva:
+        return []
+    descriptor = offset(import_rva)
+    result = []
+    while any(data[descriptor:descriptor+20]):
+        name_rva, = struct.unpack_from('<I', data, descriptor + 12)
+        start = offset(name_rva)
+        result.append(data[start:data.index(0, start)].decode('ascii').lower())
+        descriptor += 20
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
     for key in ('runtime', 'loaders', 'output'):
@@ -55,7 +83,18 @@ def main():
             raise ValueError(f'Stale runtime: {arch}')
         destination = args.output / arch
         destination.mkdir()
-        for file in source.glob('*.dll'):
+        available = {file.name.lower(): file for file in source.glob('*.dll')}
+        required = {'opencl.dll', 'vulkan-1.dll'}
+        pending = [source / 'OpenCL.dll', source / 'vulkan-1.dll', source / 'viogpu-opencl-check.exe']
+        while pending:
+            for name in imports(pending.pop()):
+                if name in available and name not in required:
+                    required.add(name)
+                    pending.append(available[name])
+        # MSVC ARM64 redistributable includes an x64-only vcruntime140_1.dll
+        # for the hybrid view. Ship only this native runtime's imported closure.
+        for name in sorted(required):
+            file = available[name]
             if file.name not in sums:
                 raise ValueError(f'Unhashed dependency: {file}')
             machine(file, arch)
