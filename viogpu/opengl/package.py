@@ -88,9 +88,9 @@ def assemble(args):
     hybrid = args.proxies/"viogpuopengl.dll"
     exports = pe_exports(hybrid, MACHINES["arm64"])
     assert set(exports) == set(EXPORTS), "ARM64X export table mismatch"
-    # The native view is parsed here. CI also checks the relocated x64 view by
-    # invoking DrvValidateVersion from an actual x64 process on Windows ARM64.
-    assert all(value == "viogpuopengl_arm64."+name for name, value in exports.items()), exports
+    # Both views contain adapter code that loads exact sibling paths. A pure
+    # forwarder would depend on the external application's DLL search path.
+    assert all(value is None for value in exports.values()), exports
     shutil.copy2(hybrid, output/hybrid.name)
     for suffix, dll in (("", "viogpuopengl.dll"), ("-wow", "viogpuopengl_x86.dll")):
         (output/f"turnip{suffix}.json").write_text(json.dumps({
