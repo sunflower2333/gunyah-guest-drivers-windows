@@ -3290,7 +3290,7 @@ def check_legacy_runtime_callback_contract() -> None:
         "notify.InterruptType=DXGK_INTERRUPT_CRTC_VSYNC;",
         "notify.CrtcVsync.VidPnTargetId=0;",
         "notify.CrtcVsync.PhysicalAddress.QuadPart=InterlockedCompareExchange64(&m_CrtcVsyncPrimaryAddress,0,0);",
-        "NotifyNativeSchedulerInterrupt(&notify,TRUE)",
+        "NotifyNativeSchedulerInterrupt(&notify,TRUE,notificationEpoch)",
     ):
         if fragment not in deliver_vsync:
             fail(f"vsync delivery must report a gated CRTC vertical blank for the programmed primary: {fragment}")
@@ -11355,9 +11355,17 @@ def check_wddm_submission_lifetime() -> None:
     )
     if "KeAcquireSpinLock(" in prepare or "QueryNativeSubmittedFence" in prepare:
         fail("DIRQL publication must neither take the DPC tracker lock nor substitute submitted work")
-    if "activeEpoch!=QueryNativeFenceEpoch()" not in prepare or \
-       prepare.count("InterlockedCompareExchange(&m_NativeFenceNotificationClosed,0,0)") != 2:
+    dma_prepare = prepare[prepare.index("if(!completion&&!preemption)"):]
+    if "activeEpoch!=QueryNativeFenceEpoch()" not in dma_prepare or \
+       dma_prepare.count("InterlockedCompareExchange(&m_NativeFenceNotificationClosed,0,0)") != 2:
         fail("DIRQL must reject a reset-gated or changing epoch snapshot without spinning")
+    for fragment in ("DXGK_INTERRUPT_CRTC_VSYNC_WITH_MULTIPLANE_OVERLAY2",
+                     "fenceEpoch==QueryNativeFenceEpoch()",
+                     "InterlockedCompareExchange(&m_ColorPresentCompletedEpoch,0,0)",
+                     "vsync.MultiPlaneOverlayVsyncInfoCount==1",
+                     "InterlockedCompareExchange64(&m_ColorPresentCompletedId,0,0)"):
+        if fragment not in prepare:
+            fail(f"MPO completion must validate its epoch and exact PresentId: {fragment}")
     require_order(
         complete_reset,
         ("InterlockedExchange(&m_NativeFenceNotificationClosed,1);",

@@ -185,6 +185,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     KeInitializeSpinLock(&m_CrtcTimingLock);
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     KeInitializeSpinLock(&m_ColorStateLock);
+    KeInitializeEvent(&m_ColorPresentIdle, NotificationEvent, TRUE);
 #endif
     m_CrtcTiming = VioGpuVirtualTiming(1024, 768, 60);
     m_CrtcEpoch = 0;
@@ -1143,6 +1144,72 @@ VOID VioGpuDod::SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address)
     InterlockedExchange64(&m_CrtcVsyncPrimaryAddress, static_cast<LONG64>(address));
 }
 
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+BOOLEAN VioGpuDod::BeginColorStateOperation(BOOLEAN wait)
+{
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return FALSE;
+    }
+    for (;;)
+    {
+        KIRQL oldIrql;
+        KeAcquireSpinLock(&m_ColorStateLock, &oldIrql);
+        if (m_ColorPresentPending == 0)
+        {
+            m_ColorPresentPending = 1;
+            KeClearEvent(&m_ColorPresentIdle);
+            KeReleaseSpinLock(&m_ColorStateLock, oldIrql);
+            return TRUE;
+        }
+        KeReleaseSpinLock(&m_ColorStateLock, oldIrql);
+        if (!wait)
+        {
+            return FALSE;
+        }
+        // Bounded wait: a stuck host command must enter reset recovery, not
+        // indefinitely block a VidPn/power transition behind a work item.
+        LARGE_INTEGER timeout;
+        timeout.QuadPart = -10000000LL;
+        if (KeWaitForSingleObject(&m_ColorPresentIdle, Executive, KernelMode, FALSE, &timeout) != STATUS_SUCCESS)
+        {
+            return FALSE;
+        }
+    }
+}
+
+VOID VioGpuDod::EndColorStateOperation()
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_ColorStateLock, &oldIrql);
+    m_ColorPresentPending = 0;
+    KeSetEvent(&m_ColorPresentIdle, IO_NO_INCREMENT, FALSE);
+    KeReleaseSpinLock(&m_ColorStateLock, oldIrql);
+}
+
+VOID VioGpuDod::ClearColorPresentCompletion()
+{
+    InterlockedExchange(&m_ColorPresentCompletedEpoch, 0);
+    InterlockedExchange64(&m_ColorPresentCompletedId, 0);
+    InterlockedExchange(&m_ColorPresentActive, 0);
+}
+
+BOOLEAN VioGpuDod::PublishColorPresentCompletion(ULONGLONG presentId, ULONGLONG address, ULONG epoch)
+{
+    if (epoch != QueryNativeFenceEpoch() || IsHardwareResetRequested())
+    {
+        return FALSE;
+    }
+    InterlockedExchange(&m_ColorPresentCompletedEpoch, 0);
+    SetCrtcVsyncPrimaryAddress(address);
+    InterlockedExchange64(&m_ColorPresentCompletedId, static_cast<LONG64>(presentId));
+    InterlockedExchange(&m_ColorPresentCompletedEpoch, static_cast<LONG>(epoch));
+    // Reset may race publication. DIRQL checks both the queued epoch and the
+    // live reset gate again before notifying dxgkrnl.
+    return epoch == QueryNativeFenceEpoch() && !IsHardwareResetRequested();
+}
+#endif
+
 VOID VioGpuDod::DeliverCrtcVsync(void)
 {
     if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0) == 0 || !IsHardwareInterruptDispatchAllowed())
@@ -1162,11 +1229,20 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
     notify.CrtcVsync.VidPnTargetId = 0;
     notify.CrtcVsync.PhysicalAddress.QuadPart = InterlockedCompareExchange64(&m_CrtcVsyncPrimaryAddress, 0, 0);
     notify.CrtcVsync.PhysicalAdapterMask = 1;
+    ULONG notificationEpoch = QueryNativeFenceEpoch();
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     DXGK_MULTIPLANE_OVERLAY_VSYNC_INFO2 mpo = {};
+    const BOOLEAN colorActive = InterlockedCompareExchange(&m_ColorPresentActive, 0, 0) != 0;
+    const ULONG colorEpoch = static_cast<ULONG>(InterlockedCompareExchange(&m_ColorPresentCompletedEpoch, 0, 0));
     mpo.PresentId = static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_ColorPresentCompletedId, 0, 0));
-    if (mpo.PresentId != 0)
+    if (colorActive)
     {
+        if (mpo.PresentId == 0 || colorEpoch == 0 || colorEpoch != notificationEpoch ||
+            colorEpoch != static_cast<ULONG>(InterlockedCompareExchange(&m_ColorPresentCompletedEpoch, 0, 0)))
+        {
+            return;
+        }
+        notificationEpoch = colorEpoch;
         RtlZeroMemory(&notify, sizeof(notify));
         notify.InterruptType = DXGK_INTERRUPT_CRTC_VSYNC_WITH_MULTIPLANE_OVERLAY2;
         notify.CrtcVsyncWithMultiPlaneOverlay2.VidPnTargetId = 0;
@@ -1175,7 +1251,7 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
         notify.CrtcVsyncWithMultiPlaneOverlay2.pMultiPlaneOverlayVsyncInfo = &mpo;
     }
 #endif
-    if (NotifyNativeSchedulerInterrupt(&notify, TRUE))
+    if (NotifyNativeSchedulerInterrupt(&notify, TRUE, notificationEpoch))
     {
         InterlockedIncrement(&m_CrtcVsyncDeliveredCount);
     }
@@ -1185,6 +1261,12 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
      * real hardware the display engine scans it out continuously, and here it
      * has to be transferred and flushed. Do it on the display's own cadence. */
     VioGpuAdapter *adapter = m_pHWDevice;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    if (colorActive)
+    {
+        return;
+    }
+#endif
     if (adapter != NULL)
     {
         adapter->RequestScanoutRefresh();
@@ -1196,6 +1278,20 @@ BOOLEAN VioGpuDod::PrepareNativeSchedulerNotificationAtDirql(
 {
     const bool completion = notification->InterruptType == DXGK_INTERRUPT_DMA_COMPLETED;
     const bool preemption = notification->InterruptType == DXGK_INTERRUPT_DMA_PREEMPTED;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    if (notification->InterruptType == DXGK_INTERRUPT_CRTC_VSYNC_WITH_MULTIPLANE_OVERLAY2)
+    {
+        const auto &vsync = notification->CrtcVsyncWithMultiPlaneOverlay2;
+        return !IsHardwareResetRequested() && !InterlockedCompareExchange(&m_NativeFenceNotificationClosed, 0, 0) &&
+               fenceEpoch == QueryNativeFenceEpoch() &&
+               fenceEpoch == static_cast<ULONG>(InterlockedCompareExchange(&m_ColorPresentCompletedEpoch, 0, 0)) &&
+               InterlockedCompareExchange(&m_ColorPresentActive, 0, 0) && vsync.MultiPlaneOverlayVsyncInfoCount == 1 &&
+               vsync.pMultiPlaneOverlayVsyncInfo != NULL &&
+               vsync.pMultiPlaneOverlayVsyncInfo[0].PresentId == static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_ColorPresentCompletedId,
+                                                                                                                     0,
+                                                                                                                     0));
+    }
+#endif
     if (!completion && !preemption)
         return TRUE;
     if (IsHardwareResetRequested() || InterlockedCompareExchange(&m_NativeFenceNotificationClosed, 0, 0))
@@ -4258,6 +4354,15 @@ NTSTATUS VioGpuDod::SetVidPnSourceVisibility(_In_ CONST DXGKARG_SETVIDPNSOURCEVI
 NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVidPn)
 {
     PAGED_CODE();
+
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    ColorStateOperation colorOperation(this);
+    if (!colorOperation.Acquired())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    ClearColorPresentCompletion();
+#endif
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
     CountDisplayEvent(5);
