@@ -2233,7 +2233,7 @@ BOOLEAN CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height
     return TRUE;
 }
 
-#define SGLIST_SIZE 256
+#define SGLIST_SIZE VIOGPU_CONTROL_SG_CAPACITY
 static const int VIOGPU_QUEUE_ERROR = -1;
 
 int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)

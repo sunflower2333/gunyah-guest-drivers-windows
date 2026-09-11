@@ -15,6 +15,7 @@ on:
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
+      - "viogpu/tests/backing-entries/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
@@ -37,6 +38,7 @@ on:
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
+      - "viogpu/tests/backing-entries/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
@@ -115,6 +117,9 @@ jobs:
       - name: Execute fault recovery regression
         shell: pwsh
         run: python viogpu/tests/fault-recovery/run.py
+      - name: Execute fragmented backing and control descriptor regression
+        shell: pwsh
+        run: python viogpu/tests/backing-entries/run.py
 
       - name: Parse Native Context diagnostic readers
         shell: pwsh
