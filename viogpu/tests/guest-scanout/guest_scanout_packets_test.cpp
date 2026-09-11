@@ -72,7 +72,7 @@ class CtrlQueue
     Pool *m_pBuf = &pool;
     bool gate = true, failCommand = false, poisoned = false;
     unsigned begins = 0, ends = 0, submits = 0, releases = 0;
-    GPU_CTRL_HDR response = {0x1100, 0, 0, 0, 0, {0, 0, 0}};
+    GPU_CTRL_HDR hostReply = {0x1100, 0, 0, 0, 0, {0, 0, 0}};
     UINT responseSize = 24;
     PGPU_VBUFFER retained = nullptr;
     const GPU_MEM_ENTRY *callerEntries = nullptr;
@@ -140,7 +140,7 @@ class CtrlQueue
             bytes = static_cast<const uint8_t *>(buffer->data_buf);
             backing.assign(bytes, bytes + buffer->data_size);
         }
-        buffer->response = response;
+        buffer->response = hostReply;
         buffer->response_size = responseSize;
         *submitted = transport != QueueRejected;
         *release = transport == Complete || transport == QueueRejected;
@@ -352,27 +352,27 @@ static void response_ownership()
         q.callerEntries = &entry;
         if (variant < 6)
         {
-            q.response.type = 0x1200 + variant;
+            q.hostReply.type = 0x1200 + variant;
         }
         if (variant == 6)
         {
-            q.response.flags = 1;
+            q.hostReply.flags = 1;
         }
         if (variant == 7)
         {
-            q.response.fence_id = 1;
+            q.hostReply.fence_id = 1;
         }
         if (variant == 8)
         {
-            q.response.ctx_id = 1;
+            q.hostReply.ctx_id = 1;
         }
         if (variant == 9)
         {
-            q.response.ring_idx = 1;
+            q.hostReply.ring_idx = 1;
         }
         if (variant >= 10 && variant <= 12)
         {
-            q.response.padding[variant - 10] = 1;
+            q.hostReply.padding[variant - 10] = 1;
         }
         if (variant == 13)
         {
@@ -384,7 +384,7 @@ static void response_ownership()
         }
         if (variant == 15)
         {
-            q.response.type = 0x1206;
+            q.hostReply.type = 0x1206;
         }
         if (variant == 16)
         {
