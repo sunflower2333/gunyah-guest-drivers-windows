@@ -49,6 +49,9 @@ jobs:
           Copy-Item $exe accounting-tool/
           Copy-Item viogpu/tools/wddm-accounting/*.ps1, viogpu/tools/wddm-accounting/README.md accounting-tool/
           Get-FileHash accounting-tool/* -Algorithm SHA256 | Format-Table -AutoSize
+          # The deliberately invalid PID test returns 2. All expectations were
+          # checked above; do not let GitHub's wrapper reuse that expected code.
+          exit 0
       - uses: actions/upload-artifact@v4
         with:
           name: wddm-accounting-arm64
