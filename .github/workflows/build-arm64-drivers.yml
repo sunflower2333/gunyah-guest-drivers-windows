@@ -437,13 +437,12 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # Driver version = 100.6.101.<58180 + commits after the exact 58180 source>.
-          # The branch was rebased after the earlier version epoch, so require
-          # this installed source to remain an ancestor before counting. The
-          # first descendant build is 58181. The 16-bit limit leaves 7354
-          # revisions before another explicit epoch is required.
-          $epoch = '00c0fd0217cd25ef61581f498dbcb5f40516d4f6'
-          $epochMinor = 58180
+          # Recovery epoch: retain the known-working WDDM1.2 KMD source while
+          # ranking above the failed 58422 WDDM2.3 candidate. This first
+          # descendant is 58423; 58423..58429 are reserved for GL recovery.
+          # The independent HDR repair branch reserves 58430 and above.
+          $epoch = '4ffe1f27019dd94eff334020da43af16099514e4'
+          $epochMinor = 58422
           & git merge-base --is-ancestor $epoch HEAD
           if ($LASTEXITCODE -ne 0) {
             throw "driver version epoch $epoch is not an ancestor of HEAD"

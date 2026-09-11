@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   workflow_call:
   push:
-    branches: [viogpu-opengl-icd-20260911, viogpu-opengl-integrated-20260911, viogpu-opengl-installer-file-20260911, viogpu-opengl-discovery-20260911, viogpu-opengl-surface-20260911]
+    branches: [viogpu-opengl-icd-20260911, viogpu-opengl-integrated-20260911, viogpu-opengl-installer-file-20260911, viogpu-opengl-discovery-20260911, viogpu-opengl-surface-20260911, viogpu-opengl-wddm12-recovery-20260911]
 permissions:
   contents: read
   actions: read
@@ -34,11 +34,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run watch 34603341031 --repo sunflower2333/mesa --exit-status --interval 30
+          gh run watch 34603394209 --repo sunflower2333/mesa --exit-status --interval 30
           if ($LASTEXITCODE) { throw 'Pinned Mesa run did not complete successfully' }
-          $source = gh run view 34603341031 --repo sunflower2333/mesa --json headSha --jq .headSha
-          if ($LASTEXITCODE -or $source.Trim() -ne 'fec36bac3fd4068294855a459e62b3c7c2216a00') { throw 'Pinned Mesa run source mismatch' }
-          gh run download 34603341031 --repo sunflower2333/mesa --dir mesa-opengl-artifacts
+          $source = gh run view 34603394209 --repo sunflower2333/mesa --json headSha --jq .headSha
+          if ($LASTEXITCODE -or $source.Trim() -ne '668d598875209397ffcb69a109017609a76744c1') { throw 'Pinned Mesa run source mismatch' }
+          gh run download 34603394209 --repo sunflower2333/mesa --dir mesa-opengl-artifacts
           if ($LASTEXITCODE) { throw 'Pinned Mesa artifact download failed' }
           python viogpu/opengl/package.py --payloads mesa-opengl-artifacts --verify-only
           if ($LASTEXITCODE) { throw 'Pinned Mesa source/hash/PE/export verification failed' }
