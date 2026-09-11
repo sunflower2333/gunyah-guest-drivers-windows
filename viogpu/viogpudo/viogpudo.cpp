@@ -13470,9 +13470,9 @@ void VioGpuAdapter::ConfigChanged(void)
         virtio_set_config(&m_VioDev, FIELD_OFFSET(GPU_CONFIG, events_clear), &events_clear, sizeof(m_u32NumScanouts));
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
         InterlockedExchange(&m_ColorConnectionRefreshRequested, 1);
-        return;
-#endif
+#else
         UpdateChildStatus(TRUE);
+#endif
     }
 }
 
