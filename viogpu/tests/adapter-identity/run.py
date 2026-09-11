@@ -9,6 +9,7 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--prepatch-revision', help='Use an old private reply as the negative control')
+parser.add_argument('--dxvk-root', type=Path, help='Also exercise the actual DXVK runtime identity decoder')
 args = parser.parse_args()
 here = Path(__file__).resolve().parent
 root = here.parents[2]
@@ -53,13 +54,20 @@ with tempfile.TemporaryDirectory(prefix='viogpu-adapter-identity-') as temporary
     unit = output / 'test.cpp'
     unit.write_text(fixture)
     includes = [root / 'viogpu/shared', root / 'viogpu/common']
+    if args.dxvk_root:
+        decoder = args.dxvk_root.resolve() / 'src/umd/umd_runtime_identity.h'
+        if not decoder.is_file():
+            parser.error(f'DXVK runtime identity decoder not found: {decoder}')
+        includes.append(decoder.parent)
     if shutil.which('cl'):
         exe = output / 'test.exe'
         command = ['cl', '/nologo', '/EHsc', '/W4', '/WX', '/std:c++17',
+                   *(['/DVIOGPU_TEST_DXVK_IDENTITY'] if args.dxvk_root else []),
                    *[f'/I{p}' for p in includes], str(unit), f'/Fe{exe}']
     else:
         exe = output / 'test'
         command = ['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                   *(['-DVIOGPU_TEST_DXVK_IDENTITY'] if args.dxvk_root else []),
                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
                    *[f'-I{p}' for p in includes], str(unit), '-o', str(exe)]
     subprocess.run(command, cwd=output, check=True)
