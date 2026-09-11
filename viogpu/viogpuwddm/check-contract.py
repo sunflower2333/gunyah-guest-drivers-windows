@@ -989,13 +989,13 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$epoch = '00c0fd0217cd25ef61581f498dbcb5f40516d4f6'",
-        "$epochMinor = 58180",
+        "$epoch = 'ae36d7b0abeec37cb838f6f981d1599298799459'",
+        "$epochMinor = 58450",
         "git merge-base --is-ancestor $epoch HEAD",
         'git rev-list --count "$epoch..HEAD"',
         "$minor = $epochMinor + [int]$n",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -le 58180",
+        "[int]$env:DROIDVM_DRIVER_MINOR -le 58450",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -4369,9 +4369,31 @@ def check_wddm_2d_resource_ownership() -> None:
         "VioGpu2DResourceCreated,"
         "VioGpu2DResourceBackingAttached,"
         "VioGpu2DResourceUnknown,"
+        "VioGpu2DResourceGuestBlobBackingAttached,"
     )
     if queue_header.count(expected_states) != 1:
         fail("2D primary resources must retain explicit none, created, attached, and unknown Host states")
+
+    attached = canonical_code(function_body("VioGpuResourceBackingAttached", QUEUE_HEADER_CODE))
+    if attached != "returnstate==VioGpu2DResourceBackingAttached||state==VioGpu2DResourceGuestBlobBackingAttached;":
+        fail("only confirmed legacy and guest-blob backing states may count as attached")
+    guest_create = canonical_code(function_body("CtrlQueue::CreateGuestBlobSynchronous", QUEUE_CODE))
+    for fragment in (
+        "!IsStandard2DResourceId(resource_id)",
+        "covered<size",
+        "RtlCopyMemory(ownedEntries,entries,entriesSize);",
+        "RtlZeroMemory(command,sizeof(*command));",
+        "command->blob_mem=VIRTIO_GPU_BLOB_MEM_GUEST;",
+        "vbuf->data_buf=ownedEntries;",
+        "SubmitSynchronousNoDataLocked(vbuf)",
+    ):
+        if guest_create.count(fragment) != 1:
+            fail(f"primary guest-blob creation must retain its bounded context-zero backing contract: {fragment}")
+    if "command->hdr.ctx_id=" in guest_create or "command->blob_flags=" in guest_create:
+        fail("primary guest backing must not gain renderer context or sharing flags")
+    guest_scanout = canonical_code(function_body("CtrlQueue::SetScanoutBlobSynchronous", QUEUE_CODE))
+    if "VioGpuGuestScanoutBoundsValid(layout->Width,layout->Height,layout->Stride,layout->BackingSize)" not in guest_scanout:
+        fail("guest scanout must validate the complete visible layout before queuing it")
 
     allocate_id = canonical_code(function_body("VioGpuAdapter::Allocate2DResourceId", VIOGPU_CODE))
     for fragment in (
@@ -4972,10 +4994,10 @@ def check_wddm_standard_primary_scanout() -> None:
         "setVidPnSourceAddress->PrimarySegment!=VIOGPU_WDDM_SEGMENT_ID",
         "IsStandardPrimaryAllocation(allocation)",
         "EnsureStandard2DAllocationBacking(allocation)",
-        "allocation->Resource2DState!=VioGpu2DResourceBackingAttached",
+        "!VioGpuResourceBackingAttached(allocation->Resource2DState)",
         "!allocation->PlacementValid",
         "setVidPnSourceAddress->PrimaryAddress.QuadPart)!=allocation->PlacementOffset",
-        "adapter->Set2DScanout(0,allocation->ResourceId,allocation->Width,allocation->Height,&previousResourceId)",
+        "adapter->Set2DScanout(0,allocation->ResourceId,allocation->Width,allocation->Height,&previousResourceId,guestBlob?&guestLayout:NULL)",
         "result==VioGpuHostContextConfirmed?STATUS_SUCCESS:STATUS_DEVICE_NOT_READY",
     ):
         if fragment not in set_ddi:
@@ -5203,7 +5225,7 @@ def check_wddm_present_contract() -> None:
     live_gdi_identity = canonical_code(function_body("HasLiveGdiPresentIdentity", WDDM_DDI_CODE))
     for fragment in (
         "HasGdiPresentIdentity(allocation,context,adapter)",
-        "allocation->Resource2DState==VioGpu2DResourceBackingAttached",
+        "VioGpuResourceBackingAttached(allocation->Resource2DState)",
         "allocation->Resource2DResetGeneration!=0",
         "allocation->PlacementValid",
         "allocation->ApertureMdl!=NULL",
@@ -5231,7 +5253,7 @@ def check_wddm_present_contract() -> None:
        "allocation->ApertureMdl!=NULL" not in reconcile_gdi or \
        "allocation->ApertureAddress!=NULL" not in reconcile_gdi or \
        "EnsureStandard2DAllocationBacking(allocation)" not in reconcile_gdi or \
-       "allocation->Resource2DState==VioGpu2DResourceBackingAttached" not in reconcile_gdi or \
+       "VioGpuResourceBackingAttached(allocation->Resource2DState)" not in reconcile_gdi or \
        "allocation->Resource2DResetGeneration!=0" not in reconcile_gdi:
         fail("Present reset reconciliation must retain the current attached VidMm-backed 2D identity")
 
@@ -9147,7 +9169,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "allocation->ApertureMdl!=NULL",
         "allocation->ApertureAddress!=NULL",
         "EnsureStandard2DAllocationBacking(allocation)",
-        "allocation->Resource2DState==VioGpu2DResourceBackingAttached",
+        "VioGpuResourceBackingAttached(allocation->Resource2DState)",
         "allocation->Resource2DResetGeneration!=0",
         "!transaction->Adapter->IsHardwareResetRequested()",
         "!transaction->TransferDataComplete",

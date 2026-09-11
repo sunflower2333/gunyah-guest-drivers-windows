@@ -74,6 +74,9 @@ jobs:
       - name: Execute fragmented backing and control descriptor regression
         shell: pwsh
         run: python viogpu/tests/backing-entries/run.py
+      - name: Execute guest scanout layout and backing bounds
+        shell: pwsh
+        run: python viogpu/tests/guest-scanout/run.py
       - name: Execute Render prepatch and final residency regression
         shell: pwsh
         run: python viogpu/tests/render-prepatch/run.py
@@ -446,10 +449,10 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # OpenCL integration reserves 58440 onward. Preserve the GL recovery
-          # WDDM1.2 source, without colliding with GL58423..29 or HDR58430.
-          $epoch = 'ae15bee'
-          $epochMinor = 58439
+          # Primary guest-blob builds follow the frozen vkd3d58450 candidate.
+          # Preserve the current GL/OpenCL/Mesa pairing and reserve 58451 onward.
+          $epoch = 'ae36d7b0abeec37cb838f6f981d1599298799459'
+          $epochMinor = 58450
           & git merge-base --is-ancestor $epoch HEAD
           if ($LASTEXITCODE -ne 0) {
             throw "driver version epoch $epoch is not an ancestor of HEAD"
@@ -516,7 +519,7 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -le 58180) {
+          if ([int]$env:DROIDVM_DRIVER_MINOR -le 58450) {
             throw "Native Context product version must rank above installed 100.6.101.58180"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"

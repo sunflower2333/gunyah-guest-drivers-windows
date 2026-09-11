@@ -157,6 +157,32 @@ typedef struct virtio_gpu_resource_create_blob
 } GPU_CMD_RESOURCE_CREATE_BLOB, *PGPU_CMD_RESOURCE_CREATE_BLOB;
 #pragma pack()
 
+/* VIRTIO_GPU_CMD_SET_SCANOUT_BLOB. Layout is independent of the crop rectangle. */
+#pragma pack(1)
+typedef struct virtio_gpu_set_scanout_blob
+{
+    GPU_CTRL_HDR hdr;
+    GPU_RECT r;
+    ULONG scanout_id;
+    ULONG resource_id;
+    ULONG width;
+    ULONG height;
+    ULONG format;
+    ULONG padding;
+    ULONG strides[4];
+    ULONG offsets[4];
+} GPU_CMD_SET_SCANOUT_BLOB, *PGPU_CMD_SET_SCANOUT_BLOB;
+#pragma pack()
+
+typedef struct
+{
+    UINT Width;
+    UINT Height;
+    UINT Format;
+    UINT Stride;
+    ULONGLONG BackingSize;
+} VIOGPU_PRIMARY_SCANOUT_LAYOUT;
+
 #define VIOGPU_NATIVE_RESOURCE_ID_START 0x80000000U
 
 /* VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB */
@@ -194,6 +220,7 @@ static_assert(sizeof(GPU_CTRL_HDR) == 24, "virtio-gpu control header wire size")
 static_assert(sizeof(GPU_CMD_SUBMIT_3D) == 32, "virtio-gpu submit wire size");
 static_assert(sizeof(GPU_CMD_CTX_CREATE) == 96, "virtio-gpu context create wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_CREATE_BLOB) == 56, "virtio-gpu blob create wire size");
+static_assert(sizeof(GPU_CMD_SET_SCANOUT_BLOB) == 96, "virtio-gpu scanout blob wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_MAP_BLOB) == 40, "virtio-gpu blob map wire size");
 static_assert(sizeof(GPU_RESP_MAP_INFO) == 32, "virtio-gpu blob map response wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_UNMAP_BLOB) == 32, "virtio-gpu blob unmap wire size");

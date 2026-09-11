@@ -126,6 +126,9 @@ jobs:
       - name: Execute fragmented backing and control descriptor regression
         shell: pwsh
         run: python viogpu/tests/backing-entries/run.py
+      - name: Execute guest scanout layout and backing bounds
+        shell: pwsh
+        run: python viogpu/tests/guest-scanout/run.py
       - name: Execute Render prepatch and final residency regression
         shell: pwsh
         run: python viogpu/tests/render-prepatch/run.py

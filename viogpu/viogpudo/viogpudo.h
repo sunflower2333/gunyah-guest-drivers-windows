@@ -47,7 +47,8 @@ typedef struct
     UINT UsePhysicalMemory : 1;
     UINT UsePresentProgress : 1;
     UINT RenderOnly : 1;
-    UINT Unused : 24;
+    UINT GuestBlobScanout : 1;
+    UINT Unused : 23;
 } DRIVER_STATUS_FLAG;
 
 #pragma pack(pop)
@@ -576,7 +577,8 @@ class VioGpuAdapter : IVioGpuPCI
                                                        _In_reads_(entryCount) const GPU_MEM_ENTRY *entries,
                                                        _In_ UINT entryCount,
                                                        _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
-                                                       _Inout_ ULONGLONG *resourceResetGeneration);
+                                                       _Inout_ ULONGLONG *resourceResetGeneration,
+                                                       _In_ BOOLEAN guestBlob = FALSE);
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                  _Inout_ ULONGLONG *resourceResetGeneration,
@@ -609,7 +611,7 @@ class VioGpuAdapter : IVioGpuPCI
      * then draws into that memory, so the binding has to be republished on the
      * display's cadence for anything to reach the host. */
     VOID RequestScanoutRefresh(void);
-    VOID RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
+    VOID RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height, _In_ BOOLEAN guestBlob = FALSE);
     NTSTATUS PublishPresentBlit(_In_ UINT width,
                                 _In_ UINT height,
                                 _In_ UINT sourcePitch,
@@ -619,7 +621,8 @@ class VioGpuAdapter : IVioGpuPCI
                                             _In_ UINT resourceId,
                                             _In_ UINT width,
                                             _In_ UINT height,
-                                            _Out_ UINT *previousResourceId);
+                                            _Out_ UINT *previousResourceId,
+                                            _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout = NULL);
     VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached);
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
@@ -876,6 +879,8 @@ class VioGpuAdapter : IVioGpuPCI
     volatile LONG m_ExplicitPresentResourceId;
     volatile LONG m_ActiveScanoutWidth;
     volatile LONG m_ActiveScanoutHeight;
+    KSPIN_LOCK m_ActiveScanoutLock;
+    BOOLEAN m_ActiveScanoutGuestBlob;
     volatile LONG m_ScanoutRefreshRequested;
     VioGpuObj *m_pCursorBuf;
     VioGpuMemSegment m_CursorSegment;
@@ -1050,6 +1055,10 @@ class VioGpuDod
     {
         m_Flags.RenderOnly = enable;
     }
+    BOOLEAN IsGuestBlobScanoutEnabled() const
+    {
+        return m_Flags.GuestBlobScanout && !IsRenderOnly();
+    }
     void SetPersistentDispMode0Width(USHORT res)
     {
         m_PersistentDispMode0Width = res;
@@ -1202,7 +1211,8 @@ class VioGpuDod
                                                        _In_reads_(entryCount) const GPU_MEM_ENTRY *entries,
                                                        _In_ UINT entryCount,
                                                        _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
-                                                       _Inout_ ULONGLONG *resourceResetGeneration);
+                                                       _Inout_ ULONGLONG *resourceResetGeneration,
+                                                       _In_ BOOLEAN guestBlob = FALSE);
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                  _Inout_ ULONGLONG *resourceResetGeneration,
@@ -1251,7 +1261,8 @@ class VioGpuDod
                                             _In_ UINT resourceId,
                                             _In_ UINT width,
                                             _In_ UINT height,
-                                            _Out_ UINT *previousResourceId);
+                                            _Out_ UINT *previousResourceId,
+                                            _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout = NULL);
     VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached);
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);

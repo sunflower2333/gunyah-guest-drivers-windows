@@ -250,7 +250,13 @@ enum VIOGPU_2D_RESOURCE_STATE : LONG
     VioGpu2DResourceCreated,
     VioGpu2DResourceBackingAttached,
     VioGpu2DResourceUnknown,
+    VioGpu2DResourceGuestBlobBackingAttached,
 };
+
+inline BOOLEAN VioGpuResourceBackingAttached(VIOGPU_2D_RESOURCE_STATE state)
+{
+    return state == VioGpu2DResourceBackingAttached || state == VioGpu2DResourceGuestBlobBackingAttached;
+}
 
 #define MAX_INLINE_CMD_SIZE             96
 #define MAX_INLINE_RESP_SIZE              24
@@ -485,6 +491,13 @@ class CtrlQueue : public VioGpuQueue
                         UINT command_size,
                         _Inout_opt_ PVIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic = NULL);
     VIOGPU_HOST_CONTEXT_RESULT CreateResource2DSynchronous(UINT resource_id, UINT format, UINT width, UINT height);
+    VIOGPU_HOST_CONTEXT_RESULT CreateGuestBlobSynchronous(UINT resource_id,
+                                                          ULONGLONG size,
+                                                          const GPU_MEM_ENTRY *entries,
+                                                          UINT entry_count);
+    VIOGPU_HOST_CONTEXT_RESULT SetScanoutBlobSynchronous(UINT scanout_id,
+                                                         UINT resource_id,
+                                                         const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout);
     VIOGPU_HOST_CONTEXT_RESULT AttachBackingSynchronous(UINT resource_id,
                                                         const GPU_MEM_ENTRY *entries,
                                                         UINT entry_count);

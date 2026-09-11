@@ -1991,7 +1991,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Create2DResourceBacking(_In_ UINT resource
                                                               _In_reads_(entryCount) const GPU_MEM_ENTRY *entries,
                                                               _In_ UINT entryCount,
                                                               _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
-                                                              _Inout_ ULONGLONG *resourceResetGeneration)
+                                                              _Inout_ ULONGLONG *resourceResetGeneration,
+                                                              _In_ BOOLEAN guestBlob)
 {
     if (!AcquireNativeSubmissionOperation())
     {
@@ -2007,7 +2008,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Create2DResourceBacking(_In_ UINT resource
                                                                                            entries,
                                                                                            entryCount,
                                                                                            resourceState,
-                                                                                           resourceResetGeneration)
+                                                                                           resourceResetGeneration,
+                                                                                           guestBlob)
                                                         : VioGpuHostContextNotSubmitted;
     ReleaseNativeSubmissionOperation();
     return result;
@@ -2136,7 +2138,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
                                                    _In_ UINT resourceId,
                                                    _In_ UINT width,
                                                    _In_ UINT height,
-                                                   _Out_ UINT *previousResourceId)
+                                                   _Out_ UINT *previousResourceId,
+                                                   _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout)
 {
     if (previousResourceId == NULL)
     {
@@ -2153,7 +2156,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
                                                                                 resourceId,
                                                                                 width,
                                                                                 height,
-                                                                                previousResourceId)
+                                                                                previousResourceId,
+                                                                                layout)
                                                         : VioGpuHostContextNotSubmitted;
     ReleaseNativeSubmissionOperation();
     return result;
@@ -7816,6 +7820,10 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
     value = 1;
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"RenderOnly", &value);
     SetRenderOnly(VioGpuWddmIsRenderOnlyRegistration() || !NT_SUCCESS(StatusOptional) || !!value);
+    /* Activate only with the matched host guest-backing implementation. */
+    value = 0;
+    StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"GuestBlobScanout", &value);
+    m_Flags.GuestBlobScanout = NT_SUCCESS(StatusOptional) && value == 1 && !IsRenderOnly();
     /* A render-only adapter owns no VidPn target, so it must never service the
      * pointer DDIs.  SetPointerShape() reaches UpdateCursor() -> CreateCursor(),
      * which builds a cursor resource against CURRENT_MODE and shares
@@ -7869,6 +7877,8 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_ExplicitPresentResourceId = 0;
     m_ActiveScanoutWidth = 0;
     m_ActiveScanoutHeight = 0;
+    KeInitializeSpinLock(&m_ActiveScanoutLock);
+    m_ActiveScanoutGuestBlob = FALSE;
     m_ScanoutRefreshRequested = 0;
     m_pCursorBuf = NULL;
     m_PendingWorks = 0;
@@ -8673,7 +8683,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Flush2DResource(_In_ UINT resourceId,
 
     BOOLEAN retired = FALSE;
     if (!Reconcile2DResourceAfterReset(resourceState, resourceResetGeneration, &retired) ||
-        *resourceState != VioGpu2DResourceBackingAttached)
+        !VioGpuResourceBackingAttached(*resourceState))
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -8817,9 +8827,11 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
                                                        _In_ UINT resourceId,
                                                        _In_ UINT width,
                                                        _In_ UINT height,
-                                                       _Out_ UINT *previousResourceId)
+                                                       _Out_ UINT *previousResourceId,
+                                                       _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout)
 {
     if (previousResourceId == NULL || scanoutId >= VIRTIO_GPU_MAX_SCANOUTS ||
+        (layout != NULL && (resourceId == 0 || layout->Width != width || layout->Height != height)) ||
         (resourceId == 0 ? width != 0 || height != 0
                          : resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || width == 0 || height == 0) ||
         KeGetCurrentIrql() != PASSIVE_LEVEL)
@@ -8851,15 +8863,24 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
     }
 
     m_PublishedScanoutResourceId = 0;
-    RecordActiveScanout(resourceId, width, height);
-    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetScanoutSynchronous(scanoutId, resourceId, width, height, 0, 0);
+    VIOGPU_HOST_CONTEXT_RESULT result = layout != NULL ? m_CtrlQueue.SetScanoutBlobSynchronous(scanoutId,
+                                                                                               resourceId,
+                                                                                               layout)
+                                                       : m_CtrlQueue.SetScanoutSynchronous(scanoutId,
+                                                                                           resourceId,
+                                                                                           width,
+                                                                                           height,
+                                                                                           0,
+                                                                                           0);
     if (result == VioGpuHostContextConfirmed)
     {
+        RecordActiveScanout(resourceId, width, height, layout != NULL);
         m_2DScanoutResourceId = resourceId;
         m_2DScanoutResetGeneration = resourceId == 0 ? 0 : operationGeneration;
     }
     else if (result == VioGpuHostContextUnknown)
     {
+        RecordActiveScanout(0, 0, 0);
         m_2DScanoutUnknown = TRUE;
         m_2DScanoutResetGeneration = operationGeneration;
         FailNativeContextAtAnyIrql();
@@ -8981,7 +9002,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
                                                                   _In_reads_(entryCount) const GPU_MEM_ENTRY *entries,
                                                                   _In_ UINT entryCount,
                                                                   _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
-                                                                  _Inout_ ULONGLONG *resourceResetGeneration)
+                                                                  _Inout_ ULONGLONG *resourceResetGeneration,
+                                                                  _In_ BOOLEAN guestBlob)
 {
     PAGED_CODE();
 
@@ -9002,6 +9024,36 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
                                                 : *resourceResetGeneration != operationGeneration))
     {
         return VioGpuHostContextNotSubmitted;
+    }
+
+    if (guestBlob)
+    {
+        if (*resourceState != VioGpu2DResourceNone ||
+            !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_RESOURCE_BLOB))
+        {
+            return VioGpuHostContextNotSubmitted;
+        }
+        VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.CreateGuestBlobSynchronous(resourceId,
+                                                                                   backingSize,
+                                                                                   entries,
+                                                                                   entryCount);
+        if (result == VioGpuHostContextConfirmed)
+        {
+            *resourceState = VioGpu2DResourceGuestBlobBackingAttached;
+            *resourceResetGeneration = operationGeneration;
+            if (static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0)) !=
+                operationGeneration)
+            {
+                result = VioGpuHostContextUnknown;
+            }
+        }
+        if (result == VioGpuHostContextUnknown)
+        {
+            *resourceState = VioGpu2DResourceUnknown;
+            *resourceResetGeneration = operationGeneration;
+            FailNativeContextAtAnyIrql();
+        }
+        return result;
     }
 
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextConfirmed;
@@ -9088,7 +9140,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId
         return VioGpuHostContextConfirmed;
     }
     if (*resourceState == VioGpu2DResourceUnknown ||
-        (*resourceState != VioGpu2DResourceCreated && *resourceState != VioGpu2DResourceBackingAttached))
+        (*resourceState != VioGpu2DResourceCreated && !VioGpuResourceBackingAttached(*resourceState)))
     {
         FailNativeContextAtAnyIrql();
         return VioGpuHostContextUnknown;
@@ -9188,7 +9240,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Present2DResource(_In_ UINT resourceId
 
     BOOLEAN retired = FALSE;
     if (!Reconcile2DResourceAfterReset(resourceState, resourceResetGeneration, &retired) ||
-        *resourceState != VioGpu2DResourceBackingAttached)
+        !VioGpuResourceBackingAttached(*resourceState))
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -9203,26 +9255,26 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Present2DResource(_In_ UINT resourceId
 
     LARGE_INTEGER frequency = {0};
     m_pVioGpuDod->RecordDisplayValue(63, static_cast<LONG>(resourceId));
-    m_pVioGpuDod->RecordDisplayValue(52, 1);
-    m_pVioGpuDod->CountDisplayEvent(53);
-    const LONGLONG transferStart = KeQueryPerformanceCounter(&frequency).QuadPart;
-    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.TransferToHost2DSynchronous(resourceId,
-                                                                                offset,
-                                                                                width,
-                                                                                height,
-                                                                                x,
-                                                                                y);
-    const LONGLONG transferEnd = KeQueryPerformanceCounter(NULL).QuadPart;
-    LONG transferUsec = 0;
-    if (frequency.QuadPart > 0 && transferEnd > transferStart)
+    KeQueryPerformanceCounter(&frequency);
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextConfirmed;
+    if (*resourceState != VioGpu2DResourceGuestBlobBackingAttached)
     {
-        const LONGLONG usec = ((transferEnd - transferStart) * 1000000LL) / frequency.QuadPart;
-        transferUsec = static_cast<LONG>(usec > MAXLONG ? MAXLONG : usec);
+        m_pVioGpuDod->RecordDisplayValue(52, 1);
+        m_pVioGpuDod->CountDisplayEvent(53);
+        const LONGLONG transferStart = KeQueryPerformanceCounter(NULL).QuadPart;
+        result = m_CtrlQueue.TransferToHost2DSynchronous(resourceId, offset, width, height, x, y);
+        const LONGLONG transferEnd = KeQueryPerformanceCounter(NULL).QuadPart;
+        LONG transferUsec = 0;
+        if (frequency.QuadPart > 0 && transferEnd > transferStart)
+        {
+            const LONGLONG usec = ((transferEnd - transferStart) * 1000000LL) / frequency.QuadPart;
+            transferUsec = static_cast<LONG>(usec > MAXLONG ? MAXLONG : usec);
+        }
+        m_pVioGpuDod->RecordDisplayValue(55, transferUsec);
+        m_pVioGpuDod->RecordDisplayMaximum(56, transferUsec);
+        m_pVioGpuDod->RecordDisplayValue(57, static_cast<LONG>(result));
+        m_pVioGpuDod->CountDisplayEvent(54);
     }
-    m_pVioGpuDod->RecordDisplayValue(55, transferUsec);
-    m_pVioGpuDod->RecordDisplayMaximum(56, transferUsec);
-    m_pVioGpuDod->RecordDisplayValue(57, static_cast<LONG>(result));
-    m_pVioGpuDod->CountDisplayEvent(54);
     if (result == VioGpuHostContextConfirmed)
     {
         m_pVioGpuDod->RecordDisplayValue(52, 2);
@@ -12901,12 +12953,16 @@ void VioGpuAdapter::ThreadWork(_In_ PVOID Context)
     pdev->ThreadWorkRoutine();
 }
 
-VOID VioGpuAdapter::RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height)
+VOID VioGpuAdapter::RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height, _In_ BOOLEAN guestBlob)
 {
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_ActiveScanoutLock, &oldIrql);
     InterlockedExchange(&m_ExplicitPresentResourceId, 0);
+    m_ActiveScanoutGuestBlob = guestBlob;
     InterlockedExchange(&m_ActiveScanoutWidth, static_cast<LONG>(width));
     InterlockedExchange(&m_ActiveScanoutHeight, static_cast<LONG>(height));
     InterlockedExchange(&m_ActiveScanoutResourceId, static_cast<LONG>(resourceId));
+    KeReleaseSpinLock(&m_ActiveScanoutLock, oldIrql);
 }
 
 VOID VioGpuAdapter::RequestScanoutRefresh(void)
@@ -12931,9 +12987,13 @@ void VioGpuAdapter::RefreshActiveScanout(void)
         return;
     }
 
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_ActiveScanoutLock, &oldIrql);
     const UINT resourceId = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutResourceId, 0, 0));
     const UINT width = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutWidth, 0, 0));
     const UINT height = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutHeight, 0, 0));
+    const BOOLEAN guestBlob = m_ActiveScanoutGuestBlob;
+    KeReleaseSpinLock(&m_ActiveScanoutLock, oldIrql);
     if (resourceId == 0 || width == 0 || height == 0 || m_pVioGpuDod == NULL || !m_pVioGpuDod->IsDriverActive() ||
         static_cast<UINT>(InterlockedCompareExchange(&m_ExplicitPresentResourceId, 0, 0)) == resourceId)
     {
@@ -12942,7 +13002,7 @@ void VioGpuAdapter::RefreshActiveScanout(void)
 
     /* The compositor writes the primary in place and never tells us again, so
      * move what is there now. Both commands are queued, not waited on. */
-    if (m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0) &&
+    if ((guestBlob || m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0)) &&
         m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0))
     {
         m_pVioGpuDod->CountDisplayEvent(48);

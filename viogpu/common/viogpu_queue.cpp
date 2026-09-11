@@ -28,6 +28,7 @@
  */
 
 #include "viogpu_queue.h"
+#include "viogpu_primary_scanout.h"
 #include "baseobj.h"
 #include "../../VirtIO/osdep.h"
 
@@ -993,6 +994,62 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::AttachBackingSynchronous(UINT resource_id,
     return result;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateGuestBlobSynchronous(UINT resource_id,
+                                                                 ULONGLONG size,
+                                                                 const GPU_MEM_ENTRY *entries,
+                                                                 UINT entry_count)
+{
+    PAGED_CODE();
+    if (!IsStandard2DResourceId(resource_id) || size == 0 || entries == NULL || entry_count == 0 ||
+        entry_count > VIOGPU_MAX_BACKING_ENTRIES)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    ULONGLONG covered = 0;
+    for (UINT index = 0; index < entry_count; ++index)
+    {
+        const GPU_MEM_ENTRY &entry = entries[index];
+        if (entry.addr == 0 || entry.length == 0 || entry.padding != 0 ||
+            entry.addr > MAXULONGLONG - (entry.length - 1) || covered > MAXULONGLONG - entry.length)
+        {
+            return VioGpuHostContextNotSubmitted;
+        }
+        covered += entry.length;
+    }
+    if (covered < size || !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_CMD_RESOURCE_CREATE_BLOB command = static_cast<PGPU_CMD_RESOURCE_CREATE_BLOB>(AllocCmd(&vbuf,
+                                                                                                sizeof(*command)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    const SIZE_T entriesSize = sizeof(*entries) * (SIZE_T)entry_count;
+    PGPU_MEM_ENTRY ownedEntries = static_cast<PGPU_MEM_ENTRY>(m_pBuf->AllocateMemory(entriesSize));
+    if (ownedEntries == NULL)
+    {
+        ReleaseBuffer(vbuf);
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlCopyMemory(ownedEntries, entries, entriesSize);
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB;
+    command->resource_id = resource_id;
+    command->blob_mem = VIRTIO_GPU_BLOB_MEM_GUEST;
+    command->nr_entries = entry_count;
+    command->size = size;
+    vbuf->data_buf = ownedEntries;
+    vbuf->data_size = (UINT)entriesSize;
+    const VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::DetachBackingSynchronous(UINT resource_id)
 {
     PAGED_CODE();
@@ -1077,6 +1134,38 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetScanoutSynchronous(UINT scanout_id,
     command->r.y = y;
 
     VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetScanoutBlobSynchronous(UINT scanout_id,
+                                                                UINT resource_id,
+                                                                const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout)
+{
+    if (layout == NULL || scanout_id >= VIRTIO_GPU_MAX_SCANOUTS || !IsStandard2DResourceId(resource_id) ||
+        (layout->Format != VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM && layout->Format != VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM &&
+         layout->Format != VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM) ||
+        !VioGpuGuestScanoutBoundsValid(layout->Width, layout->Height, layout->Stride, layout->BackingSize) ||
+        !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_CMD_SET_SCANOUT_BLOB command = static_cast<PGPU_CMD_SET_SCANOUT_BLOB>(AllocCmd(&vbuf, sizeof(*command)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT_BLOB;
+    command->resource_id = resource_id;
+    command->scanout_id = scanout_id;
+    command->r.width = command->width = layout->Width;
+    command->r.height = command->height = layout->Height;
+    command->format = layout->Format;
+    command->strides[0] = layout->Stride;
+    const VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
     EndSynchronousRequest();
     return result;
 }
