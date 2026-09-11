@@ -4328,8 +4328,7 @@ NTSTATUS ApplyRenderPrepatches(_Inout_ VIOGPU_WDDM_RENDER_COMMAND *header,
                         allocation->ContextGeneration == nativeContext->Generation &&
                         allocation->ContextResetGeneration == nativeContext->ResetGeneration &&
                         allocationEntry->SegmentId == VIOGPU_WDDM_SEGMENT_ID &&
-                        allocationEntry->PhysicalAddress.QuadPart >= 0 &&
-                        allocationEntry->Reserved == 0 &&
+                        allocationEntry->PhysicalAddress.QuadPart >= 0 && allocationEntry->Reserved == 0 &&
                         ((reference->Flags & VIOGPU_WDDM_REFERENCE_WRITE) != 0) == (allocationEntry->WriteOperation !=
                                                                                     0) &&
                         (!openAllocation->ReadOnly || (reference->Flags & VIOGPU_WDDM_REFERENCE_WRITE) == 0) &&
