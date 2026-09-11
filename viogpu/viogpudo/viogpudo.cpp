@@ -2897,6 +2897,9 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
                                 descriptor.InterfaceTechnology,
                                 descriptor.HpdAwareness);
 #endif
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    if (m_pHWDevice != NULL && !IsRenderOnly()) m_pHWDevice->RequestColorConnectionRefresh();
+#endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return STATUS_SUCCESS;
 }
@@ -2916,6 +2919,9 @@ NTSTATUS VioGpuDod::QueryChildStatus(_Inout_ DXGK_CHILD_STATUS *pChildStatus, _I
         case StatusConnection:
             {
                 pChildStatus->HotPlug.Connected = IsDriverActive();
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+                pChildStatus->HotPlug.Connected &= InterlockedCompareExchange(&m_ColorMonitorConnected, 0, 0) != 0;
+#endif
 #if defined(VIOGPU_NATIVE_CONTEXT)
                 CountDisplayEvent(8);
                 RecordDisplayValue(9, pChildStatus->HotPlug.Connected ? 1 : 0);
@@ -13909,6 +13915,9 @@ void VioGpuAdapter::ThreadWorkRoutine(void)
         }
         RefreshActiveScanout();
         ConfigChanged();
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        RefreshColorConnection();
+#endif
         if (!m_pVioGpuDod->IsRenderOnly())
         {
             NotifyResolutionEvent();
@@ -13941,11 +13950,58 @@ void VioGpuAdapter::ConfigChanged(void)
         }
         events_clear |= VIRTIO_GPU_EVENT_DISPLAY;
         virtio_set_config(&m_VioDev, FIELD_OFFSET(GPU_CONFIG, events_clear), &events_clear, sizeof(m_u32NumScanouts));
-        //        UpdateChildStatus(FALSE);
-        //        ProcessEdid();
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        InterlockedExchange(&m_ColorConnectionRefreshRequested, 1);
+        return;
+#endif
         UpdateChildStatus(TRUE);
     }
 }
+
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+void VioGpuAdapter::RequestColorConnectionRefresh()
+{
+    InterlockedExchange(&m_ColorConnectionRefreshRequested, 1);
+    KeSetEvent(&m_ConfigUpdateEvent, IO_NO_INCREMENT, FALSE);
+}
+
+void VioGpuAdapter::RefreshColorConnection()
+{
+    if (InterlockedExchange(&m_ColorConnectionRefreshRequested, 0) == 0 || m_pVioGpuDod->IsRenderOnly()) return;
+    VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+    BOOLEAN connected = FALSE;
+    {
+        VioGpuDod::ColorStateOperation operation(m_pVioGpuDod);
+        if (!operation.Acquired()) return;
+        // DVCL discovery refuses a detached/unknown Surface. A valid SDR
+        // display still answers discovery successfully with usable HDR zero.
+        connected = m_pVioGpuDod->QueryDisplayColor(&caps) && caps.generation != 0;
+        m_pVioGpuDod->ClearColorPresentCompletion();
+    }
+    const BOOLEAN previous = InterlockedCompareExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 0, 0) != 0;
+    if (m_ColorConnectionInitialized && m_ColorNotifiedGeneration == caps.generation && previous == connected) return;
+
+    // Every new Surface generation requires Windows to renegotiate modes,
+    // gamma and resource metadata. Call outside ColorStateOperation: an OS
+    // callback may immediately query the driver again.
+    if (previous)
+    {
+        InterlockedExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 0);
+        if (!NT_SUCCESS(UpdateChildStatus(FALSE))) return;
+    }
+    if (connected)
+    {
+        InterlockedExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 1);
+        if (!NT_SUCCESS(UpdateChildStatus(TRUE)))
+        {
+            InterlockedExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 0);
+            return;
+        }
+    }
+    m_ColorNotifiedGeneration = caps.generation;
+    m_ColorConnectionInitialized = TRUE;
+}
+#endif
 
 VOID VioGpuAdapter::DpcRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface)
 {
