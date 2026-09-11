@@ -22,23 +22,22 @@ function Invoke-Compiler([string]$arch, [string[]]$commands) {
     if ($LASTEXITCODE) { throw "MSVC $arch build failed" }
 }
 foreach ($arch in @('arm64','x64','x86')) {
+    $repro = if ($arch -eq 'arm64') { "/LINKREPROFULLPATHRSP:`"$out/arm64-inputs.rsp`"" } else { '' }
     $def = Join-Path $out "proxy-$arch.def"
     @('EXPORTS') + @($exports | ForEach-Object {
         if ($arch -eq 'x86') { "$($_.Name)=_$($_.Name)@$($_.Bytes)" } else { $_.Name }
     }) | Set-Content $def -Encoding ascii
     Invoke-Compiler $arch @(
-        "cl /nologo /W4 /WX /EHsc /MT /LD /I`"$mesa/include`" /I`"$mesa/src/gallium/frontends/wgl`" `"$source/icd-proxy.cpp`" /Fo`"$out/proxy-$arch.obj`" /link /DEF:`"$def`" /OUT:`"$out/viogpuopengl_$arch.dll`" /PDB:`"$out/viogpuopengl_$arch.pdb`" /DEBUG",
+        "cl /nologo /W4 /WX /EHsc /MT /LD /I`"$mesa/include`" /I`"$mesa/src/gallium/frontends/wgl`" `"$source/icd-proxy.cpp`" /Fo`"$out/proxy-$arch.obj`" /link /DEF:`"$def`" /OUT:`"$out/viogpuopengl_$arch.dll`" /PDB:`"$out/viogpuopengl_$arch.pdb`" /DEBUG $repro",
         "cl /nologo /W4 /WX /EHsc /MT /I`"$mesa/include`" `"$source/system-probe.cpp`" /Fo`"$out/probe-$arch.obj`" /Fe:`"$out/system-probe-$arch.exe`" user32.lib gdi32.lib opengl32.lib"
     )
 }
-foreach ($arch in @('arm64','x64')) {
-    @('EXPORTS') + @($exports | ForEach-Object { "$($_.Name)=viogpuopengl_$arch.$($_.Name)" }) |
-        Set-Content "$out/forward-$arch.def" -Encoding ascii
-}
-Invoke-Compiler arm64 @(
-    "cl /nologo /c /Fo`"$out/empty-arm64.obj`" `"$source/empty.cpp`"",
-    "cl /nologo /c /arm64EC /Fo`"$out/empty-ec.obj`" `"$source/empty.cpp`"",
-    "link /lib /machine:arm64 /def:`"$out/forward-arm64.def`" /out:`"$out/forward-arm64.lib`"",
-    "link /lib /machine:x64 /def:`"$out/forward-x64.def`" /out:`"$out/forward-x64.lib`"",
-    "link /dll /noentry /machine:arm64x /defArm64Native:`"$out/forward-arm64.def`" /def:`"$out/forward-x64.def`" `"$out/empty-arm64.obj`" `"$out/empty-ec.obj`" `"$out/forward-arm64.lib`" `"$out/forward-x64.lib`" /out:`"$out/viogpuopengl.dll`""
+# Merge native and EC adapter code using Microsoft's documented ARM64X recipe.
+# A pure export forwarder needs its basename targets on the application's DLL
+# search path. Real adapter code instead resolves every dependency absolutely.
+$nativeInputs = @(Get-Content "$out/arm64-inputs.rsp" | Where-Object { $_ -match '(?i)\.(obj|lib)"$' })
+if (!$nativeInputs.Count) { throw 'No native ARM64 link inputs captured' }
+$nativeInputs | Set-Content "$out/arm64-merge.rsp" -Encoding ascii
+Invoke-Compiler arm64ec @(
+    "cl /nologo /W4 /WX /EHsc /MT /LD /arm64EC /I`"$mesa/include`" /I`"$mesa/src/gallium/frontends/wgl`" `"$source/icd-proxy.cpp`" /Fo`"$out/proxy-arm64ec.obj`" /link /MACHINE:ARM64X @`"$out/arm64-merge.rsp`" /DEFARM64NATIVE:`"$out/proxy-arm64.def`" /DEF:`"$out/proxy-x64.def`" /OUT:`"$out/viogpuopengl.dll`" /PDB:`"$out/viogpuopengl.pdb`" /DEBUG"
 )
