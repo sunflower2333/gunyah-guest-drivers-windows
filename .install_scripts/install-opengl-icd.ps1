@@ -41,8 +41,11 @@ if (!(New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole([Secur
 }
 if ([string]::IsNullOrWhiteSpace($InstanceId)) { throw 'Explicit VIOGPU InstanceId is required' }
 $device = Get-PnpDevice -InstanceId $InstanceId -ErrorAction Stop
-if ($device.Class -ne 'Display' -or $device.Status -ne 'OK' -or $InstanceId -notmatch '^PCI\\VEN_1AF4&DEV_1050') {
+if ($device.Class -ne 'Display' -or $InstanceId -notmatch '^PCI\\VEN_1AF4&DEV_1050') {
     throw 'The selected device is not the active VIOGPU display adapter'
+}
+if ($Action -eq 'Install' -and $device.Status -ne 'OK') {
+    throw 'New ICD installation requires a healthy VIOGPU adapter; rollback remains available for a problem state'
 }
 $driverKey = (Get-PnpDeviceProperty -InstanceId $InstanceId -KeyName 'DEVPKEY_Device_Driver').Data
 if ((Get-PnpDeviceProperty -InstanceId $InstanceId -KeyName 'DEVPKEY_Device_Service').Data -ne 'VioGpuWddm') {
