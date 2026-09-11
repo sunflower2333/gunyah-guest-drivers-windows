@@ -1,0 +1,51 @@
+name: Build registered OpenCL distribution
+on:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: KhronosGroup/OpenCL-ICD-Loader
+          ref: f27c925e782499eebc4df20e121144358ccd5ac6
+          path: opencl-loader
+      - uses: actions/checkout@v4
+        with:
+          repository: KhronosGroup/OpenCL-Headers
+          ref: v2025.07.22
+          path: opencl-headers
+      - name: Build native, x64, x86 and ARM64X Khronos loaders
+        shell: pwsh
+        run: |
+          $scripts = @('.install_scripts/install-opencl-icd.ps1','.install_scripts/opencl-registration.psm1','.install_scripts/test-opencl-installed.ps1','.github/scripts/sign-opencl-sidecar.ps1','viogpu/opencl/build-loader.ps1')
+          foreach ($script in $scripts) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw "PowerShell parse failure: $script $errors" }
+          }
+          ./viogpu/opencl/test-registration.ps1
+          ./viogpu/opencl/build-loader.ps1
+      - name: Fetch exact runtime build and assemble verified payload
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run watch 34612600265 -R sunflower2333/clvk --exit-status --interval 30
+          if ($LASTEXITCODE) { throw 'OpenCL runtime CI failed' }
+          $source = gh run view 34612600265 -R sunflower2333/clvk --json headSha --jq .headSha
+          if ($LASTEXITCODE -or $source.Trim() -ne '3c713e78de22e8aa18e555c997ee03a5e0ea9637') { throw 'OpenCL source mismatch' }
+          gh run download 34612600265 -R sunflower2333/clvk --dir opencl-runtime
+          if ($LASTEXITCODE) { throw 'OpenCL download failed' }
+          python viogpu/opencl/package.py --runtime opencl-runtime --loaders opencl-loaders --output opencl-payload
+          if ($LASTEXITCODE) { throw 'OpenCL package validation failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-opencl-system-unsigned
+          path: opencl-payload/
+          if-no-files-found: error

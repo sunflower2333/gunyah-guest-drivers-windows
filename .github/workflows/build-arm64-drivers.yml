@@ -21,6 +21,9 @@ env:
   PFX_PW: "droidvm"
 
 jobs:
+  opencl-icd:
+    uses: ./.github/workflows/opencl-system-icd.yml
+
   opengl-icd:
     uses: ./.github/workflows/opengl-system-icd.yml
 
@@ -344,7 +347,7 @@ jobs:
 
   build:
     runs-on: windows-11-arm
-    needs: [mesa-umd, opengl-icd]
+    needs: [mesa-umd, opengl-icd, opencl-icd]
 
     steps:
       - name: Checkout
@@ -363,6 +366,12 @@ jobs:
         with:
           name: viogpu-opengl-system-unsigned
           path: opengl-payload
+
+      - name: Download verified OpenCL distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: viogpu-opencl-system-unsigned
+          path: opencl-payload
 
       - name: Locate preinstalled Windows SDK and WDK
         shell: pwsh
@@ -788,6 +797,21 @@ jobs:
             -Output out/opengl -Kmd out/drivers/viogpu/viogpuwddm.sys `
             -Umd out/drivers/viogpu/viogpud3d.dll -Pfx $pfx `
             -PfxPassword $pfxPw -SignTool $signtool
+          ./.github/scripts/sign-opencl-sidecar.ps1 -Payload opencl-payload `
+            -Output out/opencl -Kmd out/drivers/viogpu/viogpuwddm.sys `
+            -Umd out/drivers/viogpu/viogpud3d.dll -Pfx $pfx `
+            -PfxPassword $pfxPw -SignTool $signtool
+          $signedClRoot = (Resolve-Path 'out/opencl/payload').Path
+          foreach ($arch in @('arm64','x64','x86')) {
+            $loaderArch = if ($arch -eq 'x86') {'x86'} else {'arm64x'}
+            & (Join-Path $signedClRoot "loaders/$arch/loader-check.exe") (Join-Path $signedClRoot "loaders/$loaderArch/OpenCL.dll")
+            if ($LASTEXITCODE) { throw "Signed OpenCL $arch loader ABI validation failed" }
+          }
+          foreach ($scriptName in @('install-opencl-icd.ps1','opencl-registration.psm1','test-opencl-installed.ps1')) {
+            Copy-Item (Join-Path '.install_scripts' $scriptName) out
+            $signedScript = Set-AuthenticodeSignature -FilePath (Join-Path 'out' $scriptName) -Certificate $cert -HashAlgorithm SHA256
+            if (!$signedScript.SignerCertificate -or $signedScript.SignerCertificate.Thumbprint -ne $cert.Thumbprint) { throw "OpenCL script signing failed: $scriptName" }
+          }
           $signedOpenGlRoot = (Resolve-Path 'out/opengl/payload').Path
           foreach ($arch in @('arm64','x64','x86')) {
             & (Join-Path $signedOpenGlRoot "system-probe-$arch.exe") --load-only $signedOpenGlRoot
