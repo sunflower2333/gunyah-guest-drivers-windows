@@ -24,13 +24,23 @@ try {
     $tool = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin" -Recurse -Filter signtool.exe |
         Where-Object FullName -Match '\\x64\\signtool\.exe$' | Sort-Object FullName -Descending | Select-Object -First 1
     if (!$tool) { throw 'SDK signtool not found for the signed package regression' }
-    $output = Join-Path $fixture 'signed'
+    $output = Join-Path $fixture 'opengl'
     # The fixture binds two ordinary proxy PEs only to exercise catalog creation;
     # it is never uploaded as a driver bundle. The combined job uses real KMD/UMD.
     & "$PSScriptRoot/../../.github/scripts/sign-opengl-sidecar.ps1" -Payload $Payload -Output $output `
         -Kmd (Join-Path $Payload 'viogpuopengl_arm64.dll') -Umd (Join-Path $Payload 'viogpuopengl_x64.dll') `
         -Pfx $pfx -PfxPassword $password -SignTool $tool.FullName
     & "$PSScriptRoot/../../.install_scripts/install-opengl-icd.ps1" -Action Verify -PackageRoot $output
+    # Exercise the actual deployment invocation, including parameter binding
+    # before the body runs under Windows PowerShell 5.1 -File.
+    foreach ($name in @('install-opengl-icd.ps1', 'opengl-registration.psm1')) {
+        Copy-Item -LiteralPath "$PSScriptRoot/../../.install_scripts/$name" -Destination $fixture
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$fixture/install-opengl-icd.ps1" -Action Verify
+    if ($LASTEXITCODE) { throw 'Windows PowerShell -File default package path verification failed' }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$fixture/install-opengl-icd.ps1" -Action Verify -PackageRoot $output
+    if ($LASTEXITCODE) { throw 'Windows PowerShell -File explicit package path verification failed' }
+    Write-Output 'PASS Windows PowerShell -File default and explicit package paths'
     # A modified manifest must fail before any adapter operation could occur.
     Add-Content (Join-Path $output 'payload/turnip.json') 'tampered'
     $rejected = $false

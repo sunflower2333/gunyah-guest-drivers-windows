@@ -2,12 +2,15 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Verify','Install','Rollback')][string]$Action = 'Verify',
-    [string]$PackageRoot = (Join-Path $PSScriptRoot 'opengl'),
+    [string]$PackageRoot,
     [string]$InstanceId,
     [string]$BackupPath
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if (!$PSBoundParameters.ContainsKey('PackageRoot')) {
+    $PackageRoot = Join-Path $PSScriptRoot 'opengl'
+}
 Import-Module (Join-Path $PSScriptRoot 'opengl-registration.psm1') -Force
 
 function Assert-Catalog([string]$Root) {
