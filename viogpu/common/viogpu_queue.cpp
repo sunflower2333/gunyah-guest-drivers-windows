@@ -1230,7 +1230,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetResourceColor(_In_ const VIOGPU_SET_RES
         return VioGpuHostContextNotSubmitted;
     }
     const UINT payloadSize = sizeof(*color) - sizeof(color->query);
-    vbuf->data_buf = static_cast<char *>(AllocateMemory(payloadSize));
+    vbuf->data_buf = static_cast<char *>(m_pBuf->AllocateMemory(payloadSize));
     if (vbuf->data_buf == NULL)
     {
         ReleaseBuffer(vbuf);
