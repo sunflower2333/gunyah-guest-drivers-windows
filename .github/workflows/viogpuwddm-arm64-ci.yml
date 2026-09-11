@@ -105,6 +105,10 @@ jobs:
         shell: pwsh
         run: python viogpu/viogpuwddm/check-contract.py
 
+      - name: Execute WDDM2 physical engine and VidMm segment regression
+        shell: pwsh
+        run: python viogpu/tests/wddm2-accounting/run.py
+
       - name: Check host EDID and rational display timings
         shell: cmd
         run: viogpu\tests\display-timing\run-msvc.cmd

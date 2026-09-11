@@ -437,12 +437,16 @@ VOID InitializeAllocationInfo(DXGK_ALLOCATIONINFO *allocationInfo,
     allocationInfo->SupportedReadSegmentSet = 1 << (VIOGPU_WDDM_SEGMENT_ID - 1);
     allocationInfo->SupportedWriteSegmentSet = 1 << (VIOGPU_WDDM_SEGMENT_ID - 1);
     allocationInfo->EvictionSegmentSet = 0;
-    allocationInfo->MaximumRenamingListLength = 0;
-    allocationInfo->Flags.Value = 0;
+    allocationInfo->PhysicalAdapterIndex = 0;
+    allocationInfo->FlagsWddm2.Value = 0;
     BOOLEAN cpuVisible = (allocation->Flags & VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE) != 0;
-    allocationInfo->Flags.CpuVisible = cpuVisible;
-    allocationInfo->Flags.Cached = cpuVisible;
-    allocationInfo->Flags.SynchronousPaging = TRUE;
+    allocationInfo->FlagsWddm2.CpuVisible = cpuVisible;
+    allocationInfo->FlagsWddm2.Cached = cpuVisible;
+    /* Every allocation participates in the physical engine's residency and
+     * patch lists. This flag makes VidMm keep the system pages mapped through
+     * our aperture while resident. The WDDM1 SynchronousPaging bit is reserved
+     * in FlagsWddm2 and must not be carried over. */
+    allocationInfo->FlagsWddm2.AccessedPhysically = TRUE;
     allocationInfo->pAllocationUsageHint = NULL;
     allocationInfo->AllocationPriority = D3DDDI_ALLOCATIONPRIORITY_NORMAL;
     allocationInfo->hAllocation = allocation;
@@ -3762,6 +3766,89 @@ static NTSTATUS QuerySegmentVersioned(VioGpuDod *adapter, const DXGKARG_QUERYADA
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS QuerySegment4(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
+{
+    if (queryAdapterInfo->pInputData == NULL ||
+        queryAdapterInfo->InputDataSize < sizeof(DXGK_QUERYSEGMENTIN4) ||
+        static_cast<const DXGK_QUERYSEGMENTIN4 *>(queryAdapterInfo->pInputData)->PhysicalAdapterIndex != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (queryAdapterInfo->pOutputData == NULL ||
+        queryAdapterInfo->OutputDataSize < sizeof(DXGK_QUERYSEGMENTOUT4))
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    GPU_CAPSET_DRM capset = {};
+    ULONGLONG generation = 0;
+    if (!adapter->QueryNativeContextReadiness(&capset, NULL, NULL, &generation) || generation == 0)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    DXGK_QUERYSEGMENTOUT4 *output = static_cast<DXGK_QUERYSEGMENTOUT4 *>(queryAdapterInfo->pOutputData);
+    /* On the count query the contract forbids touching any other member. */
+    if (output->NbSegment == 0)
+    {
+        output->NbSegment = 1;
+        return STATUS_SUCCESS;
+    }
+    if (output->NbSegment != 1 || output->pSegmentDescriptor == NULL ||
+        output->SegmentDescriptorStride < sizeof(DXGK_SEGMENTDESCRIPTOR4))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    DXGK_SEGMENTDESCRIPTOR4 descriptor = {};
+    descriptor.Size = VIOGPU_WDDM_APERTURE_SIZE;
+    descriptor.CommitLimit = VIOGPU_WDDM_APERTURE_SIZE;
+    descriptor.Flags.CpuVisible = TRUE;
+    descriptor.Flags.Aperture = TRUE;
+    descriptor.Flags.CacheCoherent = TRUE;
+    /* There is no dedicated VRAM: all backing is ordinary guest system RAM
+     * committed by VidMm. Preserve the supplied stride and its future tail. */
+    RtlCopyMemory(output->pSegmentDescriptor, &descriptor, sizeof(descriptor));
+    output->PagingBufferSegmentId = 0;
+    output->PagingBufferSize = PAGE_SIZE;
+    output->PagingBufferPrivateDataSize = sizeof(VIOGPU_WDDM_PAGING_PRIVATE);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS QueryPhysicalAdapterCaps(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
+{
+    if (queryAdapterInfo->pInputData == NULL || queryAdapterInfo->InputDataSize < sizeof(UINT) ||
+        *static_cast<const UINT *>(queryAdapterInfo->pInputData) != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (queryAdapterInfo->pOutputData == NULL ||
+        queryAdapterInfo->OutputDataSize < sizeof(DXGK_PHYSICALADAPTERCAPS))
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    DXGK_PHYSICALADAPTERCAPS *caps = static_cast<DXGK_PHYSICALADAPTERCAPS *>(queryAdapterInfo->pOutputData);
+    RtlZeroMemory(caps, sizeof(*caps));
+    caps->NumExecutionNodes = 1;
+    caps->PagingNodeIndex = 0;
+    caps->DxgkPhysicalAdapterHandle = adapter->GetDxgkInterface()->DeviceHandle;
+    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetNodeMetadata(CONST HANDLE hAdapter,
+                                                                  UINT nodeOrdinalAndAdapterIndex,
+                                                                  DXGKARG_GETNODEMETADATA *metadata)
+{
+    if (hAdapter == NULL || metadata == NULL || nodeOrdinalAndAdapterIndex != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(metadata, sizeof(*metadata));
+    /* Graphics, compute and transfer all use the same native context queue.
+     * Separate copy/compute graphs would invent independent engines. */
+    metadata->EngineType = DXGK_ENGINE_TYPE_3D;
+    metadata->GpuMmuSupported = FALSE;
+    metadata->IoMmuSupported = FALSE;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
 {
     /* Accept any buffer that can hold the ABI header rather than demanding an
@@ -4476,6 +4563,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     else if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT3)
     {
         status = QuerySegmentVersioned<DXGK_QUERYSEGMENTOUT3, DXGK_SEGMENTDESCRIPTOR3>(adapter, pQueryAdapterInfo);
+    }
+    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_QUERYSEGMENT4)
+    {
+        status = QuerySegment4(adapter, pQueryAdapterInfo);
+    }
+    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_PHYSICALADAPTERCAPS)
+    {
+        status = QueryPhysicalAdapterCaps(adapter, pQueryAdapterInfo);
     }
     else if (pQueryAdapterInfo->Type == DXGKQAITYPE_64BITONLYCAPS)
     {
