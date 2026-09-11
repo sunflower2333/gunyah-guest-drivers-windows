@@ -8,8 +8,8 @@ from pathlib import Path
 import shutil
 import struct
 
-MESA_COMMIT = "aca812f7a6692730f5e02b51da095009fd621a45"
-MESA_RUN = 34602104257
+MESA_COMMIT = "fec36bac3fd4068294855a459e62b3c7c2216a00"
+MESA_RUN = 34603341031
 MACHINES = {"arm64": 0xAA64, "x64": 0x8664, "x86": 0x14C}
 DLLS = ("libgallium_wgl.dll", "libEGL.dll", "libGLESv1_CM.dll", "libGLESv2.dll",
         "vulkan_freedreno.dll", "vulkan-1.dll", "z-1.dll")
