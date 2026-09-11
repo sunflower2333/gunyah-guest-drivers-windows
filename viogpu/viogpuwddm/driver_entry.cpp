@@ -144,6 +144,7 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
         initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3 = VioGpuWddmSetVidPnSourceAddressMpo3;
         initialData->DxgkDdiSetTargetAdjustedColorimetry = VioGpuWddmSetTargetAdjustedColorimetry;
+        initialData->DxgkDdiSetTargetGamma = VioGpuWddmSetTargetGamma;
 #endif
         initialData->DxgkDdiSetPalette = VioGpuWddmSetPalette;
         initialData->DxgkDdiSetPointerPosition = VioGpuDodSetPointerPosition;

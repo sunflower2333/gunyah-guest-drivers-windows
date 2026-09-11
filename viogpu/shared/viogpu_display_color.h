@@ -6,6 +6,7 @@
  * Discovery failure leaves HDR unavailable. Observations are never usable caps. */
 #define VIOGPU_CMD_GET_DISPLAY_COLOR  0xd100U
 #define VIOGPU_CMD_SET_RESOURCE_COLOR 0xd101U
+#define VIOGPU_CMD_SET_TARGET_TRANSFORM 0xd102U
 #define VIOGPU_RESP_DISPLAY_COLOR     0xd200U
 #define VIOGPU_DISPLAY_COLOR_MAGIC    0x4c435644U
 #define VIOGPU_DISPLAY_COLOR_VERSION  1U
@@ -59,7 +60,59 @@ typedef struct VIOGPU_SET_RESOURCE_COLOR
     VIOGPU_WDDM_UINT32 max_frame_average_light_level; /* cd/m2 */
 } VIOGPU_SET_RESOURCE_COLOR;
 
+typedef struct VIOGPU_SET_TARGET_TRANSFORM
+{
+    VIOGPU_GET_DISPLAY_COLOR query;
+    VIOGPU_WDDM_UINT64 generation;
+    VIOGPU_WDDM_UINT32 reserved[2];
+} VIOGPU_SET_TARGET_TRANSFORM;
+
+/* IEEE754 bits, not kernel floating-point values. This fixed payload is an
+ * owned data descriptor; never place its 49 KiB on the kernel stack. */
+typedef struct VIOGPU_DISPLAY_TRANSFORM
+{
+    VIOGPU_WDDM_UINT32 version, size, kind, lut_count;
+    VIOGPU_WDDM_UINT32 matrix[12], scalar, scale[3], offset[3], reserved;
+    VIOGPU_WDDM_UINT32 lut[4096][3];
+} VIOGPU_DISPLAY_TRANSFORM;
+
 #if defined(__cplusplus)
+inline bool VioGpuFiniteFloatBits(VIOGPU_WDDM_UINT32 bits)
+{
+    return (bits & 0x7f800000U) != 0x7f800000U;
+}
+inline bool VioGpuValidDisplayTransform(const VIOGPU_DISPLAY_TRANSFORM *t)
+{
+    if (t == nullptr || t->version != 1 || t->size != sizeof(*t) || t->reserved != 0 ||
+        !((t->kind == 0 && t->lut_count == 0) || (t->kind == 1 && t->lut_count == 1025) ||
+          (t->kind == 2 && t->lut_count == 4096)) ||
+        !VioGpuFiniteFloatBits(t->scalar))
+    {
+        return false;
+    }
+    for (unsigned i = 0; i < 12; ++i)
+    {
+        if (!VioGpuFiniteFloatBits(t->matrix[i]))
+        {
+            return false;
+        }
+    }
+    for (unsigned c = 0; c < 3; ++c)
+    {
+        if (!VioGpuFiniteFloatBits(t->scale[c]) || !VioGpuFiniteFloatBits(t->offset[c]))
+        {
+            return false;
+        }
+        for (unsigned i = 0; i < 4096; ++i)
+        {
+            if (!VioGpuFiniteFloatBits(t->lut[i][c]) || (i >= t->lut_count && (t->lut[i][c] & 0x7fffffffU) != 0))
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
 inline bool VioGpuValidDisplayMetadata(const VIOGPU_SET_RESOURCE_COLOR *color)
 {
     if (color == nullptr || color->has_static_metadata > 1 || color->max_mastering_luminance > 10000 ||
@@ -94,4 +147,6 @@ static_assert(sizeof(VIOGPU_DISPLAY_CONTROL_HEADER) == 24, "DVCL control header"
 static_assert(sizeof(VIOGPU_GET_DISPLAY_COLOR) == 40, "DVCL discovery request");
 static_assert(sizeof(VIOGPU_DISPLAY_COLOR_RESPONSE) == 72, "DVCL discovery response");
 static_assert(sizeof(VIOGPU_SET_RESOURCE_COLOR) == 112, "DVCL resource color");
+static_assert(sizeof(VIOGPU_SET_TARGET_TRANSFORM) == 56, "DVCL target transform header");
+static_assert(sizeof(VIOGPU_DISPLAY_TRANSFORM) == 49248, "DVCL float-bit transform payload");
 #endif
