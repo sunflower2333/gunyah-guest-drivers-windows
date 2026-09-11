@@ -7,6 +7,9 @@
 #include <functional>
 #include <cstddef>
 #include "viogpu_adapter_identity.h"
+#ifdef VIOGPU_TEST_DXVK_IDENTITY
+#include "umd_runtime_identity.h"
+#endif
 using UINT = uint32_t;
 using ULONG = uint32_t;
 using LONG = int32_t;
@@ -148,6 +151,18 @@ static void check(bool passed, const char *name)
     }
 }
 
+#ifdef VIOGPU_TEST_DXVK_IDENTITY
+static void checkDxvkIdentity(const void *reply, size_t size, const LUID *expected)
+{
+    dxvk::umd::AdapterLuid decoded = {};
+    decoded.fill(0xa5);
+    const bool accepted = dxvk::umd::readProposedRuntimeIdentity(reply, size, decoded);
+    const bool matches = expected ? std::memcmp(decoded.data(), expected, decoded.size()) == 0
+                                  : decoded == dxvk::umd::AdapterLuid{};
+    check(accepted == (expected != nullptr) && matches, "actual KMD reply consumed by actual DXVK decoder");
+}
+#endif
+
 int main()
 {
     VioGpuAdapter hardware;
@@ -189,6 +204,11 @@ int main()
             }
         }
         check(passed, "bounded prefix or complete trailer with guards");
+#ifdef VIOGPU_TEST_DXVK_IDENTITY
+        // The callback requests exactly 160 bytes. Larger producer buffers
+        // retain the same complete reply; shorter legacy buffers fail closed.
+        checkDxvkIdentity(data.data() + 16, size < 160 ? size : 160, size >= 160 ? &identity : nullptr);
+#endif
     }
     query.OutputDataSize = UINT32_MAX;
     data.fill(0xa5);
@@ -224,6 +244,9 @@ int main()
                                                                        &expected.Identity,
                                                                        32) == 0,
           "reset generation is independent of Windows identity");
+#ifdef VIOGPU_TEST_DXVK_IDENTITY
+    checkDxvkIdentity(data.data() + 16, 160, &identity);
+#endif
     hardware.ready = false;
     check(rejects_without_writes(), "unready hardware rejected");
     hardware.ready = true;
@@ -241,6 +264,9 @@ int main()
     check(QueryUmdPrivateInfo(&adapter, &query) == STATUS_SUCCESS, "new start publishes new OS identity");
     std::memcpy(&after_reset, data.data() + 16, sizeof(after_reset));
     check(after_reset.Identity.AdapterLuidLowPart == identity.LowPart, "no stale LUID after new start");
+#ifdef VIOGPU_TEST_DXVK_IDENTITY
+    checkDxvkIdentity(data.data() + 16, 160, &identity);
+#endif
     hardware.cap.msm.has_raytracing = 2;
     check(rejects_without_writes(), "invalid existing capability still rejected");
     hardware.cap.msm.has_raytracing = VIRTGPU_CAP_BOOL_TRUE;

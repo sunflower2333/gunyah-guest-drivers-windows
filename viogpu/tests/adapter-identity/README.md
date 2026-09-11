@@ -34,6 +34,21 @@ and Clang, and the full miniport source contract passes. That contract retains
 the original nonpaged ranges and now checks the bounded identity branch.
 Full WDK build and paired DXVK integration are the next gates.
 
+For paired integration, run `python viogpu/tests/adapter-identity/run.py
+--dxvk-root external/dxvk`. This compiles DXVK's actual
+`src/umd/umd_runtime_identity.h` decoder with the actual KMD reply functions;
+no duplicate decoder or synthetic valid reply replaces either side. The
+377 checks include legacy length rejection, exact signed/high-bit LUID byte
+identity, reset preserving identity and a new PnP start replacing identity.
+Local ASan/UBSan passes 377/377 against DXVK 11d889d. Using the old 7648b72f
+reply as a negative control fails 42/377. This remains CPU protocol evidence,
+not a Windows GPU rendering result.
+
+The first WDK CI attempt (34591189158) stopped before driver compilation on
+fixture SAL macro redefinitions from MSVC's CRT headers. Guarded portability
+definitions fix that without reducing `/W4 /WX`; the follow-up Windows run
+34591724161 passes the identity regression and has entered driver compilation.
+
 Microsoft documents AdapterLuid as the locally unique identifier of the
 adapter being started, available since Windows 8:
 https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/dispmprt/ns-dispmprt-_dxgk_start_info
