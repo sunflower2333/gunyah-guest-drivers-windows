@@ -126,11 +126,9 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
 
     /* SchedulingCaps advertises MultiEngineAware in both modes, which obliges
      * the miniport to supply these entry points in both modes.  They are
-     * engine/scheduler DDIs, not display ones.  DxgkDdiCancelCommand is kept
-     * assigned although CancelCommandAware is 0: dxgkrnl only reads that slot
-     * from drivers registering 0x7002 or later, so at WIN8 the assignment is
-     * inert, and it stays here so raising the registered version is a one-line
-     * change. */
+     * engine/scheduler DDIs, not display ones. DxgkDdiCancelCommand remains
+     * assigned, but CancelCommandAware is still 0: this physical-mode engine
+     * does not advertise the optional command cancellation contract. */
     initialData->DxgkDdiCancelCommand = VioGpuWddmCancelCommand;
     initialData->DxgkDdiQueryDependentEngineGroup = VioGpuWddmQueryDependentEngineGroup;
     initialData->DxgkDdiQueryEngineStatus = VioGpuWddmQueryEngineStatus;
