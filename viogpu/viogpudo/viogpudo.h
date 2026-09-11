@@ -132,6 +132,11 @@ enum : UINT
     VioGpuApertureStageUnmapScanout = 18,
     VioGpuApertureStageUnmapStandard = 19,
     VioGpuApertureStageUnmapIdle = 20,
+    /* Both paths can return INSUFFICIENT_RESOURCES. Keep the first refusal
+     * distinguishable without mistaking the later reset for its cause.
+     * Detail records the allocation's page count for these two stages. */
+    VioGpuApertureStageMapBackingEntries = 21,
+    VioGpuApertureStageMapCpuMapping = 22,
     VioGpuNativeContextDestroyDiagnosticSlotCount = 64,
 };
 

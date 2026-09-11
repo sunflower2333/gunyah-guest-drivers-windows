@@ -6578,13 +6578,17 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     if (valid)
     {
         status = AllocateApertureBackingEntries(allocation, &entries, &entryCount);
-        if (NT_SUCCESS(status))
-        {
-            status = EnsureApertureCpuMapping(allocation);
-        }
         if (!NT_SUCCESS(status))
         {
-            failureStage = VioGpuApertureStageMapBacking;
+            failureStage = VioGpuApertureStageMapBackingEntries;
+        }
+        else
+        {
+            status = EnsureApertureCpuMapping(allocation);
+            if (!NT_SUCCESS(status))
+            {
+                failureStage = VioGpuApertureStageMapCpuMapping;
+            }
         }
     }
 
@@ -6680,7 +6684,12 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     }
     if (!NT_SUCCESS(status))
     {
-        adapter->RecordNativeApertureFailure(hostAttempted ? VioGpuApertureStageMapHost : failureStage, status);
+        DWORD detail = 0;
+        if (failureStage == VioGpuApertureStageMapBackingEntries || failureStage == VioGpuApertureStageMapCpuMapping)
+        {
+            detail = static_cast<DWORD>(allocationPageCount);
+        }
+        adapter->RecordNativeApertureFailure(hostAttempted ? VioGpuApertureStageMapHost : failureStage, status, detail);
     }
     return NT_SUCCESS(status) ? STATUS_SUCCESS : STATUS_GRAPHICS_ALLOCATION_BUSY;
 }
