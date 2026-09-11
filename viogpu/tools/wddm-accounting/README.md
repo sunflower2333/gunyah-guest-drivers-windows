@@ -12,6 +12,13 @@ at the first failure or 64 nodes; this discovered list is not a guaranteed node
 count. The raw driver model uses Microsoft `D3DKMT_DRIVERVERSION` values, for
 example 2000 means WDDM 2.0. It is distinct from the package file version.
 
+`display_color` also reports each active target's real Windows Advanced Color
+supported/enabled/forced-off state, bit depth and wire color encoding, plus
+DXGI Output6 color space and luminance. Queries are read-only, preserve errors,
+and use bounded retries when display configuration changes. Advanced Color
+can also mean wide-gamut SDR; its flag alone is not proof of HDR, high-precision
+guest rendering, correct metadata or physical Android HDR output.
+
 Example, replacing the LUID, executable and arguments with the actual reviewed
 short workload on the existing VM:
 
