@@ -7703,7 +7703,8 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     # The reply is built locally and copied at the caller's length, so a short
     # buffer cannot be overrun through a full-structure pointer.
     for fragment in (
-        "VIOGPU_WDDM_ADAPTER_INFOlocal={};",
+        "VIOGPU_WDDM_ADAPTER_INFO_WITH_IDENTITYlocal={};",
+        "VIOGPU_WDDM_ADAPTER_INFO*adapterInfo=&local.AdapterInfo;",
         "InitializeAbiHeader(&adapterInfo->Header,sizeof(*adapterInfo));",
         "RtlCopyMemory(queryAdapterInfo->pOutputData,&local,copyLength);",
     ):
@@ -7711,14 +7712,25 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             fail(f"UMDRIVERPRIVATE must build its reply locally and copy the fitting prefix: {fragment}")
     # The local reply is zero-initialized at declaration, which covers the whole
     # structure including any padding, before the header is stamped.
-    zero_output = query.find("VIOGPU_WDDM_ADAPTER_INFOlocal={};")
+    zero_output = query.find("VIOGPU_WDDM_ADAPTER_INFO_WITH_IDENTITYlocal={};")
     initialize_header = query.find("InitializeAbiHeader(&adapterInfo->Header,sizeof(*adapterInfo));")
     if min(zero_output, initialize_header) < 0 or zero_output > initialize_header:
         fail("UMDRIVERPRIVATE must zero the complete reply before stamping the ABI header")
     if query.count("adapterInfo->ResetGeneration=resetGeneration;") != 1 or query.count(
-        "adapter->QueryNativeContextReadiness(&capset,NULL,NULL,&resetGeneration)"
+        "adapter->QueryNativeContextReadiness(&capset,NULL,NULL,&resetGeneration,includeIdentity?&adapterLuid:NULL)"
     ) != 1:
         fail("UMDRIVERPRIVATE must publish the stable 64-bit readiness reset generation")
+    for fragment in (
+        "constBOOLEANincludeIdentity=queryAdapterInfo->OutputDataSize>=sizeof(VIOGPU_WDDM_ADAPTER_INFO_WITH_IDENTITY);",
+        "constsize_treplySize=includeIdentity?sizeof(local):sizeof(local.AdapterInfo);",
+        "size_tcopyLength=queryAdapterInfo->OutputDataSize<replySize?queryAdapterInfo->OutputDataSize:replySize;",
+        "local.Identity.Flags=VIOGPU_WDDM_ADAPTER_IDENTITY_VALID;",
+        "local.Identity.AdapterLuidLowPart=adapterLuid.LowPart;",
+        "local.Identity.AdapterLuidHighPart=static_cast<UINT>(adapterLuid.HighPart);",
+        "local.Identity.NodeMask=1;",
+    ):
+        if query.count(fragment) != 1:
+            fail(f"UMDRIVERPRIVATE must preserve the prefix and bound its optional OS identity: {fragment}")
     if (
         query.count("adapterInfo->PriorityCount=1;") != 1
         or "adapterInfo->PriorityCount=capset.msm.priorities;" in query
@@ -12264,6 +12276,11 @@ def check_adapter_lifecycle() -> None:
             "constBOOLEANresetRequested=IsHardwareResetRequested();"
             "BOOLEANready=!resetRequested&&adapter!=NULL&&"
             "adapter->QueryNativeContextReadiness(capset,capsetVersion,capsetSize,resetGeneration);"
+            "if(ready&&adapterLuid!=NULL){"
+            "LONG64identity=InterlockedCompareExchange64(&m_RuntimeAdapterLuid,0,0);"
+            "ready=identity!=0;"
+            "if(ready){RtlCopyMemory(adapterLuid,&identity,sizeof(identity));}"
+            "}"
             # Attribution of a wrapper-level refusal, still inside the rundown window.
             "LONGdodMask=0;"
             "if(!ready){"
@@ -12286,6 +12303,8 @@ def check_adapter_lifecycle() -> None:
     for wrapper_name, failure, protected_tail in wrapper_contracts:
         wrapper = canonical_code(function_body(wrapper_name, VIOGPU_CODE))
         expected = acquire_prefix + failure + "}" + protected_tail
+        if wrapper_name == "VioGpuDod::QueryNativeContextReadiness":
+            expected = "if(adapterLuid!=NULL){RtlZeroMemory(adapterLuid,sizeof(*adapterLuid));}" + expected
         if wrapper != expected:
             fail(f"{wrapper_name} must hold hardware rundown across every m_pHWDevice use")
 
