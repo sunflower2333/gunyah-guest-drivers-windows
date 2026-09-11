@@ -7,11 +7,11 @@ compute table at nonzero heap and range offsets. Validation rejects foreign
 devices, invisible heaps, out-of-range or misaligned handles and stale bindings
 after command-list reset. DDI shader-visible bit 2 maps explicitly to API bit 1.
 
-Engine source: `0447a7675f5733059925408325dd55f4218cb5a7`.
-Standalone native CI: `sunflower2333/vkd3d-proton/actions/runs/34606533835`,
+Engine source: `bc61de9b206d35de3728cad390c476e1a011e2d2`.
+Standalone native CI: `sunflower2333/vkd3d-proton/actions/runs/34609416636`,
 all four jobs passed, including ARM64, x64 and x86 WDK builds. Linux CPU
-Vulkan locally passes two UAV, five CBV and eight SRV workloads with
-1024-word readback each (15360 words total). CBVs verify buffer/heap offsets,
+Vulkan locally passes two UAV, five CBV, eight SRV and two root-constant workloads with
+1024-word readback each (17408 words total). CBVs verify buffer/heap offsets,
 copied and null table descriptors, root rebinding after reset and rejected zero root addresses.
 Root CBVs require a live owned buffer; they cannot assume descriptor-table
 null-read behavior. Actual WDK callback
@@ -35,7 +35,18 @@ The fifth CBV workload scatters two source heaps across different destination
 range boundaries. Its GPU output also verifies that rejected late ranges,
 foreign heaps, shader-visible sources, overlaps and mismatched totals preserve
 the previously valid destination. The WDK fixture verifies native handle
-resolution and runtime error reporting; target GPU ranged-copy proof is pending.
+resolution and runtime error reporting. Parent targetseven-vkd3d044-ranges-03
+passed in1039ms with15360correct readbacks, retained DWM2088/Explorer5820 and
+correlated host trace coverage. The paired0447a76 package also passed all seven
+CI jobs at72cef21; all40downloaded manifest entries matched.
+
+Native single and bulk root32-constant callbacks now preserve unmodified values
+during partial updates, reject invalid ranges and enforce the64-DWORD root
+signature budget. Command reset clears the layout and caller arrays are copied
+while recording. Two new compute workloads use a single HLSL uint4 cbuffer,
+checking disjoint bit lanes after full/partial updates, same-root rebinding,
+overwritten caller memory and rejected late updates. Local CPU Vulkan and all
+three Windows WDK jobs pass; target root-constant execution remains pending.
 
 The package also includes `vkd3d-umd-gpu-probe`, which calls the production
 backend with an explicit Windows adapter LUID and matching Vulkan vendor and
