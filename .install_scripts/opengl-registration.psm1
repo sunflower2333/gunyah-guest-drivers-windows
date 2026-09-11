@@ -25,9 +25,16 @@ function Get-IcdSnapshot([Microsoft.Win32.RegistryKey]$Key) {
     $present = @($Key.GetValueNames())
     @($Names | ForEach-Object {
         $exists = $present -contains $_
+        $kind = $null
+        $value = $null
+        if ($exists) {
+            $kind = $Key.GetValueKind($_).ToString()
+            # Do not wrap the method in a pipeline/subexpression: that would
+            # enumerate an empty REG_MULTI_SZ or REG_BINARY into $null.
+            $value = $Key.GetValue($_, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        }
         [pscustomobject]@{ Name = $_; Present = $exists
-            Kind = $(if ($exists) {$Key.GetValueKind($_).ToString()} else {$null})
-            Value = $(if ($exists) {$Key.GetValue($_, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)} else {$null}) }
+            Kind = $kind; Value = $value }
     })
 }
 
