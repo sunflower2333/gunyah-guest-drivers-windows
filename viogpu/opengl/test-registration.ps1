@@ -19,6 +19,13 @@ try {
     $desired = @(Get-IcdRegistration 'C:\Program Files\DroidVM\OpenGL\test\payload')
     Invoke-IcdRegistration $key $desired
     if (!(Test-IcdSnapshot $key $desired)) { throw 'Install roundtrip failed' }
+    foreach ($name in @('OpenGLDriverName','OpenGLDriverNameWow')) {
+        $value = $key.GetValue($name)
+        if ($key.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::MultiString -or
+            $value -isnot [string[]] -or $value.Length -ne 1) {
+            throw "$name must be a one-element REG_MULTI_SZ for WDDM discovery"
+        }
+    }
     Invoke-IcdRegistration $key $previous
     if (!(Test-IcdSnapshot $key $previous)) { throw 'Restore failed to retain absent values, types, and MULTI_SZ content' }
     if ($null -eq $key.GetValue('VulkanDriverNameWow') -or $key.GetValue('VulkanDriverNameWow').Length -ne 0 -or
