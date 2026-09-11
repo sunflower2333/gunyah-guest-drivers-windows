@@ -3830,23 +3830,6 @@ static NTSTATUS QueryPhysicalAdapterCaps(VioGpuDod *adapter, const DXGKARG_QUERY
     return STATUS_SUCCESS;
 }
 
-_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetNodeMetadata(CONST HANDLE hAdapter,
-                                                                   UINT nodeOrdinalAndAdapterIndex,
-                                                                   DXGKARG_GETNODEMETADATA *metadata)
-{
-    if (hAdapter == NULL || metadata == NULL || nodeOrdinalAndAdapterIndex != 0)
-    {
-        return STATUS_INVALID_PARAMETER;
-    }
-    RtlZeroMemory(metadata, sizeof(*metadata));
-    /* Graphics, compute and transfer all use the same native context queue.
-     * Separate copy/compute graphs would invent independent engines. */
-    metadata->EngineType = DXGK_ENGINE_TYPE_3D;
-    metadata->GpuMmuSupported = FALSE;
-    metadata->IoMmuSupported = FALSE;
-    return STATUS_SUCCESS;
-}
-
 NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
 {
     /* Accept any buffer that can hold the ABI header rather than demanding an
@@ -4483,6 +4466,23 @@ NTSTATUS ApplyRenderPrepatches(_Inout_ VIOGPU_WDDM_RENDER_COMMAND *header,
     return STATUS_SUCCESS;
 }
 } // namespace
+
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetNodeMetadata(CONST HANDLE hAdapter,
+                                                                   UINT nodeOrdinalAndAdapterIndex,
+                                                                   DXGKARG_GETNODEMETADATA *metadata)
+{
+    if (hAdapter == NULL || metadata == NULL || nodeOrdinalAndAdapterIndex != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(metadata, sizeof(*metadata));
+    /* Graphics, compute and transfer all use the same native context queue.
+     * Separate copy/compute graphs would invent independent engines. */
+    metadata->EngineType = DXGK_ENGINE_TYPE_3D;
+    metadata->GpuMmuSupported = FALSE;
+    metadata->IoMmuSupported = FALSE;
+    return STATUS_SUCCESS;
+}
 
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter)
 {
