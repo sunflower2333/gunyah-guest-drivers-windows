@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: KhronosGroup/OpenCL-Headers
-          ref: v2025.07.22
+          ref: 386ca390b2f52efeb3e1a55a500690eb8013f60e
           path: opencl-headers
       - name: Build native, x64, x86 and ARM64X Khronos loaders
         shell: pwsh

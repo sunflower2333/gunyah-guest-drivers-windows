@@ -95,7 +95,7 @@ def main():
         'clvk': SOURCE, 'clvk_runtime_ci': 34612600265,
         'compiler_original_sha256': COMPILER,
         'khronos_loader': 'f27c925e782499eebc4df20e121144358ccd5ac6',
-        'headers': 'v2025.07.22',
+        'headers': '386ca390b2f52efeb3e1a55a500690eb8013f60e',
         'runtime_gpu_validation': 'pending after installation; ancestor 0506ac3 passed'
     }, indent=2) + '\n')
     print('PASS input hashes, source identities and architecture PE checks')
