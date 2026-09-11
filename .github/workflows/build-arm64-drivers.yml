@@ -446,12 +446,10 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # Recovery epoch: retain the known-working WDDM1.2 KMD source while
-          # ranking above the failed 58422 WDDM2.3 candidate. This first
-          # descendant is 58423; 58423..58429 are reserved for GL recovery.
-          # The independent HDR repair branch reserves 58430 and above.
-          $epoch = '4ffe1f27019dd94eff334020da43af16099514e4'
-          $epochMinor = 58422
+          # OpenCL integration reserves 58440 onward. Preserve the GL recovery
+          # WDDM1.2 source, without colliding with GL58423..29 or HDR58430.
+          $epoch = 'ae15bee'
+          $epochMinor = 58439
           & git merge-base --is-ancestor $epoch HEAD
           if ($LASTEXITCODE -ne 0) {
             throw "driver version epoch $epoch is not an ancestor of HEAD"

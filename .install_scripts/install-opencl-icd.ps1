@@ -86,6 +86,11 @@ try {
             [IO.File]::Copy($source, $pair[1], $false)
         }
     }
+    foreach ($arch in @('arm64','x64','x86')) {
+        $target = if ($arch -eq 'x86') {$systemTargets[1]} else {$systemTargets[0]}
+        & (Join-Path "$destination/payload/loaders" "$arch/loader-check.exe") $target
+        if ($LASTEXITCODE) { throw "Existing system OpenCL loader cannot serve $arch; it was preserved" }
+    }
     Set-OpenClSnapshot $desired
     if (!(Test-OpenClSnapshot $desired)) { throw 'Registration readback failed' }
 } catch {
