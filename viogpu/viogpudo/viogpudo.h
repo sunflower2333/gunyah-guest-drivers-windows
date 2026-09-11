@@ -511,6 +511,8 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode);
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     NTSTATUS ResumeFrameBuffer(CURRENT_MODE *pCurrentMode);
+    void RequestColorConnectionRefresh();
+    void RefreshColorConnection();
 #endif
     ULONG GetModeCount(void)
     {
@@ -886,6 +888,11 @@ class VioGpuAdapter : IVioGpuPCI
      * receives a confirmed scheduled Present, which explicitly publishes its
      * contents. Avoid re-uploading that primary on every idle vblank. */
     volatile LONG m_ActiveScanoutResourceId;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    volatile LONG m_ColorConnectionRefreshRequested = 0;
+    ULONGLONG m_ColorNotifiedGeneration = 0;
+    BOOLEAN m_ColorConnectionInitialized = FALSE;
+#endif
     volatile LONG m_ExplicitPresentResourceId;
     volatile LONG m_ActiveScanoutWidth;
     volatile LONG m_ActiveScanoutHeight;
@@ -1282,11 +1289,13 @@ class VioGpuDod
     VIOGPU_DISPLAY_COLOR_RESPONSE m_ColorCapabilities = {};
     DXGK_COLORIMETRY m_AdjustedColorimetry = {};
     BOOLEAN m_ColorTargetPoweredOff = FALSE;
+    volatile LONG m_ColorMonitorConnected = 0;
     volatile LONG m_ColorModeAvailable = 0;
     volatile LONG m_ColorModeEpoch = 0;
     BOOLEAN IsNativeHdrModeAvailable() const
     {
         return !IsHardwareResetRequested() &&
+               InterlockedCompareExchange(const_cast<volatile LONG *>(&m_ColorMonitorConnected), 0, 0) != 0 &&
                InterlockedCompareExchange(const_cast<volatile LONG *>(&m_ColorModeAvailable), 0, 0) != 0 &&
                static_cast<ULONG>(InterlockedCompareExchange(const_cast<volatile LONG *>(&m_ColorModeEpoch),
                                                              0,

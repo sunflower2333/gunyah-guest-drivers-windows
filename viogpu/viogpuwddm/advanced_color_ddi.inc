@@ -27,6 +27,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
     auto &path = args->pSetTimingPathInfo[0];
     path.OutputFlags = 0;
     path.DiagnosticInfo = 0;
+    const bool connected = InterlockedCompareExchange(&adapter->m_ColorMonitorConnected, 0, 0) != 0;
+    if (path.Input.Active && !connected)
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
     if (path.VidPnTargetId != 0 || path.Input.Reserved != 0 || path.Input.IgnoreConnectivity ||
         (path.Input.Active && path.Input.VidPnPathUpdates == DXGK_PATH_UPDATE_REMOVED))
     {
@@ -64,11 +69,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
     const auto status = adapter->CommitVidPn(&commit, hdr ? D3DDDIFMT_A2B10G10R10 : D3DDDIFMT_A8R8G8B8);
     if (NT_SUCCESS(status))
     {
-        // The fixed virtual child is also reported connected by QueryChildStatus.
-        // Its legacy connection has no numbered QueryConnectionChange packet.
+        // Legacy HPD notification is also reflected by QueryChildStatus.
+        // There is no numbered QueryConnectionChange packet on this route.
         RtlZeroMemory(&path.TargetState, sizeof(path.TargetState));
         path.TargetState.TargetId = 0;
-        path.TargetState.ConnectionStatus = MonitorStatusConnected;
+        path.TargetState.ConnectionStatus = connected ? MonitorStatusConnected : MonitorStatusDisconnected;
         path.TargetState.MonitorConnect.LinkTargetType = D3DKMDT_VOT_INTERNAL;
         path.Output.RecheckMPO = 1;
         path.GlitchCause = DXGK_GLITCH_CAUSE_TIMING_CHANGE;
