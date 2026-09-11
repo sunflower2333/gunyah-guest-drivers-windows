@@ -183,6 +183,9 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_CrtcVsyncTimer = NULL;
     ExInitializeFastMutex(&m_CrtcTimerMutex);
     KeInitializeSpinLock(&m_CrtcTimingLock);
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    KeInitializeSpinLock(&m_ColorStateLock);
+#endif
     m_CrtcTiming = VioGpuVirtualTiming(1024, 768, 60);
     m_CrtcEpoch = 0;
     m_CrtcPeriodTicks = 0;
@@ -1159,6 +1162,19 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
     notify.CrtcVsync.VidPnTargetId = 0;
     notify.CrtcVsync.PhysicalAddress.QuadPart = InterlockedCompareExchange64(&m_CrtcVsyncPrimaryAddress, 0, 0);
     notify.CrtcVsync.PhysicalAdapterMask = 1;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    DXGK_MULTIPLANE_OVERLAY_VSYNC_INFO2 mpo = {};
+    mpo.PresentId = static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_ColorPresentCompletedId, 0, 0));
+    if (mpo.PresentId != 0)
+    {
+        RtlZeroMemory(&notify, sizeof(notify));
+        notify.InterruptType = DXGK_INTERRUPT_CRTC_VSYNC_WITH_MULTIPLANE_OVERLAY2;
+        notify.CrtcVsyncWithMultiPlaneOverlay2.VidPnTargetId = 0;
+        notify.CrtcVsyncWithMultiPlaneOverlay2.PhysicalAdapterMask = 1;
+        notify.CrtcVsyncWithMultiPlaneOverlay2.MultiPlaneOverlayVsyncInfoCount = 1;
+        notify.CrtcVsyncWithMultiPlaneOverlay2.pMultiPlaneOverlayVsyncInfo = &mpo;
+    }
+#endif
     if (NotifyNativeSchedulerInterrupt(&notify, TRUE))
     {
         InterlockedIncrement(&m_CrtcVsyncDeliveredCount);
@@ -2132,6 +2148,52 @@ NTSTATUS VioGpuDod::PublishPresentBlit(_In_ UINT width,
     return status;
 }
 
+BOOLEAN VioGpuDod::QueryDisplayColor(_Out_ VIOGPU_DISPLAY_COLOR_RESPONSE *caps)
+{
+    if (caps == NULL)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(caps, sizeof(*caps));
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL || !AcquireNativeSubmissionOperation())
+    {
+        return FALSE;
+    }
+    BOOLEAN result = m_pHWDevice != NULL && m_pHWDevice->QueryDisplayColor(caps);
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::SetResourceColor(_In_ const VIOGPU_SET_RESOURCE_COLOR *color)
+{
+    if (color == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || !AcquireNativeSubmissionOperation())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    VIOGPU_HOST_CONTEXT_RESULT result = m_pHWDevice != NULL ? m_pHWDevice->SetResourceColor(color)
+                                                            : VioGpuHostContextNotSubmitted;
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::PresentColorResource(_In_ const VIOGPU_SET_RESOURCE_COLOR *color,
+                                                           UINT width,
+                                                           UINT height,
+                                                           ULONGLONG resetGeneration)
+{
+    if (color == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || !AcquireNativeSubmissionOperation())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    VIOGPU_HOST_CONTEXT_RESULT result = m_pHWDevice != NULL ? m_pHWDevice->PresentColorResource(color,
+                                                                                                width,
+                                                                                                height,
+                                                                                                resetGeneration)
+                                                            : VioGpuHostContextNotSubmitted;
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
                                                    _In_ UINT resourceId,
                                                    _In_ UINT width,
@@ -2843,6 +2905,9 @@ NTSTATUS VioGpuDod::ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In
 
         case DXGK_INTERRUPT_CRTC_VSYNC:
         case DXGK_INTERRUPT_CRTC_VSYNC_WITH_MULTIPLANE_OVERLAY:
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        case DXGK_INTERRUPT_CRTC_VSYNC_WITH_MULTIPLANE_OVERLAY2:
+#endif
         case DXGK_INTERRUPT_DISPLAYONLY_VSYNC:
             /* Dxgkrnl enables the CRTC vertical-blank interrupt for every D3D
              * device that asks for vsync on a display-capable adapter, and that
@@ -2917,6 +2982,9 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
     DXGK_DRIVERCAPS *driverCaps = static_cast<DXGK_DRIVERCAPS *>(queryAdapterInfo->pOutputData);
     RtlZeroMemory(driverCaps, requiredSize);
     driverCaps->WDDMVersion = DXGKDDI_WDDMv2;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    driverCaps->WDDMVersion = DXGKDDI_WDDMv2_3;
+#endif
     driverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
 
     if (pointerEnabled && !renderOnly)
@@ -8820,6 +8888,81 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
     return STATUS_SUCCESS;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::SetResourceColor(_In_ const VIOGPU_SET_RESOURCE_COLOR *color)
+{
+    if (color == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    if (WaitScanoutLifecycle() != STATUS_SUCCESS)
+    {
+        return VioGpuHostContextUnknown;
+    }
+    Reconcile2DScanoutAfterResetLocked();
+    VIOGPU_HOST_CONTEXT_RESULT result = m_2DScanoutUnknown ? VioGpuHostContextUnknown
+                                                           : m_CtrlQueue.SetResourceColor(color);
+    if (result == VioGpuHostContextUnknown)
+    {
+        FailNativeContextAtAnyIrql();
+    }
+    KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::PresentColorResource(_In_ const VIOGPU_SET_RESOURCE_COLOR *color,
+                                                               UINT width,
+                                                               UINT height,
+                                                               ULONGLONG resetGeneration)
+{
+    if (color == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || width == 0 || height == 0 || resetGeneration == 0)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    if (WaitScanoutLifecycle() != STATUS_SUCCESS)
+    {
+        return VioGpuHostContextUnknown;
+    }
+    Reconcile2DScanoutAfterResetLocked();
+    const ULONGLONG currentGeneration = static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration,
+                                                                                            0,
+                                                                                            0));
+    if (m_2DScanoutUnknown || currentGeneration != resetGeneration)
+    {
+        KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+        return VioGpuHostContextNotSubmitted;
+    }
+    /* Metadata, binding and pixel publication share one scanout lifecycle. Host
+     * RESOURCE_FLUSH completes only after every native reader fence retires. */
+    m_PublishedScanoutResourceId = 0;
+    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetResourceColor(color);
+    if (result == VioGpuHostContextConfirmed)
+    {
+        result = m_CtrlQueue.SetScanoutSynchronous(0, color->resource_id, width, height, 0, 0);
+    }
+    if (result == VioGpuHostContextConfirmed)
+    {
+        result = m_CtrlQueue.TransferToHost2DSynchronous(color->resource_id, 0, width, height, 0, 0);
+    }
+    if (result == VioGpuHostContextConfirmed)
+    {
+        result = m_CtrlQueue.FlushResourceSynchronous(color->resource_id, width, height, 0, 0);
+    }
+    if (result == VioGpuHostContextConfirmed)
+    {
+        m_2DScanoutResourceId = color->resource_id;
+        m_2DScanoutResetGeneration = resetGeneration;
+        RecordActiveScanout(color->resource_id, width, height);
+    }
+    else if (result == VioGpuHostContextUnknown)
+    {
+        m_2DScanoutUnknown = TRUE;
+        m_2DScanoutResetGeneration = resetGeneration;
+        FailNativeContextAtAnyIrql();
+    }
+    KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+    return result;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
                                                        _In_ UINT resourceId,
                                                        _In_ UINT width,
@@ -13127,9 +13270,13 @@ UINT ColorFormat(UINT format)
             return VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM;
         case D3DDDIFMT_X8B8G8R8:
             return VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
+        case D3DDDIFMT_A2B10G10R10:
+            return VIRTIO_GPU_FORMAT_R10G10B10A2_UNORM;
+        case D3DDDIFMT_A2R10G10B10:
+            return VIRTIO_GPU_FORMAT_B10G10R10A2_UNORM;
     }
     DbgPrint(TRACE_LEVEL_ERROR, ("---> %s Unsupported color format %d\n", __FUNCTION__, format));
-    return VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM;
+    return 0;
 }
 
 PAGED_CODE_SEG_BEGIN
@@ -13143,6 +13290,10 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
     ASSERT(m_pFrameBuf == NULL);
     size = pModeInfo->ScreenStride * pModeInfo->VisScreenHeight;
     format = ColorFormat(pCurrentMode->DispInfo.ColorFormat);
+    if (format == 0)
+    {
+        return FALSE;
+    }
     DbgPrint(TRACE_LEVEL_INFORMATION,
              ("---> %s - (%d -> %d)\n", __FUNCTION__, pCurrentMode->DispInfo.ColorFormat, format));
     m_PublishedScanoutResourceId = 0;

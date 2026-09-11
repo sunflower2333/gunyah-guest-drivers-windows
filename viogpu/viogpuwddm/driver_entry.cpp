@@ -14,7 +14,7 @@ BOOLEAN VioGpuWddmIsRenderOnlyRegistration()
 #pragma code_seg(push)
 #pragma code_seg("INIT")
 
-static_assert(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WDDM2_0,
+static_assert(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WDDM2_0 || DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WDDM2_3,
               "viogpuwddm requires WDDM 2.0 physical-engine declarations");
 
 /* Registration and DriverCaps must describe the same selected runtime mode. */
@@ -79,7 +79,11 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     /* WDDM 2.0 permits physical-mode engines with allocation/patch lists.
      * Register the matching table; host-owned GPU page tables are not exposed
      * as a guest GpuMmu/IoMmu. VidSch retains the real submission timeline. */
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    initialData->Version = DXGKDDI_INTERFACE_VERSION_WDDM2_3;
+#else
     initialData->Version = DXGKDDI_INTERFACE_VERSION_WDDM2_0;
+#endif
 
     initialData->DxgkDdiAddDevice = VioGpuDodAddDevice;
     initialData->DxgkDdiStartDevice = VioGpuDodStartDevice;
@@ -137,6 +141,10 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
 
     if (!renderOnly)
     {
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3 = VioGpuWddmSetVidPnSourceAddressMpo3;
+        initialData->DxgkDdiSetTargetAdjustedColorimetry = VioGpuWddmSetTargetAdjustedColorimetry;
+#endif
         initialData->DxgkDdiSetPalette = VioGpuWddmSetPalette;
         initialData->DxgkDdiSetPointerPosition = VioGpuDodSetPointerPosition;
         initialData->DxgkDdiSetPointerShape = VioGpuDodSetPointerShape;

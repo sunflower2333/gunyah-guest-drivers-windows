@@ -29,6 +29,7 @@
 
 #pragma once
 #include "viogpu.h"
+#include "../shared/viogpu_display_color.h"
 #include "viogpu_pci.h"
 
 #pragma pack(1)
@@ -490,6 +491,8 @@ class CtrlQueue : public VioGpuQueue
                                                         UINT entry_count);
     VIOGPU_HOST_CONTEXT_RESULT DetachBackingSynchronous(UINT resource_id);
     VIOGPU_HOST_CONTEXT_RESULT UnrefResourceSynchronous(UINT resource_id);
+    BOOLEAN QueryDisplayColor(_Out_ VIOGPU_DISPLAY_COLOR_RESPONSE *caps);
+    VIOGPU_HOST_CONTEXT_RESULT SetResourceColor(_In_ const VIOGPU_SET_RESOURCE_COLOR *color);
     VIOGPU_HOST_CONTEXT_RESULT SetScanoutSynchronous(UINT scanout_id,
                                                      UINT resource_id,
                                                      UINT width,

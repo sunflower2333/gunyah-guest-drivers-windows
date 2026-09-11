@@ -615,6 +615,15 @@ class VioGpuAdapter : IVioGpuPCI
                                 _In_ UINT sourcePitch,
                                 _In_reads_bytes_(payloadSize) const BYTE *payload,
                                 _In_ UINT payloadSize);
+    BOOLEAN QueryDisplayColor(_Out_ VIOGPU_DISPLAY_COLOR_RESPONSE *caps)
+    {
+        return m_CtrlQueue.QueryDisplayColor(caps);
+    }
+    VIOGPU_HOST_CONTEXT_RESULT SetResourceColor(_In_ const VIOGPU_SET_RESOURCE_COLOR *color);
+    VIOGPU_HOST_CONTEXT_RESULT PresentColorResource(_In_ const VIOGPU_SET_RESOURCE_COLOR *color,
+                                                    UINT width,
+                                                    UINT height,
+                                                    ULONGLONG resetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,
                                             _In_ UINT width,
@@ -1247,6 +1256,19 @@ class VioGpuDod
     {
         return InterlockedCompareExchange(&m_UmdPresentActive, 0, 0) != 0;
     }
+    BOOLEAN QueryDisplayColor(_Out_ VIOGPU_DISPLAY_COLOR_RESPONSE *caps);
+    VIOGPU_HOST_CONTEXT_RESULT SetResourceColor(_In_ const VIOGPU_SET_RESOURCE_COLOR *color);
+    VIOGPU_HOST_CONTEXT_RESULT PresentColorResource(_In_ const VIOGPU_SET_RESOURCE_COLOR *color,
+                                                    UINT width,
+                                                    UINT height,
+                                                    ULONGLONG resetGeneration);
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    volatile LONG m_ColorPresentPending = 0;
+    volatile LONG64 m_ColorPresentCompletedId = 0;
+    volatile LONG64 m_ColorPresentLastQueuedId = 0;
+    KSPIN_LOCK m_ColorStateLock;
+    VIOGPU_DISPLAY_COLOR_RESPONSE m_ColorCapabilities = {};
+#endif
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,
                                             _In_ UINT width,

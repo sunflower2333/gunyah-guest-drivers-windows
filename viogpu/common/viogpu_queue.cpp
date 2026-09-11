@@ -375,6 +375,8 @@ static BOOLEAN IsSupported2DResourceFormat(UINT format)
         case VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM:
         case VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM:
         case VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM:
+        case VIRTIO_GPU_FORMAT_R10G10B10A2_UNORM:
+        case VIRTIO_GPU_FORMAT_B10G10R10A2_UNORM:
             return TRUE;
         default:
             return FALSE;
@@ -1146,6 +1148,91 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::FlushResourceSynchronous(UINT resource_id,
     command->r.x = x;
     command->r.y = y;
 
+    VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+BOOLEAN CtrlQueue::QueryDisplayColor(_Out_ VIOGPU_DISPLAY_COLOR_RESPONSE *caps)
+{
+    PAGED_CODE();
+    if (caps == NULL || m_pBuf == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(caps, sizeof(*caps));
+    if (!BeginSynchronousRequest())
+    {
+        return FALSE;
+    }
+    auto response = static_cast<VIOGPU_DISPLAY_COLOR_RESPONSE *>(m_pBuf->AllocateMemory(sizeof(*caps)));
+    if (response == NULL)
+    {
+        EndSynchronousRequest();
+        return FALSE;
+    }
+    PGPU_VBUFFER vbuf = NULL;
+    auto command = static_cast<VIOGPU_GET_DISPLAY_COLOR *>(AllocCmdResp(&vbuf,
+                                                                        sizeof(VIOGPU_GET_DISPLAY_COLOR),
+                                                                        response,
+                                                                        sizeof(*caps)));
+    if (command == NULL)
+    {
+        m_pBuf->FreeMemory(response);
+        EndSynchronousRequest();
+        return FALSE;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = VIOGPU_CMD_GET_DISPLAY_COLOR;
+    command->magic = VIOGPU_DISPLAY_COLOR_MAGIC;
+    command->version = VIOGPU_DISPLAY_COLOR_VERSION;
+    command->size = sizeof(*command);
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) && vbuf->response_size == sizeof(*caps) &&
+                      IsPlainControlResponse(reinterpret_cast<GPU_CTRL_HDR *>(&response->query.hdr),
+                                             VIOGPU_RESP_DISPLAY_COLOR) &&
+                      response->query.magic == VIOGPU_DISPLAY_COLOR_MAGIC &&
+                      response->query.version == VIOGPU_DISPLAY_COLOR_VERSION &&
+                      response->query.size == sizeof(*caps) && response->query.scanout_id == 0 &&
+                      response->reserved == 0 && response->generation != 0 &&
+                      (response->observed_hdr_types & ~3U) == 0 &&
+                      (response->usable_hdr_types & ~response->observed_hdr_types) == 0;
+    if (success)
+    {
+        *caps = *response;
+    }
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
+    return success;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetResourceColor(_In_ const VIOGPU_SET_RESOURCE_COLOR *color)
+{
+    PAGED_CODE();
+    if (color == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || !IsStandard2DResourceId(color->resource_id) ||
+        color->query.scanout_id != 0 || color->generation == 0 || color->has_static_metadata > 1 ||
+        (color->encoding != VIOGPU_DISPLAY_COLOR_PQ && color->encoding != VIOGPU_DISPLAY_COLOR_HLG) ||
+        (color->format != VIOGPU_DISPLAY_FORMAT_AB30 && color->format != VIOGPU_DISPLAY_FORMAT_AR30) ||
+        !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    PGPU_VBUFFER vbuf = NULL;
+    auto command = static_cast<VIOGPU_SET_RESOURCE_COLOR *>(AllocCmd(&vbuf, sizeof(*color)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    *command = *color;
+    RtlZeroMemory(&command->query, sizeof(command->query));
+    command->query.hdr.type = VIOGPU_CMD_SET_RESOURCE_COLOR;
+    command->query.magic = VIOGPU_DISPLAY_COLOR_MAGIC;
+    command->query.version = VIOGPU_DISPLAY_COLOR_VERSION;
+    command->query.size = sizeof(*command);
     VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
     EndSynchronousRequest();
     return result;
