@@ -15,6 +15,7 @@ using ULONGLONG = uint64_t;
 using UCHAR = uint8_t;
 using NTSTATUS = int32_t;
 using BOOLEAN = bool;
+using KIRQL = unsigned;
 #ifndef _In_
 #define _In_
 #endif
@@ -34,11 +35,19 @@ using BOOLEAN = bool;
 #define FALSE          false
 #define NT_SUCCESS(x)  ((x) >= 0)
 #define PAGE_SHIFT     12
-#define PAGE_SIZE      4096U
+#define PAGE_SIZE      4096
 #define MAXULONGLONG   UINT64_MAX
 #define MAXULONG       UINT32_MAX
 #define MAXUINT        UINT32_MAX
 #define BYTE_OFFSET(p) (reinterpret_cast<uintptr_t>(p) & (PAGE_SIZE - 1))
+#define DbgPrint(...)
+constexpr KIRQL DISPATCH_LEVEL = 2;
+static KIRQL testIrql;
+[[maybe_unused]] static KIRQL KeGetCurrentIrql()
+{
+    return testIrql;
+}
+static const int VIOGPU_QUEUE_ERROR = -1;
 using std::min;
 struct PHYSICAL_ADDRESS
 {
@@ -48,6 +57,48 @@ struct VirtIOBufferDescriptor
 {
     PHYSICAL_ADDRESS physAddr;
     ULONG length;
+};
+struct GPU_VBUFFER
+{
+    char *buf;
+    int size;
+    void *data_buf;
+    ULONG data_size;
+    char *resp_buf;
+    int resp_size;
+    UINT response_size;
+};
+using PGPU_VBUFFER = GPU_VBUFFER *;
+class CtrlQueue
+{
+  public:
+    void *m_pBuf = this;
+    UINT queueCapacity = 2048, kicks = 0, calls = 0, outputCount = 0, inputCount = 0;
+    std::vector<VirtIOBufferDescriptor> retained;
+    void Lock(KIRQL *saved)
+    {
+        *saved = testIrql;
+    }
+    void Unlock(KIRQL)
+    {
+    }
+    void Kick()
+    {
+        ++kicks;
+    }
+    int AddBuf(VirtIOBufferDescriptor *sg, UINT out, UINT in, void *, void *, uint64_t)
+    {
+        ++calls;
+        if (out + in > queueCapacity)
+        {
+            return -28;
+        }
+        retained.assign(sg, sg + out + in);
+        outputCount = out;
+        inputCount = in;
+        return 0;
+    }
+    int QueueBuffer(PGPU_VBUFFER buf);
 };
 static bool MmIsAddressValid(PVOID p)
 {
@@ -171,7 +222,53 @@ static void controlPacket()
     }
     check(observed == bytes, "DMA descriptors cover the entire entry payload");
     check(sg[VIOGPU_CONTROL_SG_CAPACITY].length == 0xabcdef, "control descriptor array stays bounded");
-    check(VIOGPU_MAX_BACKING_ENTRIES <= 65536, "backing list stays within Host udmabuf limit");
+    check(VIOGPU_MAX_BACKING_ENTRIES <= 262144, "backing list stays within paired Host udmabuf limit");
+}
+static void queuePacket(SIZE_T pages)
+{
+    const ULONG bytes = static_cast<ULONG>(pages * sizeof(GPU_MEM_ENTRY));
+    std::vector<UCHAR> storage(static_cast<SIZE_T>(bytes) + 3 * PAGE_SIZE);
+    uintptr_t aligned = (reinterpret_cast<uintptr_t>(storage.data()) + PAGE_SIZE - 1) &
+                        ~(static_cast<uintptr_t>(PAGE_SIZE) - 1);
+    char *unaligned = reinterpret_cast<char *>(aligned + PAGE_SIZE - 1);
+    GPU_VBUFFER packet = {unaligned, 96, unaligned, bytes, unaligned, 24, 123};
+    CtrlQueue queue;
+    int result = queue.QueueBuffer(&packet);
+    check(result == 0 && queue.kicks == 1 && packet.response_size == 0,
+          "complete large packet reaches the real QueueBuffer enqueue path");
+    uint64_t outputBytes = 0, inputBytes = 0;
+    for (UINT i = 0; i < queue.retained.size(); ++i)
+    {
+        (i < queue.outputCount ? outputBytes : inputBytes) += queue.retained[i].length;
+    }
+    check(result == 0 && outputBytes == bytes + 96 && inputBytes == 24,
+          "enqueued descriptors cover command, complete payload and writable response");
+    check(outstanding == 0, "successful enqueue releases only the temporary SG array");
+    if (pages < 65536)
+    {
+        return;
+    }
+
+    queue.queueCapacity = 16;
+    UINT previousKicks = queue.kicks;
+    result = queue.QueueBuffer(&packet);
+    check(result < 0 && queue.kicks == previousKicks && outstanding == 0,
+          "full or smaller negotiated queue refuses without kick or SG leak");
+    failPool = true;
+    UINT previousCalls = queue.calls;
+    result = queue.QueueBuffer(&packet);
+    check(result < 0 && queue.calls == previousCalls && outstanding == 0,
+          "SG allocation failure publishes no descriptor and leaks nothing");
+    failPool = false;
+    testIrql = DISPATCH_LEVEL + 1;
+    result = queue.QueueBuffer(&packet);
+    check(result < 0 && queue.calls == previousCalls && outstanding == 0,
+          "large packet never allocates from pool above DISPATCH_LEVEL");
+    testIrql = 0;
+    packet.data_size = UINT32_MAX;
+    result = queue.QueueBuffer(&packet);
+    check(result < 0 && queue.calls == previousCalls && outstanding == 0,
+          "oversized packet is refused before any enqueue or wrapped allocation");
 }
 int main(int argc, char **)
 {
@@ -180,9 +277,18 @@ int main(int argc, char **)
     allocation(16385, 1, !old);
     allocation(32768, 1, !old);
     allocation(32768, 4, true);
+    allocation(140070, 1, !old);
+    allocation(262144, 1, !old);
     allocation(VIOGPU_MAX_BACKING_ENTRIES, 1, true);
     allocation(static_cast<SIZE_T>(VIOGPU_MAX_BACKING_ENTRIES) + 1, 1, false);
     controlPacket();
+    queuePacket(16);
+    queuePacket(32768);
+    if (!old)
+    {
+        queuePacket(140070);
+        queuePacket(262144);
+    }
     PFN_NUMBER pfns[] = {0x100, 0x101, 0x200, 0x202};
     GPU_MEM_ENTRY entries[3] = {};
     entries[2] = {0xabcdef, 0x1234, 0x5678};

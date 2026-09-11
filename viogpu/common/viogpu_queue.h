@@ -253,16 +253,16 @@ enum VIOGPU_2D_RESOURCE_STATE : LONG
 };
 
 #define MAX_INLINE_CMD_SIZE             96
-#define MAX_INLINE_RESP_SIZE            24
-#define VBUFFER_SIZE                    (sizeof(GPU_VBUFFER) + MAX_INLINE_CMD_SIZE + MAX_INLINE_RESP_SIZE)
-#define VIOGPU_NATIVE_CONTROL_BLOB_SIZE 0x4000U
-#define VIOGPU_CONTROL_SG_CAPACITY      256U
-/* A fragmented 128 MiB allocation needs 32768 backing entries. The old
- * 16384-entry cap refused it during paging and reset the whole adapter.
- * Bound the larger list by the actual control-packet descriptor budget:
- * two pages each for an unaligned command and response, plus one for an
- * unaligned entry array. This also stays below the Host's 65536-entry limit. */
-#define VIOGPU_MAX_BACKING_ENTRIES      ((VIOGPU_CONTROL_SG_CAPACITY - 5U) * PAGE_SIZE / sizeof(GPU_MEM_ENTRY))
+#define MAX_INLINE_RESP_SIZE              24
+#define VBUFFER_SIZE                      (sizeof(GPU_VBUFFER) + MAX_INLINE_CMD_SIZE + MAX_INLINE_RESP_SIZE)
+#define VIOGPU_NATIVE_CONTROL_BLOB_SIZE   0x4000U
+#define VIOGPU_CONTROL_INLINE_SG_CAPACITY 256U
+/* One GiB of fully fragmented 4 KiB backing. Large packets use a temporary
+ * nonpaged SG array, never a larger kernel stack array. The Host must provide
+ * a 2048-entry control queue and a matching udmabuf list limit. Reserve two
+ * pages each for command/response and one for entry-array alignment. */
+#define VIOGPU_MAX_BACKING_ENTRIES        (1U << 18)
+#define VIOGPU_CONTROL_SG_CAPACITY        (VIOGPU_MAX_BACKING_ENTRIES * sizeof(GPU_MEM_ENTRY) / PAGE_SIZE + 5U)
 
 class VioGpuBuf
 {

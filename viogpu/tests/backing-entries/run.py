@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute production PFN packing and aperture entry allocation, including 128 MiB."""
+"""Execute production PFN packing and direct control enqueue through 1 GiB backing."""
 import argparse
 from pathlib import Path
 import re
@@ -37,10 +37,19 @@ header = source('viogpu/common/viogpu_queue.h')
 limit = re.search(r'^#define VIOGPU_MAX_BACKING_ENTRIES\s+(.+)$', header, re.M).group(0)
 capacity = re.search(r'^#define VIOGPU_CONTROL_SG_CAPACITY\s+(.+)$', header, re.M)
 capacity = capacity.group(0) if capacity else '#define VIOGPU_CONTROL_SG_CAPACITY 256U'
+inline = re.search(r'^#define VIOGPU_CONTROL_INLINE_SG_CAPACITY\s+(.+)$', header, re.M)
+inline = inline.group(0) if inline else '#define VIOGPU_CONTROL_INLINE_SG_CAPACITY 256U'
 queue = source('viogpu/common/viogpu_queue.cpp')
-production = '\n'.join([capacity, limit, function(queue, 'static UINT BuildSGElements(')] + [function(ddi, signature) for signature in (
-    'NTSTATUS BuildPfnEntries(', 'BOOLEAN ValidateAperturePageState(',
-    'NTSTATUS AllocateApertureBackingEntries(')])
+helpers = [function(queue, 'static UINT BuildSGElements(')]
+if 'static UINT ControlDescriptorCount(' in queue:
+    helpers += [function(queue, 'static UINT ControlDescriptorCount('),
+                function(queue, 'static BOOLEAN BuildControlSG(')]
+helpers += [function(queue, 'int CtrlQueue::QueueBuffer(')]
+production = '\n'.join([capacity, inline, limit,
+    '#define SGLIST_SIZE VIOGPU_CONTROL_SG_CAPACITY'] + helpers +
+    [function(ddi, signature) for signature in (
+        'NTSTATUS BuildPfnEntries(', 'BOOLEAN ValidateAperturePageState(',
+        'NTSTATUS AllocateApertureBackingEntries(')])
 fixture = (here / 'backing_entries_test.cpp').read_text().replace('// INSERT_PRODUCTION', production)
 with tempfile.TemporaryDirectory(prefix='viogpu-backing-entries-') as output:
     directory = Path(output)

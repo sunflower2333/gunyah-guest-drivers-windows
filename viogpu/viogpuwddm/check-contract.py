@@ -4147,14 +4147,54 @@ def check_control_queue_dma_and_response_contract() -> None:
             fail(f"control DMA SG builder must contain exactly one page-fragment contract: {fragment}")
 
     queue = canonical_code(function_body("CtrlQueue::QueueBuffer", QUEUE_CODE))
-    if queue.count("BuildSGElements(") != 3:
+    control = canonical_code(function_body_with_parameters(
+        "BuildControlSG",
+        "const GPU_VBUFFER *buf, VirtIOBufferDescriptor *sg, UINT capacity, PUINT outcnt, PUINT incnt",
+        QUEUE_CODE,
+    ))
+    if control.count("BuildSGElements(") != 3:
         fail("control queue must fragment command, payload, and response DMA ranges independently")
-    if queue.count("outcnt+=elementCount;sgleft-=elementCount;") != 2:
-        fail("control queue must account for every command and payload output descriptor")
-    if queue.count("incnt+=elementCount;sgleft-=elementCount;") != 1:
-        fail("control queue must account for every response input descriptor")
-    if "if(buf->resp_size){if(sgleft==0)" not in queue:
-        fail("control queue must fail instead of submitting a response-bearing command without an input descriptor")
+    require_order(
+        control,
+        (
+            "UINTrequired=ControlDescriptorCount(buf);",
+            "required==0||required>capacity||sg==NULL",
+            "BuildSGElements(sg,capacity,buf->buf,static_cast<ULONG>(buf->size))",
+            "if(written==0){returnFALSE;}",
+            "BuildSGElements(sg+written,capacity-written,buf->data_buf,buf->data_size)",
+            "if(dataCount==0){returnFALSE;}",
+            "written+=dataCount;",
+            "BuildSGElements(sg+written,capacity-written,buf->resp_buf,static_cast<ULONG>(buf->resp_size))",
+            "if(responseCount==0){returnFALSE;}",
+            "*outcnt=written;*incnt=responseCount;returnTRUE;",
+        ),
+        "control queue must bound and account for each output/input range before enqueue",
+    )
+    require_order(
+        queue,
+        (
+            "UINTcapacity=ControlDescriptorCount(buf);",
+            "if(capacity==0||m_pBuf==NULL)",
+            "VirtIOBufferDescriptorinlineSg[VIOGPU_CONTROL_INLINE_SG_CAPACITY];",
+            "if(capacity>VIOGPU_CONTROL_INLINE_SG_CAPACITY)",
+            "if(KeGetCurrentIrql()>DISPATCH_LEVEL)",
+            "ExAllocatePoolUninitialized(NonPagedPoolNx,static_cast<SIZE_T>(capacity)*sizeof(*sg),)",
+            "if(sg==NULL)",
+            "if(BuildControlSG(buf,sg,capacity,&outcnt,&incnt))",
+            "Lock(&savedIrql);",
+            "ret=AddBuf(sg,outcnt,incnt,buf,NULL,0);",
+            "if(ret>=0){Kick();}",
+            "Unlock(savedIrql);",
+            "if(sg!=inlineSg){ExFreePoolWithTag(sg,);}",
+            "returnret;",
+        ),
+        "large control SG storage must be bounded, allocated before locking, and freed after direct enqueue",
+    )
+    count = canonical_code(function_body("ControlDescriptorCount", QUEUE_CODE))
+    if count.count("static_cast<ULONGLONG>(BYTE_OFFSET(") != 3 or (
+        "returncount<=VIOGPU_CONTROL_SG_CAPACITY?static_cast<UINT>(count):0;" not in count
+    ):
+        fail("control descriptor sizing must use wide page counts and reject oversized packets")
 
     cursor = canonical_code(function_body("CrsrQueue::QueueCursor", QUEUE_CODE))
     if "VirtIOBufferDescriptorsg[2];" not in cursor or cursor.count("BuildSGElements(") != 1:

@@ -2233,88 +2233,121 @@ BOOLEAN CtrlQueue::SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height
     return TRUE;
 }
 
-#define SGLIST_SIZE VIOGPU_CONTROL_SG_CAPACITY
 static const int VIOGPU_QUEUE_ERROR = -1;
+
+static UINT ControlDescriptorCount(const GPU_VBUFFER *buf)
+{
+    if (buf == NULL || buf->buf == NULL || buf->size <= 0 || buf->size > static_cast<int>(PAGE_SIZE) ||
+        buf->resp_size < 0 || buf->resp_size > static_cast<int>(PAGE_SIZE) ||
+        (buf->data_size != 0 && buf->data_buf == NULL) || (buf->resp_size != 0 && buf->resp_buf == NULL))
+    {
+        return 0;
+    }
+
+    // Use 64-bit arithmetic before the bound so a wrapped payload length
+    // cannot select a small descriptor allocation.
+    ULONGLONG count = (static_cast<ULONGLONG>(BYTE_OFFSET(buf->buf)) + buf->size + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (buf->data_size != 0)
+    {
+        count += (static_cast<ULONGLONG>(BYTE_OFFSET(buf->data_buf)) + buf->data_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    }
+    if (buf->resp_size != 0)
+    {
+        count += (static_cast<ULONGLONG>(BYTE_OFFSET(buf->resp_buf)) + buf->resp_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    }
+    return count <= VIOGPU_CONTROL_SG_CAPACITY ? static_cast<UINT>(count) : 0;
+}
+
+static BOOLEAN BuildControlSG(const GPU_VBUFFER *buf,
+                              VirtIOBufferDescriptor *sg,
+                              UINT capacity,
+                              PUINT outcnt,
+                              PUINT incnt)
+{
+    *outcnt = 0;
+    *incnt = 0;
+    UINT required = ControlDescriptorCount(buf);
+    if (required == 0 || required > capacity || sg == NULL)
+    {
+        return FALSE;
+    }
+
+    UINT written = BuildSGElements(sg, capacity, buf->buf, static_cast<ULONG>(buf->size));
+    if (written == 0)
+    {
+        return FALSE;
+    }
+    if (buf->data_size != 0)
+    {
+        UINT dataCount = BuildSGElements(sg + written, capacity - written, buf->data_buf, buf->data_size);
+        if (dataCount == 0)
+        {
+            return FALSE;
+        }
+        written += dataCount;
+    }
+    UINT responseCount = 0;
+    if (buf->resp_size != 0)
+    {
+        responseCount = BuildSGElements(sg + written,
+                                        capacity - written,
+                                        buf->resp_buf,
+                                        static_cast<ULONG>(buf->resp_size));
+        if (responseCount == 0)
+        {
+            return FALSE;
+        }
+    }
+    *outcnt = written;
+    *incnt = responseCount;
+    return TRUE;
+}
 
 int CtrlQueue::QueueBuffer(PGPU_VBUFFER buf)
 {
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
-
-    if (buf == NULL || m_pBuf == NULL)
+    UINT capacity = ControlDescriptorCount(buf);
+    if (capacity == 0 || m_pBuf == NULL)
     {
-        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s invalid buffer\n", __FUNCTION__));
         return VIOGPU_QUEUE_ERROR;
     }
 
-    VirtIOBufferDescriptor sg[SGLIST_SIZE];
-    UINT sgleft = SGLIST_SIZE;
+    VirtIOBufferDescriptor inlineSg[VIOGPU_CONTROL_INLINE_SG_CAPACITY];
+    VirtIOBufferDescriptor *sg = inlineSg;
+    if (capacity > VIOGPU_CONTROL_INLINE_SG_CAPACITY)
+    {
+        if (KeGetCurrentIrql() > DISPATCH_LEVEL)
+        {
+            return VIOGPU_QUEUE_ERROR;
+        }
+        sg = static_cast<VirtIOBufferDescriptor *>(ExAllocatePoolUninitialized(NonPagedPoolNx,
+                                                                               static_cast<SIZE_T>(capacity) * sizeof(*sg),
+                                                                               'sCGV'));
+        if (sg == NULL)
+        {
+            return VIOGPU_QUEUE_ERROR;
+        }
+    }
+
     UINT outcnt = 0, incnt = 0;
-    int ret = 0;
-    KIRQL SavedIrql;
-
-    if (buf->size > PAGE_SIZE)
+    int ret = VIOGPU_QUEUE_ERROR;
+    if (BuildControlSG(buf, sg, capacity, &outcnt, &incnt))
     {
-        DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s size is too big %d\n", __FUNCTION__, buf->size));
-        return VIOGPU_QUEUE_ERROR;
-    }
-
-    UINT elementCount = BuildSGElements(&sg[outcnt + incnt], sgleft, (PVOID)buf->buf, buf->size);
-    if (elementCount == 0)
-    {
-        DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid command DMA address %p\n", __FUNCTION__, buf->buf));
-        return VIOGPU_QUEUE_ERROR;
-    }
-    outcnt += elementCount;
-    sgleft -= elementCount;
-
-    if (buf->data_size)
-    {
-        elementCount = BuildSGElements(&sg[outcnt + incnt], sgleft, (PVOID)buf->data_buf, buf->data_size);
-        if (elementCount == 0)
+        buf->response_size = 0;
+        KIRQL savedIrql;
+        Lock(&savedIrql);
+        // Direct AddBuf copies the SG values into the negotiated virtqueue.
+        // It refuses a full/smaller queue without retaining this temporary SG.
+        ret = AddBuf(sg, outcnt, incnt, buf, NULL, 0);
+        if (ret >= 0)
         {
-            DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid data DMA address %p\n", __FUNCTION__, buf->data_buf));
-            return VIOGPU_QUEUE_ERROR;
+            Kick();
         }
-        outcnt += elementCount;
-        sgleft -= elementCount;
+        Unlock(savedIrql);
     }
-
-    if (buf->resp_size > PAGE_SIZE)
+    if (sg != inlineSg)
     {
-        DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s resp_size is too big %d\n", __FUNCTION__, buf->resp_size));
-        return VIOGPU_QUEUE_ERROR;
+        ExFreePoolWithTag(sg, 'sCGV');
     }
-
-    if (buf->resp_size)
-    {
-        if (sgleft == 0)
-        {
-            DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s no descriptor available for response\n", __FUNCTION__));
-            return VIOGPU_QUEUE_ERROR;
-        }
-        elementCount = BuildSGElements(&sg[outcnt + incnt], sgleft, (PVOID)buf->resp_buf, buf->resp_size);
-        if (elementCount == 0)
-        {
-            DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid response DMA address %p\n", __FUNCTION__, buf->resp_buf));
-            return VIOGPU_QUEUE_ERROR;
-        }
-        incnt += elementCount;
-        sgleft -= elementCount;
-    }
-
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--> %s sgleft %d\n", __FUNCTION__, sgleft));
-
-    buf->response_size = 0;
-    Lock(&SavedIrql);
-    ret = AddBuf(&sg[0], outcnt, incnt, buf, NULL, 0);
-    if (ret >= 0)
-    {
-        Kick();
-    }
-    Unlock(SavedIrql);
-
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s ret = %d\n", __FUNCTION__, ret));
-
     return ret;
 }
 
