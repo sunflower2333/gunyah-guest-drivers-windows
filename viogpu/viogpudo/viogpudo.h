@@ -1133,6 +1133,10 @@ class VioGpuDod
     volatile LONG m_NativeApertureMapSkipCount;
     volatile LONG m_NativeApertureFailureCount;
     volatile LONG m_NativePagingResetCount;
+    // First Render refusal: stage, status, predicate mask, reference index,
+    // context ID and resource ID. Publication state 2 means all fields ready.
+    volatile LONG m_NativeRenderFailure[6];
+    volatile LONG m_NativeRenderFailureRecorded;
     // Keep DISPATCH_LEVEL spinlock regions out of their pageable callers,
     // including optimized builds that would otherwise inline these routines.
     __declspec(noinline) __declspec(code_seg(".text")) NTSTATUS ArmCrtcVsyncTimer(void);
@@ -1620,6 +1624,26 @@ class VioGpuDod
     DWORD ReadNativeApertureFailureStage(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeApertureFailureStage, 0, 0));
+    }
+    VOID RecordNativeRenderFailure(DWORD stage, NTSTATUS status, DWORD detail = 0,
+                                   DWORD index = MAXULONG, DWORD context = 0, DWORD resource = 0)
+    {
+        if (InterlockedCompareExchange(&m_NativeRenderFailureRecorded, 1, 0) != 0)
+        {
+            return;
+        }
+        const DWORD values[] = {stage, static_cast<DWORD>(status), detail, index, context, resource};
+        for (UINT field = 0; field < ARRAYSIZE(values); ++field)
+        {
+            InterlockedExchange(&m_NativeRenderFailure[field], static_cast<LONG>(values[field]));
+        }
+        InterlockedExchange(&m_NativeRenderFailureRecorded, 2);
+    }
+    DWORD ReadNativeRenderFailure(UINT field)
+    {
+        return field < ARRAYSIZE(m_NativeRenderFailure) &&
+                       InterlockedCompareExchange(&m_NativeRenderFailureRecorded, 0, 0) == 2
+                   ? static_cast<DWORD>(InterlockedCompareExchange(&m_NativeRenderFailure[field], 0, 0)) : 0;
     }
     DWORD ReadNativeApertureFailureStatus(void)
     {

@@ -240,6 +240,11 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativePendingPreemptionEpoch = 0;
     m_NativeFencePublication = {};
     m_NativeApertureFailureStage = 0;
+    for (UINT field = 0; field < ARRAYSIZE(m_NativeRenderFailure); ++field)
+    {
+        m_NativeRenderFailure[field] = 0;
+    }
+    m_NativeRenderFailureRecorded = 0;
     m_NativeApertureFailureStatus = 0;
     m_NativeApertureFailureDetail = 0;
     m_NativeApertureFailureRecorded = 0;
@@ -5771,6 +5776,9 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD fenceTraceLastEvent = VioGpuReadFenceTraceLastEvent();
     DWORD fenceTraceLastFenceId = VioGpuReadFenceTraceLastFenceId();
     DWORD fenceTraceLastSubmitted = VioGpuReadFenceTraceLastSubmitted();
+    DWORD renderFailure[] = {ReadNativeRenderFailure(0), ReadNativeRenderFailure(1),
+                            ReadNativeRenderFailure(2), ReadNativeRenderFailure(3),
+                            ReadNativeRenderFailure(4), ReadNativeRenderFailure(5)};
     DWORD apertureFailureStage = ReadNativeApertureFailureStage();
     DWORD apertureFailureStatus = ReadNativeApertureFailureStatus();
     DWORD apertureFailureDetail = ReadNativeApertureFailureDetail();
@@ -6263,6 +6271,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"sionFaultPres"
                                                                                                          L"entDetail",
                                                                                                          &submissionFaultPresentDetail},
+        {L"NativeRenderFailureStatus", &renderFailure[1]},
+        {L"NativeRenderFailureDetail", &renderFailure[2]},
+        {L"NativeRenderFailureIndex", &renderFailure[3]},
+        {L"NativeRenderFailureContextId", &renderFailure[4]},
+        {L"NativeRenderFailureResourceId", &renderFailure[5]},
+        {L"NativeRenderFailureStage", &renderFailure[0]},
     };
     NTSTATUS writeStatus = STATUS_SUCCESS;
     for (UINT index = 0; index < ARRAYSIZE(writes); ++index)
