@@ -1,17 +1,17 @@
 # Native D3D12 descriptor checkpoint
 
 The pinned vkd3d-proton engine now translates native WDK descriptor heap,
-buffer UAV/CBV/SRV, simple descriptor copy, heap binding and compute root table/CBV/SRV
+buffer UAV/CBV/SRV, simple and ranged descriptor copy, heap binding and compute root table/CBV/SRV
 callbacks into its embedded backend. A copied staging descriptor can feed a
 compute table at nonzero heap and range offsets. Validation rejects foreign
 devices, invisible heaps, out-of-range or misaligned handles and stale bindings
 after command-list reset. DDI shader-visible bit 2 maps explicitly to API bit 1.
 
-Engine source: `b2c510d2dd58e93cb3d53cec9a484187230b52d9`.
-Standalone native CI: `sunflower2333/vkd3d-proton/actions/runs/34603845851`,
-Windows architecture jobs in progress; the CPU Vulkan job passed. Linux CPU
-Vulkan locally passes two UAV, four CBV and eight SRV workloads with
-1024-word readback each (14336 words total). CBVs verify buffer/heap offsets,
+Engine source: `0447a7675f5733059925408325dd55f4218cb5a7`.
+Standalone native CI: `sunflower2333/vkd3d-proton/actions/runs/34606533835`,
+all four jobs passed, including ARM64, x64 and x86 WDK builds. Linux CPU
+Vulkan locally passes two UAV, five CBV and eight SRV workloads with
+1024-word readback each (15360 words total). CBVs verify buffer/heap offsets,
 copied and null table descriptors, root rebinding after reset and rejected zero root addresses.
 Root CBVs require a live owned buffer; they cannot assume descriptor-table
 null-read behavior. Actual WDK callback
@@ -27,6 +27,16 @@ metadata when a live descriptor is replaced by null, including copied null
 descriptors; shader GetDimensions and readback verify that the old buffer size
 cannot survive slot reuse.
 
+Native CopyDescriptors resolves multiple source and destination heaps before
+copying. Null range sizes mean one descriptor and empty ranges are ignored.
+Validation checks ownership, types, bounds, equal flattened totals, CPU-only
+sources and all source/destination overlaps before any descriptor can change.
+The fifth CBV workload scatters two source heaps across different destination
+range boundaries. Its GPU output also verifies that rejected late ranges,
+foreign heaps, shader-visible sources, overlaps and mismatched totals preserve
+the previously valid destination. The WDK fixture verifies native handle
+resolution and runtime error reporting; target GPU ranged-copy proof is pending.
+
 The package also includes `vkd3d-umd-gpu-probe`, which calls the production
 backend with an explicit Windows adapter LUID and matching Vulkan vendor and
 device IDs. It independently requires that identity and the Turnip driver ID;
@@ -35,7 +45,9 @@ on the selected device when invoked. Missing identity returns2 before loading
 Vulkan. The previous09146e1 checkpoint passed all four standalone CI jobs,
 all seven paired jobs at parent674154c, and two real ARM64 Turnip compute
 readbacks in1005ms. The84d6bba CBV checkpoint also passed the ARM64 target in806ms
-with6144 correct GPU readbacks. The new SRV target test remains pending. Neither backend
+with6144 correct GPU readbacks. The b2c510d SRV checkpoint passed the target
+in1015ms with14336 correct GPU readbacks, all submissions retired and no new
+host GPU fault or desktop process restart. Neither backend
 checkpoint establishes native runtime DDI or presentation support.
 
 The parent workflow repeats backend and three-architecture bridge validation,
@@ -44,6 +56,6 @@ and records the engine and parent identities. Existing Mesa desktop
 registration is retained. This checkpoint does not register a D3D12 UMD.
 
 Remaining native runtime work includes complete SRV mappings, sampler/texture descriptors,
-ranged copies and graphics, runtime allocation/GPUVA/residency, monitored
+graphics, runtime allocation/GPUVA/residency, monitored
 fences, OpenAdapter12 integration, presentation and reset recovery. These
 remain prerequisites for claiming application-compatible native Direct3D12.
