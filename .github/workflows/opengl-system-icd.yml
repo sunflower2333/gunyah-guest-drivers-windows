@@ -34,17 +34,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run watch 34602261501 --repo sunflower2333/mesa --exit-status --interval 30
+          gh run watch 34603046582 --repo sunflower2333/mesa --exit-status --interval 30
           if ($LASTEXITCODE) { throw 'Pinned Mesa run did not complete successfully' }
-          $source = gh run view 34602261501 --repo sunflower2333/mesa --json headSha --jq .headSha
-          if ($LASTEXITCODE -or $source.Trim() -ne 'e0caf8c6740638c1b12a5150edca095d01262805') { throw 'Pinned Mesa run source mismatch' }
-          gh run download 34602261501 --repo sunflower2333/mesa --dir mesa-opengl-artifacts
+          $source = gh run view 34603046582 --repo sunflower2333/mesa --json headSha --jq .headSha
+          if ($LASTEXITCODE -or $source.Trim() -ne '9e66985560feb2d6237ba5983a80293f1a224038') { throw 'Pinned Mesa run source mismatch' }
+          gh run download 34603046582 --repo sunflower2333/mesa --dir mesa-opengl-artifacts
           if ($LASTEXITCODE) { throw 'Pinned Mesa artifact download failed' }
           python viogpu/opengl/package.py --payloads mesa-opengl-artifacts --verify-only
           if ($LASTEXITCODE) { throw 'Pinned Mesa source/hash/PE/export verification failed' }
       - name: Build real architecture proxies and ARM64X dual-view ICD
         shell: pwsh
-        run: ./viogpu/opengl/build-proxy.ps1
+        run: |
+          ./viogpu/opengl/build-proxy.ps1
+          ./viogpu/opengl/build-gles-probe.ps1 -Output opengl-system
       - name: Assemble system ICD package without an opengl32 replacement
         shell: pwsh
         run: |
@@ -74,6 +76,8 @@ jobs:
           foreach ($arch in @('arm64','x64','x86')) {
             & "$root/system-probe-$arch.exe" --load-only $root
             if ($LASTEXITCODE) { throw "Actual $arch ICD forwarding/load failed" }
+            & "$root/gles-probe-$arch.exe" --load-only $root
+            if ($LASTEXITCODE) { throw "Actual $arch EGL/GLES load failed" }
           }
           $isolated = Join-Path $env:RUNNER_TEMP 'opengl-probes-only'
           New-Item -ItemType Directory $isolated | Out-Null

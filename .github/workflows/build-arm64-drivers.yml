@@ -820,8 +820,8 @@ jobs:
           $pairRoot = 'out/drivers/viogpu'
           $pairIdentity = [ordered]@{
             source_commit = $env:GITHUB_SHA
-            mesa_commit = 'e0caf8c6740638c1b12a5150edca095d01262805'
-            mesa_architecture_run = 34602261501
+            mesa_commit = '9e66985560feb2d6237ba5983a80293f1a224038'
+            mesa_architecture_run = 34603046582
             workflow_run = $env:GITHUB_RUN_ID
             profile = 'WDDM 2.3 Advanced Color with native Mesa D3D10 UMD'
             expected_driver_model = 2300

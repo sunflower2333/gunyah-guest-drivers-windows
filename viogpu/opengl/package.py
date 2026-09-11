@@ -8,8 +8,8 @@ from pathlib import Path
 import shutil
 import struct
 
-MESA_COMMIT = "e0caf8c6740638c1b12a5150edca095d01262805"
-MESA_RUN = 34602261501
+MESA_COMMIT = "9e66985560feb2d6237ba5983a80293f1a224038"
+MESA_RUN = 34603046582
 MACHINES = {"arm64": 0xAA64, "x64": 0x8664, "x86": 0x14C}
 DLLS = ("libgallium_wgl.dll", "libEGL.dll", "libGLESv1_CM.dll", "libGLESv2.dll",
         "vulkan_freedreno.dll", "vulkan-1.dll", "z-1.dll")
@@ -85,6 +85,8 @@ def assemble(args):
         assert set(exports) == set(EXPORTS) and all(value is None for value in exports.values()), proxy
         shutil.copy2(args.proxies/proxy, output/proxy)
         shutil.copy2(args.proxies/f"system-probe-{arch}.exe", output/f"system-probe-{arch}.exe")
+        pe_exports(args.proxies/f"gles-probe-{arch}.exe", machine)
+        shutil.copy2(args.proxies/f"gles-probe-{arch}.exe", output/f"gles-probe-{arch}.exe")
     hybrid = args.proxies/"viogpuopengl.dll"
     exports = pe_exports(hybrid, MACHINES["arm64"])
     assert set(exports) == set(EXPORTS), "ARM64X export table mismatch"
