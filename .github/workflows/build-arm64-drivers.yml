@@ -864,8 +864,8 @@ jobs:
             $identity = Get-Content "$candidate/source.json" -Raw | ConvertFrom-Json
             $engine = ((& git ls-tree HEAD external/vkd3d-proton) -split '\s+')[2]
             if ($identity.Source -ne $engine) { throw "Candidate $arch source is not the parent gitlink" }
-            $identity | Add-Member ParentSource $env:GITHUB_SHA
-            $identity | Add-Member MesaSource (((& git ls-tree HEAD external/mesa) -split '\s+')[2])
+            $identity | Add-Member -NotePropertyName ParentSource -NotePropertyValue $env:GITHUB_SHA
+            $identity | Add-Member -NotePropertyName MesaSource -NotePropertyValue (((& git ls-tree HEAD external/mesa) -split '\s+')[2])
             $identity | ConvertTo-Json -Depth 6 | Set-Content "$candidate/source.json"
             Get-ChildItem $candidate -File | Where-Object Name -ne 'SHA256SUMS' | Get-FileHash -Algorithm SHA256 |
               ForEach-Object { $_.Hash + '  ' + [IO.Path]::GetFileName($_.Path) } | Set-Content "$candidate/SHA256SUMS"
