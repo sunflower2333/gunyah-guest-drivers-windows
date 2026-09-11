@@ -3,7 +3,7 @@
 `external/dxvk` pins the independent DXVK fork. The parent workflow builds
 that exact submodule, the existing Mesa UMD and KMD, then signs and catalogues
 the DLLs before publishing the driver artifact. It does not publish a release.
-All checkouts and submodules use depth1. Candidate version60000 is explicitly
+All checkouts and submodules use depth1. The candidate version is explicitly
 versioned in source; it is not calculated from truncated Git history.
 
 The DXVK library currently exposes native D3D10 resource and restricted
