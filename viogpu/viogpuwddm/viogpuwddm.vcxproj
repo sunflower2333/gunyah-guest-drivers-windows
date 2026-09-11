@@ -98,6 +98,11 @@
   <ItemGroup>
     <FilesToPackage Include="$(TargetPath)" />
     <FilesToPackage Include="$(OutDir)viogpud3d.dll" />
+    <!-- WDK runs an initial Inf2Cat during MSBuild, before workflow staging.
+         Supply every candidate named by the INF to that first package too. -->
+    <FilesToPackage Include="$(MSBuildThisFileDirectory)..\..\dxvk-umd\viogpudxvk.dll" />
+    <FilesToPackage Include="$(MSBuildThisFileDirectory)..\..\dxvk-umd\dxvk-umd-backend-probe.exe" />
+    <FilesToPackage Include="$(MSBuildThisFileDirectory)..\..\dxvk-umd\dxvk-umd-ddi-probe.exe" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="$(MSBuildProjectDirectory)\..\..\build\Driver.Common.targets" />
