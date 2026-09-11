@@ -42,6 +42,9 @@ jobs:
       - name: Execute suballocator mapping failure regression
         shell: pwsh
         run: python external/mesa/src/freedreno/vulkan/tests/tu_suballoc_failure_test.py
+      - name: Execute command stream pooling and range ownership regression
+        shell: pwsh
+        run: python external/mesa/src/freedreno/vulkan/tests/tu_cs_pool_test.py
       - name: Execute production fault and power recovery paths
         shell: pwsh
         run: |
