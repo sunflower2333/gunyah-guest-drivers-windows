@@ -1,0 +1,58 @@
+name: Build and validate system OpenGL ICD
+on:
+  workflow_dispatch:
+  workflow_call:
+  push:
+    branches: [viogpu-opengl-icd-20260911]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Download the exact successful three-architecture Mesa run
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 34579117645 --repo sunflower2333/mesa --dir mesa-opengl-artifacts
+          if ($LASTEXITCODE) { throw 'Pinned Mesa artifact download failed' }
+          python viogpu/opengl/package.py --payloads mesa-opengl-artifacts --verify-only
+          if ($LASTEXITCODE) { throw 'Pinned Mesa source/hash/PE/export verification failed' }
+      - name: Build real architecture proxies and ARM64X dual-view ICD
+        shell: pwsh
+        run: ./viogpu/opengl/build-proxy.ps1
+      - name: Assemble system ICD package without an opengl32 replacement
+        shell: pwsh
+        run: |
+          python viogpu/opengl/package.py --payloads mesa-opengl-artifacts --proxies opengl-system --output opengl-payload
+          if ($LASTEXITCODE) { throw 'System ICD package verification failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-opengl-system-unsigned
+          path: opengl-payload/
+          if-no-files-found: error
+  native-abi:
+    needs: package
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: viogpu-opengl-system-unsigned
+          path: opengl-payload
+      - name: Execute ARM64X native and x64 views plus x86 Wow ABI
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path opengl-payload).Path
+          foreach ($arch in @('arm64','x64','x86')) {
+            & "$root/system-probe-$arch.exe" --load-only $root
+            if ($LASTEXITCODE) { throw "Actual $arch ICD forwarding/load failed" }
+          }
+          Write-Host 'No adapter registration or graphics context: ABI proof only, system rendering still requires target validation.'
