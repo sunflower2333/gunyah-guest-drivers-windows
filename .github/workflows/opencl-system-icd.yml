@@ -1,5 +1,7 @@
 name: Build registered OpenCL distribution
 on:
+  push:
+    branches: [work/opencl-integration-20260911]
   workflow_dispatch:
   workflow_call:
 permissions:
