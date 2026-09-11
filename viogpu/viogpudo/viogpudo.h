@@ -1178,7 +1178,8 @@ class VioGpuDod
     NTSTATUS RecommendMonitorModes(_In_ CONST DXGKARG_RECOMMENDMONITORMODES *CONST pRecommendMonitorModes);
     NTSTATUS EnumVidPnCofuncModality(_In_ CONST DXGKARG_ENUMVIDPNCOFUNCMODALITY *CONST pEnumCofuncModality);
     NTSTATUS SetVidPnSourceVisibility(_In_ CONST DXGKARG_SETVIDPNSOURCEVISIBILITY *pSetVidPnSourceVisibility);
-    NTSTATUS CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVidPn);
+    NTSTATUS CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVidPn,
+                         D3DDDIFORMAT requiredOutputFormat = D3DDDIFMT_UNKNOWN);
     NTSTATUS
     UpdateActiveVidPnPresentPath(_In_ CONST DXGKARG_UPDATEACTIVEVIDPNPRESENTPATH *CONST pUpdateActiveVidPnPresentPath);
     NTSTATUS QueryVidPnHWCapability(_Inout_ DXGKARG_QUERYVIDPNHWCAPABILITY *pVidPnHWCaps);
@@ -1287,6 +1288,13 @@ class VioGpuDod
                                                              0)) == QueryNativeFenceEpoch();
     }
     BOOLEAN BeginColorStateOperation(BOOLEAN wait);
+    // Caller owns ColorStateOperation so CommitVidPn cannot change this mode.
+    BOOLEAN MatchesNativeHdrMode(UINT width, UINT height) const
+    {
+        return IsNativeHdrModeAvailable() && m_CurrentMode.Flags.FrameBufferIsActive &&
+               m_CurrentMode.DispInfo.ColorFormat == D3DDDIFMT_A2B10G10R10 && m_CurrentMode.DispInfo.Width == width &&
+               m_CurrentMode.DispInfo.Height == height;
+    }
     VOID EndColorStateOperation();
     VOID ClearColorPresentCompletion();
     BOOLEAN PublishColorPresentCompletion(ULONGLONG presentId, ULONGLONG address, ULONG epoch);
