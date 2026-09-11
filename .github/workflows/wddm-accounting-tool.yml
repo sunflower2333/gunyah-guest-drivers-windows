@@ -1,0 +1,56 @@
+name: Build WDDM accounting acceptance tool
+on:
+  workflow_dispatch:
+  push:
+    branches: [viogpu-wddm2-taskmanager-20260911]
+    paths: ['viogpu/tools/wddm-accounting/**', '.github/workflows/wddm-accounting-tool.yml']
+  pull_request:
+    paths: ['viogpu/tools/wddm-accounting/**', '.github/workflows/wddm-accounting-tool.yml']
+jobs:
+  accounting-tool:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: arm64
+      - name: Locate Windows SDK and WDK
+        shell: pwsh
+        run: ./.github/scripts/locate-windows-kit.ps1
+      - name: Parse collection scripts and test accounting deltas
+        shell: pwsh
+        run: |
+          Get-ChildItem viogpu/tools/wddm-accounting/*.ps1 | ForEach-Object {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+          & viogpu/tools/wddm-accounting/test-accounting-deltas.ps1
+      - name: Build actual ARM64 KMT snapshot executable
+        shell: pwsh
+        run: |
+          msbuild viogpu/tools/wddm-accounting/wddm-accounting.vcxproj /m /p:Configuration=Release /p:Platform=ARM64 `
+            /p:WindowsTargetPlatformVersion="$env:DROIDVM_KIT_VERSION" /p:SpectreMitigation=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = Resolve-Path viogpu/tools/wddm-accounting/bin/ARM64/wddm-accounting.exe
+          $stream = [IO.File]::OpenRead($exe)
+          $reader = [IO.BinaryReader]::new($stream)
+          try {
+            $stream.Position = 0x3c
+            $offset = $reader.ReadInt32()
+            $stream.Position = $offset
+            if ($reader.ReadUInt32() -ne 0x4550 -or $reader.ReadUInt16() -ne 0xaa64) { throw 'Tool must be native ARM64 PE' }
+          } finally { $reader.Dispose() }
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'Native ARM64 executable did not load' }
+          & $exe --pid invalid
+          if ($LASTEXITCODE -ne 2) { throw 'Invalid PID must fail before touching GPU' }
+          New-Item -ItemType Directory -Path accounting-tool -Force | Out-Null
+          Copy-Item $exe accounting-tool/
+          Copy-Item viogpu/tools/wddm-accounting/*.ps1, viogpu/tools/wddm-accounting/README.md accounting-tool/
+          Get-FileHash accounting-tool/* -Algorithm SHA256 | Format-Table -AutoSize
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wddm-accounting-arm64
+          path: accounting-tool/
+          if-no-files-found: error
