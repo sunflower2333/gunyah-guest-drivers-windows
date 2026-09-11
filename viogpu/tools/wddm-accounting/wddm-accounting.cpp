@@ -1,5 +1,6 @@
 // Read-only OS accounting snapshot. No driver installation or workload launch.
 #include <windows.h>
+#include <winternl.h>
 #include <d3dkmthk.h>
 #include <dxgi1_2.h>
 #include <cstdio>
