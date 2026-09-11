@@ -406,6 +406,13 @@ jobs:
           pattern: paired-vkd3d-*
           path: vkd3d-umd
 
+      - name: Execute ARM64 bridge WDK ABI on ARM64 runner without GPU work
+        shell: pwsh
+        run: |
+          $candidate = Resolve-Path vkd3d-umd/paired-vkd3d-arm64
+          & "$candidate/vkd3d-umd-ddi-abi-test.exe" "$candidate/viogpud3d12.dll"
+          if ($LASTEXITCODE) { throw 'ARM64 native DDI ABI test failed' }
+
       - name: Download the Mesa user-mode driver
         uses: actions/download-artifact@v4
         with:
