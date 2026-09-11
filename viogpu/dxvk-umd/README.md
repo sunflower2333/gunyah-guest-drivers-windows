@@ -17,6 +17,17 @@ the optional identity trailer; the consumer rejects old KMDs without it. It rema
 unregistered candidate: the installed UserModeDriverName still selects Mesa.
 No capability or complete-DXVK-UMD claim follows from this packaging.
 
+The newer development DDIs add bounded buffer/texture uploads and region
+copies, real event/occlusion/timestamp queries, VS/PS constant buffers,
+Texture2D shader-resource views and samplers. The pixel probe's red result
+depends on a sampled texture, constant buffer and completed GPU event.
+Windowed-blit Present uses a real runtime-associated CPU-visible allocation,
+synchronized GPU readback and Lock/Unlock before PresentCb on a real runtime
+context. This copying path is unregistered and has no target proof; shared
+opens, primary/flip support and the complete native table remain unfinished.
+The paired job checks the actual pinned child wire declaration against the
+KMD header for all sixteen allocation fields, defaults and format codes.
+
 Remaining native activation requirements include installed adapter-lifecycle
 validation, general shader interfaces and all mandatory DDI coverage, kernel allocation
 sharing, ownership/residency and DXGI Present/fence integration. Native D3D9,
