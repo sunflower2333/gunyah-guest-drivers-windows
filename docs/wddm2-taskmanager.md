@@ -108,7 +108,15 @@ validation of this VIOGPU implementation.
 - Local full-miniport contract checker: PASS at final `41ade6e`.
 - `git diff --check`: PASS.
 - ARM64 WDK workflow [34579582312](https://github.com/sunflower2333/gunyah-guest-drivers-windows/actions/runs/34579582312): PASS at final `41ade6e`, including the 17 production-function tests, inherited regressions, full-miniport and guest-driver ARM64 compilation/link checks.
-- Paired Mesa/KMD signed product workflow [34579585440](https://github.com/sunflower2333/gunyah-guest-drivers-windows/actions/runs/34579585440): PASS at `41ade6e`, including Mesa, Zink recovery regression, KMD build, package validation and signing. Artifact identity is recorded separately below once downloaded.
+- Paired Mesa/KMD signed product workflow [34579585440](https://github.com/sunflower2333/gunyah-guest-drivers-windows/actions/runs/34579585440): PASS at `41ade6e`, including Mesa, Zink recovery regression, KMD build, package validation and signing.
+- Downloaded paired package: `.artifacts/paired-34579585440/`, INF version
+  `100.6.101.58378`; KMD and UMD are both ARM64 PE images.
+- Product artifact ID `10191403919`, GitHub archive digest
+  `sha256:4baf1f2f62bb38f4e95c2efb13059bceb1a404556b636bdf502d80c40bafada8`.
+- Downloaded KMD SHA256:
+  `4263a59e7671639825346076804bbb40b4bbb4c34a5b7fce3995cf4e5b56bee8`.
+- Downloaded paired Mesa UMD SHA256:
+  `855eb2cbf8b7262d06cd853eb34c8c24981f41d8cd422409a0f30799978932d2`.
 - Repository-wide clang-format CI reports inherited formatting debt. Only
   changed lines/new test code were formatted; no mass reformat was made.
 
