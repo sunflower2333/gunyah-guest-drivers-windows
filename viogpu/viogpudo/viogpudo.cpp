@@ -3255,19 +3255,29 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                 }
                 auto output = static_cast<DXGK_COLORIMETRY *>(pQueryAdapterInfo->pOutputData);
                 RtlZeroMemory(output, sizeof(*output));
-                output->FormatBitDepths.Rgb = D3DKMDT_BITS_PER_COMPONENT_08;
                 VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
                 if (QueryDisplayColor(&caps) && IsNativeHdrModeAvailable())
                 {
-                    output->FormatBitDepths.Rgb |= D3DKMDT_BITS_PER_COMPONENT_10;
+                    // WDK requires a complete override or an entirely zero
+                    // structure. Unknown luminance cannot form an override.
+                    if (caps.min_luminance == MAXULONG || caps.max_luminance == MAXULONG ||
+                        caps.max_average_luminance == MAXULONG || caps.max_luminance == 0 ||
+                        caps.max_average_luminance == 0 || caps.min_luminance >= caps.max_luminance ||
+                        caps.max_average_luminance > caps.max_luminance)
+                        return STATUS_SUCCESS;
+                    output->FormatBitDepths.Rgb = D3DKMDT_BITS_PER_COMPONENT_08 | D3DKMDT_BITS_PER_COMPONENT_10;
                     output->StandardColorimetryFlags.BT2020RGB = 1;
                     output->StandardColorimetryFlags.ST2084 = 1;
-                    // Unknown values remain zero (no override). Display API
-                    // observations never manufacture physical chromaticities.
-                    output->MinLuminance = caps.min_luminance == MAXULONG ? 0 : caps.min_luminance;
-                    output->MaxLuminance = caps.max_luminance == MAXULONG ? 0 : caps.max_luminance;
-                    output->MaxFullFrameLuminance = caps.max_average_luminance == MAXULONG ? 0
-                                                                                           : caps.max_average_luminance;
+                    // These are the virtual BT.2020/D65 transport endpoint,
+                    // in EDID 10-bit xy units, NOT measured panel primaries.
+                    // Android owns the final transport-to-panel gamut mapping.
+                    output->RedPoint = {725, 299};
+                    output->GreenPoint = {174, 816};
+                    output->BluePoint = {134, 47};
+                    output->WhitePoint = {320, 337};
+                    output->MinLuminance = caps.min_luminance;
+                    output->MaxLuminance = caps.max_luminance;
+                    output->MaxFullFrameLuminance = caps.max_average_luminance;
                 }
                 return STATUS_SUCCESS;
             }
@@ -4575,6 +4585,7 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
         Status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
         if (NT_SUCCESS(Status))
         {
+            m_ColorTargetPoweredOff = TRUE;
             DisarmCrtcVsyncTimer();
             SetCrtcVsyncPrimaryAddress(0);
         }
@@ -4859,8 +4870,15 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
     DisarmCrtcVsyncTimer();
     if (resize)
         Status = m_pHWDevice->SetCurrentMode(m_pHWDevice->GetModeNumber(selected), pCurrentMode);
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    else if (m_ColorTargetPoweredOff)
+        Status = m_pHWDevice->ResumeFrameBuffer(pCurrentMode);
+#endif
     if (NT_SUCCESS(Status))
     {
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        m_ColorTargetPoweredOff = FALSE;
+#endif
         m_pHWDevice->SetCurrentModeIndex(selected);
         Status = SetCrtcTiming(m_pHWDevice->GetModeTiming(selected));
     }
@@ -8619,6 +8637,42 @@ VioGpuAdapter::~VioGpuAdapter(void)
     m_Id = 0;
     DbgPrint(TRACE_LEVEL_FATAL, ("<--- %s\n", __FUNCTION__));
 }
+
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+NTSTATUS VioGpuAdapter::ResumeFrameBuffer(CURRENT_MODE *pCurrentMode)
+{
+    PAGED_CODE();
+    // The caller holds ColorStateOperation. Rebind the driver-owned fallback
+    // primary after a target power-up even when the VidPn is unmodified.
+    if (m_pFrameBuf == NULL || !pCurrentMode->Flags.FrameBufferIsActive ||
+        m_FrameBufWidth != pCurrentMode->DispInfo.Width || m_FrameBufHeight != pCurrentMode->DispInfo.Height)
+        return STATUS_DEVICE_NOT_READY;
+    const UINT resource = m_pFrameBuf->GetId();
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextConfirmed;
+    if (pCurrentMode->DispInfo.ColorFormat == D3DDDIFMT_A2B10G10R10)
+    {
+        VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+        if (!m_pVioGpuDod->QueryDisplayColor(&caps) || !(caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ))
+            return STATUS_DEVICE_NOT_READY;
+        VIOGPU_SET_RESOURCE_COLOR color = {};
+        color.resource_id = resource;
+        color.format = VIOGPU_DISPLAY_FORMAT_AB30;
+        color.encoding = VIOGPU_DISPLAY_COLOR_PQ;
+        color.generation = caps.generation;
+        result = m_CtrlQueue.SetResourceColor(&color);
+    }
+    UINT previousResource = 0;
+    if (result == VioGpuHostContextConfirmed)
+        result = Set2DScanout(0, resource, m_FrameBufWidth, m_FrameBufHeight, &previousResource);
+    if (result == VioGpuHostContextConfirmed)
+        result = m_CtrlQueue.TransferToHost2DSynchronous(resource, 0, m_FrameBufWidth, m_FrameBufHeight, 0, 0);
+    if (result == VioGpuHostContextConfirmed)
+        result = m_CtrlQueue.FlushResourceSynchronous(resource, m_FrameBufWidth, m_FrameBufHeight, 0, 0);
+    if (result == VioGpuHostContextUnknown)
+        m_pVioGpuDod->RequestHardwareResetAtAnyIrql();
+    return result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+}
+#endif
 
 NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
 {
