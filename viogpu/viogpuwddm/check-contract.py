@@ -897,9 +897,11 @@ def check_arm64_workflow_contract() -> None:
         fail(f"full-miniport workflow driver projects must all target ARM64: {contract_platforms or ['none']}")
     if not product_platforms or set(product_platforms) != {"ARM64"}:
         fail(f"product workflow driver projects must all target ARM64: {product_platforms or ['none']}")
-    if sources["Native Context full-miniport"].count("/p:Platform=ARM64") != 3:
+    if sources["Native Context full-miniport"].count("/p:Platform=ARM64") != 4:
         fail("the full WDDM contract, UMD, and opt-in test targets must be built explicitly for ARM64")
     experimental_workflow = sources["Native Context full-miniport"]
+    if experimental_workflow.count("/p:VIOGPU_ADVANCED_COLOR=1") != 1 or "objhdr_win11_arm64/arm64/" not in experimental_workflow:
+        fail("the opt-in2.3 candidate must compile once into an independent ARM64 output tree")
     if experimental_workflow.count("Compile opt-in WDDM test implementations") != 1:
         fail("the full WDDM workflow must compile the opt-in test implementations exactly once")
     if experimental_workflow.count("/p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1") != 2:
@@ -2634,7 +2636,10 @@ def check_native_driver_caps_contract() -> None:
     if helper.count("RtlZeroMemory(") != 1:
         fail("Native Context DriverCaps must zero exactly the selected versioned structure extent")
 
-    helper_fields = set(re.findall(r"\bdriverCaps->([A-Za-z_][A-Za-z0-9_]*)", helper))
+    # Match before whitespace compaction: #endif followed by driverCaps is still
+    # a token boundary in C++, though compact_code joins their spelling.
+    helper_fields = set(re.findall(r"\bdriverCaps\s*->\s*([A-Za-z_][A-Za-z0-9_]*)",
+                                  function_body("VioGpuQueryNativeDriverCaps", VIOGPU_CODE)))
     expected_helper_fields = {
         "WDDMVersion",
         "HighestAcceptableAddress",
@@ -2732,6 +2737,24 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
         fail("registered unload callback must clean up WPP exactly once after successful initialization")
 def check_callback_table() -> None:
     body = function_body("VioGpuWddmBuildInitializationData")
+    # Check the opt-in branch exactly, then run the unchanged WDDM2.0 sequence
+    # contract against its default branch. Neither branch may add unreviewed DDIs.
+    advanced_version = re.compile(
+        r"#if\s*\(DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\)\s*"
+        r"initialData->Version\s*=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3;\s*#else\s*"
+        r"initialData->Version\s*=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_0;\s*#endif"
+    )
+    body, count = advanced_version.subn("initialData->Version = DXGKDDI_INTERFACE_VERSION_WDDM2_0;", body)
+    if count != 1:
+        fail("Advanced Color registration must preserve the exact default2.0/opt-in2.3 version selection")
+    advanced_callbacks = re.compile(
+        r"#if\s*\(DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\)\s*"
+        r"initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3\s*=\s*VioGpuWddmSetVidPnSourceAddressMpo3;\s*"
+        r"initialData->DxgkDdiSetTargetAdjustedColorimetry\s*=\s*VioGpuWddmSetTargetAdjustedColorimetry;\s*#endif"
+    )
+    body, count = advanced_callbacks.subn("", body)
+    if count != 1:
+        fail("Advanced Color callbacks must remain an exact conditional display-only registration")
     zero_initialization = re.findall(
         r"\bRtlZeroMemory\s*\(\s*initialData\s*,\s*sizeof\s*\(\s*\*\s*initialData\s*\)\s*\)\s*;",
         body,
@@ -7874,8 +7897,11 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if canonical_code(function_body("VioGpuAdapter::VioGpuAdapter", VIOGPU_SOURCE)).count(
             "m_PublishedScanoutResourceId=0;") != 1:
         fail("the cached scanout binding must be initialised in the constructor")
-    if VIOGPU_SOURCE.count("m_PublishedScanoutResourceId = 0;") != 5:
+    if VIOGPU_SOURCE.count("m_PublishedScanoutResourceId = 0;") != 6:
         fail("every scanout re-bind outside the publication path must drop the cached binding")
+    color_present = canonical_code(function_body("VioGpuAdapter::PresentColorResource", VIOGPU_CODE))
+    if color_present.count("m_PublishedScanoutResourceId=0;") != 1 or color_present.index("m_PublishedScanoutResourceId=0;") > color_present.index("m_CtrlQueue.SetScanoutSynchronous("):
+        fail("the color present transaction must invalidate cached binding before changing scanout")
     # The compositor programs its primary once and then draws into that memory
     # every frame. Nothing else moves those pixels, so the binding is recorded
     # wherever scanout 0 is pointed and republished on the display's cadence.
@@ -12554,16 +12580,23 @@ def check_project_safety(root: ET.Element) -> None:
     if len(test_definitions) != 1 or "VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1" not in test_definitions[0].split(";"):
         fail("opt-in WDDM test implementation property group must define its macro exactly once")
 
-    expected_interface = "DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WDDM2_0"
+    expected_interface = "DXGKDDI_INTERFACE_VERSION=$(VioGpuDdiInterface)"
     interface_definitions = [
         definition for definition in definitions if definition.startswith("DXGKDDI_INTERFACE_VERSION=")
     ]
     if interface_definitions != [expected_interface]:
         fail(f"project must fix the interface version only as {expected_interface}")
+    interfaces = root.findall(".//msbuild:VioGpuDdiInterface", NAMESPACE)
+    if [(element.attrib.get("Condition"), element.text) for element in interfaces] != [
+        (None, "DXGKDDI_INTERFACE_VERSION_WDDM2_0"),
+        ("'$(VIOGPU_ADVANCED_COLOR)'=='1'", "DXGKDDI_INTERFACE_VERSION_WDDM2_3"),
+    ]:
+        fail("WDDM2.0 must remain the default and2.3 must require the explicit Advanced Color build property")
 
     static_asserts = re.findall(
         r"\bstatic_assert\s*\(\s*DXGKDDI_INTERFACE_VERSION\s*==\s*"
-        r"DXGKDDI_INTERFACE_VERSION_WDDM2_0\s*,",
+        r"DXGKDDI_INTERFACE_VERSION_WDDM2_0\s*\|\|\s*"
+        r"DXGKDDI_INTERFACE_VERSION\s*==\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\s*,",
         DRIVER_CODE,
     )
     if len(static_asserts) != 1:

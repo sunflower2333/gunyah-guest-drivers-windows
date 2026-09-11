@@ -284,7 +284,8 @@ void DereferenceDevice(VIOGPU_WDDM_DEVICE *device)
 
 BOOLEAN IsSupportedSurfaceFormat(D3DDDIFORMAT format)
 {
-    return format == D3DDDIFMT_A8R8G8B8 || format == D3DDDIFMT_X8R8G8B8 || format == D3DDDIFMT_A8B8G8R8;
+    return format == D3DDDIFMT_A8R8G8B8 || format == D3DDDIFMT_X8R8G8B8 || format == D3DDDIFMT_A8B8G8R8 ||
+           format == D3DDDIFMT_A2B10G10R10 || format == D3DDDIFMT_A2R10G10B10;
 }
 
 VIOGPU_WDDM_UINT32 ToPrivateFormat(D3DDDIFORMAT format)
@@ -297,6 +298,10 @@ VIOGPU_WDDM_UINT32 ToPrivateFormat(D3DDDIFORMAT format)
             return VIOGPU_WDDM_FORMAT_B8G8R8X8_UNORM;
         case D3DDDIFMT_A8B8G8R8:
             return VIOGPU_WDDM_FORMAT_R8G8B8A8_UNORM;
+        case D3DDDIFMT_A2B10G10R10:
+            return VIOGPU_WDDM_FORMAT_R10G10B10A2_UNORM;
+        case D3DDDIFMT_A2R10G10B10:
+            return VIOGPU_WDDM_FORMAT_B10G10R10A2_UNORM;
         default:
             return VIOGPU_WDDM_FORMAT_NONE;
     }
@@ -312,6 +317,10 @@ D3DDDIFORMAT FromPrivateFormat(VIOGPU_WDDM_UINT32 format)
             return D3DDDIFMT_X8R8G8B8;
         case VIOGPU_WDDM_FORMAT_R8G8B8A8_UNORM:
             return D3DDDIFMT_A8B8G8R8;
+        case VIOGPU_WDDM_FORMAT_R10G10B10A2_UNORM:
+            return D3DDDIFMT_A2B10G10R10;
+        case VIOGPU_WDDM_FORMAT_B10G10R10A2_UNORM:
+            return D3DDDIFMT_A2R10G10B10;
         default:
             return D3DDDIFMT_UNKNOWN;
     }
@@ -2462,6 +2471,12 @@ BOOLEAN ResolveStandard2DFormat(D3DDDIFORMAT format, _Out_ UINT *virtioFormat)
         case D3DDDIFMT_X8B8G8R8:
             *virtioFormat = VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
             return TRUE;
+        case D3DDDIFMT_A2B10G10R10:
+            *virtioFormat = VIRTIO_GPU_FORMAT_R10G10B10A2_UNORM;
+            return TRUE;
+        case D3DDDIFMT_A2R10G10B10:
+            *virtioFormat = VIRTIO_GPU_FORMAT_B10G10R10A2_UNORM;
+            return TRUE;
         default:
             *virtioFormat = 0;
             return FALSE;
@@ -4423,6 +4438,58 @@ NTSTATUS ApplyRenderPrepatches(_Inout_ VIOGPU_WDDM_RENDER_COMMAND *header,
     }
     return STATUS_SUCCESS;
 }
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+struct VIOGPU_COLOR_PRESENT_WORK
+{
+    WORK_QUEUE_ITEM Work;
+    VioGpuDod *Adapter;
+    VIOGPU_WDDM_ALLOCATION *Allocation;
+    VIOGPU_SET_RESOURCE_COLOR Color;
+    ULONGLONG PrimaryAddress;
+    ULONGLONG PresentId;
+};
+
+VOID VioGpuColorPresentWorker(_In_ PVOID context)
+{
+    auto work = static_cast<VIOGPU_COLOR_PRESENT_WORK *>(context);
+    VioGpuDod *adapter = work->Adapter;
+    auto allocation = work->Allocation;
+    NTSTATUS status = AcquireAllocationLifecycle(allocation);
+    if (status == STATUS_SUCCESS)
+    {
+        VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
+        if (IsStandardPrimaryAllocation(allocation) && allocation->PlacementValid &&
+            allocation->PlacementOffset == work->PrimaryAddress && EnsureStandard2DAllocationBacking(allocation) &&
+            allocation->Resource2DState == VioGpu2DResourceBackingAttached)
+        {
+            work->Color.resource_id = allocation->ResourceId;
+            result = adapter->PresentColorResource(&work->Color,
+                                                   allocation->Width,
+                                                   allocation->Height,
+                                                   allocation->Resource2DResetGeneration);
+        }
+        status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+        KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+    }
+    if (status == STATUS_SUCCESS)
+    {
+        adapter->SetCrtcVsyncPrimaryAddress(work->PrimaryAddress);
+        // Publish only after RESOURCE_FLUSH retires all host input readers. The
+        // existing synchronized VSync notification reports this exact PresentId.
+        InterlockedExchange64(&adapter->m_ColorPresentCompletedId, static_cast<LONG64>(work->PresentId));
+    }
+    else
+    {
+        // An accepted asynchronous flip cannot be silently discarded or reported
+        // complete. Reset owns recovery if any queue/lifetime/generation step fails.
+        adapter->RequestHardwareResetAtAnyIrql();
+    }
+    ReleaseAllocationSubmissionReference(allocation);
+    delete work;
+    InterlockedExchange(&adapter->m_ColorPresentPending, 0);
+    adapter->ReleaseNativeSubmissionOperation();
+}
+#endif
 } // namespace
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetNodeMetadata(CONST HANDLE hAdapter,
@@ -10192,6 +10259,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRestartFromTimeout(CONST HAND
 }
 
 #pragma code_seg(pop)
+
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#include "advanced_color_ddi.inc"
+#endif
 
 _Use_decl_annotations_ NTSTATUS APIENTRY
 VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOURCEADDRESS *setVidPnSourceAddress)

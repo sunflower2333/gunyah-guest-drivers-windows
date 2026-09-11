@@ -189,6 +189,9 @@ UINT BPPFromPixelFormat(_In_ D3DDDIFORMAT Format)
             return 24;
         case D3DDDIFMT_X8R8G8B8:
         case D3DDDIFMT_A8R8G8B8:
+        case D3DDDIFMT_A8B8G8R8:
+        case D3DDDIFMT_A2B10G10R10:
+        case D3DDDIFMT_A2R10G10B10:
             return 32;
         default:
             VIOGPU_LOG_ASSERTION1("Unknown D3DDDIFORMAT 0x%I64x", Format);

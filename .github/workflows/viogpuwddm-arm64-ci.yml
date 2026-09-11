@@ -87,6 +87,14 @@ jobs:
           # select Platform=ARM64 explicitly in the MSBuild invocations.
           arch: x64
 
+      - name: Validate display color wire and metadata contract
+        shell: cmd
+        run: |
+          cl /nologo /std:c++17 /EHsc /W4 /WX viogpu\tests\display-color\display_color_test.cpp /Fe:display_color_test.exe
+          if errorlevel 1 exit /b 1
+          display_color_test.exe
+          if errorlevel 1 exit /b 1
+
       - name: Generate NetKVM MOF header
         shell: pwsh
         run: |
@@ -202,6 +210,19 @@ jobs:
             /p:ApiValidator_Enable=false `
             /p:SpectreMitigation=false /p:SignMode=Off
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Compile opt-in WDDM2.3 Advanced Color candidate
+        shell: pwsh
+        run: |
+          $hdrOutDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objhdr_win11_arm64/arm64/')
+          New-Item -ItemType Directory -Path $hdrOutDir -Force | Out-Null
+          msbuild viogpu/viogpuwddm/viogpuwddm.vcxproj /m `
+            /p:Configuration="Win11 Release" /p:Platform=ARM64 `
+            /p:WindowsTargetPlatformVersion="$env:DROIDVM_KIT_VERSION" `
+            /p:ApiValidator_Enable=false /p:SpectreMitigation=false /p:SignMode=Off `
+            /p:VIOGPU_ADVANCED_COLOR=1 /p:OutDir="$hdrOutDir" /p:IntDir="$hdrOutDir"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path (Join-Path $hdrOutDir 'viogpuwddm.sys'))) { throw 'No Advanced Color candidate binary' }
 
       - name: Compile opt-in WDDM test implementations
         shell: pwsh
