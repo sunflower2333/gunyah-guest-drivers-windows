@@ -2271,6 +2271,9 @@ NTSTATUS VioGpuDod::PublishPresentBlit(_In_ UINT width,
 
 BOOLEAN VioGpuDod::QueryDisplayColor(_Out_ VIOGPU_DISPLAY_COLOR_RESPONSE *caps)
 {
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    InterlockedExchange(&m_ColorModeAvailable, 0);
+#endif
     if (caps == NULL)
     {
         return FALSE;
@@ -2282,6 +2285,15 @@ BOOLEAN VioGpuDod::QueryDisplayColor(_Out_ VIOGPU_DISPLAY_COLOR_RESPONSE *caps)
     }
     BOOLEAN result = m_pHWDevice != NULL && m_pHWDevice->QueryDisplayColor(caps);
     ReleaseNativeSubmissionOperation();
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_ColorStateLock, &oldIrql);
+    m_ColorCapabilities = *caps;
+    InterlockedExchange(&m_ColorModeEpoch, static_cast<LONG>(QueryNativeFenceEpoch()));
+    InterlockedExchange(&m_ColorModeAvailable,
+                        result && caps->generation != 0 && (caps->usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ) ? 1 : 0);
+    KeReleaseSpinLock(&m_ColorStateLock, oldIrql);
+#endif
     return result;
 }
 
@@ -3290,6 +3302,19 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
             {
 #if defined(VIOGPU_NATIVE_CONTEXT)
                 status = VioGpuQueryNativeDriverCaps(pQueryAdapterInfo, IsPointerEnabled(), IsRenderOnly());
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+                VIOGPU_DISPLAY_COLOR_RESPONSE colorCaps = {};
+                if (NT_SUCCESS(status) && !IsRenderOnly() &&
+                    pQueryAdapterInfo->OutputDataSize >= sizeof(DXGK_DRIVERCAPS) && QueryDisplayColor(&colorCaps) &&
+                    IsNativeHdrModeAvailable())
+                {
+                    auto driverCaps = static_cast<DXGK_DRIVERCAPS *>(pQueryAdapterInfo->pOutputData);
+                    driverCaps->ColorTransformCaps.Gamma_Dxgi1 = 1;
+                    driverCaps->ColorTransformCaps.Transform_3x4Matrix = 1;
+                    driverCaps->ColorTransformCaps.Transform_3x4Matrix_WideColor = 1;
+                    driverCaps->ColorTransformCaps.Transform_3x4Matrix_HighColor = 1;
+                }
+#endif
 #else
                 if (pQueryAdapterInfo->OutputDataSize < sizeof(DXGK_DRIVERCAPS))
                 {
@@ -3719,6 +3744,15 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     UNREFERENCED_PARAMETER(SourceId);
 
+    UINT formatCount = 1;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    VIOGPU_DISPLAY_COLOR_RESPONSE colorCaps = {};
+    if (QueryDisplayColor(&colorCaps) && IsNativeHdrModeAvailable())
+    {
+        formatCount = 2;
+    }
+#endif
+
     for (ULONG idx = 0; idx < m_pHWDevice->GetModeCount(); ++idx)
     {
         D3DKMDT_VIDPN_SOURCE_MODE *pVidPnSourceModeInfo = NULL;
@@ -3727,42 +3761,50 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
             (pModeInfo->VisScreenWidth != pPinnedTarget->VideoSignalInfo.ActiveSize.cx ||
              pModeInfo->VisScreenHeight != pPinnedTarget->VideoSignalInfo.ActiveSize.cy))
             continue;
-        NTSTATUS Status = pVidPnSourceModeSetInterface->pfnCreateNewModeInfo(hVidPnSourceModeSet,
-                                                                             &pVidPnSourceModeInfo);
-        if (!NT_SUCCESS(Status))
+        for (UINT formatIndex = 0; formatIndex < formatCount; ++formatIndex)
         {
-            DbgPrint(TRACE_LEVEL_ERROR,
-                     ("pfnCreateNewModeInfo failed with Status = 0x%X, hVidPnSourceModeSet = %llu",
-                      Status,
-                      LONG_PTR(hVidPnSourceModeSet)));
-            return Status;
-        }
-
-        pVidPnSourceModeInfo->Type = D3DKMDT_RMT_GRAPHICS;
-        pVidPnSourceModeInfo->Format.Graphics.PrimSurfSize.cx = pModeInfo->VisScreenWidth;
-        pVidPnSourceModeInfo->Format.Graphics.PrimSurfSize.cy = pModeInfo->VisScreenHeight;
-        pVidPnSourceModeInfo->Format.Graphics.VisibleRegionSize = pVidPnSourceModeInfo->Format.Graphics.PrimSurfSize;
-        pVidPnSourceModeInfo->Format.Graphics.Stride = pModeInfo->ScreenStride;
-        pVidPnSourceModeInfo->Format.Graphics.PixelFormat = D3DDDIFMT_A8R8G8B8;
-        pVidPnSourceModeInfo->Format.Graphics.ColorBasis = D3DKMDT_CB_SCRGB;
-        pVidPnSourceModeInfo->Format.Graphics.PixelValueAccessMode = D3DKMDT_PVAM_DIRECT;
-
-        Status = pVidPnSourceModeSetInterface->pfnAddMode(hVidPnSourceModeSet, pVidPnSourceModeInfo);
-        if (!NT_SUCCESS(Status))
-        {
-            NTSTATUS TempStatus = pVidPnSourceModeSetInterface->pfnReleaseModeInfo(hVidPnSourceModeSet,
-                                                                                   pVidPnSourceModeInfo);
-            UNREFERENCED_PARAMETER(TempStatus);
-            NT_ASSERT(NT_SUCCESS(TempStatus));
-
-            if (Status != STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET)
+            NTSTATUS Status = pVidPnSourceModeSetInterface->pfnCreateNewModeInfo(hVidPnSourceModeSet,
+                                                                                 &pVidPnSourceModeInfo);
+            if (!NT_SUCCESS(Status))
             {
                 DbgPrint(TRACE_LEVEL_ERROR,
-                         ("pfnAddMode failed with Status = 0x%X, hVidPnSourceModeSet = %llu, pVidPnSourceModeInfo = %p",
+                         ("pfnCreateNewModeInfo failed with Status = 0x%X, hVidPnSourceModeSet = %llu",
                           Status,
-                          LONG_PTR(hVidPnSourceModeSet),
-                          pVidPnSourceModeInfo));
+                          LONG_PTR(hVidPnSourceModeSet)));
                 return Status;
+            }
+
+            pVidPnSourceModeInfo->Type = D3DKMDT_RMT_GRAPHICS;
+            pVidPnSourceModeInfo->Format.Graphics.PrimSurfSize.cx = pModeInfo->VisScreenWidth;
+            pVidPnSourceModeInfo->Format.Graphics.PrimSurfSize.cy = pModeInfo->VisScreenHeight;
+            pVidPnSourceModeInfo->Format.Graphics.VisibleRegionSize = pVidPnSourceModeInfo->Format.Graphics.PrimSurfSize;
+            pVidPnSourceModeInfo->Format.Graphics.Stride = pModeInfo->ScreenStride;
+            pVidPnSourceModeInfo->Format.Graphics.PixelFormat = D3DDDIFMT_A8R8G8B8;
+            if (formatIndex == 1)
+            {
+                pVidPnSourceModeInfo->Format.Graphics.PixelFormat = D3DDDIFMT_A2B10G10R10;
+            }
+            pVidPnSourceModeInfo->Format.Graphics.ColorBasis = D3DKMDT_CB_SCRGB;
+            pVidPnSourceModeInfo->Format.Graphics.PixelValueAccessMode = D3DKMDT_PVAM_DIRECT;
+
+            Status = pVidPnSourceModeSetInterface->pfnAddMode(hVidPnSourceModeSet, pVidPnSourceModeInfo);
+            if (!NT_SUCCESS(Status))
+            {
+                NTSTATUS TempStatus = pVidPnSourceModeSetInterface->pfnReleaseModeInfo(hVidPnSourceModeSet,
+                                                                                       pVidPnSourceModeInfo);
+                UNREFERENCED_PARAMETER(TempStatus);
+                NT_ASSERT(NT_SUCCESS(TempStatus));
+
+                if (Status != STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET)
+                {
+                    DbgPrint(TRACE_LEVEL_ERROR,
+                             ("pfnAddMode failed with Status = 0x%X, hVidPnSourceModeSet = %llu, pVidPnSourceModeInfo "
+                              "= %p",
+                              Status,
+                              LONG_PTR(hVidPnSourceModeSet),
+                              pVidPnSourceModeInfo));
+                    return Status;
+                }
             }
         }
     }
@@ -3822,6 +3864,13 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
         BuildVideoSignalInfo(&pVidPnTargetModeInfo->VideoSignalInfo, candidate);
         pVidPnTargetModeInfo->Preference = ModeIndex == m_pHWDevice->GetCurrentModeIndex()
             ? D3DKMDT_MP_PREFERRED : D3DKMDT_MP_NOTPREFERRED;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        pVidPnTargetModeInfo->WireFormatAndPreference.Rgb = D3DKMDT_BITS_PER_COMPONENT_08;
+        if (IsNativeHdrModeAvailable())
+        {
+            pVidPnTargetModeInfo->WireFormatAndPreference.Rgb |= D3DKMDT_BITS_PER_COMPONENT_10;
+        }
+#endif
         Status = pVidPnTargetModeSetInterface->pfnAddMode(hVidPnTargetModeSet, pVidPnTargetModeInfo);
         if (!NT_SUCCESS(Status))
         {
@@ -4854,6 +4903,12 @@ NTSTATUS VioGpuDod::IsVidPnSourceModeFieldsValid(CONST D3DKMDT_VIDPN_SOURCE_MODE
         {
             return STATUS_SUCCESS;
         }
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        if (pSourceMode->Format.Graphics.PixelFormat == D3DDDIFMT_A2B10G10R10 && IsNativeHdrModeAvailable())
+        {
+            return STATUS_SUCCESS;
+        }
+#endif
     }
 
     DbgPrint(TRACE_LEVEL_ERROR,

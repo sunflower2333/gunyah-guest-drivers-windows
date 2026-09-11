@@ -1298,6 +1298,16 @@ class VioGpuDod
     ULONG m_ColorPresentQueuedEpoch = 0;
     KSPIN_LOCK m_ColorStateLock;
     VIOGPU_DISPLAY_COLOR_RESPONSE m_ColorCapabilities = {};
+    volatile LONG m_ColorModeAvailable = 0;
+    volatile LONG m_ColorModeEpoch = 0;
+    BOOLEAN IsNativeHdrModeAvailable() const
+    {
+        return !IsHardwareResetRequested() &&
+               InterlockedCompareExchange(const_cast<volatile LONG *>(&m_ColorModeAvailable), 0, 0) != 0 &&
+               static_cast<ULONG>(InterlockedCompareExchange(const_cast<volatile LONG *>(&m_ColorModeEpoch),
+                                                             0,
+                                                             0)) == QueryNativeFenceEpoch();
+    }
     BOOLEAN BeginColorStateOperation(BOOLEAN wait);
     VOID EndColorStateOperation();
     VOID ClearColorPresentCompletion();
