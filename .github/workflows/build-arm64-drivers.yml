@@ -23,7 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          fetch-depth: 1
+          submodules: false
+      - run: git submodule update --init --recursive --depth 1
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
@@ -70,7 +72,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: true
+          fetch-depth: 1
+          submodules: false
+      - run: git submodule update --init --recursive --depth 1
 
       - name: Set up MSVC and WDK
         uses: ilammy/msvc-dev-cmd@v1
@@ -318,6 +322,29 @@ jobs:
           Copy-Item $symbols.FullName (Join-Path 'mesa-umd' 'viogpud3d.pdb') -Force
           Get-FileHash (Join-Path 'mesa-umd' 'viogpud3d.dll') -Algorithm SHA256 | Format-List
 
+      - name: Build the pinned DXVK native DDI candidate
+        shell: pwsh
+        working-directory: external/dxvk
+        run: ./scripts/build-native-umd.ps1 -OutputDirectory ../../dxvk-umd
+
+      - name: Record the paired source identities
+        shell: pwsh
+        run: |
+          $parent = (git rev-parse HEAD).Trim()
+          $mesa = (git rev-parse HEAD:external/mesa).Trim()
+          $dxvk = (git rev-parse HEAD:external/dxvk).Trim()
+          if ((git -C external/mesa rev-parse HEAD).Trim() -ne $mesa -or
+              (git -C external/dxvk rev-parse HEAD).Trim() -ne $dxvk) { throw 'Submodule identity mismatch' }
+          @("PARENT=$parent", "MESA=$mesa", "DXVK=$dxvk", 'NATIVE_DXVK_RUNTIME_ACCEPTANCE=PENDING') |
+            Set-Content dxvk-umd/PAIRED-SOURCE.txt
+
+      - name: Upload the DXVK native DDI candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: dxvk-native-ddi-arm64
+          path: dxvk-umd/
+          if-no-files-found: error
+
       - name: Upload the Mesa user-mode driver
         uses: actions/upload-artifact@v4
         with:
@@ -333,7 +360,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 需要完整歷史：driver 版號第四段用 commit 數（shallow 會變成 1）
+          fetch-depth: 1
+
+      - name: Download the DXVK native DDI candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: dxvk-native-ddi-arm64
+          path: dxvk-umd
 
       - name: Download the Mesa user-mode driver
         uses: actions/download-artifact@v4
@@ -414,23 +447,12 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # Driver version = 100.6.101.<58180 + commits after the exact 58180 source>.
-          # The branch was rebased after the earlier version epoch, so require
-          # this installed source to remain an ancestor before counting. The
-          # first descendant build is 58181. The 16-bit limit leaves 7354
-          # revisions before another explicit epoch is required.
-          $epoch = '00c0fd0217cd25ef61581f498dbcb5f40516d4f6'
-          $epochMinor = 58180
-          & git merge-base --is-ancestor $epoch HEAD
-          if ($LASTEXITCODE -ne 0) {
-            throw "driver version epoch $epoch is not an ancestor of HEAD"
-          }
-          $n = (& git rev-list --count "$epoch..HEAD" | Out-String).Trim()
-          if (-not ($n -match '^[1-9][0-9]*$')) {
-            throw "invalid driver version distance from $epoch to HEAD: '$n'"
-          }
-          $minor = $epochMinor + [int]$n
-          if ($minor -gt 65535) { throw "driver minor $minor exceeds 65535; start a new version epoch" }
+          # Explicit development candidate version works with depth=1 and is
+          # reproducible on reruns. Never derive a version from shallow history.
+          $versionText = (Get-Content viogpu/dxvk-umd/driver-version.txt -Raw).Trim()
+          if ($versionText -notmatch '^[0-9]+$') { throw 'Invalid candidate version' }
+          $minor = [int]$versionText
+          if ($minor -lt 60000 -or $minor -gt 65535) { throw 'Candidate version outside reserved development range' }
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -677,6 +699,14 @@ jobs:
               Copy-Item $mesaUmd (Join-Path $dest 'viogpud3d.dll') -Force
               $mesaHash = (Get-FileHash (Join-Path $dest 'viogpud3d.dll') -Algorithm SHA256).Hash
               Write-Host "viogpu: packaged Mesa UMD $mesaHash"
+              # The independent DXVK DDI development library is catalogued
+              # alongside the paired KMD and active Mesa UMD. It does not yet
+              # register OpenAdapter or replace the validated desktop driver.
+              foreach ($file in @('viogpudxvk.dll', 'dxvk-umd-backend-probe.exe', 'dxvk-umd-ddi-probe.exe', 'PAIRED-SOURCE.txt', 'STATUS.txt')) {
+                $source = Join-Path 'dxvk-umd' $file
+                if (-not (Test-Path $source -PathType Leaf)) { throw "Missing DXVK candidate $file" }
+                Copy-Item $source $dest -Force
+              }
             }
             # 取 inf（優先 ARM64 已 stamp；否則 source 模板）
             $infF = PickInf $d.root $d.inf

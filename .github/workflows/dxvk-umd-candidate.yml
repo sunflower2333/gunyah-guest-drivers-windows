@@ -1,0 +1,9 @@
+name: Paired DXVK UMD development candidate
+on:
+  push:
+    branches: [viogpu-dxvk-umd-20260911]
+  workflow_dispatch:
+jobs:
+  paired:
+    uses: ./.github/workflows/build-arm64-drivers.yml
+    secrets: inherit

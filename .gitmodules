@@ -3,3 +3,8 @@
 	url = https://github.com/sunflower2333/mesa
 	branch = wip/turnip-wddm-assumenotinuse
 	shallow = true
+[submodule "external/dxvk"]
+	path = external/dxvk
+	url = https://github.com/sunflower2333/dxvk
+	branch = viogpu-umd-20260911
+	shallow = true
