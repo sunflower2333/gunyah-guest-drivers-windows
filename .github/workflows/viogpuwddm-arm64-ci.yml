@@ -16,6 +16,7 @@ on:
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/backing-entries/**"
+      - "viogpu/tests/render-prepatch/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
@@ -39,6 +40,7 @@ on:
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/backing-entries/**"
+      - "viogpu/tests/render-prepatch/**"
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
@@ -120,6 +122,9 @@ jobs:
       - name: Execute fragmented backing and control descriptor regression
         shell: pwsh
         run: python viogpu/tests/backing-entries/run.py
+      - name: Execute Render prepatch and final residency regression
+        shell: pwsh
+        run: python viogpu/tests/render-prepatch/run.py
 
       - name: Parse Native Context diagnostic readers
         shell: pwsh

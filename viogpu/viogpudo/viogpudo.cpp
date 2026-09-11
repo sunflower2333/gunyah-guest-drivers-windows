@@ -5776,9 +5776,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD fenceTraceLastEvent = VioGpuReadFenceTraceLastEvent();
     DWORD fenceTraceLastFenceId = VioGpuReadFenceTraceLastFenceId();
     DWORD fenceTraceLastSubmitted = VioGpuReadFenceTraceLastSubmitted();
-    DWORD renderFailure[] = {ReadNativeRenderFailure(0), ReadNativeRenderFailure(1),
-                            ReadNativeRenderFailure(2), ReadNativeRenderFailure(3),
-                            ReadNativeRenderFailure(4), ReadNativeRenderFailure(5)};
+    DWORD renderFailure[] = {ReadNativeRenderFailure(0),
+                             ReadNativeRenderFailure(1),
+                             ReadNativeRenderFailure(2),
+                             ReadNativeRenderFailure(3),
+                             ReadNativeRenderFailure(4),
+                             ReadNativeRenderFailure(5)};
     DWORD apertureFailureStage = ReadNativeApertureFailureStage();
     DWORD apertureFailureStatus = ReadNativeApertureFailureStatus();
     DWORD apertureFailureDetail = ReadNativeApertureFailureDetail();

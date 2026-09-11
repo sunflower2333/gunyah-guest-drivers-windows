@@ -1625,8 +1625,12 @@ class VioGpuDod
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeApertureFailureStage, 0, 0));
     }
-    VOID RecordNativeRenderFailure(DWORD stage, NTSTATUS status, DWORD detail = 0,
-                                   DWORD index = MAXULONG, DWORD context = 0, DWORD resource = 0)
+    VOID RecordNativeRenderFailure(DWORD stage,
+                                   NTSTATUS status,
+                                   DWORD detail = 0,
+                                   DWORD index = MAXULONG,
+                                   DWORD context = 0,
+                                   DWORD resource = 0)
     {
         if (InterlockedCompareExchange(&m_NativeRenderFailureRecorded, 1, 0) != 0)
         {
@@ -1641,9 +1645,13 @@ class VioGpuDod
     }
     DWORD ReadNativeRenderFailure(UINT field)
     {
-        return field < ARRAYSIZE(m_NativeRenderFailure) &&
-                       InterlockedCompareExchange(&m_NativeRenderFailureRecorded, 0, 0) == 2
-                   ? static_cast<DWORD>(InterlockedCompareExchange(&m_NativeRenderFailure[field], 0, 0)) : 0;
+        return field < ARRAYSIZE(m_NativeRenderFailure) && InterlockedCompareExchange(&m_NativeRenderFailureRecorded,
+                                                                                      0,
+                                                                                      0) == 2
+                                                                                                                   ? static_cast<DWORD>(InterlockedCompareExchange(&m_NativeRenderFailure[field],
+                                                                                                                                                                   0,
+                                                                                                                                                                   0))
+                                                                                                                   : 0;
     }
     DWORD ReadNativeApertureFailureStatus(void)
     {

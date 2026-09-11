@@ -2055,6 +2055,77 @@ VOID NativeSubmissionQueueFailed(_In_opt_ PVOID callbackContext)
     DereferenceRenderSubmission(submission);
 }
 
+NTSTATUS ValidateNativeRenderBindings(VIOGPU_WDDM_SUBMISSION *submission)
+{
+    if (submission == NULL || submission->Adapter == NULL || submission->Context == NULL ||
+        submission->References == NULL || submission->AllocationCount == 0 ||
+        submission->AllocationCount > VioGpuWddmSubmissionAllocationLimit || submission->CommandStream == NULL ||
+        submission->CommandStreamSize < sizeof(MSM_CCMD_GEM_SUBMIT_REQ))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    const BYTE *stream = static_cast<const BYTE *>(submission->CommandStream);
+    const MSM_CCMD_GEM_SUBMIT_REQ *request = reinterpret_cast<const MSM_CCMD_GEM_SUBMIT_REQ *>(stream);
+    if (request->nr_bos != submission->AllocationCount ||
+        static_cast<ULONGLONG>(request->nr_bos) * sizeof(VIOGPU_WDDM_MSM_SUBMIT_BO) > submission->CommandStreamSize - sizeof(*request))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    const VIOGPU_WDDM_MSM_SUBMIT_BO *bos = reinterpret_cast<const VIOGPU_WDDM_MSM_SUBMIT_BO *>(request->payload);
+    // VidMm has completed residency by dispatch and retains it until the DMA
+    // fence retires. Render's last-known placement is not such a guarantee.
+    for (UINT index = 0; index < submission->AllocationCount; ++index)
+    {
+        const VIOGPU_WDDM_SUBMISSION_REFERENCE *reference = &submission->References[index];
+        if ((reference->PatchOffset & (sizeof(ULONG) - 1)) != 0 ||
+            reference->PatchOffset > submission->CommandStreamSize - sizeof(ULONGLONG))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        ULONGLONG patchedIova = 0;
+        RtlCopyMemory(&patchedIova, stream + reference->PatchOffset, sizeof(patchedIova));
+        VIOGPU_WDDM_ALLOCATION *allocation = reference->Allocation;
+        NTSTATUS status = AcquireAllocationLifecycle(allocation);
+        if (status != STATUS_SUCCESS)
+        {
+            return status;
+        }
+        BOOLEAN valid = allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
+                        allocation->Adapter == submission->Adapter && IsNativeAllocation(allocation) &&
+                        !allocation->Destroying && allocation->NativeContext == &submission->Context->NativeContext &&
+                        allocation->ContextId == submission->ContextId &&
+                        allocation->ContextGeneration == submission->Generation &&
+                        allocation->ContextResetGeneration == submission->ResetGeneration &&
+                        allocation->PrivateData.ExpectedResetGeneration == submission->ResetGeneration &&
+                        allocation->HostState == VioGpuWddmAllocationHostLive && allocation->PlacementValid &&
+                        allocation->ApertureMdl != NULL && allocation->ApertureAddress != NULL &&
+                        allocation->BoundContextId == submission->ContextId &&
+                        allocation->BoundGeneration == submission->Generation &&
+                        allocation->BoundResetGeneration == submission->ResetGeneration &&
+                        allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START &&
+                        allocation->ResourceId != MAXUINT && allocation->BlobId == allocation->ResourceId &&
+                        bos[index].Handle == allocation->ResourceId && reference->Length != 0 &&
+                        reference->AllocationOffset <= allocation->PrivateData.Size &&
+                        reference->Length <= allocation->PrivateData.Size - reference->AllocationOffset &&
+                        allocation->PrivateData.RequestedIova != 0 &&
+                        allocation->PrivateData.RequestedIova <= MAXULONGLONG - reference->AllocationOffset &&
+                        patchedIova == allocation->PrivateData.RequestedIova + reference->AllocationOffset;
+        UINT resourceId = allocation->ResourceId;
+        KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+        if (!valid)
+        {
+            submission->Adapter->RecordNativeRenderFailure(22,
+                                                           STATUS_DEVICE_NOT_READY,
+                                                           0,
+                                                           index,
+                                                           submission->ContextId,
+                                                           resourceId);
+            return STATUS_DEVICE_NOT_READY;
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
 _Use_decl_annotations_ VOID NativeRenderDispatchWorker(PVOID callbackContext)
 {
     VIOGPU_WDDM_SUBMISSION *submission = static_cast<VIOGPU_WDDM_SUBMISSION *>(callbackContext);
@@ -2081,7 +2152,8 @@ _Use_decl_annotations_ VOID NativeRenderDispatchWorker(PVOID callbackContext)
     UINT fenceId = static_cast<UINT>(submission->FenceId);
     UINT nodeOrdinal = submission->Context->NodeOrdinal;
     BOOLEAN operationAcquired = adapter->AcquireNativeSubmissionOperation();
-    int queueResult = operationAcquired ? adapter->QueueNativeSubmit(submission->VirtioBuffer, fenceId) : -1;
+    NTSTATUS bindingStatus = operationAcquired ? ValidateNativeRenderBindings(submission) : STATUS_DEVICE_NOT_READY;
+    int queueResult = NT_SUCCESS(bindingStatus) ? adapter->QueueNativeSubmit(submission->VirtioBuffer, fenceId) : -1;
     if (operationAcquired)
     {
         adapter->ReleaseNativeSubmissionOperation();
@@ -4049,17 +4121,21 @@ NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_RENDER_COMMAND *header,
         if (!current && nativeContext != NULL)
         {
             identityDetail = (allocation->Destroying ? 1U : 0U) |
-                (allocation->NativeContext != nativeContext->Registration ? 2U : 0U) |
-                (allocation->ContextGeneration != nativeContext->Generation ? 4U : 0U) |
-                (allocation->ContextResetGeneration != nativeContext->ResetGeneration ? 8U : 0U) |
-                (allocation->ContextId != nativeContext->ContextId ? 16U : 0U) |
-                (allocation->PrivateData.ExpectedResetGeneration != nativeContext->ResetGeneration ? 32U : 0U);
+                             (allocation->NativeContext != nativeContext->Registration ? 2U : 0U) |
+                             (allocation->ContextGeneration != nativeContext->Generation ? 4U : 0U) |
+                             (allocation->ContextResetGeneration != nativeContext->ResetGeneration ? 8U : 0U) |
+                             (allocation->ContextId != nativeContext->ContextId ? 16U : 0U) |
+                             (allocation->PrivateData.ExpectedResetGeneration != nativeContext->ResetGeneration ? 32U
+                                                                                                                : 0U);
         }
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
         if (!current)
         {
-            device->Adapter->RecordNativeRenderFailure(20, STATUS_DEVICE_NOT_READY, identityDetail,
-                                                       index, nativeContext == NULL ? 0 : nativeContext->ContextId);
+            device->Adapter->RecordNativeRenderFailure(20,
+                                                       STATUS_DEVICE_NOT_READY,
+                                                       identityDetail,
+                                                       index,
+                                                       nativeContext == NULL ? 0 : nativeContext->ContextId);
             return STATUS_DEVICE_NOT_READY;
         }
 
@@ -4235,24 +4311,24 @@ NTSTATUS ApplyRenderPrepatches(_Inout_ VIOGPU_WDDM_RENDER_COMMAND *header,
             return status;
         }
 
+        // SegmentId/PhysicalAddress are VidMm's last-known placement, which
+        // may already have been evicted while Render is translating. Native
+        // resource IDs and requested IOVAs survive paging, so prepatch those
+        // stable addresses now. Patch still handles every output reference;
+        // final dispatch validates the live Host binding even if Patch is
+        // omitted by VidMm. Never require present residency at Render time.
         BOOLEAN valid = openAllocation != NULL && allocation != NULL &&
                         openAllocation->Signature == VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE &&
                         openAllocation->Device == device && allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
                         allocation->Adapter == device->Adapter && !allocation->Destroying &&
                         allocation->NativeContext == nativeContext->Registration &&
-                        allocation->HostState == VioGpuWddmAllocationHostLive && allocation->PlacementValid &&
-                        allocation->ApertureAddress != NULL &&
                         allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START &&
                         allocation->ResourceId != MAXUINT && allocation->BlobId == allocation->ResourceId &&
                         allocation->ContextId == nativeContext->ContextId &&
                         allocation->ContextGeneration == nativeContext->Generation &&
                         allocation->ContextResetGeneration == nativeContext->ResetGeneration &&
-                        allocation->BoundContextId == nativeContext->ContextId &&
-                        allocation->BoundGeneration == nativeContext->Generation &&
-                        allocation->BoundResetGeneration == nativeContext->ResetGeneration &&
                         allocationEntry->SegmentId == VIOGPU_WDDM_SEGMENT_ID &&
                         allocationEntry->PhysicalAddress.QuadPart >= 0 &&
-                        static_cast<ULONGLONG>(allocationEntry->PhysicalAddress.QuadPart) == allocation->PlacementOffset &&
                         allocationEntry->Reserved == 0 &&
                         ((reference->Flags & VIOGPU_WDDM_REFERENCE_WRITE) != 0) == (allocationEntry->WriteOperation !=
                                                                                     0) &&
@@ -4267,24 +4343,31 @@ NTSTATUS ApplyRenderPrepatches(_Inout_ VIOGPU_WDDM_RENDER_COMMAND *header,
         if (!valid && allocation != NULL)
         {
             placementDetail = (allocation->HostState != VioGpuWddmAllocationHostLive ? 1U : 0U) |
-                (!allocation->PlacementValid ? 2U : 0U) | (allocation->ApertureAddress == NULL ? 4U : 0U) |
-                (allocationEntry->PhysicalAddress.QuadPart < 0 ||
-                 static_cast<ULONGLONG>(allocationEntry->PhysicalAddress.QuadPart) != allocation->PlacementOffset ? 8U : 0U) |
-                (allocation->BoundContextId != nativeContext->ContextId ? 16U : 0U) |
-                (allocation->BoundGeneration != nativeContext->Generation ? 32U : 0U) |
-                (allocation->BoundResetGeneration != nativeContext->ResetGeneration ? 64U : 0U) |
-                (allocation->Destroying ? 128U : 0U) |
-                (allocation->NativeContext != nativeContext->Registration ? 256U : 0U) |
-                (allocationEntry->SegmentId != VIOGPU_WDDM_SEGMENT_ID ? 512U : 0U) |
-                (allocation->ResourceId < VIOGPU_NATIVE_RESOURCE_ID_START || allocation->ResourceId == MAXUINT ||
-                 allocation->BlobId != allocation->ResourceId ? 1024U : 0U);
+                              (!allocation->PlacementValid ? 2U : 0U) |
+                              (allocation->ApertureAddress == NULL ? 4U : 0U) |
+                              (allocationEntry->PhysicalAddress.QuadPart < 0 || static_cast<ULONGLONG>(allocationEntry->PhysicalAddress.QuadPart) != allocation->PlacementOffset
+                                                                                                                                   ? 8U
+                                                                                                                                   : 0U) |
+                              (allocation->BoundContextId != nativeContext->ContextId ? 16U : 0U) |
+                              (allocation->BoundGeneration != nativeContext->Generation ? 32U : 0U) |
+                              (allocation->BoundResetGeneration != nativeContext->ResetGeneration ? 64U : 0U) |
+                              (allocation->Destroying ? 128U : 0U) |
+                              (allocation->NativeContext != nativeContext->Registration ? 256U : 0U) |
+                              (allocationEntry->SegmentId != VIOGPU_WDDM_SEGMENT_ID ? 512U : 0U) |
+                              (allocation->ResourceId < VIOGPU_NATIVE_RESOURCE_ID_START || allocation->ResourceId == MAXUINT || allocation->BlobId != allocation->ResourceId
+                                                                                                                                   ? 1024U
+                                                                                                                                   : 0U);
         }
         DWORD failedResource = allocation == NULL ? 0 : allocation->ResourceId;
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
         if (!valid)
         {
-            device->Adapter->RecordNativeRenderFailure(21, STATUS_DEVICE_NOT_READY, placementDetail,
-                                                       index, nativeContext->ContextId, failedResource);
+            device->Adapter->RecordNativeRenderFailure(21,
+                                                       STATUS_DEVICE_NOT_READY,
+                                                       placementDetail,
+                                                       index,
+                                                       nativeContext->ContextId,
+                                                       failedResource);
             return STATUS_DEVICE_NOT_READY;
         }
 
@@ -7957,8 +8040,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
 
     if (!NT_SUCCESS(status))
     {
-        context->Device->Adapter->RecordNativeRenderFailure(renderFailureStage, status, 0, MAXULONG,
-                                                           nativeContext.ContextId);
+        context->Device->Adapter->RecordNativeRenderFailure(renderFailureStage,
+                                                            status,
+                                                            0,
+                                                            MAXULONG,
+                                                            nativeContext.ContextId);
     }
     if (submissionPublished && submission != NULL)
     {

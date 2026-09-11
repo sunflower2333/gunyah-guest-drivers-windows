@@ -10510,20 +10510,37 @@ def check_wddm_submission_lifetime() -> None:
         "allocationEntry->SegmentId==0",
         "*fullyPrepatched=FALSE;",
         "allocation->NativeContext==nativeContext->Registration",
-        "allocation->HostState==VioGpuWddmAllocationHostLive",
-        "allocation->PlacementValid",
-        "allocation->BoundResetGeneration==nativeContext->ResetGeneration",
+        "allocation->ContextResetGeneration==nativeContext->ResetGeneration",
         "allocation->ResourceId!=MAXUINT",
         "allocation->BlobId==allocation->ResourceId",
         "allocationEntry->SegmentId==VIOGPU_WDDM_SEGMENT_ID",
-        "static_cast<ULONGLONG>(allocationEntry->PhysicalAddress.QuadPart)==allocation->PlacementOffset",
+        "allocationEntry->PhysicalAddress.QuadPart>=0",
         "allocation->PrivateData.RequestedIova<=MAXULONGLONG-reference->AllocationOffset",
         "(reference->PatchOffset&(sizeof(ULONG)-1))!=0",
         "RtlCopyMemory(&bos[index].Handle,&resourceId,sizeof(resourceId));",
         "RtlCopyMemory(commandStream+reference->PatchOffset,&iova,sizeof(iova));",
     ):
         if fragment not in render_prepatch:
-            fail(f"Render prepatch must retain its per-reference residency and payload gate: {fragment}")
+            fail(f"Render prepatch must retain stable identity and bounded address translation: {fragment}")
+
+    render_bindings = canonical_code(function_body("ValidateNativeRenderBindings", WDDM_DDI_CODE))
+    for fragment in (
+        "allocation->NativeContext==&submission->Context->NativeContext",
+        "allocation->ContextResetGeneration==submission->ResetGeneration",
+        "allocation->PrivateData.ExpectedResetGeneration==submission->ResetGeneration",
+        "allocation->HostState==VioGpuWddmAllocationHostLive",
+        "allocation->PlacementValid",
+        "allocation->ApertureMdl!=NULL",
+        "allocation->ApertureAddress!=NULL",
+        "allocation->BoundContextId==submission->ContextId",
+        "allocation->BoundGeneration==submission->Generation",
+        "allocation->BoundResetGeneration==submission->ResetGeneration",
+        "bos[index].Handle==allocation->ResourceId",
+        "allocation->BlobId==allocation->ResourceId",
+        "patchedIova==allocation->PrivateData.RequestedIova+reference->AllocationOffset",
+    ):
+        if fragment not in render_bindings:
+            fail(f"Final Render dispatch must validate every live binding and translated address: {fragment}")
 
     acquire_render = canonical_code(function_body("AcquireRenderAllocationReferences", WDDM_DDI_CODE))
     require_order(
@@ -10885,6 +10902,16 @@ def check_wddm_submission_lifetime() -> None:
         fail("native queue-failure callback must retain one temporary reference through every terminal path")
     render_worker_body = function_body("NativeRenderDispatchWorker", WDDM_DDI_CODE)
     render_worker = canonical_code(render_worker_body)
+    require_order(
+        render_worker,
+        (
+            "adapter->AcquireNativeSubmissionOperation();",
+            "operationAcquired?ValidateNativeRenderBindings(submission):STATUS_DEVICE_NOT_READY",
+            "NT_SUCCESS(bindingStatus)?adapter->QueueNativeSubmit(submission->VirtioBuffer,fenceId):-1",
+            "adapter->ReleaseNativeSubmissionOperation();",
+        ),
+        "Render must check final residency before issuing either prepatched or patched packets",
+    )
     render_issue_claim = (
         "InterlockedCompareExchange(&submission->State,VioGpuWddmSubmissionHostIssued,"
         "VioGpuWddmSubmissionEngineQueued)!=VioGpuWddmSubmissionEngineQueued"
