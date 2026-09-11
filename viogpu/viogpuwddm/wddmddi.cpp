@@ -3769,14 +3769,12 @@ static NTSTATUS QuerySegmentVersioned(VioGpuDod *adapter, const DXGKARG_QUERYADA
 
 static NTSTATUS QuerySegment4(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
 {
-    if (queryAdapterInfo->pInputData == NULL ||
-        queryAdapterInfo->InputDataSize < sizeof(DXGK_QUERYSEGMENTIN4) ||
+    if (queryAdapterInfo->pInputData == NULL || queryAdapterInfo->InputDataSize < sizeof(DXGK_QUERYSEGMENTIN4) ||
         static_cast<const DXGK_QUERYSEGMENTIN4 *>(queryAdapterInfo->pInputData)->PhysicalAdapterIndex != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
-    if (queryAdapterInfo->pOutputData == NULL ||
-        queryAdapterInfo->OutputDataSize < sizeof(DXGK_QUERYSEGMENTOUT4))
+    if (queryAdapterInfo->pOutputData == NULL || queryAdapterInfo->OutputDataSize < sizeof(DXGK_QUERYSEGMENTOUT4))
     {
         return STATUS_BUFFER_TOO_SMALL;
     }
@@ -3820,8 +3818,7 @@ static NTSTATUS QueryPhysicalAdapterCaps(VioGpuDod *adapter, const DXGKARG_QUERY
     {
         return STATUS_INVALID_PARAMETER;
     }
-    if (queryAdapterInfo->pOutputData == NULL ||
-        queryAdapterInfo->OutputDataSize < sizeof(DXGK_PHYSICALADAPTERCAPS))
+    if (queryAdapterInfo->pOutputData == NULL || queryAdapterInfo->OutputDataSize < sizeof(DXGK_PHYSICALADAPTERCAPS))
     {
         return STATUS_BUFFER_TOO_SMALL;
     }
@@ -3834,8 +3831,8 @@ static NTSTATUS QueryPhysicalAdapterCaps(VioGpuDod *adapter, const DXGKARG_QUERY
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetNodeMetadata(CONST HANDLE hAdapter,
-                                                                  UINT nodeOrdinalAndAdapterIndex,
-                                                                  DXGKARG_GETNODEMETADATA *metadata)
+                                                                   UINT nodeOrdinalAndAdapterIndex,
+                                                                   DXGKARG_GETNODEMETADATA *metadata)
 {
     if (hAdapter == NULL || metadata == NULL || nodeOrdinalAndAdapterIndex != 0)
     {
