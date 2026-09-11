@@ -53,7 +53,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - run: git submodule update --init --recursive --depth 1 external/vkd3d-proton
+      - name: Fetch pinned engine with Windows long-path support
+        run: git -c core.longpaths=true submodule update --init --recursive --depth 1 external/vkd3d-proton
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.msvc }}
