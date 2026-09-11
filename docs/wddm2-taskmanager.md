@@ -171,3 +171,18 @@ The standalone `wddm-accounting-tool.yml` workflow compiles/packages the tool
 and runs 10 delta boundary cases without rebuilding or changing the validated
 41ade6e paired driver package. Native tool runtime and actual Task Manager UI
 acceptance on the device still await the coordinated window.
+
+Tool CI [34581281440](https://github.com/sunflower2333/gunyah-guest-drivers-windows/actions/runs/34581281440)
+PASS at `31dd593c5bf1356be6572fece97f56734bea3c49`: real ARM64 compile/link,
+PE machine, executable startup, rejected invalid PID, script parse and 10
+delta cases. Downloaded to `.artifacts/accounting-34581281440/`.
+
+- Artifact ID `10191714170`, GitHub archive SHA256
+  `5dd80754967c14589407238d2dfd743a8334b52acffcc818f8074e16fbd41e76`.
+- Native executable SHA256
+  `c337a067b48a9f4db3ee32231768c4d912e79c8bba80d36aa8df9a274a9f5620`.
+- Collector SHA256
+  `3570d52fd55cc49551b9bdbfe3dc8d7bf1e8c5556605f15f1e91e6a79a5cd50a`.
+
+The package and tool are concrete reviewable candidates, not device acceptance
+results. No remote operations were performed by this implementation subtask.
