@@ -3781,13 +3781,16 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
 
-    const BOOLEAN includeIdentity =
-        queryAdapterInfo->OutputDataSize >= sizeof(VIOGPU_WDDM_ADAPTER_INFO_WITH_IDENTITY);
+    const BOOLEAN includeIdentity = queryAdapterInfo->OutputDataSize >= sizeof(VIOGPU_WDDM_ADAPTER_INFO_WITH_IDENTITY);
     LUID adapterLuid = {};
     GPU_CAPSET_DRM capset = {};
     ULONGLONG resetGeneration = 0;
-    if (!adapter->QueryNativeContextReadiness(&capset, NULL, NULL, &resetGeneration,
-                                             includeIdentity ? &adapterLuid : NULL) || resetGeneration == 0)
+    if (!adapter->QueryNativeContextReadiness(&capset,
+                                              NULL,
+                                              NULL,
+                                              &resetGeneration,
+                                              includeIdentity ? &adapterLuid : NULL) ||
+        resetGeneration == 0)
     {
         /* Record which readiness condition refused.  Without this the only evidence a
          * user-mode driver has is STATUS_DEVICE_NOT_READY, which names none of them. */
