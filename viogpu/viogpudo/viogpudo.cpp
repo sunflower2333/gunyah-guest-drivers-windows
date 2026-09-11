@@ -164,7 +164,7 @@ PAGED_CODE_SEG_BEGIN
 VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     : m_pPhysicalDevice(pPhysicalDeviceObject), m_MonitorPowerState(PowerDeviceD0), m_AdapterPowerState(PowerDeviceD0),
       m_pHWDevice(NULL), m_HardwareRundownCompleted(FALSE), m_HardwareResetState(VioGpuHardwareActive),
-      m_CrtcVsyncEnabled(0), m_DodReadinessFailMask(0)
+      m_RuntimeAdapterLuid(0), m_CrtcVsyncEnabled(0), m_DodReadinessFailMask(0)
 {
     PAGED_CODE();
 
@@ -352,6 +352,7 @@ NTSTATUS VioGpuDod::UnwindFailedStart(_In_ NTSTATUS failureStatus)
 {
     PAGED_CODE();
 
+    SetNativeAdapterLuid(NULL);
     InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
     if (!m_HardwareRundownCompleted)
     {
@@ -426,6 +427,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
                                VioGpuNativeStartPreconditions,
                                STATUS_SUCCESS,
                                static_cast<DWORD>(startResetState));
+    SetNativeAdapterLuid(NULL);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     ResetNativeFenceTracker();
 #endif
@@ -635,6 +637,9 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
         return UnwindFailedStart(STATUS_DEVICE_NOT_READY);
     }
 #endif
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WIN8)
+    SetNativeAdapterLuid(&pDxgkStartInfo->AdapterLuid);
+#endif
     m_Flags.DriverStarted = TRUE;
     VIOGPU_RECORD_NATIVE_START(this, VioGpuNativeStartComplete, STATUS_SUCCESS, VioGpuNativeStartDetailNone);
     DbgPrintEx(DPFLTR_DEFAULT_ID,
@@ -652,6 +657,7 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
 {
     PAGED_CODE();
 
+    SetNativeAdapterLuid(NULL);
     InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
     InterlockedExchange(&m_CrtcVsyncEnabled, 0);
     DisarmCrtcVsyncTimer();
@@ -2228,13 +2234,30 @@ BOOLEAN VioGpuDod::AcquireNativeContextSnapshotForAllocation(_In_ ULONGLONG requ
 }
 #endif
 
+_IRQL_requires_max_(PASSIVE_LEVEL) VOID VioGpuDod::SetNativeAdapterLuid(_In_opt_ const LUID *adapterLuid)
+{
+    PAGED_CODE();
+    LONG64 identity = 0;
+    static_assert(sizeof(identity) == sizeof(LUID), "Windows adapter LUID width");
+    if (adapterLuid != NULL)
+    {
+        RtlCopyMemory(&identity, adapterLuid, sizeof(identity));
+    }
+    InterlockedExchange64(&m_RuntimeAdapterLuid, identity);
+}
+
 #pragma code_seg(push)
 #pragma code_seg()
 _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN VioGpuDod::QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                                                                    _Out_opt_ UINT *capsetVersion,
                                                                                    _Out_opt_ UINT *capsetSize,
-                                                                                   _Out_opt_ ULONGLONG *resetGeneration)
+                                                                                   _Out_opt_ ULONGLONG *resetGeneration,
+                                                                                   _Out_opt_ LUID *adapterLuid)
 {
+    if (adapterLuid != NULL)
+    {
+        RtlZeroMemory(adapterLuid, sizeof(*adapterLuid));
+    }
     if (!ExAcquireRundownProtection(&m_HardwareOperations))
     {
         InterlockedExchange(&m_DodReadinessFailMask, VIOGPU_READINESS_FAIL_RUNDOWN);
@@ -2245,6 +2268,17 @@ _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN VioGpuDod::QueryNativeContextReadine
     const BOOLEAN resetRequested = IsHardwareResetRequested();
     BOOLEAN ready = !resetRequested && adapter != NULL &&
                     adapter->QueryNativeContextReadiness(capset, capsetVersion, capsetSize, resetGeneration);
+    if (ready && adapterLuid != NULL)
+    {
+        // Stop invalidates this before draining rundown; a racing query must
+        // not return a stale identity after observing that invalidation.
+        LONG64 identity = InterlockedCompareExchange64(&m_RuntimeAdapterLuid, 0, 0);
+        ready = identity != 0;
+        if (ready)
+        {
+            RtlCopyMemory(adapterLuid, &identity, sizeof(identity));
+        }
+    }
     /* These two conditions live in the wrapper, so a refusal here leaves the
      * adapter-level mask at zero and looks like "the adapter never objected". */
     LONG dodMask = 0;

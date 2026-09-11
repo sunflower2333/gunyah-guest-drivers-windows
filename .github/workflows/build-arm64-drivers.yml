@@ -67,6 +67,9 @@ jobs:
       - name: Execute Render prepatch and final residency regression
         shell: pwsh
         run: python viogpu/tests/render-prepatch/run.py
+      - name: Execute native adapter identity and reply compatibility regression
+        shell: pwsh
+        run: python viogpu/tests/adapter-identity/run.py
 
   mesa-umd:
     name: Mesa D3D10 UMD (ARM64, cross-compiled)

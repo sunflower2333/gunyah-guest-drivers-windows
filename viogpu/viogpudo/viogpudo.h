@@ -908,6 +908,8 @@ class VioGpuDod
     mutable EX_RUNDOWN_REF m_HardwareOperations;
     BOOLEAN m_HardwareRundownCompleted;
     mutable volatile LONG m_HardwareResetState;
+    // Exact dxgkrnl identity, published only for a successful adapter start.
+    DECLSPEC_ALIGN(8) volatile LONG64 m_RuntimeAdapterLuid;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     volatile LONG m_HardwareResetCallerRva;
     volatile LONG m_HardwareResetFirstCallerRva;
@@ -1268,7 +1270,9 @@ class VioGpuDod
     _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,
                                                                             _Out_opt_ UINT *capsetVersion,
                                                                             _Out_opt_ UINT *capsetSize,
-                                                                            _Out_opt_ ULONGLONG *resetGeneration);
+                                                                            _Out_opt_ ULONGLONG *resetGeneration,
+                                                                            _Out_opt_ LUID *adapterLuid = NULL);
+    _IRQL_requires_max_(PASSIVE_LEVEL) VOID SetNativeAdapterLuid(_In_opt_ const LUID *adapterLuid);
     NTSTATUS CreateNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context,
                                  _In_ ULONGLONG expectedResetGeneration);
     NTSTATUS DestroyNativeContext(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context, _Out_ BOOLEAN *released);
