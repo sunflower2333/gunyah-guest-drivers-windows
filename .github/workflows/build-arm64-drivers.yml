@@ -518,6 +518,11 @@ jobs:
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
                       "/p:WindowsTargetPlatformVersion=$env:DROIDVM_KIT_VERSION",
                       "/p:_BUILD_MINOR_VERSION_=$minor")
+          # The vcxproj runs its own Inf2Cat before final bundle signing.
+          # Supply the real pinned candidate to that package stage as well.
+          $earlyPackage = 'viogpu/viogpuwddm/objfre_win11_arm64/arm64'
+          New-Item -ItemType Directory -Force $earlyPackage | Out-Null
+          Copy-Item vkd3d-umd/paired-vkd3d-arm64/viogpud3d12.dll $earlyPackage
           $jobs = @(
             @{ p='VirtIO/VirtioLib.vcxproj';                c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='VirtIO/WDF/VirtioLib-WDF.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
