@@ -74,7 +74,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
         RtlZeroMemory(&path.TargetState, sizeof(path.TargetState));
         path.TargetState.TargetId = 0;
         path.TargetState.ConnectionStatus = connected ? MonitorStatusConnected : MonitorStatusDisconnected;
-        path.TargetState.MonitorConnect.LinkTargetType = D3DKMDT_VOT_INTERNAL;
+        if (connected)
+        {
+            path.TargetState.MonitorConnect.LinkTargetType = D3DKMDT_VOT_INTERNAL;
+        }
         path.Output.RecheckMPO = 1;
         path.GlitchCause = DXGK_GLITCH_CAUSE_TIMING_CHANGE;
         path.GlitchEffect = DXGK_GLITCH_EFFECT_BLACK_CONTENT;

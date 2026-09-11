@@ -13463,7 +13463,11 @@ void VioGpuAdapter::RefreshColorConnection()
         m_pVioGpuDod->ClearColorPresentCompletion();
     }
     const BOOLEAN previous = InterlockedCompareExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 0, 0) != 0;
-    if (m_ColorConnectionInitialized && m_ColorNotifiedGeneration == caps.generation && previous == connected) return;
+    // Ignore request-header fence IDs; compare all capability payload fields,
+    // including a runtime admission change within the same Surface generation.
+    const SIZE_T payloadSize = sizeof(caps) - FIELD_OFFSET(VIOGPU_DISPLAY_COLOR_RESPONSE, generation);
+    if (m_ColorConnectionInitialized && previous == connected &&
+        RtlCompareMemory(&m_ColorNotifiedCapabilities.generation, &caps.generation, payloadSize) == payloadSize) return;
 
     // Every new Surface generation requires Windows to renegotiate modes,
     // gamma and resource metadata. Call outside ColorStateOperation: an OS
@@ -13482,7 +13486,7 @@ void VioGpuAdapter::RefreshColorConnection()
             return;
         }
     }
-    m_ColorNotifiedGeneration = caps.generation;
+    m_ColorNotifiedCapabilities = caps;
     m_ColorConnectionInitialized = TRUE;
 }
 #endif
