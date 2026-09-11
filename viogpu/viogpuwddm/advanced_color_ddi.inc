@@ -8,6 +8,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTargetAdjustedColorimetry(
     {
         return STATUS_INVALID_PARAMETER;
     }
+    VioGpuDod::ColorStateOperation operation(adapter);
+    if (!operation.Acquired())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
     VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
     if (!adapter->QueryDisplayColor(&caps))
     {
@@ -79,20 +84,21 @@ VioGpuWddmSetVidPnSourceAddressMpo3(CONST HANDLE hAdapter, DXGKARG_SETVIDPNSOURC
     {
         return STATUS_NOT_SUPPORTED;
     }
-    if (InterlockedCompareExchange(&adapter->m_ColorPresentPending, 1, 0) != 0)
+    if (!adapter->BeginColorStateOperation(FALSE))
     {
+        args->OutputFlags.PrePresentNeeded = 1;
         return STATUS_RETRY;
     }
-    if (plane->PresentId <=
-        static_cast<ULONGLONG>(InterlockedCompareExchange64(&adapter->m_ColorPresentLastQueuedId, 0, 0)))
+    const ULONG fenceEpoch = adapter->QueryNativeFenceEpoch();
+    if (fenceEpoch == adapter->m_ColorPresentQueuedEpoch && plane->PresentId <= adapter->m_ColorPresentLastQueuedId)
     {
-        InterlockedExchange(&adapter->m_ColorPresentPending, 0);
+        adapter->EndColorStateOperation();
         return STATUS_INVALID_PARAMETER;
     }
     auto work = new (NonPagedPoolNx) VIOGPU_COLOR_PRESENT_WORK;
     if (work == NULL)
     {
-        InterlockedExchange(&adapter->m_ColorPresentPending, 0);
+        adapter->EndColorStateOperation();
         return STATUS_NO_MEMORY;
     }
     RtlZeroMemory(work, sizeof(*work));
@@ -100,6 +106,7 @@ VioGpuWddmSetVidPnSourceAddressMpo3(CONST HANDLE hAdapter, DXGKARG_SETVIDPNSOURC
     work->Allocation = allocation;
     work->PrimaryAddress = static_cast<ULONGLONG>(primary->SegmentAddress.QuadPart);
     work->PresentId = plane->PresentId;
+    work->FenceEpoch = fenceEpoch;
     work->Color.generation = caps.generation;
     work->Color.format = VIOGPU_DISPLAY_FORMAT_AB30;
     work->Color.encoding = VIOGPU_DISPLAY_COLOR_PQ;
@@ -155,10 +162,12 @@ VioGpuWddmSetVidPnSourceAddressMpo3(CONST HANDLE hAdapter, DXGKARG_SETVIDPNSOURC
     if (status != STATUS_SUCCESS)
     {
         delete work;
-        InterlockedExchange(&adapter->m_ColorPresentPending, 0);
+        adapter->EndColorStateOperation();
         return status;
     }
-    InterlockedExchange64(&adapter->m_ColorPresentLastQueuedId, static_cast<LONG64>(plane->PresentId));
+    adapter->m_ColorPresentLastQueuedId = plane->PresentId;
+    adapter->m_ColorPresentQueuedEpoch = fenceEpoch;
+    InterlockedExchange(&adapter->m_ColorPresentActive, 1);
     // For immediate flips OS must wait for the reported PresentId; returning
     // from this callback only means queued, not that the primary is reusable.
     if (plane->InputFlags.FlipImmediate)
