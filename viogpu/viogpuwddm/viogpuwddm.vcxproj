@@ -14,6 +14,8 @@
     <Configuration>Win11 Release</Configuration>
     <Platform Condition="'$(Platform)' == ''">ARM64</Platform>
     <SignMode>Off</SignMode>
+    <VioGpuDdiInterface>DXGKDDI_INTERFACE_VERSION_WDDM2_0</VioGpuDdiInterface>
+    <VioGpuDdiInterface Condition="'$(VIOGPU_ADVANCED_COLOR)'=='1'">DXGKDDI_INTERFACE_VERSION_WDDM2_3</VioGpuDdiInterface>
     <WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win11 Release|ARM64'" Label="Configuration">
@@ -42,7 +44,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win11 Release|ARM64'">
     <ClCompile>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories);$(DDK_INC_PATH);$(SDK_INC_PATH);..\common;..\shared;..\..\VirtIO;..\viogpudo;</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>VIOGPU_EXTERNAL_DRIVER_ENTRY=1;VIOGPU_NATIVE_CONTEXT=1;DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WDDM2_0;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>VIOGPU_EXTERNAL_DRIVER_ENTRY=1;VIOGPU_NATIVE_CONTEXT=1;DXGKDDI_INTERFACE_VERSION=$(VioGpuDdiInterface);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WppEnabled>true</WppEnabled>
       <WppScanConfigurationData>..\viogpudo\trace.h</WppScanConfigurationData>
       <WppMinimalRebuildFromTracking>false</WppMinimalRebuildFromTracking>
