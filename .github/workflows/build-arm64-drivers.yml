@@ -779,6 +779,11 @@ jobs:
             -Output out/opengl -Kmd out/drivers/viogpu/viogpuwddm.sys `
             -Umd out/drivers/viogpu/viogpud3d.dll -Pfx $pfx `
             -PfxPassword $pfxPw -SignTool $signtool
+          $signedOpenGlRoot = (Resolve-Path 'out/opengl/payload').Path
+          foreach ($arch in @('arm64','x64','x86')) {
+            & (Join-Path $signedOpenGlRoot "system-probe-$arch.exe") --load-only $signedOpenGlRoot
+            if ($LASTEXITCODE) { throw "Signed OpenGL $arch ABI validation failed" }
+          }
           foreach ($scriptName in @('install-opengl-icd.ps1','opengl-registration.psm1')) {
             Copy-Item -LiteralPath (Join-Path '.install_scripts' $scriptName) -Destination out
             $signedScript = Set-AuthenticodeSignature -FilePath (Join-Path 'out' $scriptName) -Certificate $cert -HashAlgorithm SHA256
