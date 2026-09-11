@@ -90,6 +90,19 @@ int wmain(int argc, wchar_t **argv)
             return error("real Vulkan ICD interface negotiation");
         }
         std::printf("VULKAN_ICD_INTERFACE=%u\n", version);
+        PFN_vkGetInstanceProcAddr getInstanceProcAddr = nullptr;
+        symbol = GetProcAddress(module, "vk_icdGetInstanceProcAddr");
+        std::memcpy(&getInstanceProcAddr, &symbol, sizeof(getInstanceProcAddr));
+        if (!getInstanceProcAddr || !getInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance") ||
+            !getInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceExtensionProperties"))
+        {
+            return error("real Vulkan ICD global entry-point discovery");
+        }
+        if (!GetProcAddress(module, "vk_icdGetPhysicalDeviceProcAddr"))
+        {
+            return error("Vulkan ICD physical-device entry-point export");
+        }
+        std::printf("VULKAN_ICD_GLOBAL_ENTRYPOINTS=PASS (no instance or device created)\n");
     }
     else if (!wcscmp(argv[1], L"--system"))
     {
