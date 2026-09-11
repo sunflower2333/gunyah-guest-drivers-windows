@@ -1,0 +1,76 @@
+name: Microsoft native Direct3D runtime probes
+on:
+  workflow_dispatch:
+  push:
+    branches: [viogpu-native-runtime-validation-20260911]
+    paths:
+      - 'viogpu/tests/native-runtime/**'
+      - '.github/workflows/native-runtime-probe.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: arm64
+            compiler: x64_arm64
+          - name: x64
+            compiler: x64
+          - name: x86
+            compiler: x64_x86
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.compiler }}
+      - name: Compile ordinary application without private UMD imports
+        shell: cmd
+        run: >-
+          cl /nologo /std:c++17 /EHsc /W4 /WX /MT /DUNICODE /D_UNICODE
+          viogpu\tests\native-runtime\runtime-probe.cpp
+          /Fe:runtime-probe-${{ matrix.name }}.exe
+          /link bcrypt.lib dxguid.lib user32.lib
+      - name: Record exact probe identity
+        shell: pwsh
+        run: |
+          $file = 'runtime-probe-${{ matrix.name }}.exe'
+          $identity = [ordered]@{ source=$env:GITHUB_SHA; architecture='${{ matrix.name }}';
+            file=$file; sha256=(Get-FileHash $file).Hash; size=(Get-Item $file).Length;
+            proof='compile only; next job validates harness through software WARP' }
+          $identity | ConvertTo-Json | Set-Content "runtime-probe-${{ matrix.name }}.json"
+          Copy-Item viogpu/tests/native-runtime/test-harness.ps1 .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-runtime-probe-${{ matrix.name }}
+          path: |
+            runtime-probe-${{ matrix.name }}.exe
+            runtime-probe-${{ matrix.name }}.json
+            test-harness.ps1
+          if-no-files-found: error
+  arm64-harness:
+    needs: build
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-runtime-probe-*
+          path: probes
+          merge-multiple: true
+      - name: Run real ARM64, AMD64 and x86 processes through Microsoft WARP
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          foreach ($arch in @('arm64','x64','x86')) {
+            $identity = Get-Content "probes/runtime-probe-$arch.json" -Raw | ConvertFrom-Json
+            if ($identity.source -ne $env:GITHUB_SHA -or $identity.architecture -ne $arch -or
+                (Get-FileHash "probes/runtime-probe-$arch.exe").Hash -ne $identity.sha256) {
+              throw "Wrong probe identity: $arch"
+            }
+            ./probes/test-harness.ps1 -Probe "probes/runtime-probe-$arch.exe"
+          }
