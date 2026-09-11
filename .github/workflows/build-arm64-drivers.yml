@@ -1,7 +1,7 @@
 name: Build DroidVM ARM64 drivers
 
-# Every emitted driver target below is ARM64.  x64 appears only for runner-side
-# MSBuild/signing tools used to cross-compile and package the ARM64 binaries.
+# Installed kernel drivers are ARM64. The unregistered native D3D12 candidate
+# sidecar includes ARM64, x64 and x86; all share this exact KMD/Mesa package.
 
 # 可手動觸發，或被其他 workflow 重用（dev-release.yml 會 call 它）。
 # push 觸發移到 dev-release.yml，避免一次 push 重複建置兩次。
@@ -21,6 +21,9 @@ env:
   PFX_PW: "droidvm"
 
 jobs:
+  vkd3d-umd:
+    uses: ./.github/workflows/vkd3d-native-umd.yml
+
   opencl-icd:
     uses: ./.github/workflows/opencl-system-icd.yml
 
@@ -347,13 +350,13 @@ jobs:
 
   build:
     runs-on: windows-11-arm
-    needs: [mesa-umd, opengl-icd, opencl-icd]
+    needs: [mesa-umd, opengl-icd, opencl-icd, vkd3d-umd]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 需要完整歷史：driver 版號第四段用 commit 數（shallow 會變成 1）
+          fetch-depth: 1
 
       - name: Download the Mesa user-mode driver
         uses: actions/download-artifact@v4
@@ -366,6 +369,12 @@ jobs:
         with:
           name: viogpu-opengl-system-unsigned
           path: opengl-payload
+
+      - name: Download exact pinned D3D12 UMD candidates
+        uses: actions/download-artifact@v4
+        with:
+          pattern: paired-vkd3d-*
+          path: vkd3d-payload
 
       - name: Download verified OpenCL distribution
         uses: actions/download-artifact@v4
@@ -446,20 +455,9 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # OpenCL integration reserves 58440 onward. Preserve the GL recovery
-          # WDDM1.2 source, without colliding with GL58423..29 or HDR58430.
-          $epoch = 'ae15bee'
-          $epochMinor = 58439
-          & git merge-base --is-ancestor $epoch HEAD
-          if ($LASTEXITCODE -ne 0) {
-            throw "driver version epoch $epoch is not an ancestor of HEAD"
-          }
-          $n = (& git rev-list --count "$epoch..HEAD" | Out-String).Trim()
-          if (-not ($n -match '^[1-9][0-9]*$')) {
-            throw "invalid driver version distance from $epoch to HEAD: '$n'"
-          }
-          $minor = $epochMinor + [int]$n
-          if ($minor -gt 65535) { throw "driver minor $minor exceeds 65535; start a new version epoch" }
+          # Parent reserved this candidate version; a shallow clone is enough.
+          # Preserve ae36d7b GL/Mesa/OpenCL baseline and keep D3D12 unregistered.
+          $minor = 58450
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -793,6 +791,10 @@ jobs:
           # Microsoft's opengl32.dll.
           ./.github/scripts/sign-opengl-sidecar.ps1 -Payload opengl-payload `
             -Output out/opengl -Kmd out/drivers/viogpu/viogpuwddm.sys `
+            -Umd out/drivers/viogpu/viogpud3d.dll -Pfx $pfx `
+            -PfxPassword $pfxPw -SignTool $signtool
+          ./.github/scripts/sign-vkd3d-sidecar.ps1 -Payload vkd3d-payload `
+            -Output out/candidates/vkd3d -Kmd out/drivers/viogpu/viogpuwddm.sys `
             -Umd out/drivers/viogpu/viogpud3d.dll -Pfx $pfx `
             -PfxPassword $pfxPw -SignTool $signtool
           ./.github/scripts/sign-opencl-sidecar.ps1 -Payload opencl-payload `

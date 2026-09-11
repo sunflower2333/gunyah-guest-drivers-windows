@@ -1,0 +1,64 @@
+name: Build pinned native D3D12 UMD
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - run: git submodule update --init --recursive --depth 1 external/vkd3d-proton
+      - run: sudo apt-get update && sudo apt-get install -y meson ninja-build wine64-tools libwine-dev glslang-tools mesa-vulkan-drivers
+      - name: Test embedded backend on CPU Vulkan
+        working-directory: external/vkd3d-proton
+        run: |
+          meson setup build-umd --buildtype debugoptimized -Denable_umd_bridge=true -Denable_umd_bridge_tests=true
+          meson compile -C build-umd -j 3 vkd3d-umd-backend-test
+          export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          if [ ! -f "$VK_DRIVER_FILES" ]; then export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json; fi
+          timeout 90 build-umd/libs/vkd3d-umd/vkd3d-umd-backend-test
+  windows:
+    runs-on: windows-2025-vs2026
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            msvc: x64_arm64
+          - arch: x64
+            msvc: x64
+          - arch: x86
+            msvc: x64_x86
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - run: git -c core.longpaths=true submodule update --init --recursive --depth 1 external/vkd3d-proton
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare embedded engine tools
+        shell: pwsh
+        run: |
+          choco install strawberryperl -y --no-progress
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Invoke-WebRequest 'https://raw.githubusercontent.com/HansKristian-Work/vkd3d-proton-ci/9e54d0ea518003b6da3f1600c010840a5921e0aa/glslangValidator.exe' -OutFile C:\Strawberry\c\bin\glslangValidator.exe
+          'C:\Strawberry\c\bin' | Out-File $env:GITHUB_PATH -Append
+          pip install meson ninja
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build exact WDK UMD and lifecycle fixture
+        working-directory: external/vkd3d-proton
+        shell: pwsh
+        run: ./tools/build-windows-umd.ps1 -Architecture '${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paired-vkd3d-${{ matrix.arch }}
+          path: external/vkd3d-proton/build-umd-${{ matrix.arch }}/package/
+          if-no-files-found: error
