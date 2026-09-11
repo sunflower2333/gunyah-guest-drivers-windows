@@ -11,6 +11,8 @@ on:
       - ".install_scripts/viogpu-native-context-destroy-diagnostics.ps1"
       - "viogpu/common/**"
       - "viogpu/shared/viogpu_wddm_abi.h"
+      - "viogpu/shared/viogpu_adapter_identity.h"
+      - "viogpu/tests/adapter-identity/**"
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/power-recovery/**"
@@ -35,6 +37,8 @@ on:
       - ".install_scripts/viogpu-native-context-destroy-diagnostics.ps1"
       - "viogpu/common/**"
       - "viogpu/shared/viogpu_wddm_abi.h"
+      - "viogpu/shared/viogpu_adapter_identity.h"
+      - "viogpu/tests/adapter-identity/**"
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/power-recovery/**"
@@ -125,6 +129,9 @@ jobs:
       - name: Execute Render prepatch and final residency regression
         shell: pwsh
         run: python viogpu/tests/render-prepatch/run.py
+      - name: Execute native adapter identity and reply compatibility regression
+        shell: pwsh
+        run: python viogpu/tests/adapter-identity/run.py
 
       - name: Parse Native Context diagnostic readers
         shell: pwsh

@@ -1,4 +1,5 @@
 #include "wddmddi.h"
+#include "../shared/viogpu_adapter_identity.h"
 
 #include "../common/baseobj.h"
 #include "../viogpudo/viogpudo.h"
@@ -3780,9 +3781,13 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
 
+    const BOOLEAN includeIdentity =
+        queryAdapterInfo->OutputDataSize >= sizeof(VIOGPU_WDDM_ADAPTER_INFO_WITH_IDENTITY);
+    LUID adapterLuid = {};
     GPU_CAPSET_DRM capset = {};
     ULONGLONG resetGeneration = 0;
-    if (!adapter->QueryNativeContextReadiness(&capset, NULL, NULL, &resetGeneration) || resetGeneration == 0)
+    if (!adapter->QueryNativeContextReadiness(&capset, NULL, NULL, &resetGeneration,
+                                             includeIdentity ? &adapterLuid : NULL) || resetGeneration == 0)
     {
         /* Record which readiness condition refused.  Without this the only evidence a
          * user-mode driver has is STATUS_DEVICE_NOT_READY, which names none of them. */
@@ -3806,8 +3811,13 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
     /* Build the reply locally at full extent, then copy only what the caller's
      * buffer can hold: writing through a VIOGPU_WDDM_ADAPTER_INFO* aimed at a
      * shorter buffer would overrun it. */
-    VIOGPU_WDDM_ADAPTER_INFO local = {};
-    VIOGPU_WDDM_ADAPTER_INFO *adapterInfo = &local;
+    VIOGPU_WDDM_ADAPTER_INFO_WITH_IDENTITY local = {};
+    static_assert(sizeof(local.AdapterInfo) == 128, "Preserve adapter-info v0 prefix");
+    static_assert(sizeof(local.Identity) == 32, "Adapter identity trailer width");
+    static_assert(FIELD_OFFSET(VIOGPU_WDDM_ADAPTER_INFO_WITH_IDENTITY, Identity) == 128,
+                  "Adapter identity trailer offset");
+    static_assert(sizeof(local) == 160, "Full adapter identity reply width");
+    VIOGPU_WDDM_ADAPTER_INFO *adapterInfo = &local.AdapterInfo;
     InitializeAbiHeader(&adapterInfo->Header, sizeof(*adapterInfo));
     adapterInfo->Capabilities = VIOGPU_WDDM_CAPABILITIES_NONE;
     adapterInfo->ResetGeneration = resetGeneration;
@@ -3828,8 +3838,18 @@ NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO 
     adapterInfo->HasRayTracing = hasRayTracing;
     adapterInfo->MaxFrequency = capset.msm.max_freq;
 
-    size_t copyLength = queryAdapterInfo->OutputDataSize < sizeof(local) ? queryAdapterInfo->OutputDataSize
-                                                                         : sizeof(local);
+    if (includeIdentity)
+    {
+        local.Identity.Magic = VIOGPU_WDDM_ADAPTER_IDENTITY_MAGIC;
+        local.Identity.Version = VIOGPU_WDDM_ADAPTER_IDENTITY_VERSION;
+        local.Identity.Size = sizeof(local.Identity);
+        local.Identity.Flags = VIOGPU_WDDM_ADAPTER_IDENTITY_VALID;
+        local.Identity.AdapterLuidLowPart = adapterLuid.LowPart;
+        local.Identity.AdapterLuidHighPart = static_cast<UINT>(adapterLuid.HighPart);
+        local.Identity.NodeMask = 1; // The current adapter exposes one physical node.
+    }
+    const size_t replySize = includeIdentity ? sizeof(local) : sizeof(local.AdapterInfo);
+    size_t copyLength = queryAdapterInfo->OutputDataSize < replySize ? queryAdapterInfo->OutputDataSize : replySize;
     RtlCopyMemory(queryAdapterInfo->pOutputData, &local, copyLength);
     return STATUS_SUCCESS;
 }
