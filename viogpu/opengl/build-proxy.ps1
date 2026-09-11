@@ -28,7 +28,7 @@ foreach ($arch in @('arm64','x64','x86')) {
     }) | Set-Content $def -Encoding ascii
     Invoke-Compiler $arch @(
         "cl /nologo /W4 /WX /EHsc /MT /LD /I`"$mesa/include`" /I`"$mesa/src/gallium/frontends/wgl`" `"$source/icd-proxy.cpp`" /Fo`"$out/proxy-$arch.obj`" /link /DEF:`"$def`" /OUT:`"$out/viogpuopengl_$arch.dll`" /PDB:`"$out/viogpuopengl_$arch.pdb`" /DEBUG",
-        "cl /nologo /W4 /WX /EHsc /MT `"$source/system-probe.cpp`" /Fo`"$out/probe-$arch.obj`" /Fe:`"$out/system-probe-$arch.exe`" user32.lib gdi32.lib opengl32.lib"
+        "cl /nologo /W4 /WX /EHsc /MT /I`"$mesa/include`" `"$source/system-probe.cpp`" /Fo`"$out/probe-$arch.obj`" /Fe:`"$out/system-probe-$arch.exe`" user32.lib gdi32.lib opengl32.lib"
     )
 }
 foreach ($arch in @('arm64','x64')) {

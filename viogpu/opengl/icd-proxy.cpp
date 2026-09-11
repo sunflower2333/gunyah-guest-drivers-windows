@@ -50,12 +50,24 @@ static HMODULE load_sibling(const wchar_t *name)
     {
         return nullptr;
     }
+    // A full-path load can coexist with a different DLL of the same basename.
+    // Zink later loads vulkan-1 by basename, so reject that ambiguity up front.
+    wchar_t actual[32768];
+    HMODULE existing = GetModuleHandleW(name);
+    if (existing)
+    {
+        length = GetModuleFileNameW(existing, actual, _countof(actual));
+        if (!length || length >= _countof(actual) || _wcsicmp(path, actual))
+        {
+            SetLastError(ERROR_INVALID_DLL);
+            return nullptr;
+        }
+    }
     HMODULE result = LoadLibraryExW(path, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!result)
     {
         return nullptr;
     }
-    wchar_t actual[32768];
     length = GetModuleFileNameW(result, actual, _countof(actual));
     if (!length || length >= _countof(actual) || _wcsicmp(path, actual))
     {
@@ -69,16 +81,18 @@ static HMODULE load_sibling(const wchar_t *name)
 
 static BOOL CALLBACK initialize_modules(PINIT_ONCE, PVOID, PVOID *)
 {
-    if (!load_sibling(L"z-1.dll"))
-    {
-        return FALSE;
-    }
-    if (!load_sibling(L"vulkan-1.dll"))
+    HMODULE zlib = load_sibling(L"z-1.dll");
+    if (!zlib)
     {
         return FALSE;
     }
     turnip = load_sibling(L"vulkan_freedreno.dll");
-    return turnip != nullptr;
+    if (!turnip)
+    {
+        FreeLibrary(zlib);
+        return FALSE;
+    }
+    return TRUE;
 }
 
 static BOOL CALLBACK initialize_gallium(PINIT_ONCE, PVOID, PVOID *)
@@ -87,7 +101,19 @@ static BOOL CALLBACK initialize_gallium(PINIT_ONCE, PVOID, PVOID *)
     {
         return FALSE;
     }
+    // Direct Vulkan clients already own their loader. Only the GL path needs
+    // to preload the loader used by Zink; do not constrain Vulkan negotiation
+    // to the sidecar loader's location.
+    HMODULE loader = load_sibling(L"vulkan-1.dll");
+    if (!loader)
+    {
+        return FALSE;
+    }
     gallium = load_sibling(L"libgallium_wgl.dll");
+    if (!gallium)
+    {
+        FreeLibrary(loader);
+    }
     return gallium != nullptr;
 }
 

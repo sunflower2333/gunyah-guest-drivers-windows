@@ -45,6 +45,9 @@ jobs:
         run: |
           python viogpu/opengl/package.py --payloads mesa-opengl-artifacts --proxies opengl-system --output opengl-payload
           if ($LASTEXITCODE) { throw 'System ICD package verification failed' }
+      - name: Verify signed catalog and reject modified payloads
+        shell: pwsh
+        run: ./viogpu/opengl/test-signed-package.ps1 -Payload opengl-payload
       - uses: actions/upload-artifact@v4
         with:
           name: viogpu-opengl-system-unsigned

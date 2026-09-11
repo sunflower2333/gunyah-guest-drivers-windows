@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cwchar>
+#include <vulkan/vulkan_core.h>
 
 static int error(const char *what)
 {
@@ -57,6 +58,15 @@ int wmain(int argc, wchar_t **argv)
         {
             return error("real DrvValidateVersion");
         }
+        VkResult(VKAPI_PTR * negotiate)(uint32_t *) = nullptr;
+        symbol = GetProcAddress(module, "vk_icdNegotiateLoaderICDInterfaceVersion");
+        std::memcpy(&negotiate, &symbol, sizeof(negotiate));
+        uint32_t version = 7;
+        if (!negotiate || negotiate(&version) != VK_SUCCESS || version < 1 || version > 7)
+        {
+            return error("real Vulkan ICD interface negotiation");
+        }
+        std::printf("VULKAN_ICD_INTERFACE=%u\n", version);
     }
     else if (!wcscmp(argv[1], L"--system"))
     {
