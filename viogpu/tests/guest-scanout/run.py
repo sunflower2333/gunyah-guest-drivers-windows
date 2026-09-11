@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 source = Path(__file__).resolve().with_name("guest_scanout_test.cpp")
 with tempfile.TemporaryDirectory(prefix="viogpu-guest-scanout-") as temporary:
@@ -17,3 +18,13 @@ with tempfile.TemporaryDirectory(prefix="viogpu-guest-scanout-") as temporary:
                    "-fsanitize=address,undefined", "-fno-omit-frame-pointer", str(source), "-o", str(binary)]
     subprocess.run(command, cwd=directory, check=True)
     subprocess.run([str(binary)], cwd=directory, check=True)
+    # Windows runners can retain the exited image briefly (AV/image cleanup).
+    # Keep cleanup strict, with the same bounded retry as the other fixtures.
+    for attempt in range(21):
+        try:
+            binary.unlink()
+            break
+        except PermissionError:
+            if attempt == 20:
+                raise
+            time.sleep(0.25)
