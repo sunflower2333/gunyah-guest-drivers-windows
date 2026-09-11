@@ -123,6 +123,10 @@ jobs:
         shell: pwsh
         run: python viogpu/tests/wddm2-accounting/run.py
 
+      - name: Verify exact-start activation trace decoding
+        shell: pwsh
+        run: Tools/test-native-activation-trace.ps1
+
       - name: Check host EDID and rational display timings
         shell: cmd
         run: viogpu\tests\display-timing\run-msvc.cmd

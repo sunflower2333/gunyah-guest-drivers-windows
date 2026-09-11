@@ -233,6 +233,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativeSubmissionFaultPresentSubmitDetail = 0;
     m_NativeContextDestroyAttempt = 0;
     KeInitializeMutex(&m_NativeContextDestroyDiagnosticMutex, 0);
+    KeInitializeMutex(&m_NativeActivationTraceMutex, 0);
+    RtlZeroMemory(&m_NativeActivationTrace, sizeof(m_NativeActivationTrace));
     m_NativeFenceHead = 0;
     m_NativeFenceCount = 0;
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
@@ -5627,6 +5629,7 @@ VOID VioGpuDod::RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage
 
     if (stage == VioGpuNativeStartEntered)
     {
+        InitializeNativeActivationTrace();
         InterlockedExchange(&m_NativePresentDiagnosticRecorded, 2);
         InterlockedExchange(&m_NativePresentExecutionDiagnosticRecorded, 2);
         InterlockedExchange(&m_NativePresentCopyProbeState, 3);
@@ -7310,6 +7313,113 @@ VOID VioGpuDod::RecordNativeReadinessDiagnostic(void)
     // Mask is written last so it commits the state value that belongs with it.
     WriteRegistryDWORD(deviceKey, L"NativeReadinessFailMask", &maskValue);
     ZwClose(deviceKey);
+}
+
+VOID VioGpuDod::InitializeNativeActivationTrace(void)
+{
+    PAGED_CODE();
+    static_assert(sizeof(m_NativeActivationTrace.Entries[0]) == 48, "Activation trace entry ABI");
+    static_assert(sizeof(m_NativeActivationTrace) == 24 + 64 * 48, "Activation trace header ABI");
+    KeWaitForSingleObject(&m_NativeActivationTraceMutex, Executive, KernelMode, FALSE, NULL);
+    RtlZeroMemory(&m_NativeActivationTrace, sizeof(m_NativeActivationTrace));
+    HANDLE deviceKey = NULL;
+    NTSTATUS status = IoOpenDeviceRegistryKey(m_pPhysicalDevice,
+                                              PLUGPLAY_REGKEY_DRIVER,
+                                              KEY_QUERY_VALUE | KEY_SET_VALUE,
+                                              &deviceKey);
+    if (NT_SUCCESS(status))
+    {
+        DWORD epoch = 0;
+        status = ReadRegistryDWORD(deviceKey, L"NativeActivationEpoch", &epoch);
+        if ((NT_SUCCESS(status) || status == STATUS_OBJECT_NAME_NOT_FOUND) && epoch < MAXULONG)
+        {
+            ++epoch;
+            status = WriteRegistryDWORD(deviceKey, L"NativeActivationEpoch", &epoch);
+            if (NT_SUCCESS(status))
+            {
+                m_NativeActivationTrace.Magic = 0x54434156; // VACT
+                m_NativeActivationTrace.Version = 1;
+                m_NativeActivationTrace.Epoch = epoch;
+                m_NativeActivationTrace.DdiVersion = DXGKDDI_INTERFACE_VERSION;
+                m_NativeActivationTrace.RenderOnly = IsRenderOnly() ? 1U : 0U;
+                UNICODE_STRING name;
+                RtlInitUnicodeString(&name, L"NativeActivationTrace");
+                status = ZwSetValueKey(deviceKey, &name, 0, REG_BINARY, &m_NativeActivationTrace, 6 * sizeof(DWORD));
+            }
+        }
+        else
+        {
+            status = STATUS_INTEGER_OVERFLOW;
+        }
+        ZwClose(deviceKey);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        m_NativeActivationTrace.Version = 0;
+        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu activation trace init failed 0x%08X\n", status);
+    }
+    KeReleaseMutex(&m_NativeActivationTraceMutex, FALSE);
+}
+
+VOID VioGpuDod::RecordNativeActivationQuery(_In_ CONST DXGKARG_QUERYADAPTERINFO *query, _In_ NTSTATUS status)
+{
+    PAGED_CODE();
+    KeWaitForSingleObject(&m_NativeActivationTraceMutex, Executive, KernelMode, FALSE, NULL);
+    if (m_NativeActivationTrace.Version != 1 ||
+        m_NativeActivationTrace.Count >= RTL_NUMBER_OF(m_NativeActivationTrace.Entries))
+    {
+        KeReleaseMutex(&m_NativeActivationTraceMutex, FALSE);
+        return;
+    }
+    m_NativeActivationTrace.RenderOnly = IsRenderOnly() ? 1U : 0U;
+    auto entry = &m_NativeActivationTrace.Entries[m_NativeActivationTrace.Count++];
+    entry->Type = static_cast<DWORD>(query->Type);
+    entry->Status = static_cast<DWORD>(status);
+    entry->InputSize = query->InputDataSize;
+    entry->OutputSize = query->OutputDataSize;
+    if (NT_SUCCESS(status) && query->pOutputData != NULL)
+    {
+        if (query->Type == DXGKQAITYPE_DRIVERCAPS && query->OutputDataSize >= VIOGPU_WIN7_DRIVERCAPS_SIZE)
+        {
+            const auto caps = static_cast<const DXGK_DRIVERCAPS *>(query->pOutputData);
+            entry->Values[0] = caps->WDDMVersion;
+            entry->Values[1] = caps->SchedulingCaps.Value;
+            entry->Values[2] = caps->MemoryManagementCaps.Value;
+            entry->Values[3] = caps->GpuEngineTopology.NbAsymetricProcessingNodes;
+            if (query->OutputDataSize >= sizeof(DXGK_DRIVERCAPS))
+            {
+                entry->Values[4] = caps->PreemptionCaps.GraphicsPreemptionGranularity;
+                entry->Values[5] = caps->PreemptionCaps.ComputePreemptionGranularity;
+                entry->Values[6] = caps->SupportPerEngineTDR;
+            }
+        }
+        else if (query->Type == DXGKQAITYPE_QUERYSEGMENT4 && query->OutputDataSize >= sizeof(DXGK_QUERYSEGMENTOUT4))
+        {
+            const auto segments = static_cast<const DXGK_QUERYSEGMENTOUT4 *>(query->pOutputData);
+            entry->Values[0] = segments->NbSegment;
+            // The count-only call defines no members beyond NbSegment. Never
+            // inspect its descriptor pointer or any other uninitialized tail.
+        }
+    }
+    HANDLE deviceKey = NULL;
+    NTSTATUS writeStatus = IoOpenDeviceRegistryKey(m_pPhysicalDevice,
+                                                   PLUGPLAY_REGKEY_DRIVER,
+                                                   KEY_SET_VALUE,
+                                                   &deviceKey);
+    if (NT_SUCCESS(writeStatus))
+    {
+        UNICODE_STRING name;
+        RtlInitUnicodeString(&name, L"NativeActivationTrace");
+        const ULONG length = static_cast<ULONG>(6 * sizeof(DWORD) +
+                                                m_NativeActivationTrace.Count * sizeof(m_NativeActivationTrace.Entries[0]));
+        writeStatus = ZwSetValueKey(deviceKey, &name, 0, REG_BINARY, &m_NativeActivationTrace, length);
+        ZwClose(deviceKey);
+    }
+    if (!NT_SUCCESS(writeStatus))
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, "viogpu activation trace write failed 0x%08X\n", writeStatus);
+    }
+    KeReleaseMutex(&m_NativeActivationTraceMutex, FALSE);
 }
 
 VOID VioGpuDod::RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,

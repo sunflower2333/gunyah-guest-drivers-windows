@@ -4668,6 +4668,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
         status = VioGpuDodQueryAdapterInfo(hAdapter, pQueryAdapterInfo);
     }
 
+    adapter->RecordNativeActivationQuery(pQueryAdapterInfo, status);
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                NT_SUCCESS(status) ? DPFLTR_INFO_LEVEL : DPFLTR_ERROR_LEVEL,
                "viogpu WDDM QueryAdapterInfo: type=%u input=%u output=%u status=0x%08X\n",

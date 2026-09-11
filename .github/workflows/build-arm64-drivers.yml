@@ -80,6 +80,9 @@ jobs:
       - name: Execute WDDM2 physical engine and VidMm segment regression
         shell: pwsh
         run: python viogpu/tests/wddm2-accounting/run.py
+      - name: Verify exact-start activation trace decoding
+        shell: pwsh
+        run: Tools/test-native-activation-trace.ps1
 
   mesa-umd:
     name: Mesa D3D10 UMD (ARM64, cross-compiled)
@@ -440,13 +443,12 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # Driver version = 100.6.101.<58180 + commits after the exact 58180 source>.
-          # The branch was rebased after the earlier version epoch, so require
-          # this installed source to remain an ancestor before counting. The
-          # first descendant build is 58181. The 16-bit limit leaves 7354
-          # revisions before another explicit epoch is required.
-          $epoch = '00c0fd0217cd25ef61581f498dbcb5f40516d4f6'
-          $epochMinor = 58180
+          # The integrated 58422 source is the fixed comparison point. Reserve
+          # 58423..58429 for the independent GL recovery package; the first
+          # activation-diagnostic descendant is 58430. Keep ancestry validation
+          # and the 16-bit bound so later diagnostics remain monotonic.
+          $epoch = '4c5e828db0c9d3ebd3c0112f16fe79d5e1fa7127'
+          $epochMinor = 58429
           & git merge-base --is-ancestor $epoch HEAD
           if ($LASTEXITCODE -ne 0) {
             throw "driver version epoch $epoch is not an ancestor of HEAD"

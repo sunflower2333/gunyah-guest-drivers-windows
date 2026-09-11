@@ -996,8 +996,8 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$epoch = '00c0fd0217cd25ef61581f498dbcb5f40516d4f6'",
-        "$epochMinor = 58180",
+        "$epoch = '4c5e828db0c9d3ebd3c0112f16fe79d5e1fa7127'",
+        "$epochMinor = 58429",
         "git merge-base --is-ancestor $epoch HEAD",
         'git rev-list --count "$epoch..HEAD"',
         "$minor = $epochMinor + [int]$n",

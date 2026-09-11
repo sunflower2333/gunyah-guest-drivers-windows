@@ -931,6 +931,25 @@ class VioGpuDod
     // Exact dxgkrnl identity, published only for a successful adapter start.
     DECLSPEC_ALIGN(8) volatile LONG64 m_RuntimeAdapterLuid;
 #if defined(VIOGPU_NATIVE_CONTEXT)
+    // First 64 activation queries, atomically persisted without kernel pointers.
+    KMUTEX m_NativeActivationTraceMutex;
+    struct
+    {
+        DWORD Magic;
+        DWORD Version;
+        DWORD Epoch;
+        DWORD Count;
+        DWORD DdiVersion;
+        DWORD RenderOnly;
+        struct
+        {
+            DWORD Type;
+            DWORD Status;
+            DWORD InputSize;
+            DWORD OutputSize;
+            DWORD Values[8];
+        } Entries[64];
+    } m_NativeActivationTrace;
     volatile LONG m_HardwareResetCallerRva;
     volatile LONG m_HardwareResetFirstCallerRva;
     volatile LONG m_NativeContextFailFirstCallerRva;
@@ -1895,6 +1914,8 @@ class VioGpuDod
                                                 _In_ ULONG stage,
                                                 _In_ ULONG detail);
     VOID RecordNativeReadinessDiagnostic(void);
+    VOID InitializeNativeActivationTrace(void);
+    VOID RecordNativeActivationQuery(_In_ CONST DXGKARG_QUERYADAPTERINFO *query, _In_ NTSTATUS status);
     volatile LONG m_DodReadinessFailMask;
     VOID RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,
                                                 _In_ NTSTATUS status,
