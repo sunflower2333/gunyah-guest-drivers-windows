@@ -47,6 +47,7 @@ jobs:
           if ($LASTEXITCODE) { throw 'System ICD package verification failed' }
       - name: Verify signed catalog and reject modified payloads
         shell: pwsh
+        timeout-minutes: 5
         run: ./viogpu/opengl/test-signed-package.ps1 -Payload opengl-payload
       - uses: actions/upload-artifact@v4
         with:
