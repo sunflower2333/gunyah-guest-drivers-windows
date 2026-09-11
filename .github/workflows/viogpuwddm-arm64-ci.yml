@@ -484,6 +484,28 @@ jobs:
           Assert-Arm64Pe $driver
           Assert-Arm64Pe $umd
 
+          $hdrRoot = 'viogpu/viogpuwddm/objhdr_win11_arm64/arm64'
+          $hdrInf = Join-Path $hdrRoot 'viogpuwddm.inf'
+          $hdrDriver = Join-Path $hdrRoot 'viogpuwddm.sys'
+          $hdrUmd = Join-Path $hdrRoot 'viogpud3d.dll'
+          foreach ($path in @($hdrInf, $hdrDriver, $hdrUmd, (Join-Path $hdrRoot 'viogpuwddm.map'))) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "missing HDR candidate evidence: $path" }
+          }
+          & $infverif /w /v $hdrInf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Assert-Arm64Pe $hdrDriver
+          Assert-Arm64Pe $hdrUmd
+          $manifest = [ordered]@{
+            source_commit = $env:GITHUB_SHA
+            profile = 'optional WDDM 2.3 Advanced Color candidate'
+            hdr_admitted = $false
+            runtime_validated = $false
+            umd_role = 'baseline D3D shim; native RGB10 requires the paired Mesa UMD build'
+            driver_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $hdrDriver).Hash
+            umd_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $hdrUmd).Hash
+          }
+          $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $hdrRoot 'candidate.json') -Encoding utf8
+
           $dumpbin = (Get-Command dumpbin.exe -ErrorAction Stop).Source
           $exports = (& $dumpbin /nologo /exports $umd 2>&1 | Out-String)
           if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for $umd" }
@@ -514,4 +536,17 @@ jobs:
             viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.dll
             viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.pdb
             viogpu/viogpuwddm/README.md
+          if-no-files-found: error
+
+      - name: Upload unsigned Advanced Color candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: viogpuwddm-arm64-hdr-candidate
+          path: |
+            viogpu/viogpuwddm/objhdr_win11_arm64/arm64/viogpuwddm.sys
+            viogpu/viogpuwddm/objhdr_win11_arm64/arm64/viogpuwddm.pdb
+            viogpu/viogpuwddm/objhdr_win11_arm64/arm64/viogpuwddm.map
+            viogpu/viogpuwddm/objhdr_win11_arm64/arm64/viogpuwddm.inf
+            viogpu/viogpuwddm/objhdr_win11_arm64/arm64/viogpud3d.dll
+            viogpu/viogpuwddm/objhdr_win11_arm64/arm64/candidate.json
           if-no-files-found: error
