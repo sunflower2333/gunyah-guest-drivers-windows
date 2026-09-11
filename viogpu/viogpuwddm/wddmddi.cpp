@@ -10315,6 +10315,14 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
     {
         return STATUS_INVALID_PARAMETER;
     }
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    if (allocation->Format == D3DDDIFMT_A2B10G10R10 || allocation->Format == D3DDDIFMT_A2R10G10B10)
+    {
+        // Only MPO3 carries the source colorspace and HDR metadata needed to
+        // interpret a high-precision primary. The legacy DDI cannot tag it.
+        return STATUS_NOT_SUPPORTED;
+    }
+#endif
 
     NTSTATUS status = AcquireAllocationLifecycle(allocation);
     if (status != STATUS_SUCCESS)

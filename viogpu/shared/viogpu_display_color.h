@@ -4,16 +4,16 @@
 /* Project-private control queue extension, not an assigned virtio-gpu feature.
  * All fields are little endian. Supported guest architectures are little endian.
  * Discovery failure leaves HDR unavailable. Observations are never usable caps. */
-#define VIOGPU_CMD_GET_DISPLAY_COLOR  0xd100U
-#define VIOGPU_CMD_SET_RESOURCE_COLOR 0xd101U
+#define VIOGPU_CMD_GET_DISPLAY_COLOR    0xd100U
+#define VIOGPU_CMD_SET_RESOURCE_COLOR   0xd101U
 #define VIOGPU_CMD_SET_TARGET_TRANSFORM 0xd102U
-#define VIOGPU_RESP_DISPLAY_COLOR     0xd200U
-#define VIOGPU_DISPLAY_COLOR_MAGIC    0x4c435644U
-#define VIOGPU_DISPLAY_COLOR_VERSION  1U
-#define VIOGPU_DISPLAY_COLOR_PQ       1U
-#define VIOGPU_DISPLAY_COLOR_HLG      2U
-#define VIOGPU_DISPLAY_FORMAT_AB30    0x30334241U
-#define VIOGPU_DISPLAY_FORMAT_AR30    0x30335241U
+#define VIOGPU_RESP_DISPLAY_COLOR       0xd200U
+#define VIOGPU_DISPLAY_COLOR_MAGIC      0x4c435644U
+#define VIOGPU_DISPLAY_COLOR_VERSION    1U
+#define VIOGPU_DISPLAY_COLOR_PQ         1U
+#define VIOGPU_DISPLAY_COLOR_HLG        2U
+#define VIOGPU_DISPLAY_FORMAT_AB30      0x30334241U
+#define VIOGPU_DISPLAY_FORMAT_AR30      0x30335241U
 
 typedef struct VIOGPU_DISPLAY_CONTROL_HEADER
 {
@@ -132,6 +132,12 @@ inline bool VioGpuValidDisplayMetadata(const VIOGPU_SET_RESOURCE_COLOR *color)
         {
             return false;
         }
+        if (color->has_static_metadata &&
+            (color->chromaticities[i] + color->chromaticities[i + 1] == 0 ||
+             (i == 6 && (color->chromaticities[i] == 0 || color->chromaticities[i + 1] == 0))))
+        {
+            return false;
+        }
     }
     if (!color->has_static_metadata)
     {
@@ -139,7 +145,7 @@ inline bool VioGpuValidDisplayMetadata(const VIOGPU_SET_RESOURCE_COLOR *color)
                color->max_content_light_level == 0 && color->max_frame_average_light_level == 0;
     }
     return color->encoding == VIOGPU_DISPLAY_COLOR_PQ && color->max_mastering_luminance != 0 &&
-           color->min_mastering_luminance <= color->max_mastering_luminance * 10000 &&
+           color->min_mastering_luminance < color->max_mastering_luminance * 10000 &&
            (color->max_content_light_level == 0 ||
             color->max_frame_average_light_level <= color->max_content_light_level);
 }
