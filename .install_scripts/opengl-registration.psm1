@@ -7,16 +7,16 @@ $Names = @('OpenGLDriverName','OpenGLVersion','OpenGLFlags',
 
 function Get-IcdRegistration([string]$Directory) {
     $values = @{
-        OpenGLDriverName = (Join-Path $Directory 'viogpuopengl.dll')
+        OpenGLDriverName = [string[]]@(Join-Path $Directory 'viogpuopengl.dll')
         OpenGLVersion = 1; OpenGLFlags = 1
-        OpenGLDriverNameWow = (Join-Path $Directory 'viogpuopengl_x86.dll')
+        OpenGLDriverNameWow = [string[]]@(Join-Path $Directory 'viogpuopengl_x86.dll')
         OpenGLVersionWow = 1; OpenGLFlagsWow = 1
         VulkanDriverName = (Join-Path $Directory 'turnip.json')
         VulkanDriverNameWow = (Join-Path $Directory 'turnip-wow.json')
     }
     @($Names | ForEach-Object {
         [pscustomobject]@{ Name = $_; Present = $true
-            Kind = $(if ($values[$_] -is [int]) {'DWord'} else {'String'})
+            Kind = $(if ($values[$_] -is [int]) {'DWord'} elseif ($values[$_] -is [string[]]) {'MultiString'} else {'String'})
             Value = $values[$_] }
     })
 }
