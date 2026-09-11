@@ -863,8 +863,13 @@ def check_arm64_workflow_contract() -> None:
         if r"Tools\x64\infverif.exe" in source:
             fail(f"{label} workflow must discover the versioned InfVerif.exe path")
 
-        if source.count("& $infverif /w /v") != 1:
-            fail(f"{label} workflow must run InfVerif /w /v exactly once on the Native Context INF")
+        has_hdr_candidate = "name: viogpuwddm-arm64-hdr-candidate" in source
+        expected_inf_checks = 2 if has_hdr_candidate else 1
+        if (source.count("& $infverif /w /v") != expected_inf_checks or
+                (has_hdr_candidate and
+                 (source.count("& $infverif /w /v $inf\n") != 1 or
+                  source.count("& $infverif /w /v $hdrInf\n") != 1))):
+            fail(f"{label} workflow must validate each distinct Native Context INF exactly once")
 
     required_locator_fragments = (
         "Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\\10'",
