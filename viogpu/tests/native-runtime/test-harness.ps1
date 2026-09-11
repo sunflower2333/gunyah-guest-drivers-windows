@@ -14,8 +14,19 @@ foreach ($api in @('d3d11','d3d12')) {
 }
 # Missing hardware identity must be rejected before trying a GPU. These cases
 # catch accidental weakening of the ordinary-application acceptance contract.
-& $Probe --api d3d11 2>&1 | Out-Host
-if ($LASTEXITCODE -eq 0) { throw 'Missing UMD identity incorrectly accepted' }
-& $Probe --api d3d12 --self-test-warp --expect-umd 'C:\bad.dll' 2>&1 | Out-Host
-if ($LASTEXITCODE -eq 0) { throw 'WARP mixed with hardware identity incorrectly accepted' }
+$output = @(& $Probe --api d3d11 2>&1)
+$exit = $LASTEXITCODE
+$output
+if ($exit -ne 1 -or ($output -join "`n") -notmatch 'FAIL stage=expected-umd-identity-required ') {
+    throw 'Missing UMD identity did not produce the intended rejection'
+}
+$output = @(& $Probe --api d3d12 --self-test-warp --expect-umd 'C:\bad.dll' 2>&1)
+$exit = $LASTEXITCODE
+$output
+if ($exit -ne 1 -or ($output -join "`n") -notmatch 'FAIL stage=self-test-not-hardware-acceptance ') {
+    throw 'WARP mixed with hardware identity did not produce the intended rejection'
+}
+# Both expected negative exits were checked above. Do not leak the final exit1
+# into GitHub's outer PowerShell wrapper after the complete self-test passed.
+$global:LASTEXITCODE = 0
 'SELF_TESTS_ONLY_COMPLETE=1 TARGET_VIOGPU_TESTED=0'
