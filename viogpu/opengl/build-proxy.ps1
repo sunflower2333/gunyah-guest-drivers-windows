@@ -39,5 +39,6 @@ $nativeInputs = @(Get-Content "$out/arm64-inputs.rsp" | Where-Object { $_ -match
 if (!$nativeInputs.Count) { throw 'No native ARM64 link inputs captured' }
 $nativeInputs | Set-Content "$out/arm64-merge.rsp" -Encoding ascii
 Invoke-Compiler arm64 @(
-    "cl /nologo /W4 /WX /EHsc /MT /LD /arm64EC /I`"$mesa/include`" /I`"$mesa/src/gallium/frontends/wgl`" `"$source/icd-proxy.cpp`" /Fo`"$out/proxy-arm64ec.obj`" /link /MACHINE:ARM64X @`"$out/arm64-merge.rsp`" /DEFARM64NATIVE:`"$out/proxy-arm64.def`" /DEF:`"$out/proxy-x64.def`" /OUT:`"$out/viogpuopengl.dll`" /PDB:`"$out/viogpuopengl.pdb`" /DEBUG"
+    "cl /nologo /W4 /WX /EHsc /MT /c /arm64EC /I`"$mesa/include`" /I`"$mesa/src/gallium/frontends/wgl`" `"$source/icd-proxy.cpp`" /Fo`"$out/proxy-arm64ec.obj`"",
+    "link /DLL /MACHINE:ARM64X `"$out/proxy-arm64ec.obj`" @`"$out/arm64-merge.rsp`" /DEFARM64NATIVE:`"$out/proxy-arm64.def`" /DEF:`"$out/proxy-x64.def`" /OUT:`"$out/viogpuopengl.dll`" /PDB:`"$out/viogpuopengl.pdb`" /DEBUG"
 )
