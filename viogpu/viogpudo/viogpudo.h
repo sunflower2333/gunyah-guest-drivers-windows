@@ -1809,7 +1809,9 @@ class VioGpuDod
                                                 _In_ ULONGLONG regionOffset,
                                                 _In_ BOOLEAN attempted,
                                                 _In_ BOOLEAN mapped);
-    VOID RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva);
+    VOID RecordNativeSynchronousPoisonDiagnostic(
+        _In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva,
+        _In_opt_ const VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *timeoutDiagnostic);
     VOID RecordAdapterInfoTypeMap(void);
     VOID RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId,
                                                 _In_ LONG hostResult,

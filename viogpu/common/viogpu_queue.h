@@ -115,6 +115,22 @@ enum VIOGPU_SYNCHRONOUS_STATE : LONG
     VioGpuSynchronousPoisoned,
 };
 
+/* First submitted completion-wait failure for this queue object's lifetime.
+ * EpochGeneration is the submission epoch, before poisoning advances it.
+ * Only Flags bit 0 validates Type/ContextId; bit 1 validates ResourceId.
+ * This is internal diagnostic state, not a host or UMD wire contract. */
+typedef struct viogpu_synchronous_timeout_diagnostic
+{
+    ULONG Flags;
+    ULONG Type;
+    ULONG ContextId;
+    ULONG ResourceId;
+    ULONG WaitStatus;
+    ULONG CallerRva;
+    ULONG CommandBytes;
+    ULONG EpochGeneration;
+} VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC;
+
 enum VIOGPU_HOST_CONTEXT_RESULT : LONG
 {
     VioGpuHostContextNotSubmitted = 0,
@@ -442,6 +458,8 @@ class CtrlQueue : public VioGpuQueue
         KeInitializeMutex(&m_SynchronousMutex, 0);
         m_SynchronousEpochState = VioGpuSynchronousOffline;
         m_SynchronousPoisonCallerRva = 0;
+        m_SynchronousTimeoutPublication = 0;
+        RtlZeroMemory(&m_FirstSynchronousTimeout, sizeof(m_FirstSynchronousTimeout));
         KeInitializeSpinLock(&m_NativeSubmitLock);
         InitializeListHead(&m_NativeSubmitBacklog);
         m_NativeSubmitBacklogPoisoned = 0;
@@ -527,6 +545,7 @@ class CtrlQueue : public VioGpuQueue
     ULONG SynchronousPoisonCallerRva(void);
     ULONG SynchronousEpochStateValue(void);
     ULONG SynchronousEpochGenerationValue(void);
+    BOOLEAN GetFirstSynchronousTimeout(_Out_ VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *diagnostic);
 
     BOOLEAN CreateResource(UINT res_id, UINT format, UINT width, UINT height);
     BOOLEAN DestroyResource(UINT id);
@@ -543,11 +562,15 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN BeginSynchronousRequest(void);
     void EndSynchronousRequest(void);
     BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer);
-    BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted);
+    __declspec(noinline) BOOLEAN
+    SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted);
+    void RecordFirstSynchronousTimeout(PGPU_VBUFFER buf, NTSTATUS status, LONG64 epochState, ULONG_PTR caller);
     VIOGPU_HOST_CONTEXT_RESULT SubmitSynchronousNoDataLocked(PGPU_VBUFFER buf);
     KMUTEX m_SynchronousMutex;
     DECLSPEC_ALIGN(8) volatile LONG64 m_SynchronousEpochState;
     volatile LONG m_SynchronousPoisonCallerRva;
+    volatile LONG m_SynchronousTimeoutPublication;
+    VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC m_FirstSynchronousTimeout;
     volatile LONG m_FenceIdr;
     KSPIN_LOCK m_NativeSubmitLock;
     LIST_ENTRY m_NativeSubmitBacklog;

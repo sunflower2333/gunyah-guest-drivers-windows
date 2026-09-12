@@ -4063,6 +4063,7 @@ def check_queue_failure_semantics() -> None:
         if canonical_code(condition) in ("status!=STATUS_SUCCESS", "STATUS_SUCCESS!=status")
     ]
     if len(timeout_blocks) != 1 or not canonical_code(timeout_blocks[0]).startswith(
+        "RecordFirstSynchronousTimeout(buf,status,requestEpochState,reinterpret_cast<ULONG_PTR>(_ReturnAddress()));"
         "PoisonSynchronousRequests();*release_buffer=FALSE;"
     ):
         fail("synchronous submit timeout must poison the epoch and retain the device-owned descriptor")
@@ -7115,7 +7116,7 @@ def check_native_synchronous_poison_diagnostics() -> None:
     declaration = canonical_code(VIOGPU_HEADER_SOURCE)
     expected_declaration = (
         "VOIDRecordNativeSynchronousPoisonDiagnostic(_In_ULONGstate,_In_ULONGgeneration,"
-        "_In_ULONGcallerRva);"
+        "_In_ULONGcallerRva,_In_opt_constVIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC*timeoutDiagnostic);"
     )
     if declaration.count(expected_declaration) != 1:
         fail("adapter must declare exactly one persistent synchronous poison recorder")
@@ -7136,9 +7137,11 @@ def check_native_synchronous_poison_diagnostics() -> None:
 
     destroy = canonical_code(function_body("VioGpuAdapter::DestroyNativeContext", VIOGPU_CODE))
     call = (
-        "if(!synchronousRequestsHealthy){m_pVioGpuDod->RecordNativeSynchronousPoisonDiagnostic("
+        "if(!synchronousRequestsHealthy){VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTICtimeoutDiagnostic;"
+        "BOOLEANhaveTimeout=m_CtrlQueue.GetFirstSynchronousTimeout(&timeoutDiagnostic);"
+        "m_pVioGpuDod->RecordNativeSynchronousPoisonDiagnostic("
         "m_CtrlQueue.SynchronousEpochStateValue(),m_CtrlQueue.SynchronousEpochGenerationValue(),"
-        "m_CtrlQueue.SynchronousPoisonCallerRva());}"
+        "m_CtrlQueue.SynchronousPoisonCallerRva(),haveTimeout?&timeoutDiagnostic:NULL);}"
     )
     if destroy.count(call) != 1:
         fail("blocked teardown must publish poison provenance only for an unhealthy epoch")

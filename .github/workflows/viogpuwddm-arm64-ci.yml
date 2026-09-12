@@ -142,6 +142,14 @@ jobs:
           Add-Type -TypeDefinition $source[0].Value
           Write-Host 'PASS display-mode diagnostic PowerShell parse and embedded C# compile; no modeset executed'
 
+      - name: Execute synchronous timeout lifecycle and first-failure negative control
+        shell: pwsh
+        run: |
+          python viogpu/tests/synchronous-timeout/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/synchronous-timeout/run.py --negative-control-overwrite
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
       - name: Check scheduler fence publication ordering
         shell: cmd
         run: viogpu\tests\fence-publication\run-msvc.cmd

@@ -6944,7 +6944,9 @@ VOID VioGpuDod::RecordAdapterInfoTypeMap(void)
     ZwClose(deviceKey);
 }
 
-VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva)
+VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(
+    _In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva,
+    _In_opt_ const VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *timeoutDiagnostic)
 {
     PAGED_CODE();
 
@@ -6965,18 +6967,50 @@ VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state, _In_ U
     DWORD callerValue = callerRva;
     NTSTATUS stateWrite = WriteRegistryDWORD(deviceKey, L"NativeSynchronousEpochState", &stateValue);
     NTSTATUS generationWrite = WriteRegistryDWORD(deviceKey, L"NativeSynchronousEpochGeneration", &generationValue);
+    /* Invalid first, then commit only a completely written snapshot. Like the
+     * existing poison keys this is historical failure telemetry, not live state. */
+    DWORD timeoutValid = 0;
+    NTSTATUS timeoutWrite = WriteRegistryDWORD(deviceKey, L"NativeSynchronousTimeoutValid", &timeoutValid);
+    if (NT_SUCCESS(timeoutWrite) && timeoutDiagnostic != NULL)
+    {
+        const struct
+        {
+            PCWSTR Name;
+            DWORD Value;
+        } fields[] = {
+            {L"NativeSynchronousTimeoutFlags", timeoutDiagnostic->Flags},
+            {L"NativeSynchronousTimeoutType", timeoutDiagnostic->Type},
+            {L"NativeSynchronousTimeoutContextId", timeoutDiagnostic->ContextId},
+            {L"NativeSynchronousTimeoutResourceId", timeoutDiagnostic->ResourceId},
+            {L"NativeSynchronousTimeoutWaitStatus", timeoutDiagnostic->WaitStatus},
+            {L"NativeSynchronousTimeoutCallerRva", timeoutDiagnostic->CallerRva},
+            {L"NativeSynchronousTimeoutCommandBytes", timeoutDiagnostic->CommandBytes},
+            {L"NativeSynchronousTimeoutEpochGeneration", timeoutDiagnostic->EpochGeneration},
+        };
+        for (ULONG index = 0; index < ARRAYSIZE(fields) && NT_SUCCESS(timeoutWrite); ++index)
+        {
+            DWORD value = fields[index].Value;
+            timeoutWrite = WriteRegistryDWORD(deviceKey, fields[index].Name, &value);
+        }
+        if (NT_SUCCESS(timeoutWrite))
+        {
+            timeoutValid = 1;
+            timeoutWrite = WriteRegistryDWORD(deviceKey, L"NativeSynchronousTimeoutValid", &timeoutValid);
+        }
+    }
     // The caller RVA is the commit marker for the preceding epoch fields.
     NTSTATUS callerWrite = WriteRegistryDWORD(deviceKey, L"NativeSynchronousPoisonCallerRva", &callerValue);
     ZwClose(deviceKey);
 
-    if (!NT_SUCCESS(stateWrite) || !NT_SUCCESS(generationWrite) || !NT_SUCCESS(callerWrite))
+    if (!NT_SUCCESS(stateWrite) || !NT_SUCCESS(generationWrite) || !NT_SUCCESS(callerWrite) || !NT_SUCCESS(timeoutWrite))
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
-                   "viogpu synchronous poison diagnostic: write failed, writes=%08X/%08X/%08X\n",
+                   "viogpu synchronous poison diagnostic: write failed, writes=%08X/%08X/%08X/%08X\n",
                    stateWrite,
                    generationWrite,
-                   callerWrite);
+                   callerWrite,
+                   timeoutWrite);
     }
 }
 
@@ -10651,9 +10685,12 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
         {
             if (!synchronousRequestsHealthy)
             {
+                VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC timeoutDiagnostic;
+                BOOLEAN haveTimeout = m_CtrlQueue.GetFirstSynchronousTimeout(&timeoutDiagnostic);
                 m_pVioGpuDod->RecordNativeSynchronousPoisonDiagnostic(m_CtrlQueue.SynchronousEpochStateValue(),
                                                                       m_CtrlQueue.SynchronousEpochGenerationValue(),
-                                                                      m_CtrlQueue.SynchronousPoisonCallerRva());
+                                                                      m_CtrlQueue.SynchronousPoisonCallerRva(),
+                                                                      haveTimeout ? &timeoutDiagnostic : NULL);
             }
             m_pVioGpuDod->RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostResult,
                                                                status,

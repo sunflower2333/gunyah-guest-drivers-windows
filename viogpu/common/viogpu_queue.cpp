@@ -434,6 +434,88 @@ ULONG CtrlQueue::SynchronousEpochGenerationValue(void)
     return static_cast<ULONG>(VioGpuSynchronousGeneration(VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)));
 }
 
+static void VioGpuDecodeSynchronousTimeoutCommand(const GPU_VBUFFER *buf,
+                                                 VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *diagnostic)
+{
+    if (buf == NULL || buf->buf == NULL || buf->size < static_cast<int>(sizeof(GPU_CTRL_HDR)))
+    {
+        return;
+    }
+    GPU_CTRL_HDR header;
+    RtlCopyMemory(&header, buf->buf, sizeof(header));
+    diagnostic->Flags |= 1;
+    diagnostic->Type = header.type;
+    diagnostic->ContextId = header.ctx_id;
+
+    /* Accept only a complete known fixed command. Unknown command payloads,
+     * SUBMIT_3D byte counts and response bytes are never resource identities. */
+    SIZE_T requiredSize = 0;
+    SIZE_T resourceOffset = 0;
+#define VIOGPU_TIMEOUT_RESOURCE(command, wire) \
+    case command: \
+        requiredSize = sizeof(wire); \
+        resourceOffset = FIELD_OFFSET(wire, resource_id); \
+        break
+    switch (header.type)
+    {
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, GPU_RES_CREATE_2D);
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_RESOURCE_UNREF, GPU_RES_UNREF);
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_SET_SCANOUT, GPU_SET_SCANOUT);
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_RESOURCE_FLUSH, GPU_RES_FLUSH);
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, GPU_RES_TRANSF_TO_HOST_2D);
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, GPU_RES_ATTACH_BACKING);
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING, GPU_RES_DETACH_BACKING);
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB, GPU_CMD_RESOURCE_CREATE_BLOB);
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_SET_SCANOUT_BLOB, GPU_CMD_SET_SCANOUT_BLOB);
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB, GPU_CMD_RESOURCE_MAP_BLOB);
+        VIOGPU_TIMEOUT_RESOURCE(VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB, GPU_CMD_RESOURCE_UNMAP_BLOB);
+        default:
+            return;
+    }
+#undef VIOGPU_TIMEOUT_RESOURCE
+    if (static_cast<SIZE_T>(buf->size) >= requiredSize)
+    {
+        RtlCopyMemory(&diagnostic->ResourceId, buf->buf + resourceOffset, sizeof(diagnostic->ResourceId));
+        diagnostic->Flags |= 2;
+    }
+}
+
+void CtrlQueue::RecordFirstSynchronousTimeout(PGPU_VBUFFER buf, NTSTATUS status, LONG64 epochState, ULONG_PTR caller)
+{
+    /* No allocation, wait, registry I/O or ownership transition. Retain the
+     * first record across poison/re-enable cycles, until this object dies.
+     * Readers must observe publication 2; publication 1 is never readable. */
+    if (InterlockedCompareExchange(&m_SynchronousTimeoutPublication, 1, 0) != 0)
+    {
+        return;
+    }
+    VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC diagnostic = {};
+    diagnostic.WaitStatus = static_cast<ULONG>(status);
+    diagnostic.EpochGeneration = VioGpuSynchronousGeneration(epochState);
+    diagnostic.CommandBytes = buf != NULL && buf->size > 0 ? static_cast<ULONG>(buf->size) : 0;
+    ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    ULONG_PTR callerRva = caller >= imageBase ? caller - imageBase : 0;
+    diagnostic.CallerRva = callerRva <= MAXULONG ? static_cast<ULONG>(callerRva) : 0;
+    VioGpuDecodeSynchronousTimeoutCommand(buf, &diagnostic);
+    m_FirstSynchronousTimeout = diagnostic;
+    InterlockedExchange(&m_SynchronousTimeoutPublication, 2);
+}
+
+BOOLEAN CtrlQueue::GetFirstSynchronousTimeout(_Out_ VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *diagnostic)
+{
+    if (diagnostic == NULL)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(diagnostic, sizeof(*diagnostic));
+    if (InterlockedCompareExchange(&m_SynchronousTimeoutPublication, 0, 0) != 2)
+    {
+        return FALSE;
+    }
+    *diagnostic = m_FirstSynchronousTimeout;
+    return TRUE;
+}
+
 BOOLEAN CtrlQueue::EnableSynchronousRequests(void)
 {
     PAGED_CODE();
@@ -812,7 +894,8 @@ BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN rele
     return SubmitSynchronousLocked(buf, release_buffer, &submitted);
 }
 
-BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted)
+__declspec(noinline) BOOLEAN
+CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted)
 {
     if (buf == NULL || release_buffer == NULL || submitted == NULL)
     {
@@ -848,6 +931,7 @@ BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN rele
     {
         // The device still owns the descriptor. The adapter reset path reclaims
         // it only after interrupts are disabled and queued DPCs are flushed.
+        RecordFirstSynchronousTimeout(buf, status, requestEpochState, reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
         PoisonSynchronousRequests();
         *release_buffer = FALSE;
         DbgPrint(TRACE_LEVEL_ERROR, ("%s timed out with status 0x%x\n", __FUNCTION__, status));
