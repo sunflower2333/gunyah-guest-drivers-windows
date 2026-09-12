@@ -749,6 +749,7 @@ class VioGpuAdapter : IVioGpuPCI
         return m_Id;
     }
     PBYTE GetEdidData(void);
+    ULONG GetEdidDataSize(void);
     PBYTE GetCTA861Data(void);
 
   protected:

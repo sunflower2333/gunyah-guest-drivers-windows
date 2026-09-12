@@ -2722,6 +2722,7 @@ NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVI
     PBYTE edid = NULL;
 
     edid = m_pHWDevice->GetEdidData();
+    const ULONG edidSize = m_pHWDevice->GetEdidDataSize();
 #if defined(VIOGPU_NATIVE_CONTEXT)
     CountDisplayEvent(10);
     RecordDisplayValue(11, edid != NULL ? 1 : 0);
@@ -2731,10 +2732,10 @@ NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVI
     {
         return STATUS_GRAPHICS_CHILD_DESCRIPTOR_NOT_SUPPORTED;
     }
-    else if (pDeviceDescriptor->DescriptorOffset < EDID_RAW_BLOCK_SIZE)
+    else if (pDeviceDescriptor->DescriptorOffset < edidSize)
     {
         ULONG len = min(pDeviceDescriptor->DescriptorLength,
-                        (EDID_RAW_BLOCK_SIZE - pDeviceDescriptor->DescriptorOffset));
+                        (edidSize - pDeviceDescriptor->DescriptorOffset));
         RtlCopyMemory(pDeviceDescriptor->DescriptorBuffer, (edid + pDeviceDescriptor->DescriptorOffset), len);
         pDeviceDescriptor->DescriptorLength = len;
         return STATUS_SUCCESS;
@@ -3539,10 +3540,17 @@ VOID VioGpuDod::BuildVideoSignalInfo(D3DKMDT_VIDEO_SIGNAL_INFO *pVideoSignalInfo
     pVideoSignalInfo->TotalSize.cy = timing.TotalHeight;
     pVideoSignalInfo->ActiveSize.cx = timing.Width;
     pVideoSignalInfo->ActiveSize.cy = timing.Height;
-    pVideoSignalInfo->VSyncFreq.Numerator = timing.PixelClock;
-    pVideoSignalInfo->VSyncFreq.Denominator = timing.TotalWidth * timing.TotalHeight;
-    pVideoSignalInfo->HSyncFreq.Numerator = timing.PixelClock;
-    pVideoSignalInfo->HSyncFreq.Denominator = timing.TotalWidth;
+    // Every admitted timing has an exactly representable reduced frequency.
+    // PixelRate is64bit; D3DDDI_RATIONAL components are only32bit.
+    unsigned numerator = 0, denominator = 0;
+    VioGpuTimingRational(timing.PixelClock,
+                        static_cast<unsigned long long>(timing.TotalWidth) * timing.TotalHeight,
+                        numerator, denominator);
+    pVideoSignalInfo->VSyncFreq.Numerator = numerator;
+    pVideoSignalInfo->VSyncFreq.Denominator = denominator;
+    VioGpuTimingRational(timing.PixelClock, timing.TotalWidth, numerator, denominator);
+    pVideoSignalInfo->HSyncFreq.Numerator = numerator;
+    pVideoSignalInfo->HSyncFreq.Denominator = denominator;
     pVideoSignalInfo->PixelRate = timing.PixelClock;
     pVideoSignalInfo->ScanLineOrdering = D3DDDI_VSSLO_PROGRESSIVE;
 }
@@ -11608,17 +11616,25 @@ PBYTE VioGpuAdapter::GetEdidData()
     return m_bEDID ? m_EDIDs : (PBYTE)(g_gpu_edid);
 }
 
+ULONG VioGpuAdapter::GetEdidDataSize()
+{
+    PAGED_CODE();
+    // QueryEdidInfo verifies all declared blocks arrived. The fallback is
+    // exactly128bytes; never let a descriptor read walk past that array.
+    return m_bEDID ? (1U + m_EDIDs[126]) * EDID_V1_BLOCK_SIZE : EDID_V1_BLOCK_SIZE;
+}
+
 PBYTE VioGpuAdapter::GetCTA861Data(void)
 {
     PAGED_CODE();
 
     if (m_bEDID)
     {
-        PEDID_DATA_V1 edid_data = (PEDID_DATA_V1)m_EDIDs;
-        if (edid_data->ExtensionFlag[0])
+        for (ULONG offset = EDID_V1_BLOCK_SIZE; offset < GetEdidDataSize(); offset += EDID_V1_BLOCK_SIZE)
         {
-            PEDID_CTA_861 cta_data = (PEDID_CTA_861)(m_EDIDs + EDID_V1_BLOCK_SIZE);
-            if (cta_data->ExtentionTag[0] >= 2 && cta_data->Revision[0] >= 3)
+            PEDID_CTA_861 cta_data = (PEDID_CTA_861)(m_EDIDs + offset);
+            if (cta_data->ExtentionTag[0] == 2 && cta_data->Revision[0] >= 3 &&
+                VioGpuEdidBlockValid(reinterpret_cast<const unsigned char *>(cta_data)))
             {
                 return (PBYTE)cta_data;
             }
@@ -12381,7 +12397,7 @@ int VioGpuAdapter::AddEdidModes(void)
 {
     PAGED_CODE();
     RtlZeroMemory(m_ModeTimings, sizeof(m_ModeTimings));
-    unsigned count = VioGpuReadEdidTimings(GetEdidData(), EDID_RAW_BLOCK_SIZE, m_ModeTimings, 64);
+    unsigned count = VioGpuReadEdidTimings(GetEdidData(), GetEdidDataSize(), m_ModeTimings, 64);
     // Keep recovery modes, but never let one displace the host's preferred DTD.
     VioGpuAppendTiming(m_ModeTimings, 64, count, VioGpuVirtualTiming(MIN_WIDTH_SIZE, MIN_HEIGHT_SIZE, 60));
     VioGpuAppendTiming(m_ModeTimings, 64, count, VioGpuVirtualTiming(NOM_WIDTH_SIZE, NOM_HEIGHT_SIZE, 60));
@@ -12402,7 +12418,7 @@ void VioGpuAdapter::SetVideoModeInfo(UINT Idx, PVIOGPU_DISP_MODE pModeInfo)
     pMode->ScreenStride = (pModeInfo->XResolution * 4 + 3) & ~0x3;
     const VIOGPU_DISPLAY_TIMING &timing = m_ModeTimings[Idx];
     const ULONG total = timing.TotalWidth * timing.TotalHeight;
-    pMode->Frequency = total ? (timing.PixelClock + total / 2) / total : 0;
+    pMode->Frequency = total ? static_cast<ULONG>((timing.PixelClock + total / 2) / total) : 0;
 }
 
 NTSTATUS VioGpuAdapter::UpdateChildStatus(BOOLEAN connect)

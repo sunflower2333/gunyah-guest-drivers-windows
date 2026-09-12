@@ -384,7 +384,7 @@ typedef struct virtio_gpu_resp_edid
 #pragma pack()
 
 #define EDID_V1_BLOCK_SIZE  128
-#define EDID_RAW_BLOCK_SIZE 256
+#define EDID_RAW_BLOCK_SIZE 1024
 
 #pragma pack(push)
 #pragma pack(1)

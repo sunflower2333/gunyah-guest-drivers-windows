@@ -3041,10 +3041,12 @@ def check_vidpn_mode_contract() -> None:
         "pVideoSignalInfo->TotalSize.cy=timing.TotalHeight;",
         "pVideoSignalInfo->ActiveSize.cx=timing.Width;",
         "pVideoSignalInfo->ActiveSize.cy=timing.Height;",
-        "pVideoSignalInfo->VSyncFreq.Numerator=timing.PixelClock;",
-        "pVideoSignalInfo->VSyncFreq.Denominator=timing.TotalWidth*timing.TotalHeight;",
-        "pVideoSignalInfo->HSyncFreq.Numerator=timing.PixelClock;",
-        "pVideoSignalInfo->HSyncFreq.Denominator=timing.TotalWidth;",
+        "VioGpuTimingRational(timing.PixelClock,static_cast<unsignedlonglong>(timing.TotalWidth)*timing.TotalHeight,numerator,denominator);",
+        "pVideoSignalInfo->VSyncFreq.Numerator=numerator;",
+        "pVideoSignalInfo->VSyncFreq.Denominator=denominator;",
+        "VioGpuTimingRational(timing.PixelClock,timing.TotalWidth,numerator,denominator);",
+        "pVideoSignalInfo->HSyncFreq.Numerator=numerator;",
+        "pVideoSignalInfo->HSyncFreq.Denominator=denominator;",
         "pVideoSignalInfo->PixelRate=timing.PixelClock;",
     ):
         if required not in signal_info:
