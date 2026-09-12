@@ -64,6 +64,17 @@ try {
             finally { if ($key) { $key.Dispose() } }
         } finally { $base.Dispose() }
     }
-    Remove-Item -LiteralPath $temp -Recurse -Force
+    # Windows can briefly retain a just-exited emulated process's image mapping
+    # (and on-access scanners can hold it too). Retry this exact disposable
+    # directory for at most five seconds, then preserve an actual cleanup error.
+    for ($attempt = 0; $attempt -lt 11; ++$attempt) {
+        try {
+            if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction Stop }
+            break
+        } catch {
+            if ($attempt -eq 10) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
 }
 Write-Output 'PASS real flat modules/compiler, ARM64X native+EC extension calls, all3 standard-loader fixture dispatch and missing siblings; no GPU claim'
