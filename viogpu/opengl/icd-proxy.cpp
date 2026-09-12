@@ -11,6 +11,7 @@ extern "C"
 #include <cstring>
 #include <cstdlib>
 #include <cwchar>
+#include <viogpu_private_gl.h>
 
 static INIT_ONCE modules_once = INIT_ONCE_STATIC_INIT;
 static INIT_ONCE gallium_once = INIT_ONCE_STATIC_INIT;
@@ -68,21 +69,12 @@ static HMODULE load_sibling(const wchar_t *name)
         return nullptr;
     }
     slash[1] = 0;
-#if defined(_M_ARM64)
-    const wchar_t *arch = L"arm64\\";
-#elif defined(_M_X64)
-    const wchar_t *arch = L"x64\\";
-#elif defined(_M_IX86)
-    const wchar_t *arch = L"x86\\";
-#else
-#error Unsupported ICD architecture
-#endif
-    if (wcscat_s(path, arch) || wcscat_s(path, name))
+    if (wcscat_s(path, name))
     {
         return nullptr;
     }
     // A full-path load can coexist with a different DLL of the same basename.
-    // Zink later loads vulkan-1 by basename, so reject that ambiguity up front.
+    // Reject an existing private module from a different driver package.
     HMODULE existing = GetModuleHandleW(name);
     if (existing)
     {
@@ -111,15 +103,9 @@ static HMODULE load_sibling(const wchar_t *name)
 
 static BOOL CALLBACK initialize_modules(PINIT_ONCE, PVOID, PVOID *)
 {
-    HMODULE zlib = load_sibling(L"z-1.dll");
-    if (!zlib)
-    {
-        return FALSE;
-    }
-    turnip = load_sibling(L"vulkan_freedreno.dll");
+    turnip = load_sibling(VIOGPU_WIDE(VIOGPU_GL_VK_DLL));
     if (!turnip)
     {
-        FreeLibrary(zlib);
         return FALSE;
     }
     return TRUE;
@@ -134,12 +120,12 @@ static BOOL CALLBACK initialize_gallium(PINIT_ONCE, PVOID, PVOID *)
     // Direct Vulkan clients already own their loader. Only the GL path needs
     // to preload the loader used by Zink; do not constrain Vulkan negotiation
     // to the sidecar loader's location.
-    HMODULE loader = load_sibling(L"vulkan-1.dll");
+    HMODULE loader = load_sibling(VIOGPU_WIDE(VIOGPU_GL_LOADER_DLL));
     if (!loader)
     {
         return FALSE;
     }
-    gallium = load_sibling(L"libgallium_wgl.dll");
+    gallium = load_sibling(VIOGPU_WIDE(VIOGPU_GL_DLL));
     if (!gallium)
     {
         FreeLibrary(loader);

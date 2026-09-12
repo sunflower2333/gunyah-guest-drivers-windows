@@ -21,6 +21,18 @@ env:
   PFX_PW: "droidvm"
 
 jobs:
+  flat-package-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Verify flat INF inventory and installer contract
+        run: python -m unittest discover -s viogpu/package -p 'test_*.py'
+
   opencl-icd:
     uses: ./.github/workflows/opencl-system-icd.yml
 
@@ -372,7 +384,7 @@ jobs:
 
   build:
     runs-on: windows-11-arm
-    needs: [mesa-umd, opengl-icd, opencl-icd]
+    needs: [mesa-umd, opengl-icd, opencl-icd, flat-package-tests]
 
     steps:
       - name: Checkout
@@ -395,7 +407,7 @@ jobs:
       - name: Download verified OpenCL distribution
         uses: actions/download-artifact@v4
         with:
-          name: viogpu-opencl-system-unsigned
+          name: viogpu-opencl-flat-unsigned
           path: opencl-payload
 
       - name: Locate preinstalled Windows SDK and WDK
@@ -471,10 +483,9 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # Allocation-status repair atop frozen 58472: all Mesa consumers use
-          # the same source. Jointly sign the KMD/UMD and bind every sidecar to
-          # this pair while preserving the existing OpenCL runtime and modes.
-          $minor = 58473
+          # Unified flat API installation atop frozen 58473. All API files
+          # share the display INF and the same signed catalog as the KMD/UMD.
+          $minor = 58474
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -531,8 +542,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58473) {
-            throw "Allocation status candidate requires reserved version 100.6.101.58473"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58474) {
+            throw "Unified flat candidate requires reserved version 100.6.101.58474"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -762,6 +773,9 @@ jobs:
               throw "$($d.n): $($d.inf) contains a duplicated TargetOSVersion decoration"
             }
             if ($d.n -eq 'viogpu') {
+              python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
+                --mesa 146ce4658d64705285ddb159e9b1d3a29f7f0c25 --clvk 0f436fe7110813ddf01dfaebc44b9de7cd39b3b8
+              if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
               if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
             }
@@ -771,6 +785,10 @@ jobs:
             foreach ($pe in $peFiles) {
               & $signtool sign /fd SHA256 /f $pfx /p "$pfxPw" $pe.FullName
               if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($pe.FullName)" }
+            }
+            if ($d.n -eq 'viogpu') {
+              python viogpu/package/flat_package.py --driver $dest --finalize
+              if ($LASTEXITCODE) { throw 'Post-signing GPU inventory failed' }
             }
             # 產 cat + 簽
             & $inf2cat /driver:$dest /os:$env:OSMASK
@@ -802,54 +820,20 @@ jobs:
             $has = (Get-ChildItem "$dest" | ForEach-Object Name) -join ' '
             Write-Host "packed $($d.n): $has"
           }
-          # The system ICD is an explicit, cataloged sidecar. Preserve its
-          # architecture directories and bind it to these exact signed KMD/UMD
-          # files; never flatten dependencies into the DriverStore or overwrite
-          # Microsoft's opengl32.dll.
-          ./.github/scripts/sign-opengl-sidecar.ps1 -Payload opengl-payload `
-            -Output out/opengl -Kmd out/drivers/viogpu/viogpuwddm.sys `
-            -Umd out/drivers/viogpu/viogpud3d.dll -Pfx $pfx `
-            -PfxPassword $pfxPw -SignTool $signtool
-          ./.github/scripts/sign-opencl-sidecar.ps1 -Payload opencl-payload `
-            -Output out/opencl -Kmd out/drivers/viogpu/viogpuwddm.sys `
-            -Umd out/drivers/viogpu/viogpud3d.dll -Pfx $pfx `
-            -PfxPassword $pfxPw -SignTool $signtool
-          $signedClRoot = (Resolve-Path 'out/opencl/payload').Path
-          foreach ($arch in @('arm64','x64','x86')) {
-            $loaderArch = if ($arch -eq 'x86') {'x86'} else {'arm64x'}
-            & (Join-Path $signedClRoot "loaders/$arch/loader-check.exe") (Join-Path $signedClRoot "loaders/$loaderArch/OpenCL.dll")
-            if ($LASTEXITCODE) { throw "Signed OpenCL $arch loader ABI validation failed" }
-          }
-          foreach ($scriptName in @('install-opencl-icd.ps1','opencl-registration.psm1','test-opencl-installed.ps1')) {
-            Copy-Item (Join-Path '.install_scripts' $scriptName) out
-            $signedScript = Set-AuthenticodeSignature -FilePath (Join-Path 'out' $scriptName) -Certificate $cert -HashAlgorithm SHA256
-            if (!$signedScript.SignerCertificate -or $signedScript.SignerCertificate.Thumbprint -ne $cert.Thumbprint) { throw "OpenCL script signing failed: $scriptName" }
-          }
-          $signedOpenGlRoot = (Resolve-Path 'out/opengl/payload').Path
-          foreach ($arch in @('arm64','x64','x86')) {
-            $icdName = if ($arch -eq 'x86') {'viogpuopengl_x86.dll'} else {'viogpuopengl.dll'}
-            foreach ($mode in @('--vulkan','--opengl')) {
-              & (Join-Path $signedOpenGlRoot "small-stack-probe-$arch.exe") $mode (Join-Path $signedOpenGlRoot $icdName)
-              if ($LASTEXITCODE) { throw "Signed ICD $arch $mode constrained-stack validation failed" }
-            }
-            & (Join-Path $signedOpenGlRoot "system-probe-$arch.exe") --load-only $signedOpenGlRoot
-            if ($LASTEXITCODE) { throw "Signed OpenGL $arch ABI validation failed" }
-            & (Join-Path $signedOpenGlRoot "gles-probe-$arch.exe") --load-only $signedOpenGlRoot
-            if ($LASTEXITCODE) { throw "Signed GLES $arch ABI validation failed" }
-          }
-          foreach ($scriptName in @('install-opengl-icd.ps1','opengl-registration.psm1')) {
-            Copy-Item -LiteralPath (Join-Path '.install_scripts' $scriptName) -Destination out
-            $signedScript = Set-AuthenticodeSignature -FilePath (Join-Path 'out' $scriptName) -Certificate $cert -HashAlgorithm SHA256
-            if (!$signedScript.SignerCertificate -or $signedScript.SignerCertificate.Thumbprint -ne $cert.Thumbprint) {
-              throw "OpenGL installer signing failed: $scriptName"
+          # One normal installer entry for the entire flat GPU driver.
+          $installerFiles = @('INSTALL.cmd','install-drivers.ps1','pvmpower-devnode.ps1',
+            'viogpu-unified-install.ps1','viogpu-install-state.psm1','viogpu-install-native.cs',
+            'viogpu-api-registration.psm1','viogpu-install-certificates.psm1')
+          foreach ($name in $installerFiles) {
+            $destination = Join-Path 'out' $name
+            Copy-Item -LiteralPath (Join-Path '.install_scripts' $name) -Destination $destination
+            if ([IO.Path]::GetExtension($name) -in @('.ps1','.psm1')) {
+              $signature = Set-AuthenticodeSignature -FilePath $destination -Certificate $cert -HashAlgorithm SHA256
+              if (!$signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $cert.Thumbprint) {
+                throw "Unified installer signing failed: $name"
+              }
             }
           }
-          # --- bundle installer into the artifact (source: .install_scripts/) ---
-          # INSTALL.cmd (UAC launcher) + install-drivers.ps1 install the pVM drivers
-          # (viogpu/pvmpower/storage/input, then NetKVM last) and remove
-          # older versions.
-          Copy-Item .install_scripts\INSTALL.cmd, .install_scripts\install-drivers.ps1, .install_scripts\pvmpower-devnode.ps1 out\ -Force
-          Write-Host "[pkg] bundled out\INSTALL.cmd + installer scripts"
 
           Remove-Item $pfx -Force   # 不上傳私鑰
           Write-Host "=== staged ==="; Get-ChildItem -Recurse out -File | Select FullName
@@ -864,12 +848,16 @@ jobs:
             throw "ARM64 bundle contains empty files: $($emptyFiles.FullName -join '; ')"
           }
 
+      - name: Verify actual catalog members and signed flat runtime loading
+        shell: pwsh
+        run: ./.github/scripts/test-signed-flat-gpu.ps1
+
       - name: Verify and record the exact jointly signed package identity
         shell: pwsh
         run: |
-          python .github/scripts/verify-joint-package.py --output out `
-            --mesa 0ab3f85ef7aeb69a93df442039f084b18ee02b7a --mesa-run 34696411128 `
-            --clvk ee0ea93dfdad4e243016702c5757def99975fec5 --version 100.6.101.58473
+          python viogpu/package/verify_bundle.py --output out `
+            --mesa 146ce4658d64705285ddb159e9b1d3a29f7f0c25 --mesa-run 34698314455 `
+            --clvk 0f436fe7110813ddf01dfaebc44b9de7cd39b3b8 --clvk-run 34698553838 --version 100.6.101.58474
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact

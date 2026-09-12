@@ -29,7 +29,7 @@ foreach ($arch in @('arm64','x64','x86','arm64ec')) {
         $capture = if ($arch -eq 'arm64') {"/LINKREPROFULLPATHRSP:`"$out/native.rsp`""} else {''}
         $commands += "link /DLL /OUT:`"$out/$arch/OpenCL.dll`" /DEF:`"$sourceRoot/loader/windows/OpenCL.def`" `"$out/$arch/*.obj`" cfgmgr32.lib runtimeobject.lib advapi32.lib ole32.lib $capture"
         $probe = (Resolve-Path 'viogpu/opencl/loader-check.cpp').Path
-        $commands += "cl /nologo /EHsc /MT `"$probe`" /Fo`"$out/$arch/check.obj`" /Fe:`"$out/$arch/loader-check.exe`""
+        $commands += "cl /nologo /EHsc /MT `"$probe`" /Fo`"$out/$arch/check.obj`" /Fe:`"$out/$arch/loader-check.exe`" /link /MANIFEST:EMBED `"/MANIFESTUAC:level='asInvoker' uiAccess='false'`""
     }
     Build $arch $commands
 }

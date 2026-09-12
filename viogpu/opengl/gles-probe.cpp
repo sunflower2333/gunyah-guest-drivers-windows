@@ -209,6 +209,7 @@ static void gles_diagnostic(HMODULE egl, HMODULE gl, int version)
 
 int main(int argc, char **argv)
 {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     if (argc != 3 ||
         (std::strcmp(argv[1], "--load-only") && std::strcmp(argv[1], "--gles1") && std::strcmp(argv[1], "--gles2")))
     {
@@ -224,19 +225,18 @@ int main(int argc, char **argv)
 #error Unsupported probe architecture
 #endif
     char directory[MAX_PATH];
-    const int length = std::snprintf(directory, sizeof(directory), "%s\\%s", argv[2], architecture);
+    const int length = std::snprintf(directory, sizeof(directory), "%s", argv[2]);
     if (length < 0 || static_cast<size_t>(length) >= sizeof(directory) || !SetCurrentDirectoryA(directory))
     {
-        fail("installed architecture directory");
+        fail("installed flat driver directory");
     }
 
-    load(".\\z-1.dll");
-    HMODULE vk = load(".\\vulkan-1.dll");
-    HMODULE icd = load(".\\vulkan_freedreno.dll");
-    load(".\\libgallium_wgl.dll");
-    HMODULE egl = load(".\\libEGL.dll");
-    HMODULE es1 = load(".\\libGLESv1_CM.dll");
-    HMODULE es2 = load(".\\libGLESv2.dll");
+    HMODULE vk = load(".\\" VIOGPU_GL_LOADER_DLL);
+    HMODULE icd = load(".\\" VIOGPU_GL_VK_DLL);
+    load(".\\" VIOGPU_GL_DLL);
+    HMODULE egl = load(".\\" VIOGPU_EGL_DLL);
+    HMODULE es1 = load(".\\" VIOGPU_GLES1_DLL);
+    HMODULE es2 = load(".\\" VIOGPU_GLES2_DLL);
     symbol<PROC>(vk, "vkGetInstanceProcAddr");
     symbol<PROC>(icd, "vk_icdGetInstanceProcAddr");
     symbol<PROC>(egl, "eglGetProcAddress");

@@ -18,28 +18,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - name: Parse installer and verify typed registration rollback
+      - name: Parse flat build and validation scripts
         shell: pwsh
         run: |
-          $scripts = @('.install_scripts/install-opengl-icd.ps1', '.install_scripts/opengl-registration.psm1', '.github/scripts/sign-opengl-sidecar.ps1')
+          $scripts = @('viogpu/opengl/build-proxy.ps1', 'viogpu/opengl/build-small-stack-control.ps1', 'viogpu/opengl/test-flat-runtime.ps1')
           foreach ($script in $scripts) {
             $tokens = $null; $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
             if ($errors.Count) { throw "PowerShell parse failure: $script $errors" }
           }
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File viogpu/opengl/test-registration.ps1
-          if ($LASTEXITCODE) { throw 'Windows PowerShell registration/rollback regression failed' }
       - name: Download the exact successful three-architecture Mesa run
         shell: pwsh
         timeout-minutes: 40
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run watch 34696411128 --repo sunflower2333/mesa --exit-status --interval 30
+          gh run watch 34698314455 --repo sunflower2333/mesa --exit-status --interval 30
           if ($LASTEXITCODE) { throw 'Pinned Mesa run did not complete successfully' }
-          $source = gh run view 34696411128 --repo sunflower2333/mesa --json headSha --jq .headSha
-          if ($LASTEXITCODE -or $source.Trim() -ne '0ab3f85ef7aeb69a93df442039f084b18ee02b7a') { throw 'Pinned Mesa run source mismatch' }
-          gh run download 34696411128 --repo sunflower2333/mesa --dir mesa-opengl-artifacts
+          $source = gh run view 34698314455 --repo sunflower2333/mesa --json headSha --jq .headSha
+          if ($LASTEXITCODE -or $source.Trim() -ne '146ce4658d64705285ddb159e9b1d3a29f7f0c25') { throw 'Pinned Mesa run source mismatch' }
+          gh run download 34698314455 --repo sunflower2333/mesa --dir mesa-opengl-artifacts
           if ($LASTEXITCODE) { throw 'Pinned Mesa artifact download failed' }
           python viogpu/opengl/package.py --payloads mesa-opengl-artifacts --verify-only
           if ($LASTEXITCODE) { throw 'Pinned Mesa source/hash/PE/export verification failed' }
@@ -53,19 +51,10 @@ jobs:
         run: |
           python viogpu/opengl/package.py --payloads mesa-opengl-artifacts --proxies opengl-system --output opengl-payload
           if ($LASTEXITCODE) { throw 'System ICD package verification failed' }
-      - name: Build exact pre-fix proxy source as small-stack negative control
+      - name: Reproduce original automatic path-storage failure with current flat dependencies
         shell: pwsh
         run: |
-          git fetch --depth 1 origin 92ef84ba5652b3bc664fd57c74143c09f48d7381
-          if ($LASTEXITCODE) { throw 'Exact pre-fix source fetch failed' }
-          git show 92ef84ba5652b3bc664fd57c74143c09f48d7381:viogpu/opengl/icd-proxy.cpp |
-            Set-Content legacy-icd-proxy.cpp -Encoding utf8
-          if ($LASTEXITCODE) { throw 'Exact pre-fix proxy extraction failed' }
-          ./viogpu/opengl/build-proxy.ps1 -Output opengl-legacy -ProxySource legacy-icd-proxy.cpp
-      - name: Verify signed catalog and reject modified payloads
-        shell: pwsh
-        timeout-minutes: 5
-        run: ./viogpu/opengl/test-signed-package.ps1 -Payload opengl-payload
+          ./viogpu/opengl/build-small-stack-control.ps1 -Output opengl-legacy
       - uses: actions/upload-artifact@v4
         with:
           name: viogpu-opengl-system-unsigned
@@ -82,6 +71,9 @@ jobs:
     needs: package
     runs-on: windows-11-arm
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: actions/download-artifact@v4
         with:
           name: viogpu-opengl-system-unsigned
@@ -90,7 +82,7 @@ jobs:
         with:
           name: viogpu-opengl-small-stack-negative-control
           path: opengl-legacy-proxies
-      - name: Verify real ICD exports on constrained worker stacks against pre-fix source
+      - name: Verify real ICD exports on constrained worker stacks against automatic-storage control
         shell: pwsh
         run: |
           $root = (Resolve-Path opengl-payload).Path
@@ -130,3 +122,6 @@ jobs:
             }
           } finally { Pop-Location }
           Write-Host 'No adapter registration or graphics context: ABI proof only, system rendering still requires target validation.'
+      - name: Reject missing, wrong-architecture and foreign-package dependencies
+        shell: pwsh
+        run: ./viogpu/opengl/test-flat-runtime.ps1 -Payload opengl-payload

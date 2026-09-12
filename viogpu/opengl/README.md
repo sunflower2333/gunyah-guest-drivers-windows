@@ -1,118 +1,57 @@
-# System OpenGL ICD candidate
+# Flat Windows GL/Vulkan/GLES runtime
 
-This package connects Microsoft's system OpenGL runtime to the genuine Mesa
-Zink ICD and Turnip. It does not replace system `opengl32.dll`. EGL/GLES DLLs
-are also included in each architecture directory; Windows has no equivalent
-system-wide EGL/GLES ICD registration contract.
+The runtime connects Microsoft's OpenGL ICD interface to Mesa Zink and Turnip.
+All architecture DLLs share the graphics driver directory. Mesa's app-local
+`opengl32.dll` is a build probe dependency only and is excluded from this payload.
 
-## Architecture and discovery
-
-| Calling process on ARM64 Windows | Adapter value | Actual implementation |
+| Caller on Windows ARM64 | ICD entry | Actual backend |
 | --- | --- | --- |
-| Native ARM64 | OpenGLDriverName -> viogpuopengl.dll | ARM64X native proxy code -> arm64/libgallium_wgl.dll |
-| AMD64 x64, including EC callers | OpenGLDriverName -> viogpuopengl.dll | ARM64X EC proxy code -> x64/libgallium_wgl.dll |
-| 32-bit x86 | OpenGLDriverNameWow -> viogpuopengl_x86.dll | x86/libgallium_wgl.dll |
+| Native ARM64 | `viogpuopengl.dll`, ARM64X native view | `viogpu_gl_arm64.dll` |
+| x64/EC | `viogpuopengl.dll`, ARM64X EC view | `viogpu_gl_x64.dll` |
+| x86 | `viogpuopengl_x86.dll` | `viogpu_gl_x86.dll` |
 
-The small native/x64/x86 adapters delegate all 19 `Drv*` entries using Mesa's
-own `gldrv.h` declarations. The x64 implementation is a real AMD64 binary.
-The ARM64X DLL links separate native and EC proxy code with separate export
-definitions. Both views resolve dependencies by absolute sibling paths.
+The ARM64X binary combines adapter code for two ABIs. It does not merge the
+complete Mesa backends: the x64 backend remains AMD64 code. An actual backend
+ARM64X build needs both native and ARM64EC object/import-library closures and
+separate per-view exports. Mesa's existing ARM64EC build and CHPE verifier
+provide a starting point; they are not full backend ARM64X runtime proof.
 
-Native and Wow `VulkanDriverName` entries point to package manifests. The
-native manifest uses the same ARM64X dispatch; the Wow manifest uses the x86
-adapter. Three Vulkan ICD interface exports delegate to real Turnip.
-No `VK_DRIVER_FILES`, PATH change, global Khronos key or elevation-sensitive
-environment override is installed.
+For each `arm64`, `x64`, `x86`, private runtime files are:
 
-### Constrained system worker stacks
+- `viogpu_gl_<arch>.dll`: Gallium WGL ICD and shared GL dispatch
+- `viogpu_egl_<arch>.dll`, `viogpu_gles1_<arch>.dll`, `viogpu_gles2_<arch>.dll`
+- `viogpu_gl_vk_<arch>.dll`: Turnip Vulkan ICD
+- `viogpu_gl_loader_<arch>.dll`: private Khronos Vulkan loader
 
-The installed58453 hybrid was reached through Vulkan discovery while DWM's
-D3D runtime opened the adapter. Its load_sibling helper allocated131120 stack
-bytes, including two32768-wchar path arrays. The saved native DWM stack shows
-one helper frame calling __chkstk at the failing RVA1020; this is excessive
-stack consumption, not an observed recursive forwarder chain.
+Meson and the pinned loader's CMake/module definitions assign these names before
+linking. EGL/GLES import their exact architecture's Gallium DLL. Zlib is static,
+so there is no shared `z-1.dll`. The proxy and Zink resolve private dependencies
+from their own directory, reject same-name modules from another package, and
+can coexist with an application's public `vulkan-1.dll`.
 
-Path buffers now use scoped process-heap storage, preserve full path capacity
-and last-error reporting, and return allocation failure through the existing
-ICD contract. No C++ allocation exception crosses an exported function.
+`turnip.json` and `turnip-wow.json` reference same-directory native/ARM64X and
+x86 proxies. The driver INF owns device-scoped GL/Vulkan registration. No global
+Khronos key or PATH override is needed. Windows has no system EGL/GLES ICD
+registration contract; clients must select these explicit private DLL paths.
 
-small-stack-probe executes actual Vulkan negotiation or OpenGL version
-validation twice on a64KiB reserved worker stack. CI checks the native ARM64,
-ARM64X x64 and x86 views, comparing against exact pre-fix source92ef84b that
-must reproduce STATUS_STACK_OVERFLOW. These calls create no Vulkan instance,
-GL context or GPU workload. Target DWM stability and ordinary API rendering
-remain separate functional acceptance checks.
+`package.py` verifies the pinned source/run, all input hashes, PE architecture,
+real ICD exports and actual import descriptors including delay imports. It
+rejects generic private dependencies, foreign-architecture imports and extra
+input files. `flat-runtime.json` schema 1 records every payload file's hash,
+machine and role; the main driver composer stages runtime/ICD files into the
+same INF/catalog. Probes are CI outputs, not installed driver payload.
 
-The GL adapter explicitly preloads its private Vulkan loader before Zink's
-basename lookup. It rejects an already-loaded same-basename dependency from
-another directory. This prevents accidental package substitution but means
-applications preloading another `vulkan-1.dll` or `z-1.dll` need compatibility
-evaluation. Direct Vulkan negotiation does not require the private loader.
+The OpenGL workflow builds and executes actual ARM64, ARM64X x64-view and x86
+ICD/EGL/GLES load probes on Windows ARM64. Vulkan negotiation and GL version
+validation run twice on 64 KiB reserved worker stacks. A current-source control
+restores the former automatic 128 KiB path storage and must fail specifically
+with `STATUS_STACK_OVERFLOW`. Missing dependencies, wrong architecture DLLs and
+foreign-package modules must fail; a preloaded public Vulkan loader must pass.
 
-## Build and package evidence
-
-`opengl-system-icd.yml` verifies all 39 hashes in each exact Mesa artifact from
-run 34595644367, commit `6144b82eabd05ccf56d9201e64455f05f562883b`.
-It checks PE machines and real (not forwarded) Mesa ICD exports, builds the
-dispatch adapters, and executes load-only calls from all three architectures
-on a Windows ARM64 runner. The ARM64X native and x64 views have both passed
-actual `DrvValidateVersion` calls in CI 34590946886. These calls do not create
-a graphics context and are not evidence of system OpenGL rendering.
-
-The parent `build-arm64-drivers.yml` waits for this ABI gate and its existing
-Mesa D3D UMD/KMD build. It signs every OpenGL sidecar PE with the same certificate
-as the base driver, adds a binding to the exact signed KMD/UMD hashes, then
-creates and signs a full-tree file catalog. It repeats actual ARM64/x64/x86
-load-only execution on the final signed files. Original Mesa input hashes and
-post-signing output hashes remain separately identified. CI tests catalog
-verification/tamper rejection and typed registry restoration after partial
-write failure.
-
-## Controlled registration
-
-The driver bundle includes `install-opengl-icd.ps1`,
-`opengl-registration.psm1`, and `opengl/{payload,opengl.cat}`. Registration is
-explicit and does not occur in the ordinary base-driver installer.
-
-First install/trust the jointly built base driver using its existing workflow.
-Inspect the exact VIOGPU instance ID. From an elevated 64-bit PowerShell in
-the extracted bundle, run:
-
-```powershell
-./install-opengl-icd.ps1 -Action Verify
-./install-opengl-icd.ps1 -Action Install -InstanceId '<exact PCI instance ID>'
-```
-
-The installer requires a trusted catalog and matching PE signers, an active
-VIOGPU display adapter bound to `VioGpuWddm`, and the exact signed KMD service
-file hash in the package binding. This checks the registered on-disk binary,
-not the already-loaded kernel image. It copies the verified package to a new versioned
-`Program Files/DroidVM/OpenGL` directory, verifies it again, saves all eight
-original adapter values and types, then writes and reads back the new values.
-On write failure it restores the previous state. It does not restart the VM,
-remove driver packages, replace Windows DLLs, or delete existing package files.
-
-Use the printed backup path to restore registration:
-
-```powershell
-./install-opengl-icd.ps1 -Action Rollback -InstanceId '<same PCI instance ID>' -BackupPath '<printed path>'
-```
-
-Rollback refuses to overwrite values changed by a subsequent installer.
-Installed files remain available for recovery. Driver reinstall/update may
-reset adapter values; verify registration and matching KMD binding again.
-
-## Device validation still required
-
-After registration, start a new interactive process using
-`system-probe-{arm64,x64,x86}.exe --system <installed payload directory>`.
-The probe verifies Microsoft's runtime path, creates its context through GDI
-and system WGL, requires Zink/Turnip, checks red triangle pixels and swapping,
-and verifies the actual Mesa ICD path. Use the existing bounded console-task
-launcher and coordinated Host capture, followed by desktop stability checks.
-Do not run it during the user's remote backup pause. No system registration,
-system rendering, GLES target rendering or FurMark acceptance has yet been
-proved by this integration work.
+These calls create no graphics context or GPU workload. Real system WGL,
+GLES1/2 triangle readback/presentation, Vulkan applications, desktop stability
+and stress acceptance still require the target device with the final signed
+driver package. The root workflow owns final INF, signing and installation.
 
 References:
 

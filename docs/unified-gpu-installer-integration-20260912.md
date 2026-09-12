@@ -56,6 +56,20 @@ Validation at this integration point:
   TrustedPublisher store was absent. Opening or creating the system store with
   its normal API flags fixes insertion while preserving ACLs and policy.
 
-This is source integration, not a deployable full package. Final helper bundling,
-flat signed manifest composition and real GPU
-installation/rendering validation are still required.
+The main build now composes the flat GL/CL payload into the display INF before
+PE signing, inventories the signed files before Inf2Cat, and bundles all nine
+installer-root files. Three loader helpers are installed and cataloged; test
+probes stay outside DriverStore. The old separate API output directories and
+standalone API installers are no longer emitted by this build.
+
+Integrated producers match frozen GL0221aef/Mesa146ce465 and CL829a9f3/CLVK0f436fe.
+Reusable workflows rebuild the proxies at the common parent revision and consume
+the exact verified Mesa34698314455 and CLVK34698553838 runtime runs. All files
+receive the same signer. CI checks actual Windows catalog membership and runs
+the three architecture loaders, GL/GLES proxies and CL compiler from the signed
+directory. A final external receipt includes the catalog and installer hashes.
+
+Local validation now passes35 package/manifest contract cases and parses43
+PowerShell blocks/scripts plus all three changed workflow YAML files. This is
+source integration; the full WDK/signing CI and actual GPU installation/rendering
+validation remain required before claiming a working deployed58474 driver.

@@ -1,7 +1,7 @@
-name: Build registered OpenCL distribution
+name: Build flat OpenCL driver runtime
 on:
   push:
-    branches: [work/opencl-integration-20260911]
+    branches: [work/opencl-flat58474-20260912]
   workflow_dispatch:
   workflow_call:
 permissions:
@@ -25,46 +25,42 @@ jobs:
       - name: Build native, x64, x86 and ARM64X Khronos loaders
         shell: pwsh
         run: |
-          $scripts = @('.install_scripts/install-opencl-icd.ps1','.install_scripts/opencl-registration.psm1','.install_scripts/test-opencl-installed.ps1','.github/scripts/sign-opencl-sidecar.ps1','viogpu/opencl/build-loader.ps1')
+          $scripts = @('viogpu/opencl/build-loader.ps1','viogpu/opencl/build-proxy.ps1','viogpu/opencl/test-flat.ps1')
           foreach ($script in $scripts) {
             $tokens = $null; $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
             if ($errors.Count) { throw "PowerShell parse failure: $script $errors" }
           }
-          ./viogpu/opencl/test-registration.ps1
           ./viogpu/opencl/build-loader.ps1
+          ./viogpu/opencl/build-proxy.ps1
       - name: Fetch exact runtime build and assemble verified payload
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run watch 34613435673 -R sunflower2333/clvk --exit-status --interval 30
+          gh run watch 34698553838 -R sunflower2333/clvk --exit-status --interval 30
           if ($LASTEXITCODE) { throw 'OpenCL runtime CI failed' }
-          $source = gh run view 34613435673 -R sunflower2333/clvk --json headSha --jq .headSha
-          if ($LASTEXITCODE -or $source.Trim() -ne 'ee0ea93dfdad4e243016702c5757def99975fec5') { throw 'OpenCL source mismatch' }
-          gh run download 34613435673 -R sunflower2333/clvk --dir opencl-runtime
+          $source = gh run view 34698553838 -R sunflower2333/clvk --json headSha --jq .headSha
+          if ($LASTEXITCODE -or $source.Trim() -ne '0f436fe7110813ddf01dfaebc44b9de7cd39b3b8') { throw 'OpenCL source mismatch' }
+          gh run download 34698553838 -R sunflower2333/clvk --dir opencl-runtime
           if ($LASTEXITCODE) { throw 'OpenCL download failed' }
-          python viogpu/opencl/package.py --runtime opencl-runtime --loaders opencl-loaders --output opencl-payload
+          python viogpu/opencl/package-flat.py --runtime opencl-runtime --loaders opencl-loaders --proxy opencl-proxy --output opencl-payload
           if ($LASTEXITCODE) { throw 'OpenCL package validation failed' }
       - uses: actions/upload-artifact@v4
         with:
-          name: viogpu-opencl-system-unsigned
+          name: viogpu-opencl-flat-unsigned
           path: opencl-payload/
           if-no-files-found: error
   loader-abi:
     runs-on: windows-11-arm
     needs: package
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: viogpu-opencl-system-unsigned
+          name: viogpu-opencl-flat-unsigned
           path: opencl-payload
       - name: Execute native and emulated standard-loader dispatch
         shell: pwsh
         run: |
-          $root = (Resolve-Path 'opencl-payload').Path
-          foreach ($arch in @('arm64','x64','x86')) {
-            $loader = if ($arch -eq 'x86') {'x86'} else {'arm64x'}
-            & "$root/loaders/$arch/loader-check.exe" "$root/loaders/$loader/OpenCL.dll"
-            if ($LASTEXITCODE) { throw "OpenCL $arch loader ABI test failed" }
-          }
+          ./viogpu/opencl/test-flat.ps1

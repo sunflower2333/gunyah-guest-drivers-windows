@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cwchar>
 #include <vulkan/vulkan_core.h>
+#include <viogpu_private_gl.h>
 
 static int error(const char *what)
 {
@@ -16,9 +17,9 @@ static int error(const char *what)
                               L"viogpuopengl_arm64.dll",
                               L"viogpuopengl_x64.dll",
                               L"viogpuopengl_x86.dll",
-                              L"libgallium_wgl.dll",
-                              L"vulkan-1.dll",
-                              L"vulkan_freedreno.dll"};
+                              VIOGPU_WIDE(VIOGPU_GL_DLL),
+                              VIOGPU_WIDE(VIOGPU_GL_LOADER_DLL),
+                              VIOGPU_WIDE(VIOGPU_GL_VK_DLL)};
     for (const wchar_t *name : names)
     {
         HMODULE module = GetModuleHandleW(name);
@@ -36,7 +37,8 @@ static int error(const char *what)
 }
 int wmain(int argc, wchar_t **argv)
 {
-    if (argc != 3)
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    if (argc != 3 && !(argc == 4 && !wcscmp(argv[1], L"--load-foreign")))
     {
         return error("usage: system-probe --load-only|--load-default|--system <absolute package opengl directory>");
     }
@@ -59,7 +61,12 @@ int wmain(int argc, wchar_t **argv)
     const wchar_t *icd = L"viogpuopengl.dll";
     const wchar_t *arch = L"x64";
 #endif
-    if (!wcscmp(argv[1], L"--load-only") || !wcscmp(argv[1], L"--load-default"))
+    if (argc == 4 && !LoadLibraryExW(argv[3], nullptr, LOAD_WITH_ALTERED_SEARCH_PATH))
+    {
+        error("preload foreign module control");
+        return 2;
+    }
+    if (!wcscmp(argv[1], L"--load-only") || !wcscmp(argv[1], L"--load-default") || !wcscmp(argv[1], L"--load-foreign"))
     {
         if (wcscat_s(path, icd))
         {
@@ -191,10 +198,10 @@ int wmain(int argc, wchar_t **argv)
     {
         return error("unknown mode");
     }
-    HMODULE gallium = GetModuleHandleW(L"libgallium_wgl.dll");
+    HMODULE gallium = GetModuleHandleW(VIOGPU_WIDE(VIOGPU_GL_DLL));
     wchar_t actual[32768], expected[32768];
     if (!GetFullPathNameW(argv[2], _countof(expected), expected, nullptr) || wcscat_s(expected, L"\\") ||
-        wcscat_s(expected, arch) || wcscat_s(expected, L"\\libgallium_wgl.dll") || !gallium ||
+        wcscat_s(expected, VIOGPU_WIDE(VIOGPU_GL_DLL)) || !gallium ||
         !GetModuleFileNameW(gallium, actual, _countof(actual)) || _wcsicmp(actual, expected))
     {
         return error("actual architecture Mesa ICD path");
