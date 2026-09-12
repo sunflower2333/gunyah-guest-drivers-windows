@@ -47,6 +47,8 @@ try {
         $loader = if ($arch -eq 'x86') {"$temp/OpenCL32.dll"} else {"$temp/OpenCL.dll"}
         & "$root/opencl-proxy-check-$arch.exe" $icd "$temp/viogpucl_$arch.dll" $loader
         if ($LASTEXITCODE) { throw "Khronos fixture dispatch ABI $arch failed" }
+        & "$root/opencl-loader-check-$arch.exe" $loader
+        if ($LASTEXITCODE) { throw "Installed loader helper ABI $arch failed" }
     }
     Remove-Item "$temp/viogpucl_arm64.dll", "$temp/viogpucl_x64.dll"
     foreach ($arch in @('arm64','x64')) {
