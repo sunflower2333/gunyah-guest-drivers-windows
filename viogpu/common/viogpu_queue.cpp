@@ -1290,6 +1290,58 @@ BOOLEAN CtrlQueue::QueryDisplayAllocationDiscovery(ULONGLONG pci_region_size,
     return success;
 }
 
+VIOGPU_DVSA_EXCHANGE_RESULT CtrlQueue::ExchangeDisplayAllocationCommand(const void *command,
+    UINT commandSize, void *response, UINT *responseSize)
+{
+    PAGED_CODE();
+    if (responseSize == NULL) return VioGpuDvsaNotSubmitted;
+    *responseSize = 0;
+    if (command == NULL || response == NULL || m_pBuf == NULL ||
+        commandSize < sizeof(VIOGPU_DVSA_CTRL_HEADER) || commandSize > 96) return VioGpuDvsaNotSubmitted;
+    VIOGPU_DVSA_CTRL_HEADER header = {};
+    RtlCopyMemory(&header, command, sizeof(header));
+    // This transport is private to the display allocation owner. Ordinary
+    // SUBMIT, scanout, memory writes and unversioned commands are excluded.
+    const bool supported =
+        (header.type == VIOGPU_DVSA_ALLOCATE && commandSize == 80) ||
+        (header.type == VIOGPU_DVSA_ACK_MAPPING && commandSize == 80) ||
+        (header.type == VIOGPU_DVSA_DESTROY && commandSize == 64) ||
+        (header.type == VIRTIO_GPU_CMD_CTX_CREATE && commandSize == 96) ||
+        (header.type == VIRTIO_GPU_CMD_CTX_DESTROY && commandSize == 24) ||
+        (header.type == VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB && commandSize == 40) ||
+        (header.type == VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB && commandSize == 32);
+    if (!supported || header.flags != 0 || header.fence_id != 0 || header.ring_idx != 0 ||
+        header.padding[0] != 0 || header.padding[1] != 0 || header.padding[2] != 0 || !BeginSynchronousRequest())
+        return VioGpuDvsaNotSubmitted;
+    PVOID transportResponse = m_pBuf->AllocateMemory(128);
+    if (transportResponse == NULL) { EndSynchronousRequest(); return VioGpuDvsaNotSubmitted; }
+    RtlZeroMemory(transportResponse, 128);
+    PGPU_VBUFFER vbuf = NULL;
+    PVOID transportCommand = AllocCmdResp(&vbuf, commandSize, transportResponse, 128);
+    if (transportCommand == NULL)
+    {
+        m_pBuf->FreeMemory(transportResponse);
+        EndSynchronousRequest();
+        return VioGpuDvsaNotSubmitted;
+    }
+    RtlCopyMemory(transportCommand, command, commandSize);
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN submitted = FALSE;
+    const BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    VIOGPU_DVSA_EXCHANGE_RESULT result = submitted ? VioGpuDvsaUncertain : VioGpuDvsaNotSubmitted;
+    if (completed && vbuf->response_size <= 128)
+    {
+        *responseSize = vbuf->response_size;
+        RtlCopyMemory(response, transportResponse, vbuf->response_size);
+        result = VioGpuDvsaCompleted;
+    }
+    // Retain in-flight response storage on timeout/reset. Completed protocol
+    // errors belong to the owner state machine, not a no-owner assumption.
+    if (releaseBuffer) ReleaseBuffer(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
 BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info)
 {
     PAGED_CODE();

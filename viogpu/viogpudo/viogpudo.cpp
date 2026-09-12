@@ -7906,6 +7906,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_NextNativeContextId = 1;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     m_NextNativeResourceId = VIOGPU_NATIVE_RESOURCE_ID_START;
+    RtlZeroMemory(&m_DisplayAllocationPool, sizeof(m_DisplayAllocationPool));
     KeInitializeMutex(&m_2DScanoutMutex, 0);
     m_2DResourceIdsInitialized = FALSE;
     m_2DScanoutResourceId = 0;
@@ -8300,6 +8301,9 @@ NTSTATUS VioGpuAdapter::SetPowerState(DXGK_DEVICE_INFO *pDeviceInfo,
                                                VioGpuNativeStartDetailNone);
                     return FailNativeContextInitialization(STATUS_DEVICE_NOT_READY);
                 }
+#if defined(VIOGPU_NATIVE_CONTEXT)
+                RefreshDisplayAllocationPool();
+#endif
                 VIOGPU_RECORD_NATIVE_START(m_pVioGpuDod,
                                            VioGpuNativeStartComplete,
                                            STATUS_SUCCESS,
@@ -9922,12 +9926,16 @@ BOOLEAN VioGpuAdapter::AllocateNativeControlSlotLocked(_Out_ PULONGLONG offset, 
     UINT bar = 0;
     ULONGLONG regionOffset = 0;
     ULONGLONG regionSize = 0;
-    if (!m_PciResources.QueryHostVisibleRegion(&bar, &regionOffset, &regionSize) ||
-        regionSize <= VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE ||
-        regionSize - VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE < VIOGPU_NATIVE_CONTROL_BLOB_SIZE)
+    if (!m_PciResources.QueryHostVisibleRegion(&bar, &regionOffset, &regionSize))
     {
         return FALSE;
     }
+
+    // Keep the external allocation suffix disjoint from every later control
+    // blob, including ranges retained after failed cleanup or transport reset.
+    regionSize = m_DisplayAllocationPool.ControlLimit(regionSize);
+    if (regionSize <= VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE ||
+        regionSize - VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE < VIOGPU_NATIVE_CONTROL_BLOB_SIZE) return FALSE;
 
     ULONGLONG slotCount = (regionSize - VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE) / VIOGPU_NATIVE_CONTROL_BLOB_SIZE;
     for (ULONGLONG slot = 0; slot < slotCount; ++slot)
@@ -11770,6 +11778,9 @@ NTSTATUS VioGpuAdapter::HWInit(PCM_RESOURCE_LIST pResList, DXGK_DISPLAY_INFORMAT
         return FailNativeContextInitialization(status);
     }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    RefreshDisplayAllocationPool();
+#endif
     DbgPrintEx(DPFLTR_DEFAULT_ID,
                DPFLTR_INFO_LEVEL,
                "viogpu HWInit: completed, modes=%u status=0x%08X\n",
@@ -12315,6 +12326,68 @@ NTSTATUS VioGpuAdapter::Escape(_In_ CONST DXGKARG_ESCAPE *pEscape)
     return status;
 }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+void VioGpuAdapter::RefreshDisplayAllocationPool(void)
+{
+    PAGED_CODE();
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL || m_pVioGpuDod == NULL || m_pVioGpuDod->IsRenderOnly()) return;
+    // ConfigChanged runs on the work thread. Never wait here while transport
+    // shutdown holds the lifecycle mutex and waits for that thread to exit.
+    LARGE_INTEGER immediate = {};
+    if (KeWaitForSingleObject(&m_NativeContextLifecycleMutex, Executive, KernelMode, FALSE, &immediate) != STATUS_SUCCESS)
+        return;
+    do
+    {
+        GPU_CAPSET_DRM capset = {};
+        ULONGLONG resetGeneration = 0;
+        if (!QueryNativeContextReadiness(&capset, NULL, NULL, &resetGeneration)) break;
+        UINT bar = 0;
+        ULONGLONG regionOffset = 0, regionSize = 0;
+        ULONG width = 0, height = 0;
+        VIOGPU_DVSA_DISCOVERY discovery = {};
+        if (!m_PciResources.QueryHostVisibleRegion(&bar, &regionOffset, &regionSize) || regionOffset != 0 ||
+            !m_CtrlQueue.QueryDisplayInfo(0, &width, &height) ||
+            !m_CtrlQueue.QueryDisplayAllocationDiscovery(regionSize, &discovery)) break;
+        if (m_DisplayAllocationPool.Ready() && m_DisplayAllocationPool.reset_generation == resetGeneration &&
+            m_DisplayAllocationPool.width == width && m_DisplayAllocationPool.height == height &&
+            m_DisplayAllocationPool.discovery.query.surface_generation == discovery.query.surface_generation &&
+            m_DisplayAllocationPool.discovery.bar_size == discovery.bar_size &&
+            m_DisplayAllocationPool.discovery.reserved_prefix == discovery.reserved_prefix &&
+            m_DisplayAllocationPool.discovery.mapping_alignment == discovery.mapping_alignment &&
+            discovery.feature_bits == VIOGPU_DVSA_FEATURE_MAPPING) break;
+        // Cleanup binds the old exact identity; a Surface/mode change grants
+        // no permission to relabel or reuse any retained allocation.
+        if (!m_DisplayAllocationPool.Release(m_CtrlQueue, resetGeneration) ||
+            discovery.feature_bits != VIOGPU_DVSA_FEATURE_MAPPING) break;
+        bool controlOverlap = false;
+        for (PLIST_ENTRY link = m_NativeContextRegistry.Flink; link != &m_NativeContextRegistry; link = link->Flink)
+        {
+            const VIOGPU_NATIVE_CONTEXT_OWNER *owner = CONTAINING_RECORD(link, VIOGPU_NATIVE_CONTEXT_OWNER, AdapterLink);
+            if (owner->ControlResourceId != 0 &&
+                (owner->ControlBarOffset > discovery.reserved_prefix ||
+                 owner->ControlBlobSize > discovery.reserved_prefix - owner->ControlBarOffset))
+            { controlOverlap = true; break; }
+        }
+        if (controlOverlap) break;
+        const UINT contextId = AllocateNativeContextIdLocked();
+        const VIOGPU_DVSA_U32 resources[3] = {
+            AllocateNativeResourceIdLocked(), AllocateNativeResourceIdLocked(), AllocateNativeResourceIdLocked()
+        };
+        const bool ready = m_DisplayAllocationPool.Prepare(m_CtrlQueue, discovery, regionSize,
+                                                          width, height, contextId, resources, resetGeneration);
+        DbgPrint(TRACE_LEVEL_INFORMATION,
+                 ("DVSA allocation pool: ready=%u retained=%u context=%u surface=%I64u reset=%I64u "
+                  "states=%u/%u/%u; no render or presentation lease\n",
+                  static_cast<UINT>(ready), static_cast<UINT>(m_DisplayAllocationPool.Busy()),
+                  m_DisplayAllocationPool.context_id, discovery.query.surface_generation, resetGeneration,
+                  static_cast<UINT>(m_DisplayAllocationPool.owners[0].state),
+                  static_cast<UINT>(m_DisplayAllocationPool.owners[1].state),
+                  static_cast<UINT>(m_DisplayAllocationPool.owners[2].state)));
+    } while (false);
+    KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+}
+#endif
+
 BOOLEAN VioGpuAdapter::GetDisplayInfo(void)
 {
     PAGED_CODE();
@@ -12692,6 +12765,18 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     PAGED_CODE();
     DbgPrint(TRACE_LEVEL_FATAL, ("---> %s\n", __FUNCTION__));
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (m_DisplayAllocationPool.Busy())
+    {
+        // Attempt exact UNMAP/DESTROY before quiescing this transport. Device
+        // reset cannot prove Gunyah/KGSL retirement: unresolved owners/ranges
+        // remain reserved and may never enter a later transport generation.
+        const ULONGLONG currentReset = static_cast<ULONGLONG>(
+            InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0));
+        if (m_CtrlQueue.IsSynchronousRequestsHealthy()) m_DisplayAllocationPool.Release(m_CtrlQueue, currentReset);
+        m_DisplayAllocationPool.InvalidateTransport();
+    }
+#endif
     LONG state = InterlockedCompareExchange(&m_NativeContextState,
                                             VioGpuNativeContextOffline,
                                             VioGpuNativeContextOffline);
@@ -13084,6 +13169,9 @@ void VioGpuAdapter::ConfigChanged(void)
             return;
         }
         GetDisplayInfo();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        RefreshDisplayAllocationPool();
+#endif
         if (!m_CtrlQueue.IsSynchronousRequestsHealthy())
         {
             FailNativeContextAtAnyIrql();

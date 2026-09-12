@@ -781,6 +781,7 @@ class VioGpuAdapter : IVioGpuPCI
     __declspec(code_seg(".text")) NTSTATUS ProbeNativeContextReadiness(void);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     BOOLEAN AllocateNativeControlSlotLocked(_Out_ PULONGLONG offset, _Out_ PVOID *address);
+    void RefreshDisplayAllocationPool(void);
 #endif
     NTSTATUS StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pDispInfo);
     NTSTATUS FailNativeContextInitialization(NTSTATUS status);
@@ -836,6 +837,7 @@ class VioGpuAdapter : IVioGpuPCI
     UINT m_NextNativeContextId;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     UINT m_NextNativeResourceId;
+    VioGpuDisplayAllocationPool m_DisplayAllocationPool;
     KMUTEX m_2DScanoutMutex;
     BOOLEAN m_2DResourceIdsInitialized;
     UINT m_2DScanoutResourceId;

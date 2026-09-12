@@ -57,10 +57,29 @@ clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
 ```
 Local PASS5866 checks. CI verifies actual driver compilation independently.
 
-Subsequent allocation client is a separate change: after validated discovery,
-create a dedicated native DRM diagnostic context, reserve a disjoint aligned
-range using authoritative returned allocation_size, issue ALLOCATE/MAP/ACK,
-then terminal UNMAP/DESTROY with exact tokens and cleanup receipts. Current
-fully reserved8MiB BAR provides no eligible range. That client must never use
-the active rendering context, infer a write lease from ACK, or alter display
-output before the missing producer/consumer contract is implemented.
+The descendant allocation client now lives in `common/display_allocation_client.h`.
+The actual adapter calls it after initialization and display configuration events
+under a nonblocking lifecycle mutex; shutdown attempts cleanup before quiescing
+the transport. It creates a dedicated native DRM context and three host-owned
+AHBs, reserves disjoint ranges from authoritative `allocation_size`, then executes
+MAP/ACK. It exposes no guest CPU address, GPU write or presentation lease and
+never changes scanout/capabilities. Current fully reserved8MiB BAR admits no
+allocation. Legacy control slots exclude any retained dynamic suffix.
+
+`allocation_client_test.cpp` includes this production state machine directly.
+Canonical host structures independently interpret every emitted mutation;
+synthetic transport responses use the actual unfenced frontend envelope
+(response context0, original request context retained locally). These controls
+are not additional host runtime fixtures. Tests execute normal triple allocation,
+cached/WC mappings, padded sizes, old-Surface cleanup, every creation/submission/
+cleanup fault point, lost replies, retained errors, malformed metadata, truncated
+and unaligned input, repeated calls and transport retirement.
+
+Only confirmed UNMAP then DESTROY authorizes mapped-owner release. A submitted
+ALLOCATE error may retain an import while returning no token, so guest identity
+and context remain quarantined. Reset alone proves no external-memory release:
+this adapter preserves unresolved records/ranges and refuses reuse in a later
+transport epoch. An adapter destruction ends its local journal; the frozen host
+independently retains unproven native owners/ranges until process termination.
+Reliable recovery of tokenless owners needs a future host query/cleanup contract.
+Full SDR and producer/consumer synchronization remain separate work.

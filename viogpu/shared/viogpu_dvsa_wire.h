@@ -17,6 +17,12 @@ static_assert(sizeof(VIOGPU_DVSA_U64) == 8, "DVSA requires 64-bit words");
 #define VIOGPU_DVSA_DISCOVERY_REPLY 0xd210U
 #define VIOGPU_DVSA_MAGIC 0x41535644U
 #define VIOGPU_DVSA_VERSION 1U
+#define VIOGPU_DVSA_ALLOCATE 0xd111U
+#define VIOGPU_DVSA_DESTROY 0xd114U
+#define VIOGPU_DVSA_ACK_MAPPING 0xd115U
+#define VIOGPU_DVSA_ALLOCATED_REPLY 0xd211U
+#define VIOGPU_DVSA_ABGR8888 0x34324241U
+#define VIOGPU_DVSA_LINEAR 1U
 #define VIOGPU_DVSA_FEATURE_MAPPING (1ULL << 1)
 #define VIOGPU_DVSA_NO_MAPPER (1ULL << 0)
 #define VIOGPU_DVSA_NO_SUFFIX (1ULL << 1)
@@ -55,8 +61,33 @@ struct VIOGPU_DVSA_DISCOVERY
     VIOGPU_DVSA_U32 min_allocations, max_allocations;
     VIOGPU_DVSA_U64 triple_bytes_lower_bound;
 };
+struct VIOGPU_DVSA_ALLOCATE_REQUEST
+{
+    VIOGPU_DVSA_HEADER query;
+    VIOGPU_DVSA_U32 width, height, fourcc, flags;
+};
+struct VIOGPU_DVSA_DESCRIPTION
+{
+    VIOGPU_DVSA_U64 buffer_id, allocation_size, modifier, plane_offset;
+    VIOGPU_DVSA_U32 plane_stride, width, height, fourcc, plane_count, layout_flags;
+    VIOGPU_DVSA_U64 reserved;
+};
+struct VIOGPU_DVSA_ALLOCATED
+{
+    VIOGPU_DVSA_HEADER query;
+    VIOGPU_DVSA_DESCRIPTION description;
+};
+struct VIOGPU_DVSA_ACK
+{
+    VIOGPU_DVSA_HEADER query;
+    VIOGPU_DVSA_U64 bar_offset, mapped_size;
+};
 #pragma pack(pop)
 
 static_assert(sizeof(VIOGPU_DVSA_CTRL_HEADER) == 24, "DVSA control header size");
 static_assert(sizeof(VIOGPU_DVSA_HEADER) == 64, "DVSA common header size");
 static_assert(sizeof(VIOGPU_DVSA_DISCOVERY) == 128, "DVSA discovery size");
+static_assert(sizeof(VIOGPU_DVSA_ALLOCATE_REQUEST) == 80, "DVSA allocate size");
+static_assert(sizeof(VIOGPU_DVSA_DESCRIPTION) == 64, "DVSA description size");
+static_assert(sizeof(VIOGPU_DVSA_ALLOCATED) == 128, "DVSA allocated size");
+static_assert(sizeof(VIOGPU_DVSA_ACK) == 80, "DVSA ACK size");

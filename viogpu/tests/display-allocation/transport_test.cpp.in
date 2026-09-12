@@ -1,0 +1,128 @@
+#include "display_allocation_client.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <algorithm>
+
+using UINT = unsigned;
+using PVOID = void *;
+using BOOLEAN = bool;
+using PBOOLEAN = bool *;
+#define PAGED_CODE() do {} while (0)
+#define RtlCopyMemory std::memcpy
+#define RtlZeroMemory(p, s) std::memset(p, 0, s)
+#define TRUE true
+#define FALSE false
+#define VIRTIO_GPU_CMD_CTX_CREATE 0x200U
+#define VIRTIO_GPU_CMD_CTX_DESTROY 0x201U
+#define VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB 0x208U
+#define VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB 0x209U
+static unsigned checks;
+static void require(bool value, const char *name)
+{
+    ++checks;
+    if (!value) { std::fprintf(stderr, "FAIL %s\n", name); std::exit(1); }
+}
+struct GPU_VBUFFER { unsigned response_size; void *command; void *response; };
+using PGPU_VBUFFER = GPU_VBUFFER *;
+struct Buffer
+{
+    bool fail = false;
+    unsigned live = 0;
+    void *AllocateMemory(unsigned size) { if (fail) return nullptr; ++live; return std::malloc(size); }
+    void FreeMemory(void *value) { require(live != 0, "buffer freed once"); --live; std::free(value); }
+};
+struct CtrlQueue
+{
+    Buffer buffer;
+    Buffer *m_pBuf = &buffer;
+    bool begin = true, command_fail = false, submitted = true, completed = true, release = true;
+    unsigned used = 128, begins = 0, ends = 0, submissions = 0, releases = 0;
+    GPU_VBUFFER *retained = nullptr;
+    ~CtrlQueue() { if (retained) ReleaseBuffer(retained); require(buffer.live == 0, "no temporary storage leaked by fixture"); }
+    bool BeginSynchronousRequest() { if (begin) ++begins; return begin; }
+    void EndSynchronousRequest() { ++ends; require(begins == ends, "synchronous ownership balanced"); }
+    void *AllocCmdResp(GPU_VBUFFER **out, unsigned size, void *response, unsigned response_size)
+    {
+        require(response_size == 128, "bounded reply allocation");
+        if (command_fail) return nullptr;
+        retained = new GPU_VBUFFER {0, std::malloc(size), response};
+        *out = retained; return retained->command;
+    }
+    bool SubmitSynchronousLocked(GPU_VBUFFER *value, bool *releaseBuffer, bool *wasSubmitted)
+    {
+        ++submissions; *releaseBuffer = release; *wasSubmitted = submitted;
+        value->response_size = used;
+        std::memset(value->response, 0x4c, std::min(used, 128U));
+        return completed;
+    }
+    void ReleaseBuffer(GPU_VBUFFER *value)
+    {
+        ++releases; buffer.FreeMemory(value->response); std::free(value->command);
+        delete value; retained = nullptr;
+    }
+    VIOGPU_DVSA_EXCHANGE_RESULT ExchangeDisplayAllocationCommand(const void *, UINT, void *, UINT *);
+};
+
+// INSERT_PRODUCTION_EXCHANGE
+
+int main()
+{
+    VIOGPU_DVSA_ALLOCATE_REQUEST request = {};
+    request.query.hdr.type = VIOGPU_DVSA_ALLOCATE;
+    unsigned char output[128]; unsigned used = 777;
+    for (unsigned length = 0; length < 128; ++length)
+    {
+        CtrlQueue queue;
+        const auto result = queue.ExchangeDisplayAllocationCommand(&request, length, output, &used);
+        if (length == 80) require(result == VioGpuDvsaCompleted && used == 128, "exact supported frame submitted");
+        else require(result == VioGpuDvsaNotSubmitted && queue.submissions == 0 && used == 0, "bad framing never reads beyond header or submits");
+    }
+    for (unsigned offset : {4U, 8U, 20U, 21U, 22U, 23U})
+    {
+        auto bad = request; reinterpret_cast<unsigned char *>(&bad)[offset] = 1;
+        CtrlQueue queue;
+        require(queue.ExchangeDisplayAllocationCommand(&bad, 80, output, &used) == VioGpuDvsaNotSubmitted &&
+                queue.submissions == 0, "flags fence ring padding rejected before ownership");
+    }
+    {
+        CtrlQueue queue; auto bad = request; bad.query.hdr.type = 0x207;
+        require(queue.ExchangeDisplayAllocationCommand(&bad, 80, output, &used) == VioGpuDvsaNotSubmitted, "ordinary SUBMIT excluded");
+        require(queue.ExchangeDisplayAllocationCommand(nullptr, 80, output, &used) == VioGpuDvsaNotSubmitted, "null command rejected");
+        require(queue.ExchangeDisplayAllocationCommand(&request, 80, nullptr, &used) == VioGpuDvsaNotSubmitted, "null output rejected");
+        require(queue.ExchangeDisplayAllocationCommand(&request, 80, output, nullptr) == VioGpuDvsaNotSubmitted, "null count rejected");
+    }
+    for (unsigned fault = 0; fault < 4; ++fault)
+    {
+        CtrlQueue queue;
+        if (fault == 0) queue.m_pBuf = nullptr;
+        if (fault == 1) queue.begin = false;
+        if (fault == 2) queue.buffer.fail = true;
+        if (fault == 3) queue.command_fail = true;
+        require(queue.ExchangeDisplayAllocationCommand(&request, 80, output, &used) == VioGpuDvsaNotSubmitted &&
+                queue.submissions == 0 && queue.buffer.live == 0 && queue.begins == queue.ends,
+                "pre-submission allocation/admission failures release exact storage");
+    }
+    for (unsigned fault = 0; fault < 4; ++fault)
+    {
+        CtrlQueue queue; std::memset(output, 0xa5, sizeof(output));
+        if (fault == 0) { queue.submitted = false; queue.completed = false; }
+        if (fault == 1) { queue.completed = false; queue.release = false; } // timeout
+        if (fault == 2) { queue.completed = false; queue.release = false; } // reset raced callback
+        if (fault == 3) queue.used = 129;
+        const auto result = queue.ExchangeDisplayAllocationCommand(&request, 80, output, &used);
+        require(result == (fault == 0 ? VioGpuDvsaNotSubmitted : VioGpuDvsaUncertain) && used == 0,
+                "non-submission and uncertain ownership stay distinct");
+        for (auto value : output) require(value == 0xa5, "failed exchange never publishes partial output");
+        require(queue.releases == (queue.release ? 1U : 0U) && queue.buffer.live == (queue.release ? 0U : 1U),
+                "timeout/reset storage retained until external teardown proof");
+    }
+    for (unsigned size : {0U, 24U, 32U, 128U})
+    {
+        CtrlQueue queue; queue.used = size;
+        require(queue.ExchangeDisplayAllocationCommand(&request, 80, output, &used) == VioGpuDvsaCompleted &&
+                used == size && queue.releases == 1 && queue.buffer.live == 0,
+                "completed exact transport length passed to strict owner parser");
+    }
+    std::printf("DVSA actual CtrlQueue exchange: %u checks, framing/bounds/quarantine PASS\n", checks);
+}
