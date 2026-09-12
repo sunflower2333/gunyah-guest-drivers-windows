@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 here = Path(__file__).resolve().parent
 common = here.parents[1] / "common"
@@ -33,3 +34,14 @@ with tempfile.TemporaryDirectory(prefix="viogpu-dvsa-transport-") as output:
                    "-fno-omit-frame-pointer", "-I", str(common), str(unit), "-o", str(exe)]
     subprocess.run(command, cwd=directory, check=True)
     subprocess.run([str(exe)], cwd=directory, check=True)
+    # Windows ARM64's x64 emulation may hold the image briefly after process
+    # exit. Match existing backing-entries runner cleanup, without hiding a
+    # failed test or abandoning temporary files.
+    for attempt in range(21):
+        try:
+            exe.unlink()
+            break
+        except PermissionError:
+            if attempt == 20:
+                raise
+            time.sleep(0.25)
