@@ -8,7 +8,8 @@
 
 int wmain(int argc, wchar_t** argv) {
     if (argc < 3 || argc > 4) return 2;
-    auto proxy = LoadLibraryExW(argv[1], nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    auto proxy_path = std::filesystem::absolute(argv[1]).make_preferred();
+    auto proxy = LoadLibraryExW(proxy_path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!proxy) { std::printf("FAIL proxy load error=%lu\n", GetLastError()); return 1; }
     using Extension = void*(CL_API_CALL*)(const char*);
     auto extension = reinterpret_cast<Extension>(GetProcAddress(proxy, "clGetExtensionFunctionAddress"));
@@ -25,8 +26,9 @@ int wmain(int argc, wchar_t** argv) {
     if (argc == 4) {
         // Fixture-only full loader dispatch. The genuine runtime path above
         // deliberately does not enumerate a nonexistent CI GPU.
-        SetEnvironmentVariableW(L"OCL_ICD_FILENAMES", argv[1]);
-        auto loader = LoadLibraryExW(argv[3], nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+        SetEnvironmentVariableW(L"OCL_ICD_FILENAMES", proxy_path.c_str());
+        auto loader_path = std::filesystem::absolute(argv[3]).make_preferred();
+        auto loader = LoadLibraryExW(loader_path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         using Enumerate = cl_int(CL_API_CALL*)(cl_uint, cl_platform_id*, cl_uint*);
         using Info = cl_int(CL_API_CALL*)(cl_platform_id, cl_platform_info, size_t, void*, size_t*);
         auto enumerate = loader ? reinterpret_cast<Enumerate>(GetProcAddress(loader, "clGetPlatformIDs")) : nullptr;
