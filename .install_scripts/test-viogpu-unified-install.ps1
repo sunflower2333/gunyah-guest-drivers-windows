@@ -395,6 +395,31 @@ public static class LoaderOutputFixture {
     [IO.File]::WriteAllText($current.Entries[1].Name,'modified disabled member of active package')
     Must-Fail { Get-LegacyOpenClValues $legacyRoot } 'catalog no longer verifies'
 
+    # Small independently signed installer-only artifact; no driver download or
+    # real signing secret. Use only this test's ephemeral trusted certificate.
+    $sourceRoot=Split-Path -Parent $PSScriptRoot
+    $installerSourceCommit=(& git -C $sourceRoot rev-parse HEAD).Trim()
+    $bundleScript=Join-Path $sourceRoot '.github/scripts/package-viogpu-installer-only.ps1'
+    $driverProducer='08cb762f745a76b76c9b21b4d9cafc0153894f01'
+    $bundleOutput=Join-Path $script:directory 'installer-only-bundle'
+    $bundleResult=@(& $bundleScript -SourceRoot $sourceRoot -OutputDirectory $bundleOutput `
+        -DriverProducerCommit $driverProducer -InstallerCommit $installerSourceCommit -CertificateThumbprint $certificate.Thumbprint)
+    Check ($bundleResult.Count -eq 1 -and (Test-Path $bundleResult[0].Archive)) 'installer-only signer returns one receipt and creates small independent archive'
+    $bundlePayload=Join-Path $bundleOutput 'installer'
+    $bundleReceipt=Get-Content (Join-Path $bundlePayload 'installer-receipt.json') -Raw | ConvertFrom-Json
+    Check ($bundleReceipt.driver_producer_commit -ceq $driverProducer -and
+        $bundleReceipt.installer_source_commit -ceq $installerSourceCommit -and !$bundleReceipt.driver_payload_supplied) 'bundle records driver producer separately from installer source'
+    Check (@(Get-ChildItem $bundleOutput -Recurse -File | Where-Object Extension -in @('.inf','.sys','.dll','.exe')).Count -eq 0) 'installer-only bundle contains no driver payload or probe executable'
+    $bundleSignatures=@(Get-ChildItem $bundlePayload -File | Where-Object Extension -in @('.ps1','.psm1') | ForEach-Object {
+        Get-AuthenticodeSignature -LiteralPath $_.FullName
+    })
+    Check ($bundleSignatures.Count -eq 4 -and @($bundleSignatures | Where-Object {
+        $_.Status -ne 'Valid' -or $_.SignerCertificate.Thumbprint -ine $certificate.Thumbprint
+    }).Count -eq 0) 'all installer PowerShell files use the exact supplied signing certificate'
+    Check ((Test-FileCatalog -Path $bundlePayload -CatalogFilePath (Join-Path $bundleOutput 'installer.cat')) -eq 'Valid') 'independent signed catalog covers native helper and provenance receipt'
+    Add-Content -LiteralPath (Join-Path $bundlePayload 'viogpu-install-native.cs') -Value '// fixture tamper'
+    Check ((Test-FileCatalog -Path $bundlePayload -CatalogFilePath (Join-Path $bundleOutput 'installer.cat')) -ne 'Valid') 'installer-only catalog rejects changed native helper code'
+
     Remove-GpuAttemptTrust $trust.CertificateTrust
     Check (!(Test-Path "Cert:\LocalMachine\Root\$($public.Thumbprint)")) 'pre-stage verification cleanup removes exact newly created root entry'
     Check (!(Test-Path "Cert:\LocalMachine\TrustedPublisher\$($public.Thumbprint)")) 'pre-stage verification cleanup removes exact newly created publisher entry'
