@@ -240,8 +240,12 @@ function New-ProductionBackend {
         CheckLoaders = { param($loaders)
             foreach ($arch in @('arm64','x64','x86')) {
                 $target = @($loaders | Where-Object Architecture -eq $(if ($arch -eq 'x86') {'x86'} else {'arm64x'}))[0].Path
-                & (Join-Path $script:Package.Root $script:Package.Manifest.loader_probes.$arch) $target
-                if ($LASTEXITCODE) { throw "Public OpenCL loader cannot serve $arch; existing loader preserved" }
+                # Child diagnostics must stay visible without becoming part of
+                # the installation transaction's single returned state object.
+                & (Join-Path $script:Package.Root $script:Package.Manifest.loader_probes.$arch) $target |
+                    ForEach-Object { Write-Host $_ }
+                $probeExitCode = $LASTEXITCODE
+                if ($probeExitCode) { throw "Public OpenCL loader cannot serve $arch; ExitCode=$probeExitCode; existing loader preserved" }
             }
         }
     }
