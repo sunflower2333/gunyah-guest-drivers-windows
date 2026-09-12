@@ -149,6 +149,8 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python viogpu/tests/synchronous-timeout/run.py --negative-control-overwrite
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/synchronous-timeout/run.py --negative-control-mode-publication
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Check scheduler fence publication ordering
         shell: cmd

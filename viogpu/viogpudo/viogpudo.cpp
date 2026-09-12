@@ -2097,6 +2097,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Flush2DResource(_In_ UINT resourceId,
 {
     if (!AcquireNativeSubmissionOperation())
     {
+        RecordNativeSynchronousFailureDiagnostic();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -2108,7 +2109,28 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Flush2DResource(_In_ UINT resourceId,
                                                                                    resourceResetGeneration)
                                                         : VioGpuHostContextNotSubmitted;
     ReleaseNativeSubmissionOperation();
+    if (result != VioGpuHostContextConfirmed)
+    {
+        RecordNativeSynchronousFailureDiagnostic();
+    }
     return result;
+}
+
+VOID VioGpuDod::RecordNativeSynchronousFailureDiagnostic(void)
+{
+    /* A modeset can reach the flush after the submit gate has already closed.
+     * Diagnostics need only hardware lifetime, never a new submit permission.
+     * Do not reopen the gate or dereference the adapter after rundown release. */
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL || !ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        return;
+    }
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (adapter != NULL)
+    {
+        adapter->RecordSynchronousFailureDiagnostic();
+    }
+    ExReleaseRundownProtection(&m_HardwareOperations);
 }
 
 NTSTATUS VioGpuDod::PublishPresentBlit(_In_ UINT width,
@@ -8755,6 +8777,23 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Flush2DResource(_In_ UINT resourceId,
     }
 
     return m_CtrlQueue.FlushResourceSynchronous(resourceId, width, height, 0, 0);
+}
+
+void VioGpuAdapter::RecordSynchronousFailureDiagnostic(void)
+{
+    PAGED_CODE();
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL || m_pVioGpuDod == NULL ||
+        m_CtrlQueue.IsSynchronousRequestsHealthy())
+    {
+        return;
+    }
+    VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC timeoutDiagnostic;
+    BOOLEAN haveTimeout = m_CtrlQueue.GetFirstSynchronousTimeout(&timeoutDiagnostic);
+    m_pVioGpuDod->RecordNativeSynchronousPoisonDiagnostic(m_CtrlQueue.SynchronousEpochStateValue(),
+                                                       m_CtrlQueue.SynchronousEpochGenerationValue(),
+                                                       m_CtrlQueue.SynchronousPoisonCallerRva(),
+                                                       haveTimeout ? &timeoutDiagnostic : NULL);
 }
 
 NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
