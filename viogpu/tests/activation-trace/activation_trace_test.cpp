@@ -8,7 +8,9 @@
 #include <vector>
 #include "activation_trace.h"
 
+#ifndef _In_
 #define _In_
+#endif
 #define VOID void
 #define CONST const
 #define PAGED_CODE() ((void)0)
@@ -19,6 +21,7 @@ using DWORD = unsigned int;
 using NTSTATUS = int32_t;
 using HANDLE = void *;
 constexpr auto STATUS_SUCCESS = NTSTATUS(0);
+constexpr auto STATUS_PENDING = NTSTATUS(0x103);
 constexpr auto STATUS_OBJECT_NAME_NOT_FOUND = NTSTATUS(0xc0000034U);
 constexpr auto STATUS_INTEGER_OVERFLOW = NTSTATUS(0xc0000095U);
 constexpr auto STATUS_UNSUCCESSFUL = NTSTATUS(0xc0000001U);
@@ -169,20 +172,24 @@ int main()
     query.Type = DXGKQAITYPE_QUERYSEGMENT4; query.pOutputData = &segment; query.OutputDataSize = sizeof(segment);
     adapter.RecordNativeActivationQuery(&query, STATUS_SUCCESS);
     check(blob().Entries[0].Values[0] == 1 && blob().Entries[0].Values[1] == 0, "count query ignores undefined descriptor tail");
-    registry.FailWrite = registry.Writes + 1;
+    registry.FailWrite = registry.Writes + 2;
     adapter.RecordNativeActivationQuery(&query, STATUS_SUCCESS);
     check(regword(L"NativeActivationWriteStatus") == UINT(STATUS_UNSUCCESSFUL) && blob().TotalQueries == 1,
           "failed binary write is visible and preserves old complete blob");
     registry.FailWrite = 0;
     adapter.RecordNativeActivationQuery(&query, STATUS_SUCCESS);
     check(regword(L"NativeActivationWriteStatus") == 0 && blob().TotalQueries == 3, "next successful snapshot recovers all in-memory events");
-    for (unsigned fault = 1; fault <= 4; ++fault)
+    registry.FailWrite = registry.Writes + 3;
+    adapter.RecordNativeActivationQuery(&query, STATUS_SUCCESS);
+    check(regword(L"NativeActivationWriteStatus") == UINT(STATUS_PENDING), "failed final marker cannot certify an uncommitted snapshot");
+    for (unsigned fault = 1; fault <= 5; ++fault)
     {
         registry = {}; registry.FailWrite = fault;
         adapter.InitializeNativeActivationTrace();
         check(adapter.m_NativeActivationTrace.Version == 0 && registry.OpenHandles == 0 && adapter.m_NativeActivationTraceMutex == 0,
               "every initial registry write failure disables recorder and releases ownership");
-        if (fault == 2 || fault == 3) check((regword(L"NativeActivationEpoch") & 1) != 0, "partial start remains invalid odd epoch");
+        if (fault == 3 || fault == 4) check((regword(L"NativeActivationEpoch") & 1) != 0, "partial start remains invalid odd epoch");
+        if (fault == 5) check(regword(L"NativeActivationWriteStatus") == UINT(STATUS_PENDING), "start final marker failure remains invalid pending state");
     }
     registry = {}; registry.FailOpen = true;
     adapter.InitializeNativeActivationTrace();
