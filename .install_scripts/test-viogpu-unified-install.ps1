@@ -259,7 +259,7 @@ public static class LoaderOutputFixture {
             Check ((Import-Clixml $case.Journal).Phase -eq 'installed' -and !(Import-Clixml $case.Journal).NeedReboot) 'reported single-state install agrees with durable journal'
             $removalOutput=@(Invoke-GpuRemovalTransaction $installOutput[0] $case.Journal $outputBackend $action)
             Check ($removalOutput.Count -eq 1 -and $removalOutput[0].NeedReboot -is [bool] -and
-                !$removalOutput[0].NeedReboot) "$action returns exactly one state despite verification diagnostics"
+                $removalOutput[0].NeedReboot -eq ($action -eq 'Uninstall')) "$action returns exactly one state with correct reboot flag despite verification diagnostics"
             Check ($removalOutput[0].Phase -eq $(if($action -eq 'Rollback'){'rolled-back'}else{'uninstalled'})) "$action final state remains correct"
         }
     } finally { Stop-Transcript | Out-Null }
