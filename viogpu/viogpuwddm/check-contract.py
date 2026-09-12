@@ -2599,7 +2599,7 @@ def check_native_driver_caps_contract() -> None:
         # WDDM 1.2 and the render engine topology are unconditional: the render
         # engine exists in both registrations, and a display-mode adapter that
         # advertised zero nodes broke CreateContext and left D3D no feature levels.
-        "driverCaps->WDDMVersion=DXGKDDI_WDDMv1_2;",
+        "driverCaps->WDDMVersion=DXGKDDI_WDDMv2;",
         "driverCaps->HighestAcceptableAddress.QuadPart=(ULONG64)-1;",
         "if(pointerEnabled&&!renderOnly)",
         "driverCaps->MaxPointerWidth=POINTER_SIZE;",
@@ -2610,6 +2610,9 @@ def check_native_driver_caps_contract() -> None:
         "driverCaps->SchedulingCaps.PreemptionAware=0;",
         "driverCaps->SchedulingCaps.CancelCommandAware=0;",
         "driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes=1;",
+        "driverCaps->MemoryManagementCaps.VirtualAddressingSupported=0;",
+        "driverCaps->MemoryManagementCaps.GpuMmuSupported=0;",
+        "driverCaps->MemoryManagementCaps.IoMmuSupported=0;",
         # These two live past the Win7 prefix, so they need the full structure.
         "if(fullCaps)",
         "driverCaps->PreemptionCaps.GraphicsPreemptionGranularity=D3DKMDT_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;",
@@ -2640,6 +2643,7 @@ def check_native_driver_caps_contract() -> None:
         "GpuEngineTopology",
         "PreemptionCaps",
         "SupportPerEngineTDR",
+        "MemoryManagementCaps",
     }
     if helper_fields != expected_helper_fields:
         fail(f"Native Context DriverCaps helper writes an unexpected capability field: {helper_fields}")
@@ -2738,11 +2742,11 @@ def check_callback_table() -> None:
     # with 1.2 capabilities is self-contradictory and the D3D runtime rejects
     # the adapter before loading any user-mode driver.
     version_assignment = re.findall(
-        r"\binitialData\s*->\s*Version\s*=\s*DXGKDDI_INTERFACE_VERSION_WIN8\s*;",
+        r"\binitialData\s*->\s*Version\s*=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_0\s*;",
         body,
     )
     if len(version_assignment) != 1:
-        fail("the callback table must register WDDM 1.2 in both modes to match DriverCaps")
+        fail("the callback table must register WDDM 2.0 in both modes to match DriverCaps")
 
     callbacks = {
         "DxgkDdiAddDevice": "VioGpuDodAddDevice",
@@ -2811,6 +2815,7 @@ def check_callback_table() -> None:
         "DxgkDdiQueryDependentEngineGroup": "VioGpuWddmQueryDependentEngineGroup",
         "DxgkDdiQueryEngineStatus": "VioGpuWddmQueryEngineStatus",
         "DxgkDdiResetEngine": "VioGpuWddmResetEngine",
+        "DxgkDdiGetNodeMetadata": "VioGpuWddmGetNodeMetadata",
     }
     all_callbacks = {**callbacks, **engine_callbacks, **display_callbacks}
     for member, callback in all_callbacks.items():
@@ -2827,7 +2832,7 @@ def check_callback_table() -> None:
 
     expected_statements = [
         "RtlZeroMemory(initialData, sizeof(*initialData));",
-        "initialData->Version = DXGKDDI_INTERFACE_VERSION_WIN8;",
+        "initialData->Version = DXGKDDI_INTERFACE_VERSION_WDDM2_0;",
         *(f"initialData->{member} = {callback};" for member, callback in callbacks.items()),
         *(f"initialData->{member} = {callback};" for member, callback in engine_callbacks.items()),
         "if (!renderOnly) {",
@@ -4560,9 +4565,10 @@ def check_wddm_standard_paging() -> None:
     allocation_info = canonical_code(function_body("InitializeAllocationInfo", WDDM_DDI_CODE))
     for fragment in (
         "BOOLEANcpuVisible=(allocation->Flags&VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE)!=0;",
-        "allocationInfo->Flags.CpuVisible=cpuVisible;",
-        "allocationInfo->Flags.Cached=cpuVisible;",
-        "allocationInfo->Flags.SynchronousPaging=TRUE;",
+        "allocationInfo->FlagsWddm2.CpuVisible=cpuVisible;",
+        "allocationInfo->FlagsWddm2.Cached=cpuVisible;",
+        "allocationInfo->FlagsWddm2.AccessedPhysically=TRUE;",
+        "allocationInfo->PhysicalAdapterIndex=0;",
     ):
         if allocation_info.count(fragment) != 1:
             fail(f"ordinary VidMm allocation backing must retain its exact visibility contract: {fragment}")
@@ -11150,12 +11156,12 @@ def check_wddm_submission_lifetime() -> None:
         fail("a failed preemption interrupt notification must gate the adapter for TDR")
     driver_caps = canonical_code(function_body("VioGpuQueryNativeDriverCaps", VIOGPU_CODE))
     for fragment in (
-        "driverCaps->WDDMVersion=DXGKDDI_WDDMv1_2;",
+        "driverCaps->WDDMVersion=DXGKDDI_WDDMv2;",
         "driverCaps->SchedulingCaps.PreemptionAware=0;",
         "driverCaps->SupportPerEngineTDR=1;",
     ):
         if driver_caps.count(fragment) != 1:
-            fail(f"the WDDM 1.2 scheduler/TDR contract is incomplete: {fragment}")
+            fail(f"the WDDM 2.0 physical scheduler/TDR contract is incomplete: {fragment}")
     if "driverCaps->SupportSmoothRotation" in driver_caps:
         fail("render-only DriverCaps must not advertise the display-only smooth-rotation capability")
 
@@ -12603,7 +12609,7 @@ def check_project_safety(root: ET.Element) -> None:
     if len(test_definitions) != 1 or "VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1" not in test_definitions[0].split(";"):
         fail("opt-in WDDM test implementation property group must define its macro exactly once")
 
-    expected_interface = "DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WIN8"
+    expected_interface = "DXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WDDM2_0"
     interface_definitions = [
         definition for definition in definitions if definition.startswith("DXGKDDI_INTERFACE_VERSION=")
     ]
@@ -12612,11 +12618,11 @@ def check_project_safety(root: ET.Element) -> None:
 
     static_asserts = re.findall(
         r"\bstatic_assert\s*\(\s*DXGKDDI_INTERFACE_VERSION\s*==\s*"
-        r"DXGKDDI_INTERFACE_VERSION_WIN8\s*,",
+        r"DXGKDDI_INTERFACE_VERSION_WDDM2_0\s*,",
         DRIVER_CODE,
     )
     if len(static_asserts) != 1:
-        fail("driver_entry.cpp must assert the Win8 declaration surface exactly once")
+        fail("driver_entry.cpp must assert the WDDM2 physical-engine declaration surface exactly once")
 
     sign_modes = [
         (element.text or "").strip() for element in root.findall(".//msbuild:SignMode", NAMESPACE)

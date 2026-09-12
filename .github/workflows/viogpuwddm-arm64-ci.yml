@@ -189,6 +189,23 @@ jobs:
       - name: Execute native adapter identity and reply compatibility regression
         shell: pwsh
         run: python viogpu/tests/adapter-identity/run.py
+      - name: Execute actual WDK physical-mode contracts
+        shell: pwsh
+        run: |
+          python viogpu/tests/wddm2-accounting/run.py --wdk
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python viogpu/tests/wddm2-accounting/run.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise activation recorder faults and decoder
+        shell: pwsh
+        run: |
+          python viogpu/tests/activation-trace/run.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($fault in @('lost-late-failure', 'reuse-epoch')) {
+            python viogpu/tests/activation-trace/run.py --negative-control $fault
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          ./Tools/test-native-activation-trace.ps1
 
       - name: Parse Native Context diagnostic readers
         shell: pwsh

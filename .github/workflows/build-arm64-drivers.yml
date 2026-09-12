@@ -123,6 +123,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python viogpu/tests/synchronous-timeout/run.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Execute WDDM physical contracts and activation failure diagnostics
+        shell: pwsh
+        run: |
+          python viogpu/viogpuwddm/check-contract.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python viogpu/tests/wddm2-accounting/run.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python viogpu/tests/activation-trace/run.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($fault in @('lost-late-failure', 'reuse-epoch')) {
+            python viogpu/tests/activation-trace/run.py --negative-control $fault
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          ./Tools/test-native-activation-trace.ps1
 
   mesa-umd:
     name: Mesa D3D10 UMD (ARM64, cross-compiled)
