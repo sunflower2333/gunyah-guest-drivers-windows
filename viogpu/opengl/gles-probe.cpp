@@ -209,6 +209,7 @@ static void gles_diagnostic(HMODULE egl, HMODULE gl, int version)
 
 int main(int argc, char **argv)
 {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     if (argc != 3 ||
         (std::strcmp(argv[1], "--load-only") && std::strcmp(argv[1], "--gles1") && std::strcmp(argv[1], "--gles2")))
     {

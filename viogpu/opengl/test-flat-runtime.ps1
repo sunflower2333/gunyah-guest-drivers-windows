@@ -31,6 +31,15 @@ try {
         Copy-Item -LiteralPath (Join-Path $root "viogpu_gl_vk_$wrongArch.dll") -Destination (Join-Path $fixture $private)
         Invoke-Probe $probe @('--load-default', ('"{0}"' -f $fixture)) $false
         Write-Host "PASS $arch rejects wrong architecture private Turnip"
+        Copy-Item -LiteralPath (Join-Path $root $private) -Destination (Join-Path $fixture $private) -Force
+        $glesProbe = Join-Path $root "gles-probe-$arch.exe"
+        $egl = "viogpu_egl_$arch.dll"
+        Remove-Item -LiteralPath (Join-Path $fixture $egl)
+        Invoke-Probe $glesProbe @('--load-only', ('"{0}"' -f $fixture)) $false
+        Write-Host "PASS $arch rejects missing private EGL"
+        Copy-Item -LiteralPath (Join-Path $root "viogpu_egl_$wrongArch.dll") -Destination (Join-Path $fixture $egl)
+        Invoke-Probe $glesProbe @('--load-only', ('"{0}"' -f $fixture)) $false
+        Write-Host "PASS $arch rejects wrong architecture private EGL"
         $foreign = Join-Path $scratch "foreign-$arch"
         New-Item -ItemType Directory $foreign | Out-Null
         Copy-Item -LiteralPath (Join-Path $root $private) -Destination $foreign
