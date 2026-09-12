@@ -33,6 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 1
           submodules: true
       - uses: actions/setup-python@v5
         with:
@@ -93,6 +94,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          fetch-depth: 1
           submodules: true
 
       - name: Set up MSVC and WDK
@@ -356,7 +358,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # 需要完整歷史：driver 版號第四段用 commit 數（shallow 會變成 1）
+          fetch-depth: 1
 
       - name: Download the Mesa user-mode driver
         uses: actions/download-artifact@v4
@@ -449,20 +451,11 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # Primary guest-blob builds follow the frozen vkd3d58450 candidate.
-          # Preserve the current GL/OpenCL/Mesa pairing and reserve 58451 onward.
-          $epoch = 'ae36d7b0abeec37cb838f6f981d1599298799459'
-          $epochMinor = 58450
-          & git merge-base --is-ancestor $epoch HEAD
-          if ($LASTEXITCODE -ne 0) {
-            throw "driver version epoch $epoch is not an ancestor of HEAD"
-          }
-          $n = (& git rev-list --count "$epoch..HEAD" | Out-String).Trim()
-          if (-not ($n -match '^[1-9][0-9]*$')) {
-            throw "invalid driver version distance from $epoch to HEAD: '$n'"
-          }
-          $minor = $epochMinor + [int]$n
-          if ($minor -gt 65535) { throw "driver minor $minor exceeds 65535; start a new version epoch" }
+          # Reserved for this isolated OpenGL small-stack candidate. A fixed
+          # version supports depth-one builds without colliding with the
+          # separately frozen 58460-58469 WDDM candidates. Reserve a new version
+          # before producing another accepted binary after this checkpoint.
+          $minor = 58470
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -519,8 +512,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -le 58450) {
-            throw "Native Context product version must rank above installed 100.6.101.58180"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58470) {
+            throw "OpenGL small-stack candidate requires reserved version 100.6.101.58470"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -815,6 +808,11 @@ jobs:
           }
           $signedOpenGlRoot = (Resolve-Path 'out/opengl/payload').Path
           foreach ($arch in @('arm64','x64','x86')) {
+            $icdName = if ($arch -eq 'x86') {'viogpuopengl_x86.dll'} else {'viogpuopengl.dll'}
+            foreach ($mode in @('--vulkan','--opengl')) {
+              & (Join-Path $signedOpenGlRoot "small-stack-probe-$arch.exe") $mode (Join-Path $signedOpenGlRoot $icdName)
+              if ($LASTEXITCODE) { throw "Signed ICD $arch $mode constrained-stack validation failed" }
+            }
             & (Join-Path $signedOpenGlRoot "system-probe-$arch.exe") --load-only $signedOpenGlRoot
             if ($LASTEXITCODE) { throw "Signed OpenGL $arch ABI validation failed" }
             & (Join-Path $signedOpenGlRoot "gles-probe-$arch.exe") --load-only $signedOpenGlRoot

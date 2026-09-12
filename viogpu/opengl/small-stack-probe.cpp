@@ -25,8 +25,7 @@ static DWORD WINAPI run(void *argument)
             return 10;
         }
         uint32_t version = 7;
-        if (probe->negotiate &&
-            (probe->negotiate(&version) != VK_SUCCESS || version < 1 || version > 7))
+        if (probe->negotiate && (probe->negotiate(&version) != VK_SUCCESS || version < 1 || version > 7))
         {
             return 11;
         }
