@@ -20,7 +20,9 @@ constexpr NTSTATUS STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED = -10;
 constexpr NTSTATUS Refusal = -77;
 constexpr uint32_t D3DDDI_ID_ALL = UINT32_MAX, D3DDDI_ID_UNINITIALIZED = UINT32_MAX - 1;
 constexpr unsigned MAX_VIEWS = 1, MAX_CHILDREN = 1, DXGK_VIDPN_INTERFACE_VERSION_V1 = 1;
+#ifndef _In_
 #define _In_
+#endif
 #define CONST const
 #define VIOGPU_NATIVE_CONTEXT 1
 #define PAGED_CODE() ((void)0)
