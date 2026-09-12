@@ -22,7 +22,7 @@ foreach ($arch in @('arm64','x64','x86')) {
     $flags = '/nologo /O2 /W4 /WX /EHsc /std:c++17 /MT /DCL_TARGET_OPENCL_VERSION=300 /DCL_USE_DEPRECATED_OPENCL_1_2_APIS'
     Build $arch @(
         "cl $flags /LD /I`"$headersRoot`" `"$source/icd-proxy.cpp`" /Fo`"$out/proxy-$arch.obj`" /link /DEF:`"$def`" /OUT:`"$out/viogpucl_proxy_$arch.dll`" $capture",
-        "cl $flags /I`"$headersRoot`" `"$source/proxy-abi-check.cpp`" /Fo`"$out/check-$arch.obj`" /Fe:`"$out/opencl-proxy-check-$arch.exe`" /link /MANIFEST:EMBED `"/MANIFESTUAC:level='asInvoker' uiAccess='false'`"",
+        "cl $flags /I`"$headersRoot`" `"$source/proxy-abi-check.cpp`" /Fo`"$out/check-$arch.obj`" /Fe:`"$out/opencl-proxy-check-$arch.exe`" /link advapi32.lib /MANIFEST:EMBED `"/MANIFESTUAC:level='asInvoker' uiAccess='false'`"",
         "cl $flags /LD /I`"$headersRoot`" `"$source/abi-fixture.cpp`" /Fo`"$out/fixture-$arch.obj`" /link /DEF:`"$def`" /OUT:`"$out/opencl-fixture-$arch.dll`""
     )
 }
