@@ -352,6 +352,7 @@ static void d3d11(IDXGIFactory4 *factory,
         D3D11_MAPPED_SUBRESOURCE mapped{};
         checked(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "map-readback");
         UINT mismatches = 0;
+        std::array<UINT, 5> categories{};
         if (!mapped.pData || mapped.RowPitch < kSize * 4)
         {
             mismatches = kSize * kSize;
@@ -363,6 +364,20 @@ static void d3d11(IDXGIFactory4 *factory,
                 for (UINT x = 0; x < kSize; ++x)
                 {
                     const BYTE *pixel = static_cast<const BYTE *>(mapped.pData) + y * mapped.RowPitch + x * 4;
+                    const BYTE red[4] = {255, 0, 0, 255};
+                    const BYTE green[4] = {0, 255, 0, 255};
+                    const BYTE blue[4] = {0, 0, 255, 255};
+                    const BYTE black[4] = {0, 0, 0, 255};
+                    const size_t category = !memcmp(pixel, red, 4) ? 0 : !memcmp(pixel, green, 4) ? 1 :
+                                            !memcmp(pixel, blue, 4) ? 2 : !memcmp(pixel, black, 4) ? 3 : 4;
+                    ++categories[category];
+                    if ((x == 0 && y == 0) || (x == kSize / 2 && y == kSize / 2) ||
+                        (x == kSize - 1 && y == kSize - 1))
+                    {
+                        std::printf("PIXEL frame=%u x=%u y=%u rgba=%u,%u,%u,%u expected=%u,%u,%u,%u row_pitch=%u\n",
+                                    frame, x, y, pixel[0], pixel[1], pixel[2], pixel[3],
+                                    expected[0], expected[1], expected[2], expected[3], mapped.RowPitch);
+                    }
                     if (memcmp(pixel, expected, 4))
                     {
                         ++mismatches;
@@ -371,6 +386,8 @@ static void d3d11(IDXGIFactory4 *factory,
             }
         }
         context->Unmap(staging.Get(), 0);
+        std::printf("PIXEL_COUNTS frame=%u red=%u green=%u blue=%u black=%u other=%u\n",
+                    frame, categories[0], categories[1], categories[2], categories[3], categories[4]);
         std::printf("DRAW_READBACK frame=%u pixels=%u mismatches=%u\n", frame, kSize * kSize, mismatches);
         require(!mismatches, "shader-pixel-mismatch");
         if (swapchain)
