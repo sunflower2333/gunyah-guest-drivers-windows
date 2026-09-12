@@ -261,6 +261,15 @@ int main()
         pool.InvalidateTransport(); const auto before = host.calls;
         require(!pool.Release(host, 8) && before == host.calls, "lost cleanup not erased by reset");
     }
+    {
+        Host host; VioGpuDisplayAllocationPool pool = {};
+        require(prepare(pool, host), "cleanup-only transition setup");
+        host.poisoned = true;
+        require(!pool.Release(host, 7) && pool.Busy() && !pool.Ready(),
+                "closing pool never reports ready even if every unmap was not submitted");
+        host.poisoned = false;
+        require(pool.Release(host, 7), "closing state allows exact same-epoch cleanup retry only");
+    }
     for (unsigned call : {3U, 6U, 9U})
     {
         Host host; host.fail_call = call; host.failure = Host::BadMapCache;

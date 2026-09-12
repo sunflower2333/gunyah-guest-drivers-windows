@@ -82,13 +82,13 @@ struct VioGpuDisplayAllocationPool
     VIOGPU_DVSA_DISCOVERY discovery;
     VIOGPU_DVSA_U64 reset_generation;
     VIOGPU_DVSA_U32 context_id, width, height;
-    bool context_confirmed, transport_retired;
+    bool context_confirmed, transport_retired, closing;
     VIOGPU_DVSA_OWNER owners[3];
 
     bool Busy() const { return context_id != 0; }
     bool Ready() const
     {
-        return Busy() && context_confirmed && !transport_retired &&
+        return Busy() && context_confirmed && !transport_retired && !closing &&
                owners[0].state == VioGpuDvsaAcknowledged &&
                owners[1].state == VioGpuDvsaAcknowledged &&
                owners[2].state == VioGpuDvsaAcknowledged;
@@ -161,6 +161,7 @@ struct VioGpuDisplayAllocationPool
     {
         if (!Busy()) return true;
         if (transport_retired || reset_generation != current_reset) return false;
+        closing = true;
         bool retained = false;
         for (unsigned i = 0; i < 3; ++i)
         {

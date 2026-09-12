@@ -36,7 +36,7 @@ struct CtrlQueue
 {
     Buffer buffer;
     Buffer *m_pBuf = &buffer;
-    bool begin = true, command_fail = false, submitted = true, completed = true, release = true;
+    bool begin = true, command_fail = false, will_submit = true, will_complete = true, release = true;
     unsigned used = 128, begins = 0, ends = 0, submissions = 0, releases = 0;
     GPU_VBUFFER *retained = nullptr;
     ~CtrlQueue() { if (retained) ReleaseBuffer(retained); require(buffer.live == 0, "no temporary storage leaked by fixture"); }
@@ -51,10 +51,10 @@ struct CtrlQueue
     }
     bool SubmitSynchronousLocked(GPU_VBUFFER *value, bool *releaseBuffer, bool *wasSubmitted)
     {
-        ++submissions; *releaseBuffer = release; *wasSubmitted = submitted;
+        ++submissions; *releaseBuffer = release; *wasSubmitted = will_submit;
         value->response_size = used;
         std::memset(value->response, 0x4c, std::min(used, 128U));
-        return completed;
+        return will_complete;
     }
     void ReleaseBuffer(GPU_VBUFFER *value)
     {
@@ -106,9 +106,9 @@ int main()
     for (unsigned fault = 0; fault < 4; ++fault)
     {
         CtrlQueue queue; std::memset(output, 0xa5, sizeof(output));
-        if (fault == 0) { queue.submitted = false; queue.completed = false; }
-        if (fault == 1) { queue.completed = false; queue.release = false; } // timeout
-        if (fault == 2) { queue.completed = false; queue.release = false; } // reset raced callback
+        if (fault == 0) { queue.will_submit = false; queue.will_complete = false; }
+        if (fault == 1) { queue.will_complete = false; queue.release = false; } // timeout
+        if (fault == 2) { queue.will_complete = false; queue.release = false; } // reset raced callback
         if (fault == 3) queue.used = 129;
         const auto result = queue.ExchangeDisplayAllocationCommand(&request, 80, output, &used);
         require(result == (fault == 0 ? VioGpuDvsaNotSubmitted : VioGpuDvsaUncertain) && used == 0,
