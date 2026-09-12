@@ -134,15 +134,28 @@ function Assert-CandidateBinding($State) {
     $State.Installed = $actual
 }
 
-function Get-LegacyOpenClValues {
-    $root = Join-Path $env:ProgramFiles 'DroidVM/OpenCL'
-    if (!(Test-Path -LiteralPath $root)) { return }
-    Assert-GpuRegularPath $root
-    foreach ($package in Get-ChildItem -LiteralPath $root -Directory) {
+function Get-LegacyOpenClValues([string]$Root = (Join-Path $env:ProgramFiles 'DroidVM/OpenCL')) {
+    if (!(Test-Path -LiteralPath $Root)) { return }
+    Assert-GpuRegularPath $Root
+    foreach ($package in Get-ChildItem -LiteralPath $Root -Directory) {
         if ($package.Name -notmatch '^[a-fA-F0-9]{64}$') { continue }
         $payload = Join-Path $package.FullName 'payload'
         $cat = Join-Path $package.FullName 'opencl.cat'
-        if (!(Test-Path -LiteralPath $cat)) { continue }
+        $enabled = @()
+        foreach ($arch in @('arm64','x64','x86')) {
+            $entry = [pscustomobject]@{Hive='LocalMachine';View=$(if ($arch -eq 'x86') {'Registry32'} else {'Registry64'});
+                Key='SOFTWARE\Khronos\OpenCL\Vendors';Name=(Join-Path $payload "$arch/viogpucl.dll")}
+            $saved = @(Get-GpuRegistrySnapshot @($entry))[0]
+            if (!$saved.Present) { continue }
+            if ($saved.Kind -ne 'DWord') { throw 'Legacy OpenCL vendor value changed; preserve it' }
+            # Nonzero DWORD entries are disabled by the Khronos loader. Preserve
+            # their exact values and stale payloads without requiring validity.
+            if ($saved.Value -eq 0) { $enabled += $saved }
+        }
+        if (!$enabled.Count) { continue }
+        if (!(Test-Path -LiteralPath $cat)) { throw 'Enabled legacy OpenCL catalog missing; preserve registrations' }
+        # An enabled architecture makes the entire signed package relevant.
+        # Retain full catalog, path and all-architecture binding verification.
         Assert-GpuRegularPath $payload; Assert-GpuRegularPath $cat
         if ((Get-GpuHash $cat) -ine $package.Name) { throw 'Legacy OpenCL package identity changed' }
         $signature = Get-AuthenticodeSignature -LiteralPath $cat
@@ -155,14 +168,8 @@ function Get-LegacyOpenClValues {
             $file = Join-Path $payload $relative
             Assert-GpuRegularPath $file
             if ((Get-GpuHash $file) -ine $binding.files_after_signing.$relative) { throw 'Legacy OpenCL DLL ownership mismatch' }
-            $entry = [pscustomobject]@{Hive='LocalMachine';View=$(if ($arch -eq 'x86') {'Registry32'} else {'Registry64'});
-                Key='SOFTWARE\Khronos\OpenCL\Vendors';Name=$file}
-            $saved = @(Get-GpuRegistrySnapshot @($entry))[0]
-            if ($saved.Present) {
-                if ($saved.Kind -ne 'DWord' -or $saved.Value -ne 0) { throw 'Legacy OpenCL vendor value changed; preserve it' }
-                $saved
-            }
         }
+        $enabled
     }
 }
 

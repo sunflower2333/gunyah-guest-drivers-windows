@@ -28,6 +28,7 @@ $script:unrelated = [pscustomobject]@{Hive='CurrentUser';View='Registry64';Key=$
     Name='C:\OtherVendor\OpenCL.dll';Present=$true;Kind='DWord';Value=17}
 $script:active = 'old'; $script:mode = 'success'; $script:installs = @()
 $script:removed = @()
+$script:legacyRegistryBefore = @()
 $backend = @{
     Stage = { param($inf)
         if ($script:mode -eq 'stage-failure') { throw 'stage injected failure' }
@@ -181,7 +182,7 @@ try {
     # Execute production readback functions while controlling only the devnode.
     $tokens=$null; $errors=$null
     $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'viogpu-unified-install.ps1'),[ref]$tokens,[ref]$errors)
-    foreach ($name in @('Assert-FlatName','Read-FlatPackage','Test-AdapterIdentity','New-ProductionBackend')) {
+    foreach ($name in @('Assert-FlatName','Read-FlatPackage','Test-AdapterIdentity','New-ProductionBackend','Get-LegacyOpenClValues')) {
         $function=$ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq $name
         Invoke-Expression $function.Extent.Text
     }
@@ -247,6 +248,85 @@ try {
     Check $true 'actual trusted catalog membership'
     [IO.File]::WriteAllText($member,'tampered inventory')
     Must-Fail { [DroidVmGpuInstall.Native]::VerifyCatalogMember($catalog,$member) } 'Catalog membership failed'
+
+    # Actual production discovery against signed legacy payloads and exact HKLM
+    # Khronos values. All fixture names live under this disposable GUID tree.
+    $legacyRoot=Join-Path $script:directory 'legacy-opencl'
+    New-Item -ItemType Directory $legacyRoot | Out-Null
+    function New-LegacyFixture([string]$Label) {
+        $temporary=Join-Path $legacyRoot $Label
+        $payload=Join-Path $temporary 'payload'
+        New-Item -ItemType Directory $payload -Force | Out-Null
+        $files=@{}
+        foreach ($arch in @('arm64','x64','x86')) {
+            New-Item -ItemType Directory (Join-Path $payload $arch) | Out-Null
+            $relative="$arch/viogpucl.dll"
+            $path=Join-Path $payload $relative
+            [IO.File]::WriteAllText($path,"$Label $arch catalog fixture bytes")
+            $files[$relative]=Get-GpuHash $path
+        }
+        @{files_after_signing=$files} | ConvertTo-Json -Depth 5 |
+            Set-Content (Join-Path $payload 'package-binding.json')
+        $legacyCatalog=Join-Path $temporary 'opencl.cat'
+        New-FileCatalog -Path $payload -CatalogFilePath $legacyCatalog -CatalogVersion 2.0 | Out-Null
+        Set-AuthenticodeSignature -LiteralPath $legacyCatalog -Certificate $certificate -HashAlgorithm SHA256 | Out-Null
+        $destination=Join-Path $legacyRoot (Get-GpuHash $legacyCatalog)
+        Move-Item -LiteralPath $temporary -Destination $destination
+        $entries=@(@('arm64','x64','x86') | ForEach-Object {
+            [pscustomobject]@{Hive='LocalMachine';View=$(if ($_ -eq 'x86') {'Registry32'} else {'Registry64'});
+                Key='SOFTWARE\Khronos\OpenCL\Vendors';Name=(Join-Path $destination "payload/$_/viogpucl.dll");
+                Present=$true;Kind='DWord';Value=1}
+        })
+        $script:legacyRegistryBefore += @(Get-GpuRegistrySnapshot $entries)
+        [pscustomobject]@{Root=$destination;Payload=(Join-Path $destination 'payload');
+            Catalog=(Join-Path $destination 'opencl.cat');Entries=$entries}
+    }
+    $stale=New-LegacyFixture 'disabled-stale'
+    [IO.File]::WriteAllText($stale.Entries[1].Name,'old modified payload')
+    Set-GpuRegistrySnapshot $stale.Entries
+    Check ((Get-AuthenticodeSignature $stale.Catalog).Status -eq 'Valid' -and
+        (Test-FileCatalog -Path $stale.Payload -CatalogFilePath $stale.Catalog) -ne 'Valid') 'stale fixture has valid signer but invalid contents'
+    Check (@(Get-LegacyOpenClValues $legacyRoot).Count -eq 0) 'disabled invalid stale package does not block migration'
+    Check (Test-GpuRegistrySnapshot $stale.Entries) 'all three disabled architecture entries retain exact DWORD values'
+    $stale.Entries[0].Value=0;Set-GpuRegistrySnapshot $stale.Entries
+    Must-Fail { Get-LegacyOpenClValues $legacyRoot } 'catalog no longer verifies'
+    Check (Test-GpuRegistrySnapshot $stale.Entries) 'enabled invalid package rejects without registry mutation'
+    $stale.Entries[0].Value=1;Set-GpuRegistrySnapshot $stale.Entries
+    Move-Item -LiteralPath $stale.Catalog -Destination ($stale.Catalog + '.held')
+    Check (@(Get-LegacyOpenClValues $legacyRoot).Count -eq 0) 'disabled package without catalog remains irrelevant'
+    $stale.Entries[2].Value=0;Set-GpuRegistrySnapshot $stale.Entries
+    Must-Fail { Get-LegacyOpenClValues $legacyRoot } 'Enabled legacy OpenCL catalog missing'
+    $stale.Entries[2].Value=1;Set-GpuRegistrySnapshot $stale.Entries
+    Move-Item -LiteralPath ($stale.Catalog + '.held') -Destination $stale.Catalog
+
+    $current=New-LegacyFixture 'current-mixed'
+    $current.Entries[0].Value=0;$current.Entries[2].Value=0
+    Set-GpuRegistrySnapshot $current.Entries
+    $otherVendor=[pscustomobject]@{Hive='LocalMachine';View='Registry64';Key='SOFTWARE\Khronos\OpenCL\Vendors';
+        Name=(Join-Path $script:directory 'unrelated-vendor.dll');Present=$true;Kind='DWord';Value=0}
+    $script:legacyRegistryBefore += @(Get-GpuRegistrySnapshot @($otherVendor))
+    Set-GpuRegistrySnapshot @($otherVendor)
+    $selected=@(Get-LegacyOpenClValues $legacyRoot)
+    Check ($selected.Count -eq 2 -and $selected[0].Name -ceq $current.Entries[0].Name -and
+        $selected[0].View -eq 'Registry64' -and $selected[1].Name -ceq $current.Entries[2].Name -and
+        $selected[1].View -eq 'Registry32') 'only enabled native and Wow entries selected from valid mixed package'
+    $malformed=$current.Entries[1].PSObject.Copy();$malformed.Kind='String';$malformed.Value='1'
+    Set-GpuRegistrySnapshot @($malformed)
+    Must-Fail { Get-LegacyOpenClValues $legacyRoot } 'vendor value changed'
+    Check (Test-GpuRegistrySnapshot @($malformed)) 'malformed owned value is preserved on rejection'
+    Set-GpuRegistrySnapshot $current.Entries
+    $script:mode='success';$case=New-State 'actual-legacy-migration'
+    $case.State.LegacyBefore=$selected
+    $installed=Invoke-GpuInstallTransaction $case.State $case.Journal $backend
+    Check (@(Get-GpuRegistrySnapshot $selected | Where-Object Present).Count -eq 0) 'actual transaction removes only selected enabled legacy values'
+    Check (Test-GpuRegistrySnapshot $stale.Entries) 'migration preserves disabled invalid stale package values'
+    Check (Test-GpuRegistrySnapshot @($current.Entries[1],$otherVendor)) 'migration preserves disabled architecture and unrelated active vendor'
+    $restored=Invoke-GpuRemovalTransaction $installed $case.Journal $backend 'Rollback'
+    Check (Test-GpuRegistrySnapshot $current.Entries) 'rollback restores exact mixed architecture legacy DWORD values'
+    Check (Test-GpuRegistrySnapshot @($stale.Entries + @($otherVendor))) 'rollback preserves disabled stale and unrelated active vendor values'
+    [IO.File]::WriteAllText($current.Entries[1].Name,'modified disabled member of active package')
+    Must-Fail { Get-LegacyOpenClValues $legacyRoot } 'catalog no longer verifies'
+
     Remove-GpuAttemptTrust $trust.CertificateTrust
     Check (!(Test-Path "Cert:\LocalMachine\Root\$($public.Thumbprint)")) 'pre-stage verification cleanup removes exact newly created root entry'
     Check (!(Test-Path "Cert:\LocalMachine\TrustedPublisher\$($public.Thumbprint)")) 'pre-stage verification cleanup removes exact newly created publisher entry'
@@ -260,6 +340,7 @@ try {
     Must-Fail { Read-FlatPackage $badRoot } 'Invalid or unsigned flat package manifest'
     Write-Output "PASS unified installer real registry/files/catalog and controlled lifecycle: $script:checks checks; no device installation or GPU acceptance"
 } finally {
+    if ($script:legacyRegistryBefore.Count) { Set-GpuRegistrySnapshot $script:legacyRegistryBefore }
     foreach ($view in @('Registry64','Registry32')) {
         $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryView]$view)
         try { $base.DeleteSubKeyTree($script:keyName,$false) } finally { $base.Dispose() }

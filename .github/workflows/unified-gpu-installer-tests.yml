@@ -2,7 +2,7 @@ name: Unified GPU installer lifecycle fixtures
 on:
   workflow_dispatch:
   push:
-    branches: [work/unified-installer-20260912]
+    branches: [work/unified-installer-20260912, work/unified-installer-migration-20260912]
 permissions:
   contents: read
 jobs:
