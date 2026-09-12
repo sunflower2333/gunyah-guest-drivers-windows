@@ -12,6 +12,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      - name: Preserve pinned source bytes during Windows checkout
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
           repository: sunflower2333/clvk
