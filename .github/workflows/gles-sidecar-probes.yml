@@ -2,7 +2,7 @@ name: Build installed-sidecar GLES probes
 on:
   workflow_dispatch:
   push:
-    branches: [viogpu-gles-probe-20260911, viogpu-gles-errors-20260911]
+    branches: [viogpu-gles-probe-20260911, viogpu-gles-errors-20260911, work/gles2-diagnostic-20260912]
 permissions:
   contents: read
   actions: read
@@ -35,13 +35,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run watch 34596017472 --repo sunflower2333/gunyah-guest-drivers-windows --exit-status --interval 30
+          gh run watch 34685025455 --repo sunflower2333/gunyah-guest-drivers-windows --exit-status --interval 30
           if ($LASTEXITCODE) { throw 'Integrated signed package did not succeed' }
-          gh run download 34596017472 --repo sunflower2333/gunyah-guest-drivers-windows --name droidvm-arm64-drivers --dir integrated
+          gh run download 34685025455 --repo sunflower2333/gunyah-guest-drivers-windows --name droidvm-arm64-drivers --dir integrated
           if ($LASTEXITCODE) { throw 'Integrated signed package download failed' }
           $root = (Resolve-Path integrated/opengl/payload).Path
           $binding = Get-Content "$root/package-binding.json" -Raw | ConvertFrom-Json
-          if ($binding.parent_commit -ne '2090e8531a5a30c422e81b321fcfd2b27adbf7c1') { throw 'Integrated package source mismatch' }
+          if ($binding.parent_commit -ne 'd5f63bf88207aaba0191cd052f2e875794d64642') { throw 'Integrated package source mismatch' }
           foreach ($file in $binding.files_after_signing.PSObject.Properties) {
             if ((Get-FileHash (Join-Path $root $file.Name) -Algorithm SHA256).Hash -ne $file.Value) { throw "Signed payload hash mismatch: $($file.Name)" }
           }
