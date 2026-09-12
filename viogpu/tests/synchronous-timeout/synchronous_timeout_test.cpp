@@ -33,7 +33,9 @@ constexpr BOOLEAN TRUE = true, FALSE = false;
 constexpr NTSTATUS STATUS_SUCCESS = 0, STATUS_TIMEOUT = 0x102;
 constexpr ULONG MAXULONG = UINT32_MAX;
 constexpr int Executive = 0, KernelMode = 0, PASSIVE_LEVEL = 0;
+#ifndef _Out_
 #define _Out_
+#endif
 #define PAGED_CODE() ((void)0)
 #define DbgPrint(...) ((void)0)
 #define NT_ASSERT(value) do { if (!(value)) std::abort(); } while (false)
