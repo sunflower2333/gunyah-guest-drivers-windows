@@ -25,6 +25,13 @@ and exact parameters are recorded below; SHA256 identity is checked in CI by
 The canonical `shared/dvsa_protocol.h` is byte-identical to the host freeze at
 crosvm5f24ae0; SHA25641e1b2cc133cf23622d4d78f410eb8497496e41badb49a4f6005512ae0ba3525.
 LF and binary Git attributes preserve these identities on Windows runners.
+Production uses the freestanding discovery subset in `shared/viogpu_dvsa_wire.h`
+because the canonical host header's user-mode `stdint.h` conflicts with the
+WDK kernel CRT. This test checks every guest field offset/width, struct size/
+alignment, and protocol constant against the unchanged canonical header.
+Query bytes are compared with a canonical host structure, and response bytes
+are checked against the four immutable host fixtures. Real WDK compilation
+remains a separate CI gate; user-mode parser compilation cannot substitute it.
 
 Producer source hashes at fixture generation, crosvm8c97833 descendant:
 ```

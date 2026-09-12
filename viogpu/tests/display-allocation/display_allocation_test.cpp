@@ -1,4 +1,5 @@
 #include "../../shared/viogpu_display_allocation.h"
+#include "../../shared/dvsa_protocol.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -6,6 +7,69 @@
 #include <iterator>
 #include <string>
 #include <vector>
+
+// The production header above is freestanding and must not pull in user CRT
+// integer types. The immutable canonical host header is only used by tests.
+#define SAME_TYPE(guest, host) \
+    static_assert(sizeof(guest) == sizeof(host), "canonical size: " #guest); \
+    static_assert(alignof(guest) == alignof(host), "canonical alignment: " #guest)
+#define SAME_FIELD(guest, host, field) \
+    static_assert(offsetof(guest, field) == offsetof(host, field), "canonical offset: " #field); \
+    static_assert(sizeof(((guest *)0)->field) == sizeof(((host *)0)->field), "canonical width: " #field)
+#define SAME_VALUE(guest, host) static_assert(guest == host, "canonical value: " #guest)
+SAME_TYPE(VIOGPU_DVSA_CTRL_HEADER, dvsa_ctrl_header);
+SAME_TYPE(VIOGPU_DVSA_HEADER, dvsa_header);
+SAME_TYPE(VIOGPU_DVSA_DISCOVERY, dvsa_discovery);
+SAME_FIELD(VIOGPU_DVSA_CTRL_HEADER, dvsa_ctrl_header, type);
+SAME_FIELD(VIOGPU_DVSA_CTRL_HEADER, dvsa_ctrl_header, flags);
+SAME_FIELD(VIOGPU_DVSA_CTRL_HEADER, dvsa_ctrl_header, fence_id);
+SAME_FIELD(VIOGPU_DVSA_CTRL_HEADER, dvsa_ctrl_header, context_id);
+SAME_FIELD(VIOGPU_DVSA_CTRL_HEADER, dvsa_ctrl_header, ring_idx);
+SAME_FIELD(VIOGPU_DVSA_CTRL_HEADER, dvsa_ctrl_header, padding);
+SAME_FIELD(VIOGPU_DVSA_HEADER, dvsa_header, hdr);
+SAME_FIELD(VIOGPU_DVSA_HEADER, dvsa_header, magic);
+SAME_FIELD(VIOGPU_DVSA_HEADER, dvsa_header, version);
+SAME_FIELD(VIOGPU_DVSA_HEADER, dvsa_header, size);
+SAME_FIELD(VIOGPU_DVSA_HEADER, dvsa_header, scanout_id);
+SAME_FIELD(VIOGPU_DVSA_HEADER, dvsa_header, surface_generation);
+SAME_FIELD(VIOGPU_DVSA_HEADER, dvsa_header, token);
+SAME_FIELD(VIOGPU_DVSA_HEADER, dvsa_header, resource_id);
+SAME_FIELD(VIOGPU_DVSA_HEADER, dvsa_header, reserved);
+SAME_FIELD(VIOGPU_DVSA_DISCOVERY, dvsa_discovery, query);
+SAME_FIELD(VIOGPU_DVSA_DISCOVERY, dvsa_discovery, feature_bits);
+SAME_FIELD(VIOGPU_DVSA_DISCOVERY, dvsa_discovery, unavailable_reasons);
+SAME_FIELD(VIOGPU_DVSA_DISCOVERY, dvsa_discovery, bar_size);
+SAME_FIELD(VIOGPU_DVSA_DISCOVERY, dvsa_discovery, reserved_prefix);
+SAME_FIELD(VIOGPU_DVSA_DISCOVERY, dvsa_discovery, dynamic_capacity);
+SAME_FIELD(VIOGPU_DVSA_DISCOVERY, dvsa_discovery, mapping_alignment);
+SAME_FIELD(VIOGPU_DVSA_DISCOVERY, dvsa_discovery, min_allocations);
+SAME_FIELD(VIOGPU_DVSA_DISCOVERY, dvsa_discovery, max_allocations);
+SAME_FIELD(VIOGPU_DVSA_DISCOVERY, dvsa_discovery, triple_bytes_lower_bound);
+SAME_VALUE(VIOGPU_DVSA_DISCOVER, DVSA_CMD_DISCOVER);
+SAME_VALUE(VIOGPU_DVSA_DISCOVERY_REPLY, DVSA_RESP_DISCOVER);
+SAME_VALUE(VIOGPU_DVSA_MAGIC, DVSA_MAGIC);
+SAME_VALUE(VIOGPU_DVSA_VERSION, DVSA_VERSION);
+SAME_VALUE(VIOGPU_DVSA_FEATURE_MAPPING, DVSA_FEATURE_ALLOCATION_MAPPING);
+SAME_VALUE(VIOGPU_DVSA_NO_MAPPER, DVSA_UNAVAILABLE_MAPPER);
+SAME_VALUE(VIOGPU_DVSA_NO_SUFFIX, DVSA_UNAVAILABLE_NO_SUFFIX);
+SAME_VALUE(VIOGPU_DVSA_NO_TRIPLE_CAPACITY, DVSA_UNAVAILABLE_TRIPLE_CAPACITY);
+SAME_VALUE(VIOGPU_DVSA_NO_SURFACE, DVSA_UNAVAILABLE_NATIVE_SURFACE);
+SAME_VALUE(VIOGPU_DVSA_NO_ALLOCATOR, DVSA_UNAVAILABLE_ALLOCATOR);
+SAME_VALUE(VIOGPU_DVSA_NO_RENDERER_IMPORT, DVSA_UNAVAILABLE_RENDERER_IMPORT);
+SAME_VALUE(VIOGPU_DVSA_NO_PRODUCER_BRIDGE, DVSA_UNAVAILABLE_PRODUCER_BRIDGE);
+SAME_VALUE(VIOGPU_DVSA_NO_CONSUMER_BRIDGE, DVSA_UNAVAILABLE_CONSUMER_BRIDGE);
+SAME_VALUE(VIOGPU_DVSA_NO_GUEST_IDENTITY, DVSA_UNAVAILABLE_GUEST_IDENTITY);
+SAME_VALUE(VIOGPU_DVSA_KNOWN_REASONS,
+           (DVSA_UNAVAILABLE_MAPPER | DVSA_UNAVAILABLE_NO_SUFFIX | DVSA_UNAVAILABLE_TRIPLE_CAPACITY |
+            DVSA_UNAVAILABLE_NATIVE_SURFACE | DVSA_UNAVAILABLE_ALLOCATOR | DVSA_UNAVAILABLE_RENDERER_IMPORT |
+            DVSA_UNAVAILABLE_PRODUCER_BRIDGE | DVSA_UNAVAILABLE_CONSUMER_BRIDGE | DVSA_UNAVAILABLE_GUEST_IDENTITY));
+SAME_VALUE(VIOGPU_DVSA_MAPPING_PREREQUISITES,
+           (DVSA_UNAVAILABLE_MAPPER | DVSA_UNAVAILABLE_NO_SUFFIX | DVSA_UNAVAILABLE_TRIPLE_CAPACITY |
+            DVSA_UNAVAILABLE_NATIVE_SURFACE | DVSA_UNAVAILABLE_ALLOCATOR | DVSA_UNAVAILABLE_RENDERER_IMPORT |
+            DVSA_UNAVAILABLE_GUEST_IDENTITY));
+#undef SAME_VALUE
+#undef SAME_FIELD
+#undef SAME_TYPE
 
 static unsigned checks;
 static void require(bool condition, const char *name)
@@ -56,7 +120,7 @@ int main(int argc, char **argv)
     VIOGPU_DVSA_HEADER query;
     std::memset(&query, 0xff, sizeof(query));
     VioGpuInitializeDisplayAllocationQuery(&query);
-    VIOGPU_DVSA_HEADER expectedQuery = {};
+    dvsa_header expectedQuery = {};
     expectedQuery.hdr.type = DVSA_CMD_DISCOVER;
     expectedQuery.magic = DVSA_MAGIC; expectedQuery.version = 1; expectedQuery.size = 64;
     require(std::memcmp(&query, &expectedQuery, sizeof(query)) == 0, "query initializes exact unfenced64byte identity");
