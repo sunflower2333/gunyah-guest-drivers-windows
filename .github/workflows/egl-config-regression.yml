@@ -1,0 +1,43 @@
+name: Actual Windows EGL configuration selection
+on:
+  workflow_dispatch:
+  push:
+    branches: [work/egl-config-regression-20260912]
+permissions:
+  contents: read
+jobs:
+  config-selection:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Prepare actual Mesa format metadata and old production control
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pyyaml
+          if ($LASTEXITCODE) { throw 'Format generator dependency failed' }
+          git -C external/mesa fetch --depth 1 origin 668d598875209397ffcb69a109017609a76744c1
+          if ($LASTEXITCODE) { throw 'Exact pre-fix Mesa source fetch failed' }
+      - name: Execute production WGL producer and complete EGL selector
+        shell: pwsh
+        run: |
+          python viogpu/opengl/tests/egl-config-regression.py
+          if ($LASTEXITCODE) { throw 'Actual EGL selection regression failed' }
+          $old = python viogpu/opengl/tests/egl-config-regression.py --negative 2>&1
+          $oldCode = $LASTEXITCODE
+          $old | Write-Host
+          if ($oldCode -ne 1 -or ($old -join "`n") -notmatch 'EGL production config selection: [0-9]+ checks, [1-9][0-9]* failures') {
+            throw 'Exact old source did not reproduce a selection assertion failure'
+          }
+          if (($old -join "`n") -notmatch 'FAIL actual selected WGL visual') {
+            throw 'Negative control failed without reproducing the actual misselection'
+          }
+          Write-Host 'PASS actual fixed/float EGL selection plus exact old-source negative control; no GPU executed'
