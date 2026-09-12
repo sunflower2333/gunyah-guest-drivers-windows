@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--negative-control', choices=['lost-late-failure', 'reuse-epoch'])
@@ -30,8 +31,8 @@ production = '\n'.join(function(signature) for signature in (
 ))
 header = (root / 'viogpu/common/activation_trace.h').read_text()
 if args.negative_control == 'lost-late-failure':
-    header = header.replace('if (trace->Version != 2)\n        return false;',
-                            'if (trace->Version != 2 || trace->Count == 64)\n        return false;')
+    header = header.replace('if (trace->Version != 2)',
+                            'if (trace->Version != 2 || trace->Count == 64)', 1)
 elif args.negative_control == 'reuse-epoch':
     header = header.replace('*epoch = (previous & ~1U) + 2;', '*epoch = 2;')
 unit = (here / 'activation_trace_test.cpp').read_text().replace('// INSERT_PRODUCTION', production)
@@ -49,6 +50,16 @@ with tempfile.TemporaryDirectory(prefix='viogpu-activation-') as temporary:
                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer', str(file), '-o', str(executable)]
     subprocess.run(command, cwd=output, check=True)
     result = subprocess.run([str(executable)], cwd=output, capture_output=True, text=True)
+    # ARM64 Windows may retain an emulated x64 executable briefly after exit.
+    # Keep the bounded cleanup policy used by the other production fixtures.
+    for attempt in range(21):
+        try:
+            executable.unlink()
+            break
+        except PermissionError:
+            if attempt == 20:
+                raise
+            time.sleep(0.25)
     if args.negative_control:
         if result.returncode == 0 or 'FAIL:' not in result.stderr:
             raise SystemExit('negative control did not trigger a semantic test failure')

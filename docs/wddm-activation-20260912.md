@@ -3,7 +3,7 @@
 This independent candidate integrates the physical WDDM2 allocation, node and
 VidMm segment contracts into primary7eb8bff (current package58453 source plus
 tests), preserving Mesa668d598 and the current OpenGL/OpenCL workflows. Candidate
-version58461 is reserved by the main integrator. It does not enable GPUVA/MMU,
+version58462 is reserved by the main integrator. It does not enable GPUVA/MMU,
 invent independent engines or dedicated VRAM, or implement native D3D12 admission.
 
 The prior WDDM2 work used an older58373 base. This integration reuses only its
