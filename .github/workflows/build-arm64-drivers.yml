@@ -50,6 +50,16 @@ jobs:
       - name: Execute empty-submit queue ordering regression
         shell: pwsh
         run: python external/mesa/src/freedreno/vulkan/tests/tu_wddm_empty_submit_test.py
+      - name: Execute allocation status and rollback regressions with semantic negatives
+        shell: pwsh
+        run: |
+          $test = 'external/mesa/src/freedreno/vulkan/tests/tu_wddm_allocation_status_test.py'
+          python $test
+          if ($LASTEXITCODE) { throw 'Allocation status regression failed' }
+          python $test --negative-control-oom
+          if ($LASTEXITCODE) { throw 'All-OOM semantic negative failed' }
+          python $test --negative-control-rollback-status
+          if ($LASTEXITCODE) { throw 'Rollback status semantic negative failed' }
       - name: Execute large command-buffer submission regression
         shell: pwsh
         run: python external/mesa/src/freedreno/vulkan/tests/tu_queue_batch_test.py
@@ -461,10 +471,10 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # Reserved for the DisplayID timing repair atop signed58470. Keep the
-          # frozen Mesa, GL/CL and installer logic; jointly rebuild/sign the
-          # matched pair and bind every sidecar to this new source and pair.
-          $minor = 58472
+          # Allocation-status repair atop frozen 58472: all Mesa consumers use
+          # the same source. Jointly sign the KMD/UMD and bind every sidecar to
+          # this pair while preserving the existing OpenCL runtime and modes.
+          $minor = 58473
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -521,8 +531,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58472) {
-            throw "Display mode and EGL candidate requires reserved version 100.6.101.58472"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58473) {
+            throw "Allocation status candidate requires reserved version 100.6.101.58473"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -853,6 +863,14 @@ jobs:
           if ($emptyFiles.Count -ne 0) {
             throw "ARM64 bundle contains empty files: $($emptyFiles.FullName -join '; ')"
           }
+
+      - name: Verify and record the exact jointly signed package identity
+        shell: pwsh
+        run: |
+          python .github/scripts/verify-joint-package.py --output out `
+            --mesa 0ab3f85ef7aeb69a93df442039f084b18ee02b7a --mesa-run 34696411128 `
+            --clvk ee0ea93dfdad4e243016702c5757def99975fec5 --version 100.6.101.58473
+          if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact
         uses: actions/upload-artifact@v4
