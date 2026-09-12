@@ -62,7 +62,9 @@ namespace DroidVmGpuInstall {
                 if (CertAddEncodedCertificateToStore(store, 0x10001, der, (uint)der.Length, 1, IntPtr.Zero)) return true;
                 int error = Marshal.GetLastWin32Error();
                 if (unchecked((uint)error) == 0x80092005u) return false; // CRYPT_E_EXISTS: preserve concurrent entry
-                throw new Win32Exception(error, "CertAddEncodedCertificateToStore ADD_NEW");
+                throw new Win32Exception(error, "CertAddEncodedCertificateToStore ADD_NEW " +
+                    (machine ? "LocalMachine\\" : "CurrentUser\\") + name + " 0x" +
+                    unchecked((uint)error).ToString("X8") + ": " + new Win32Exception(error).Message);
             } finally { CertCloseStore(store, 0); }
         }
 

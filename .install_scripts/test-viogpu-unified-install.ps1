@@ -203,6 +203,9 @@ try {
 
     # Exercise actual WinVerifyTrust catalog-member verification on Windows.
     Write-Output 'BEGIN signed catalog membership fixture'
+    $principal=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    Check ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) 'fixture runs elevated for production machine certificate stores'
+    Write-Output "Fixture process architecture=$env:PROCESSOR_ARCHITECTURE PowerShell=$($PSVersionTable.PSVersion)"
     $catalogRoot=Join-Path $script:directory 'catalog'
     New-Item -ItemType Directory $catalogRoot | Out-Null
     $member=Join-Path $catalogRoot 'manifest.json'; [IO.File]::WriteAllText($member,'authenticated inventory')
