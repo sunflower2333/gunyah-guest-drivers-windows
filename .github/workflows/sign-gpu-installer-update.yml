@@ -1,0 +1,51 @@
+name: Sign VIOGPU installer update
+on:
+  workflow_dispatch:
+  push:
+    branches: [work/unified-flat-api58474-20260912]
+    paths:
+      - '.github/workflows/sign-gpu-installer-update.yml'
+      - '.github/scripts/package-viogpu-installer-only.ps1'
+      - '.install_scripts/viogpu-*'
+permissions:
+  contents: read
+jobs:
+  sign:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Sign tested installer with the existing fixed certificate
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.DROIDVM_PFX_BASE64 }}
+          PFX_PW_SECRET: ${{ secrets.DROIDVM_PFX_PW }}
+          PFX_PW: droidvm
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (!$env:PFX_B64) { throw 'Configured fixed signing certificate is required' }
+          $pfx = Join-Path $env:RUNNER_TEMP 'viogpu-installer-signing.pfx'
+          $public = Join-Path $env:RUNNER_TEMP 'viogpu-installer-signing.cer'
+          try {
+            # Same fixed-certificate import as the main driver signing job.
+            $pfxPw = if ($env:PFX_PW_SECRET) { $env:PFX_PW_SECRET } else { $env:PFX_PW }
+            $pw = ConvertTo-SecureString $pfxPw -AsPlainText -Force
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
+            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+            if ($cert.Thumbprint -cne '8705CD4DDD6DA49685EB34430106FA543FB59D53') { throw 'Unexpected public signer' }
+            Export-Certificate -Cert $cert -FilePath $public | Out-Null
+            Import-Certificate -FilePath $public -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+            $bundle = & ./.github/scripts/package-viogpu-installer-only.ps1 `
+              -DriverProducerCommit '240d258d7bba36db67c3a1f75f82dc075c683d6b' `
+              -InstallerCommit $env:GITHUB_SHA -CertificateThumbprint $cert.Thumbprint `
+              -OutputDirectory (Join-Path $env:RUNNER_TEMP 'viogpu-installer-update')
+            $bundle | ConvertTo-Json -Compress
+          } finally {
+            if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx -Force }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-installer-update
+          path: ${{ runner.temp }}/viogpu-installer-update.zip
+          if-no-files-found: error

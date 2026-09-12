@@ -21,7 +21,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($path in @('.install_scripts/install-drivers.ps1', '.install_scripts/viogpu-unified-install.ps1', '.install_scripts/viogpu-install-state.psm1', '.install_scripts/viogpu-install-certificates.psm1', '.install_scripts/viogpu-api-registration.psm1', '.install_scripts/test-viogpu-unified-install.ps1')) {
+          foreach ($path in @('.install_scripts/install-drivers.ps1', '.install_scripts/viogpu-unified-install.ps1', '.install_scripts/viogpu-install-state.psm1', '.install_scripts/viogpu-install-certificates.psm1', '.install_scripts/viogpu-api-registration.psm1', '.install_scripts/test-viogpu-unified-install.ps1', '.github/scripts/package-viogpu-installer-only.ps1')) {
             $tokens=$null; $errors=$null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path),[ref]$tokens,[ref]$errors)
             if ($errors.Count) { throw "Parse error $path $errors" }
