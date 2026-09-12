@@ -1,5 +1,6 @@
 // Actual WDK layout and flag unions; only hardware readiness is a controlled peer.
 #include <ntddk.h>
+#include <windef.h>
 #include <d3dkmddi.h>
 #include <cstdio>
 #include <cstdlib>

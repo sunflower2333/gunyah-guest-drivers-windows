@@ -3,7 +3,7 @@
 This independent candidate integrates the physical WDDM2 allocation, node and
 VidMm segment contracts into primary7eb8bff (current package58453 source plus
 tests), preserving Mesa668d598 and the current OpenGL/OpenCL workflows. Candidate
-version58460 is reserved by the main integrator. It does not enable GPUVA/MMU,
+version58461 is reserved by the main integrator. It does not enable GPUVA/MMU,
 invent independent engines or dedicated VRAM, or implement native D3D12 admission.
 
 The prior WDDM2 work used an older58373 base. This integration reuses only its
@@ -35,8 +35,10 @@ does not directly measure the Android Adreno sensor.
 
 `NativeActivationTrace` version2 is one pointer-free4288-byte REG_BINARY value.
 Each StartDevice attempt advances `NativeActivationEpoch` by2. The recorder
-writes an odd invalid marker, a fresh even-epoch snapshot, then commits the even
-marker. A partially written initialization stays invalid; epoch overflow disables
+writes a pending write marker, an odd invalid epoch, a fresh even-epoch snapshot,
+then commits the even epoch and the successful write marker. A failed final
+marker write leaves pending status, so a previous successful marker cannot
+certify a later failed update. A partially written initialization stays invalid; epoch overflow disables
 recording instead of reusing an identity. Registry errors are logged and, when
 possible, published as `NativeActivationWriteStatus`.
 
@@ -69,7 +71,7 @@ not automatic root-cause attribution.
 
 Local full-miniport source contract,17 production WDDM2 accounting cases and198
 adapter identity assertions passed. The actual production trace recorder passed
-590 registry, startup, saturation, failed-output and hardware-lifetime assertions
+688 registry, startup, saturation, failed-output and hardware-lifetime assertions
 under ASAN/UBSAN. Semantic negative controls reject a reused epoch and loss of
 the first failure after64 queries. Windows CI additionally executes the query,
 allocation and metadata functions against actual WDK declarations, runs the

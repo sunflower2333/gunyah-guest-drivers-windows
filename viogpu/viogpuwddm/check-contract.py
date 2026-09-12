@@ -989,7 +989,7 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58460",
+        "$minor = 58461",
         "fetch-depth: 1",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
         "[int]$env:DROIDVM_DRIVER_MINOR -le 58450",

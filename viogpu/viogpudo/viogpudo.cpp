@@ -1372,7 +1372,8 @@ __declspec(noinline) void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fence
     /* DXGK_INTERRUPT_DMA_FAULTED is reserved for the OS, not a public TDR
      * request. Reporting it can retire the scheduler's failed packet while
      * leaving our adapter-wide reset gate closed with nothing left to time
-     * out. This WDDM 1.2 driver cannot use the WDDM 2.x page-fault protocol.
+     * out. This physical engine does not implement the WDDM GPU virtual-address
+     * page-fault protocol.
      * Leave the failed packet incomplete: QueryCurrentFence retains the last
      * real completion, PreemptCommand cannot acknowledge the gated engine,
      * and the scheduler's timeout invokes ResetFromTimeout/RestartFromTimeout.
@@ -2957,17 +2958,11 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
      * Publishing no flip capability routes presents to DxgkDdiPresent, the blt
      * path this driver actually implements. */
     driverCaps->SchedulingCaps.MultiEngineAware = 1;
-    /* WDDM 1.2 permits retaining the Win7 scheduler model.  Native Context
-     * has no Host primitive for preempting an in-flight command. */
+    /* Physical-mode WDDM2 retains the allocation/patch-list scheduler.
+     * Native Context has no Host primitive for preempting an in-flight command. */
     driverCaps->SchedulingCaps.PreemptionAware = 0;
-    /* CancelCommandAware must stay clear while this miniport registers
-     * DXGKDDI_INTERFACE_VERSION_WIN8.  dxgkrnl copies the DxgkDdiCancelCommand
-     * slot out of DRIVER_INITIALIZATION_DATA only for drivers that report at
-     * least 0x7002, so at WIN8 (0x300E) its adapter slot stays NULL no matter
-     * what this driver assigns.  Advertising the capability anyway made
-     * dxgkrnl!ADAPTER_RENDER::DdiCancelCommand branch to address 0 as soon as
-     * a real D3D device started submitting work: bugcheck 0x7E with
-     * 0x80000003, twice, once the Direct3D path opened. */
+    /* Command cancellation remains optional and unadvertised. Updating the
+     * interface version does not add a host cancellation primitive. */
     driverCaps->SchedulingCaps.CancelCommandAware = 0;
     driverCaps->GpuEngineTopology.NbAsymetricProcessingNodes = 1;
     /* This is a physical-mode WDDM2 engine. VidMm owns the guest aperture
@@ -7006,6 +7001,11 @@ VOID VioGpuDod::InitializeNativeActivationTrace(void)
         }
         if (NT_SUCCESS(status))
         {
+            DWORD pending = STATUS_PENDING;
+            status = WriteRegistryDWORD(key, L"NativeActivationWriteStatus", &pending);
+        }
+        if (NT_SUCCESS(status))
+        {
             // Odd epoch invalidates all previous records before any new write.
             DWORD invalid = epoch - 1;
             status = WriteRegistryDWORD(key, L"NativeActivationEpoch", &invalid);
@@ -7049,8 +7049,11 @@ VOID VioGpuDod::PersistNativeActivationTrace(void)
     {
         UNICODE_STRING name;
         RtlInitUnicodeString(&name, L"NativeActivationTrace");
-        status = ZwSetValueKey(key, &name, 0, REG_BINARY, &m_NativeActivationTrace,
-                               sizeof(m_NativeActivationTrace));
+        DWORD pending = STATUS_PENDING;
+        status = WriteRegistryDWORD(key, L"NativeActivationWriteStatus", &pending);
+        if (NT_SUCCESS(status))
+            status = ZwSetValueKey(key, &name, 0, REG_BINARY, &m_NativeActivationTrace,
+                                   sizeof(m_NativeActivationTrace));
         DWORD writeStatus = static_cast<DWORD>(status);
         NTSTATUS marker = WriteRegistryDWORD(key, L"NativeActivationWriteStatus", &writeStatus);
         if (NT_SUCCESS(status))
