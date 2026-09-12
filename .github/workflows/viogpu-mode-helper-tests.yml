@@ -1,6 +1,12 @@
 name: Validate versioned display mode restoration helper
 on:
   workflow_dispatch:
+  push:
+    branches: [viogpu-mode-restore-20260912]
+    paths:
+      - '.install_scripts/viogpu-test-display-mode-v2.ps1'
+      - 'viogpu/tests/display-mode-helper/**'
+      - '.github/workflows/viogpu-mode-helper-tests.yml'
   pull_request:
     paths:
       - '.install_scripts/viogpu-test-display-mode-v2.ps1'
