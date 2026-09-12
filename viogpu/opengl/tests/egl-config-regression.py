@@ -60,12 +60,14 @@ def main():
                 parser.error("Sanitizers require the Linux compiler")
             exe = output / "fixture.exe"
             command = ["clang-cl", "/nologo", "/TC", "/clang:-std=c11", "/W3", "/WX",
-                       "/DHAVE_STRUCT_TIMESPEC", "/DHAVE_TIMESPEC_GET", "/clang:-Wno-sign-compare",
+                       "/DHAVE_STRUCT_TIMESPEC", "/DHAVE_TIMESPEC_GET", "/DUSE_GCC_ATOMIC_BUILTINS",
+                       "/clang:-Wno-sign-compare",
                        "/DWIN32_LEAN_AND_MEAN", "/DNOMINMAX", str(unit), f"/Fe{exe}"]
             command += [f"/I{path}" for path in includes]
         else:
             exe = output / "fixture"
-            command = [shutil.which("clang") or "cc", "-std=c11", "-D_GNU_SOURCE", "-DEGL_NO_X11",
+            compiler = shutil.which("clang") or "cc"
+            command = [compiler, "-std=c11", "-D_GNU_SOURCE", "-DEGL_NO_X11", "-DUSE_GCC_ATOMIC_BUILTINS",
                        "-DUTIL_ARCH_LITTLE_ENDIAN=1", "-DUTIL_ARCH_BIG_ENDIAN=0",
                        "-DHAVE_PTHREAD", "-DHAVE_STRUCT_TIMESPEC", "-DHAVE_TIMESPEC_GET",
                        "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-sign-compare", str(unit), "-o", str(exe)]
@@ -73,8 +75,9 @@ def main():
             if args.sanitize:
                 # Existing EGL array callbacks intentionally erase pointer types.
                 # Keep all remaining sanitizer findings fatal, including leaks.
-                command += ["-fsanitize=address,undefined", "-fno-sanitize=function",
-                            "-fno-sanitize-recover=all", "-fno-omit-frame-pointer"]
+                command += ["-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer"]
+                if "clang" in Path(compiler).name:
+                    command += ["-fno-sanitize=function"]
         subprocess.run(command, cwd=output, check=True)
         return subprocess.run([str(exe)], cwd=output).returncode
 
