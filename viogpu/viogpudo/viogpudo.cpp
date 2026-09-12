@@ -8783,17 +8783,16 @@ void VioGpuAdapter::RecordSynchronousFailureDiagnostic(void)
 {
     PAGED_CODE();
 
-    if (KeGetCurrentIrql() != PASSIVE_LEVEL || m_pVioGpuDod == NULL ||
-        m_CtrlQueue.IsSynchronousRequestsHealthy())
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL || m_pVioGpuDod == NULL || m_CtrlQueue.IsSynchronousRequestsHealthy())
     {
         return;
     }
     VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC timeoutDiagnostic;
     BOOLEAN haveTimeout = m_CtrlQueue.GetFirstSynchronousTimeout(&timeoutDiagnostic);
     m_pVioGpuDod->RecordNativeSynchronousPoisonDiagnostic(m_CtrlQueue.SynchronousEpochStateValue(),
-                                                       m_CtrlQueue.SynchronousEpochGenerationValue(),
-                                                       m_CtrlQueue.SynchronousPoisonCallerRva(),
-                                                       haveTimeout ? &timeoutDiagnostic : NULL);
+                                                          m_CtrlQueue.SynchronousEpochGenerationValue(),
+                                                          m_CtrlQueue.SynchronousPoisonCallerRva(),
+                                                          haveTimeout ? &timeoutDiagnostic : NULL);
 }
 
 NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
