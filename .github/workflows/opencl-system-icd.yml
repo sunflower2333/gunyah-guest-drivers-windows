@@ -12,6 +12,15 @@ jobs:
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
+      - name: Preserve pinned ordinary probe source bytes
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          repository: sunflower2333/clvk
+          ref: 0f436fe7110813ddf01dfaebc44b9de7cd39b3b8
+          path: clvk
+          fetch-depth: 1
       - uses: actions/checkout@v4
         with:
           repository: KhronosGroup/OpenCL-ICD-Loader
@@ -33,6 +42,9 @@ jobs:
           }
           ./viogpu/opencl/build-loader.ps1
           ./viogpu/opencl/build-proxy.ps1
+          ./viogpu/opencl/build-system-probes.ps1
+          python viogpu/opencl/package-system-probes.py
+          if ($LASTEXITCODE) { throw 'Ordinary OpenCL probe source/import validation failed' }
       - name: Fetch exact runtime build and assemble verified payload
         shell: pwsh
         env:
@@ -44,7 +56,9 @@ jobs:
           if ($LASTEXITCODE -or $source.Trim() -ne '0f436fe7110813ddf01dfaebc44b9de7cd39b3b8') { throw 'OpenCL source mismatch' }
           gh run download 34698553838 -R sunflower2333/clvk --dir opencl-runtime
           if ($LASTEXITCODE) { throw 'OpenCL download failed' }
-          python viogpu/opencl/package-flat.py --runtime opencl-runtime --loaders opencl-loaders --proxy opencl-proxy --output opencl-payload
+          python viogpu/opencl/test-system-probe-contract.py --runtime opencl-runtime --probes opencl-system-probes
+          if ($LASTEXITCODE) { throw 'Ordinary OpenCL probe regression failed' }
+          python viogpu/opencl/package-flat.py --runtime opencl-runtime --loaders opencl-loaders --proxy opencl-proxy --probes opencl-system-probes --output opencl-payload
           if ($LASTEXITCODE) { throw 'OpenCL package validation failed' }
       - uses: actions/upload-artifact@v4
         with:

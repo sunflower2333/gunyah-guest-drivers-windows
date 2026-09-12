@@ -14,13 +14,31 @@ SYSTEM = {'kernel32.dll','user32.dll','gdi32.dll','advapi32.dll','ole32.dll',
           'bcrypt.dll','version.dll','ws2_32.dll','secur32.dll','rpcrt4.dll',
           'msvcrt.dll','ucrtbase.dll','psapi.dll','setupapi.dll','runtimeobject.dll'}
 
+def validate_system_probe(path, arch, entry):
+    """Reject old private-linked probes even when their supplied hashes match."""
+    machine(path, arch)
+    if entry.get('machine') != arch or entry.get('role') != 'ordinary-application-probe':
+        raise ValueError(f'Wrong ordinary probe metadata: {path}')
+    if sha(path) != entry.get('sha256'):
+        raise ValueError(f'Ordinary probe hash mismatch: {path}')
+    actual = sorted(imports(path))
+    if actual != ['kernel32.dll','opencl.dll']:
+        raise ValueError(f'Ordinary probe must import system OpenCL.dll: {path}: {actual}')
+    if actual != sorted(entry.get('imports', [])):
+        raise ValueError(f'Ordinary probe import receipt mismatch: {path}')
+
 def main():
     parser = argparse.ArgumentParser()
-    for option in ('runtime','loaders','proxy','output'):
+    for option in ('runtime','loaders','proxy','probes','output'):
         parser.add_argument('--'+option, type=Path, required=True)
     args = parser.parse_args()
+    probe_receipt = json.loads((args.probes/'opencl-system-probes-receipt.json').read_text())
+    if (probe_receipt.get('schema') != 1 or probe_receipt.get('family') != 'opencl-system-probes'
+            or probe_receipt.get('probe_build',{}).get('clvk_test_source') != SOURCE):
+        raise ValueError('Missing/wrong ordinary OpenCL probe source receipt')
     args.output.mkdir(exist_ok=False)
     files = {}
+    ordinary_probes = set()
     def stage(source, name, arch, role):
         if name in files or Path(name).name != name: raise ValueError(f'Duplicate/unsafe flat name {name}')
         machine(source, arch)
@@ -34,11 +52,14 @@ def main():
         if (source/'source.txt').read_text(encoding='utf-8-sig').splitlines()[0].strip() != SOURCE:
             raise ValueError(f'Stale runtime source {arch}')
         names = [f'viogpucl_{arch}.dll',f'viogpucl_vk_{arch}.dll',
-                 f'windows-flat-check-{arch}.exe',f'windows-exec-check-{arch}.exe',
-                 f'viogpu-opencl-check-{arch}.exe']
+                 f'windows-flat-check-{arch}.exe',f'windows-exec-check-{arch}.exe']
         for name in names:
             if name not in sums: raise ValueError(f'Unhashed input {name}')
             stage(source/name,name,arch,'runtime' if name.endswith('.dll') else 'probe')
+        name = f'viogpu-opencl-check-{arch}.exe'
+        validate_system_probe(args.probes/name, arch, probe_receipt['files'].get(name,{}))
+        stage(args.probes/name,name,arch,'probe')
+        ordinary_probes.add(name)
         stage(args.proxy/f'opencl-proxy-check-{arch}.exe',f'opencl-proxy-check-{arch}.exe',arch,'probe')
         stage(args.proxy/f'opencl-fixture-{arch}.dll',f'opencl-fixture-{arch}.dll',arch,'probe')
         stage(args.loaders/arch/'loader-check.exe',f'opencl-loader-check-{arch}.exe',arch,'installer-helper')
@@ -54,6 +75,9 @@ def main():
             stage(source,source.name,'x64','compiler')
     for name, info in files.items():
         for dependency in imports(args.output/name):
+            # Ordinary apps use the OS's architecture-specific public loader.
+            # They do not import the flat package's private ICD or loader path.
+            if name in ordinary_probes and dependency == 'opencl.dll': continue
             if dependency in SYSTEM or dependency.startswith(('api-ms-win-','ext-ms-win-')): continue
             matches = [entry for entry in files if entry.lower() == dependency]
             if len(matches) != 1: raise ValueError(f'Unresolved flat import {name} -> {dependency}')
@@ -66,6 +90,7 @@ def main():
     manifest = {'schema':1,'family':'opencl','sources':{
         'clvk':SOURCE,'clvk_stable_base':'ee0ea93dfdad4e243016702c5757def99975fec5',
         'clvk_runtime_ci':RUNTIME_CI,'parent':parent,
+        'ordinary_probes':probe_receipt['probe_build'],
         'compiler':'c20f7c8ccf58f317972ac1ffeab68a96019cbbaa',
         'compiler_original_sha256':COMPILER,'compiler_upstream_ci':34487278874,
         'khronos_loader':'f27c925e782499eebc4df20e121144358ccd5ac6',
