@@ -9,20 +9,39 @@ system-wide EGL/GLES ICD registration contract.
 
 | Calling process on ARM64 Windows | Adapter value | Actual implementation |
 | --- | --- | --- |
-| Native ARM64 | OpenGLDriverName -> viogpuopengl.dll | ARM64X native view -> viogpuopengl_arm64.dll -> arm64/libgallium_wgl.dll |
-| AMD64 x64, including EC callers | OpenGLDriverName -> viogpuopengl.dll | ARM64X x64 view -> viogpuopengl_x64.dll -> x64/libgallium_wgl.dll |
+| Native ARM64 | OpenGLDriverName -> viogpuopengl.dll | ARM64X native proxy code -> arm64/libgallium_wgl.dll |
+| AMD64 x64, including EC callers | OpenGLDriverName -> viogpuopengl.dll | ARM64X EC proxy code -> x64/libgallium_wgl.dll |
 | 32-bit x86 | OpenGLDriverNameWow -> viogpuopengl_x86.dll | x86/libgallium_wgl.dll |
 
 The small native/x64/x86 adapters delegate all 19 `Drv*` entries using Mesa's
 own `gldrv.h` declarations. The x64 implementation is a real AMD64 binary.
-The ARM64X pure forwarder is linked from separate ARM64 and EC objects with
-separate native/x64 export definitions. It is not a renamed ARM64 DLL.
+The ARM64X DLL links separate native and EC proxy code with separate export
+definitions. Both views resolve dependencies by absolute sibling paths.
 
 Native and Wow `VulkanDriverName` entries point to package manifests. The
 native manifest uses the same ARM64X dispatch; the Wow manifest uses the x86
 adapter. Three Vulkan ICD interface exports delegate to real Turnip.
 No `VK_DRIVER_FILES`, PATH change, global Khronos key or elevation-sensitive
 environment override is installed.
+
+### Constrained system worker stacks
+
+The installed58453 hybrid was reached through Vulkan discovery while DWM's
+D3D runtime opened the adapter. Its load_sibling helper allocated131120 stack
+bytes, including two32768-wchar path arrays. The saved native DWM stack shows
+one helper frame calling __chkstk at the failing RVA1020; this is excessive
+stack consumption, not an observed recursive forwarder chain.
+
+Path buffers now use scoped process-heap storage, preserve full path capacity
+and last-error reporting, and return allocation failure through the existing
+ICD contract. No C++ allocation exception crosses an exported function.
+
+small-stack-probe executes actual Vulkan negotiation or OpenGL version
+validation twice on a64KiB reserved worker stack. CI checks the native ARM64,
+ARM64X x64 and x86 views, comparing against exact pre-fix source92ef84b that
+must reproduce STATUS_STACK_OVERFLOW. These calls create no Vulkan instance,
+GL context or GPU workload. Target DWM stability and ordinary API rendering
+remain separate functional acceptance checks.
 
 The GL adapter explicitly preloads its private Vulkan loader before Zink's
 basename lookup. It rejects an already-loaded same-basename dependency from

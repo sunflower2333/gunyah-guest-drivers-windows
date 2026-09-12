@@ -85,6 +85,8 @@ def assemble(args):
         assert set(exports) == set(EXPORTS) and all(value is None for value in exports.values()), proxy
         shutil.copy2(args.proxies/proxy, output/proxy)
         shutil.copy2(args.proxies/f"system-probe-{arch}.exe", output/f"system-probe-{arch}.exe")
+        pe_exports(args.proxies/f"small-stack-probe-{arch}.exe", machine)
+        shutil.copy2(args.proxies/f"small-stack-probe-{arch}.exe", output/f"small-stack-probe-{arch}.exe")
         pe_exports(args.proxies/f"gles-probe-{arch}.exe", machine)
         shutil.copy2(args.proxies/f"gles-probe-{arch}.exe", output/f"gles-probe-{arch}.exe")
     hybrid = args.proxies/"viogpuopengl.dll"

@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   workflow_call:
   push:
-    branches: [viogpu-opengl-icd-20260911, viogpu-opengl-integrated-20260911, viogpu-opengl-installer-file-20260911, viogpu-opengl-discovery-20260911, viogpu-opengl-surface-20260911, viogpu-opengl-wddm12-recovery-20260911]
+    branches: [viogpu-opengl-icd-20260911, viogpu-opengl-integrated-20260911, viogpu-opengl-installer-file-20260911, viogpu-opengl-discovery-20260911, viogpu-opengl-surface-20260911, viogpu-opengl-wddm12-recovery-20260911, work/opengl-small-stack-20260912]
 permissions:
   contents: read
   actions: read
@@ -13,6 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 1
           submodules: true
       - uses: actions/setup-python@v5
         with:
@@ -52,6 +53,15 @@ jobs:
         run: |
           python viogpu/opengl/package.py --payloads mesa-opengl-artifacts --proxies opengl-system --output opengl-payload
           if ($LASTEXITCODE) { throw 'System ICD package verification failed' }
+      - name: Build exact pre-fix proxy source as small-stack negative control
+        shell: pwsh
+        run: |
+          git fetch --depth 1 origin 92ef84ba5652b3bc664fd57c74143c09f48d7381
+          if ($LASTEXITCODE) { throw 'Exact pre-fix source fetch failed' }
+          git show 92ef84ba5652b3bc664fd57c74143c09f48d7381:viogpu/opengl/icd-proxy.cpp |
+            Set-Content legacy-icd-proxy.cpp -Encoding utf8
+          if ($LASTEXITCODE) { throw 'Exact pre-fix proxy extraction failed' }
+          ./viogpu/opengl/build-proxy.ps1 -Output opengl-legacy -ProxySource legacy-icd-proxy.cpp
       - name: Verify signed catalog and reject modified payloads
         shell: pwsh
         timeout-minutes: 5
@@ -61,6 +71,13 @@ jobs:
           name: viogpu-opengl-system-unsigned
           path: opengl-payload/
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-opengl-small-stack-negative-control
+          path: |
+            opengl-legacy/viogpuopengl.dll
+            opengl-legacy/viogpuopengl_x86.dll
+          if-no-files-found: error
   native-abi:
     needs: package
     runs-on: windows-11-arm
@@ -69,6 +86,29 @@ jobs:
         with:
           name: viogpu-opengl-system-unsigned
           path: opengl-payload
+      - uses: actions/download-artifact@v4
+        with:
+          name: viogpu-opengl-small-stack-negative-control
+          path: opengl-legacy-proxies
+      - name: Verify real ICD exports on constrained worker stacks against pre-fix source
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path opengl-payload).Path
+          $legacy = Join-Path $env:RUNNER_TEMP 'opengl-legacy-payload'
+          Copy-Item -LiteralPath $root -Destination $legacy -Recurse
+          Copy-Item opengl-legacy-proxies/viogpuopengl*.dll -Destination $legacy -Force
+          foreach ($arch in @('arm64','x64','x86')) {
+            $dll = if ($arch -eq 'x86') { 'viogpuopengl_x86.dll' } else { 'viogpuopengl.dll' }
+            foreach ($mode in @('--vulkan','--opengl')) {
+              $probe = Join-Path $root "small-stack-probe-$arch.exe"
+              $legacyIcd = Join-Path $legacy $dll
+              $negative = Start-Process -FilePath $probe -ArgumentList @($mode, ('"{0}"' -f $legacyIcd)) -NoNewWindow -Wait -PassThru
+              if ($negative.ExitCode -ne -1073741571) { throw "Pre-fix $arch $mode must reproduce STATUS_STACK_OVERFLOW, got $($negative.ExitCode)" }
+              Write-Host "PASS pre-fix $arch $mode reproduces STATUS_STACK_OVERFLOW"
+              & $probe $mode (Join-Path $root $dll)
+              if ($LASTEXITCODE) { throw "Actual fixed $arch $mode 64 KiB stack regression failed" }
+            }
+          }
       - name: Execute ARM64X native and x64 views plus x86 Wow ABI
         shell: pwsh
         run: |

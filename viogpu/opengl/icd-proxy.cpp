@@ -16,10 +16,41 @@ static INIT_ONCE modules_once = INIT_ONCE_STATIC_INIT;
 static INIT_ONCE gallium_once = INIT_ONCE_STATIC_INIT;
 static HMODULE turnip, gallium;
 
+// The system Vulkan loader reaches this ICD from DWM's D3D adapter discovery.
+// Those worker threads can have much less than 128 KiB of stack available.
+// Preserve full Windows path capacity without putting two long-path buffers
+// on the caller's stack or throwing a C++ allocation exception across the ICD.
+struct ModulePaths
+{
+    wchar_t path[32768];
+    wchar_t actual[32768];
+};
+
+struct ScopedModulePaths
+{
+    ModulePaths *value = static_cast<ModulePaths *>(HeapAlloc(GetProcessHeap(), 0, sizeof(ModulePaths)));
+    ~ScopedModulePaths()
+    {
+        DWORD error = GetLastError();
+        if (value)
+        {
+            HeapFree(GetProcessHeap(), 0, value);
+        }
+        SetLastError(error);
+    }
+};
+
 static HMODULE load_sibling(const wchar_t *name)
 {
     HMODULE self = nullptr;
-    wchar_t path[32768];
+    ScopedModulePaths storage;
+    if (!storage.value)
+    {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return nullptr;
+    }
+    auto &path = storage.value->path;
+    auto &actual = storage.value->actual;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<LPCWSTR>(&modules_once),
                             &self))
@@ -52,7 +83,6 @@ static HMODULE load_sibling(const wchar_t *name)
     }
     // A full-path load can coexist with a different DLL of the same basename.
     // Zink later loads vulkan-1 by basename, so reject that ambiguity up front.
-    wchar_t actual[32768];
     HMODULE existing = GetModuleHandleW(name);
     if (existing)
     {

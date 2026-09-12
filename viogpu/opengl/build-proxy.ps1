@@ -1,8 +1,10 @@
-param([string]$Output = 'opengl-system')
+param([string]$Output = 'opengl-system', [string]$ProxySource)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = (Resolve-Path '.').Path
 $source = Join-Path $root 'viogpu/opengl'
+if (!$ProxySource) { $ProxySource = Join-Path $source 'icd-proxy.cpp' }
+$ProxySource = (Resolve-Path -LiteralPath $ProxySource).Path
 $mesa = Join-Path $root 'external/mesa'
 $out = [IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Force $out | Out-Null
@@ -28,8 +30,9 @@ foreach ($arch in @('arm64','x64','x86')) {
         if ($arch -eq 'x86') { "$($_.Name)=_$($_.Name)@$($_.Bytes)" } else { $_.Name }
     }) | Set-Content $def -Encoding ascii
     Invoke-Compiler $arch @(
-        "cl /nologo /W4 /WX /EHsc /MT /LD /I`"$mesa/include`" /I`"$mesa/src/gallium/frontends/wgl`" `"$source/icd-proxy.cpp`" /Fo`"$out/proxy-$arch.obj`" /link /DEF:`"$def`" /OUT:`"$out/viogpuopengl_$arch.dll`" /PDB:`"$out/viogpuopengl_$arch.pdb`" /DEBUG $repro",
-        "cl /nologo /W4 /WX /EHsc /MT /I`"$mesa/include`" `"$source/system-probe.cpp`" /Fo`"$out/probe-$arch.obj`" /Fe:`"$out/system-probe-$arch.exe`" user32.lib gdi32.lib opengl32.lib"
+        "cl /nologo /W4 /WX /EHsc /MT /LD /I`"$mesa/include`" /I`"$mesa/src/gallium/frontends/wgl`" `"$ProxySource`" /Fo`"$out/proxy-$arch.obj`" /link /DEF:`"$def`" /OUT:`"$out/viogpuopengl_$arch.dll`" /PDB:`"$out/viogpuopengl_$arch.pdb`" /DEBUG $repro",
+        "cl /nologo /W4 /WX /EHsc /MT /I`"$mesa/include`" `"$source/system-probe.cpp`" /Fo`"$out/probe-$arch.obj`" /Fe:`"$out/system-probe-$arch.exe`" user32.lib gdi32.lib opengl32.lib",
+        "cl /nologo /W4 /WX /EHsc /MT /I`"$mesa/include`" `"$source/small-stack-probe.cpp`" /Fo`"$out/stack-probe-$arch.obj`" /Fe:`"$out/small-stack-probe-$arch.exe`""
     )
 }
 # Merge native and EC adapter code using Microsoft's documented ARM64X recipe.
@@ -39,6 +42,6 @@ $nativeInputs = @(Get-Content "$out/arm64-inputs.rsp" | Where-Object { $_ -match
 if (!$nativeInputs.Count) { throw 'No native ARM64 link inputs captured' }
 $nativeInputs | Set-Content "$out/arm64-merge.rsp" -Encoding ascii
 Invoke-Compiler arm64 @(
-    "cl /nologo /W4 /WX /EHsc /MT /c /arm64EC /I`"$mesa/include`" /I`"$mesa/src/gallium/frontends/wgl`" `"$source/icd-proxy.cpp`" /Fo`"$out/proxy-arm64ec.obj`"",
+    "cl /nologo /W4 /WX /EHsc /MT /c /arm64EC /I`"$mesa/include`" /I`"$mesa/src/gallium/frontends/wgl`" `"$ProxySource`" /Fo`"$out/proxy-arm64ec.obj`"",
     "link /DLL /MACHINE:ARM64X `"$out/proxy-arm64ec.obj`" @`"$out/arm64-merge.rsp`" /DEFARM64NATIVE:`"$out/proxy-arm64.def`" /DEF:`"$out/proxy-x64.def`" /OUT:`"$out/viogpuopengl.dll`" /PDB:`"$out/viogpuopengl.pdb`" /DEBUG"
 )
