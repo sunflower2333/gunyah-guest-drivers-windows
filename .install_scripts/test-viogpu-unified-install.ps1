@@ -232,6 +232,20 @@ try {
         $physical="HKLM:\SOFTWARE\Microsoft\SystemCertificates\$storeName\Certificates"
         Write-Output "Before bootstrap $storeName physical certificate key exists=$(Test-Path $physical)"
     }
+    foreach ($storeKey in @(
+        'HKLM:\SOFTWARE\Microsoft\SystemCertificates\TrustedPublisher',
+        'HKLM:\SOFTWARE\Microsoft\SystemCertificates\TrustedPublisher\Certificates',
+        'HKLM:\SOFTWARE\Microsoft\SystemCertificates\Root\ProtectedRoots',
+        'HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\TrustedPublisher',
+        'HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\Root',
+        'HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\Root\ProtectedRoots')) {
+        if (!(Test-Path $storeKey)) { Write-Output "Fixture store metadata: absent $storeKey"; continue }
+        Write-Output "Fixture store metadata: $storeKey ACL=$((Get-Acl $storeKey).Sddl)"
+        foreach ($valueName in @('AuthenticodeFlags','Flags','ProtectedRoots')) {
+            $property=Get-ItemProperty $storeKey -Name $valueName -ErrorAction SilentlyContinue
+            if ($null -ne $property) { Write-Output "Fixture store policy: $storeKey $valueName=$($property.$valueName)" }
+        }
+    }
     # CurrentUser Root opens interactive trust confirmation. Disposable elevated
     # CI uses LocalMachine like production, with exact-thumbprint cleanup below.
     Add-GpuPackageTrust $public $trust $trustJournal 'LocalMachine'
