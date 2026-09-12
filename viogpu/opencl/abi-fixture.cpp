@@ -31,9 +31,12 @@ extern "C" cl_int CL_API_CALL clIcdGetPlatformIDsKHR(cl_uint count, cl_platform_
     if (out) *out = reinterpret_cast<cl_platform_id>(&platform);
     return CL_SUCCESS;
 }
-extern "C" void* CL_API_CALL clGetExtensionFunctionAddress(const char* name) {
+static void* extension_address(const char* name) {
     return name && !std::strcmp(name,"clIcdGetPlatformIDsKHR") ? reinterpret_cast<void*>(&clIcdGetPlatformIDsKHR) : nullptr;
 }
+extern "C" void* CL_API_CALL clGetExtensionFunctionAddress(const char* name) {
+    return extension_address(name);
+}
 extern "C" void* CL_API_CALL clGetExtensionFunctionAddressForPlatform(cl_platform_id, const char* name) {
-    return clGetExtensionFunctionAddress(name);
+    return extension_address(name);
 }
