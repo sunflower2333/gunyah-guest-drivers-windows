@@ -1,6 +1,22 @@
+[CmdletBinding()]
+param(
+  [ValidateSet('Install','Verify','Rollback','Uninstall')][string]$GpuAction = 'Install',
+  [string]$GpuJournalPath,
+  [string]$GpuInstanceId
+)
 $ErrorActionPreference='Continue'
 $base = $PSScriptRoot
 Write-Host "DroidVM ARM64 driver installer" -ForegroundColor Cyan
+# GPU APIs are one package and one entry. Rollback/removal are deliberately
+# GPU-only; storage/network packages keep their existing install behavior.
+$gpuArguments = @{Action=$GpuAction; PackageRoot=(Join-Path $base 'drivers/viogpu')}
+if ($GpuJournalPath) { $gpuArguments.JournalPath=$GpuJournalPath }
+if ($GpuInstanceId) { $gpuArguments.InstanceId=$GpuInstanceId }
+if ($GpuAction -ne 'Install') {
+  try { & (Join-Path $base 'viogpu-unified-install.ps1') @gpuArguments }
+  catch { Write-Error -ErrorAction Continue $_; exit 1 }
+  return
+}
 # NetKVM last: touching a live NIC during replacement can bugcheck.
 $order = @('viogpu','pvmpower','viostor','vioscsi','vioinput','NetKVM')
 
@@ -18,6 +34,12 @@ foreach($d in $order){
   $orig = $inf.Name.ToLower()
   Write-Host ""
   Write-Host ("== install " + $d + " : " + $inf.Name + " ==") -ForegroundColor Cyan
+  if ($d -eq 'viogpu') {
+    try { & (Join-Path $base 'viogpu-unified-install.ps1') @gpuArguments }
+    catch { Write-Error -ErrorAction Continue $_; exit 1 }
+    # Never enumerate/localize pnputil output or delete the rollback GPU package.
+    continue
+  }
   # pvmpower binds to a root-enumerated ROOT\PVMPOWER device; create the devnode
   # (idempotent, also cleans filter-era leftovers) before installing its package.
   if($d -eq 'pvmpower'){ & (Join-Path $base 'pvmpower-devnode.ps1') }
