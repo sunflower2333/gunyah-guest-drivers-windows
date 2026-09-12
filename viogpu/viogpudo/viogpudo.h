@@ -30,6 +30,7 @@
 #pragma once
 
 #include "viogpu.h"
+#include "display_timing.h"
 #include "viogpu_queue.h"
 
 #pragma pack(push)
@@ -710,6 +711,10 @@ class VioGpuAdapter : IVioGpuPCI
     }
 #endif
 
+    const VIOGPU_DISPLAY_TIMING &GetModeTiming(UINT idx) const
+    {
+        return m_ModeTimings[idx];
+    }
     PVIDEO_MODE_INFORMATION GetModeInfo(UINT idx)
     {
         return &m_ModeInfo[idx];
@@ -779,7 +784,6 @@ class VioGpuAdapter : IVioGpuPCI
     void FixEdid(void);
     BOOLEAN GetEdids(void);
     int AddEdidModes(void);
-    BOOLEAN UpdateModes(USHORT xres, USHORT yres, int &cnt);
     NTSTATUS UpdateChildStatus(BOOLEAN connect);
     void SetCustomDisplay(_In_ USHORT xres, _In_ USHORT yres);
     BOOLEAN CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, CURRENT_MODE *pCurrentMode);
@@ -800,6 +804,7 @@ class VioGpuAdapter : IVioGpuPCI
   private:
     VioGpuDod *m_pVioGpuDod;
     PVIDEO_MODE_INFORMATION m_ModeInfo;
+    VIOGPU_DISPLAY_TIMING m_ModeTimings[65]; // 64 EDID modes + legacy custom slot
     ULONG m_ModeCount;
     USHORT m_CurrentModeIndex;
     USHORT m_CustomModeIndex;
@@ -1079,8 +1084,12 @@ class VioGpuDod
      * report D3DKMTWaitForVerticalBlankEvent returns STATUS_TIMEOUT on every
      * call and the desktop compositor stops presenting to this adapter after
      * its first few frames. */
-    KTIMER m_CrtcVsyncTimer;
-    KDPC m_CrtcVsyncDpc;
+    PEX_TIMER m_CrtcVsyncTimer;
+    FAST_MUTEX m_CrtcTimerMutex;
+    KSPIN_LOCK m_CrtcTimingLock;
+    VIOGPU_DISPLAY_TIMING m_CrtcTiming;
+    LONGLONG m_CrtcEpoch;
+    LONGLONG m_CrtcPeriodTicks;
     volatile LONG m_CrtcVsyncTimerArmed;
     volatile LONG m_CrtcVsyncDeliveredCount;
     volatile LONG64 m_CrtcVsyncPrimaryAddress;
@@ -1112,10 +1121,11 @@ class VioGpuDod
     volatile LONG m_NativeApertureMapSkipCount;
     volatile LONG m_NativeApertureFailureCount;
     volatile LONG m_NativePagingResetCount;
-    VOID ArmCrtcVsyncTimer(void);
+    NTSTATUS ArmCrtcVsyncTimer(void);
     VOID DisarmCrtcVsyncTimer(void);
     VOID DeliverCrtcVsync(void);
     VOID SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address);
+    NTSTATUS SetCrtcTiming(const VIOGPU_DISPLAY_TIMING &timing);
     DWORD ReadCrtcVsyncDeliveredCount(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_CrtcVsyncDeliveredCount, 0, 0));
@@ -1788,11 +1798,13 @@ class VioGpuDod
     NTSTATUS WriteRegistryDWORD(_In_ HANDLE DevInstRegKeyHandle, _In_ PCWSTR pszwValueName, _In_ PDWORD pdwValue);
     NTSTATUS ReadRegistryDWORD(_In_ HANDLE DevInstRegKeyHandle, _In_ PCWSTR pszwValueName, _Inout_ PDWORD pdwValue);
     NTSTATUS SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourceMode,
-                                  CONST D3DKMDT_VIDPN_PRESENT_PATH *pPath);
+                                  CONST D3DKMDT_VIDPN_PRESENT_PATH *pPath,
+                                  CONST D3DKMDT_VIDEO_SIGNAL_INFO *pTargetSignal);
     NTSTATUS AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODES *CONST pRecommendMonitorModes);
     NTSTATUS AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTERFACE *pVidPnSourceModeSetInterface,
                                  D3DKMDT_HVIDPNSOURCEMODESET hVidPnSourceModeSet,
-                                 D3DDDI_VIDEO_PRESENT_SOURCE_ID SourceId);
+                                 D3DDDI_VIDEO_PRESENT_SOURCE_ID SourceId,
+                                 CONST D3DKMDT_VIDPN_TARGET_MODE *pPinnedTarget);
     NTSTATUS AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTERFACE *pVidPnTargetModeSetInterface,
                                  D3DKMDT_HVIDPNTARGETMODESET hVidPnTargetModeSet,
                                  _In_opt_ CONST D3DKMDT_VIDPN_SOURCE_MODE *pVidPnPinnedSourceModeInfo,
