@@ -38,9 +38,15 @@ constexpr int Executive = 0, KernelMode = 0, PASSIVE_LEVEL = 0;
 #ifndef _Out_
 #define _Out_
 #endif
+#ifndef _In_
 #define _In_
+#endif
+#ifndef _Inout_
 #define _Inout_
+#endif
+#ifndef _In_opt_
 #define _In_opt_
+#endif
 #define PAGED_CODE() ((void)0)
 #define DbgPrint(...) ((void)0)
 #define NT_ASSERT(value) do { if (!(value)) std::abort(); } while (false)
