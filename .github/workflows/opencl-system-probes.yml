@@ -1,0 +1,73 @@
+name: Build ordinary OpenCL system-loader probes
+on:
+  push:
+    branches: [work/opencl-system-probes-20260913]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probes:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: sunflower2333/clvk
+          ref: 0f436fe7110813ddf01dfaebc44b9de7cd39b3b8
+          path: clvk
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: KhronosGroup/OpenCL-ICD-Loader
+          ref: f27c925e782499eebc4df20e121144358ccd5ac6
+          path: opencl-loader
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: KhronosGroup/OpenCL-Headers
+          ref: 386ca390b2f52efeb3e1a55a500690eb8013f60e
+          path: opencl-headers
+          fetch-depth: 1
+      - name: Build public import libraries and unchanged GPU probes only
+        shell: pwsh
+        run: |
+          ./viogpu/opencl/build-loader.ps1
+          ./viogpu/opencl/build-system-probes.ps1
+          python viogpu/opencl/package-system-probes.py
+          if ($LASTEXITCODE) { throw 'Probe import/source validation failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-opencl-system-probes
+          path: opencl-system-probes/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencl-probe-ci-loader-support-not-for-install
+          path: |
+            opencl-loaders/arm64x/OpenCL.dll
+            opencl-loaders/x86/OpenCL.dll
+          if-no-files-found: error
+  launch-native-and-emulated:
+    runs-on: windows-11-arm
+    needs: probes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: viogpu-opencl-system-probes
+          path: opencl-system-probes
+      - uses: actions/download-artifact@v4
+        with:
+          name: opencl-probe-ci-loader-support-not-for-install
+          path: opencl-probe-ci-loader-support
+      - name: Start ordinary applications with public loader and no private ICD siblings
+        shell: pwsh
+        run: ./viogpu/opencl/test-system-probes.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opencl-system-probes-ci-launch-evidence
+          path: opencl-probe-launch-evidence/
+          if-no-files-found: error
