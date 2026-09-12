@@ -203,6 +203,9 @@ try {
 
     # Exercise actual WinVerifyTrust catalog-member verification on Windows.
     Write-Output 'BEGIN signed catalog membership fixture'
+    $principal=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    Check ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) 'fixture runs elevated for production machine certificate stores'
+    Write-Output "Fixture process architecture=$env:PROCESSOR_ARCHITECTURE PowerShell=$($PSVersionTable.PSVersion)"
     $catalogRoot=Join-Path $script:directory 'catalog'
     New-Item -ItemType Directory $catalogRoot | Out-Null
     $member=Join-Path $catalogRoot 'manifest.json'; [IO.File]::WriteAllText($member,'authenticated inventory')
@@ -225,6 +228,10 @@ try {
     Check $true 'tampered catalog rejected before any trust mutation'
     $trust=[pscustomobject]@{CertificateTrust=@()}
     $trustJournal=Join-Path $script:directory 'trust.clixml'
+    foreach ($storeName in @('Root','TrustedPublisher')) {
+        $physical="HKLM:\SOFTWARE\Microsoft\SystemCertificates\$storeName\Certificates"
+        Write-Output "Before bootstrap $storeName physical certificate key exists=$(Test-Path $physical)"
+    }
     # CurrentUser Root opens interactive trust confirmation. Disposable elevated
     # CI uses LocalMachine like production, with exact-thumbprint cleanup below.
     Add-GpuPackageTrust $public $trust $trustJournal 'LocalMachine'

@@ -33,7 +33,15 @@ function Add-GpuPackageTrust($Certificate,$State,[string]$Journal,
             Hash=(Get-GpuCertificateHash $Certificate);Status='adding';Created=$false}
         $State.CertificateTrust += $record
         Write-GpuJournal $State $Journal
-        $record.Created = [DroidVmGpuInstall.Native]::AddCertificateNew($name,$Certificate.RawData,($Location -eq 'LocalMachine'))
+        try {
+            $record.Created = [DroidVmGpuInstall.Native]::AddCertificateNew($name,$Certificate.RawData,($Location -eq 'LocalMachine'))
+        } catch {
+            # A reported native failure did not add a certificate; only process
+            # interruption before the result has uncertain ownership.
+            $record.Status = 'failed'
+            Write-GpuJournal $State $Journal
+            throw
+        }
         $record.Status = if ($record.Created) {'created'} else {'preexisting'}
         Write-GpuJournal $State $Journal
     }

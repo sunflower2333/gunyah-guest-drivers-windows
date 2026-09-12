@@ -28,5 +28,5 @@ jobs:
           }
           & ./.install_scripts/test-viogpu-unified-install.ps1
           if ($LASTEXITCODE) { throw 'Unified installer fixture failed' }
-          & ./.install_scripts/test-viogpu-api-registration.ps1
+          & ./.install_scripts/test-viogpu-api-registration.ps1 -RegistryFixture
           if ($LASTEXITCODE) { throw 'Typed API registration fixture failed' }

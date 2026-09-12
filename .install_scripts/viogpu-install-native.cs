@@ -55,14 +55,20 @@ namespace DroidVmGpuInstall {
         static extern bool CertCloseStore(IntPtr store, uint flags);
         public static bool AddCertificateNew(string name, byte[] der, bool machine) {
             if (name != "Root" && name != "TrustedPublisher") throw new ArgumentException("Certificate store");
+            // SYSTEM is a collection. OPEN_EXISTING can return an empty logical
+            // TrustedPublisher store without a writable physical store on a
+            // fresh Windows installation. Default flags open or create it, as
+            // X509Store.Open(ReadWrite) does, without relaxing ACLs or policy.
             var store = CertOpenStore(new IntPtr(10), 0, IntPtr.Zero,
-                0x4000u | (machine ? 0x20000u : 0x10000u), name);
+                machine ? 0x20000u : 0x10000u, name);
             if (store == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "CertOpenStore");
             try {
                 if (CertAddEncodedCertificateToStore(store, 0x10001, der, (uint)der.Length, 1, IntPtr.Zero)) return true;
                 int error = Marshal.GetLastWin32Error();
                 if (unchecked((uint)error) == 0x80092005u) return false; // CRYPT_E_EXISTS: preserve concurrent entry
-                throw new Win32Exception(error, "CertAddEncodedCertificateToStore ADD_NEW");
+                throw new Win32Exception(error, "CertAddEncodedCertificateToStore ADD_NEW " +
+                    (machine ? "LocalMachine\\" : "CurrentUser\\") + name + " 0x" +
+                    unchecked((uint)error).ToString("X8") + ": " + new Win32Exception(error).Message);
             } finally { CertCloseStore(store, 0); }
         }
 

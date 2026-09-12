@@ -42,18 +42,20 @@ to `opencl-loader-check-<arch>.exe`. These three installed helpers belong in the
 same flat signed DriverStore payload. Other CI probe files remain excluded.
 
 Source integrated here: installer worker
-`a61fc69e0ccd8b5a26c1c72c48547eb33805c121`, based on58473/8b51db7. Root's original
+`bca1712e58730a67081620a8149c4ead1d6ed561`, based on58473/8b51db7. Root's original
 four registration helper/test files are identical to the worker's copies.
 
 Validation at this integration point:
 
 - Six PowerShell scripts/modules parse and the native C# helper compiles locally.
 - Registration CI34699829545 passes31 cases on each x64/ARM64 and PS5.1/PS7 pair.
-- Lifecycle CI34700735387 passes104 lifecycle/catalog/trust checks on x64.
-- ARM64 reaches95 checks, then native LocalMachine TrustedPublisher certificate
-  insertion fails with Access Denied. Worker diagnostic a85f1f2 identifies the
-  exact store; root trust insertion succeeded. This failure remains unresolved.
+- Final lifecycle CI34701031575 passes105 lifecycle/catalog/trust checks and31
+  real-registry API checks on each x64 and ARM64 runner.
+- The original ARM64 failure was caused by opening only existing certificate
+  stores on a fresh Windows installation. Logs confirmed the physical
+  TrustedPublisher store was absent. Opening or creating the system store with
+  its normal API flags fixes insertion while preserving ACLs and policy.
 
 This is source integration, not a deployable full package. Final helper bundling,
-flat signed manifest composition, successful ARM64 lifecycle tests and real GPU
+flat signed manifest composition and real GPU
 installation/rendering validation are still required.
