@@ -41,7 +41,7 @@ def main():
             stage(source/name,name,arch,'runtime' if name.endswith('.dll') else 'probe')
         stage(args.proxy/f'opencl-proxy-check-{arch}.exe',f'opencl-proxy-check-{arch}.exe',arch,'probe')
         stage(args.proxy/f'opencl-fixture-{arch}.dll',f'opencl-fixture-{arch}.dll',arch,'probe')
-        stage(args.loaders/arch/'loader-check.exe',f'opencl-loader-check-{arch}.exe',arch,'probe')
+        stage(args.loaders/arch/'loader-check.exe',f'opencl-loader-check-{arch}.exe',arch,'installer-helper')
     stage(args.proxy/'viogpucl.dll','viogpucl.dll','arm64x','icd')
     stage(args.loaders/'arm64x/OpenCL.dll','OpenCL.dll','arm64x','system-loader')
     stage(args.loaders/'x86/OpenCL.dll','OpenCL32.dll','x86','system-loader')
@@ -69,7 +69,8 @@ def main():
         'compiler':'c20f7c8ccf58f317972ac1ffeab68a96019cbbaa',
         'compiler_original_sha256':COMPILER,'compiler_upstream_ci':34487278874,
         'khronos_loader':'f27c925e782499eebc4df20e121144358ccd5ac6',
-        'headers':'386ca390b2f52efeb3e1a55a500690eb8013f60e'},'files':files}
+        'headers':'386ca390b2f52efeb3e1a55a500690eb8013f60e'},
+        'loader_probes':{arch:f'opencl-loader-check-{arch}.exe' for arch in ('arm64','x64','x86')},'files':files}
     (args.output/'flat-runtime.json').write_text(json.dumps(manifest,indent=2)+'\n')
     if any(path.is_dir() for path in args.output.iterdir()): raise ValueError('Flat payload contains a directory')
     print(f'PASS flat source/hash/architecture/import closure: {len(files)} files; manifest self-excluded')
