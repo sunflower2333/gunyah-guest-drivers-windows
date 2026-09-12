@@ -6,8 +6,10 @@ import shutil
 import subprocess
 from package import sha, machine, verify_sums, imports
 
-SOURCE = '0f436fe7110813ddf01dfaebc44b9de7cd39b3b8'
-RUNTIME_CI = 34698553838
+SOURCE = 'c5aa9e64fd1fb20e05865e4d25c14d11e6ec57c7'
+RUNTIME_CI = 34725343962
+# Ordinary public-loader probes retain their independently validated source.
+PROBE_SOURCE = '0f436fe7110813ddf01dfaebc44b9de7cd39b3b8'
 COMPILER = '79e236af8febd67fd02adfd93f81295c87e868e9fd861f71d03d1057e6be1f9d'
 SYSTEM = {'kernel32.dll','user32.dll','gdi32.dll','advapi32.dll','ole32.dll',
           'oleaut32.dll','shell32.dll','shlwapi.dll','cfgmgr32.dll','ntdll.dll',
@@ -34,7 +36,7 @@ def main():
     args = parser.parse_args()
     probe_receipt = json.loads((args.probes/'opencl-system-probes-receipt.json').read_text())
     if (probe_receipt.get('schema') != 1 or probe_receipt.get('family') != 'opencl-system-probes'
-            or probe_receipt.get('probe_build',{}).get('clvk_test_source') != SOURCE):
+            or probe_receipt.get('probe_build',{}).get('clvk_test_source') != PROBE_SOURCE):
         raise ValueError('Missing/wrong ordinary OpenCL probe source receipt')
     args.output.mkdir(exist_ok=False)
     files = {}
