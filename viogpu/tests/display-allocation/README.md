@@ -22,8 +22,9 @@ and exact parameters are recorded below; SHA256 identity is checked in CI by
 | bar128m_reserved8m_align4k.bin | 17 | 3040x1904 | 134217728/8388608/4096 | 0x1f0 | 69464064 |
 | bar128m_reserved8m_align16k.bin | 17 | 3040x1904 | 134217728/8388608/16384 | 0x1f0 | 69500928 |
 
-The canonical `shared/dvsa_protocol.h` is byte-identical to the host freeze at
-crosvm5f24ae0; SHA25641e1b2cc133cf23622d4d78f410eb8497496e41badb49a4f6005512ae0ba3525.
+The canonical `shared/dvsa_protocol.h` matches the host owner-recovery descendant
+of crosvm5f24ae0; SHA256df059c7d9e30aa86194f8cf6660434db5958e674802670e7e315babc970260cc.
+The four original discovery fixture files remain byte-for-byte unchanged.
 LF and binary Git attributes preserve these identities on Windows runners.
 Production uses the freestanding discovery subset in `shared/viogpu_dvsa_wire.h`
 because the canonical host header's user-mode `stdint.h` conflicts with the
@@ -75,11 +76,25 @@ cached/WC mappings, padded sizes, old-Surface cleanup, every creation/submission
 cleanup fault point, lost replies, retained errors, malformed metadata, truncated
 and unaligned input, repeated calls and transport retirement.
 
-Only confirmed UNMAP then DESTROY authorizes mapped-owner release. A submitted
-ALLOCATE error may retain an import while returning no token, so guest identity
-and context remain quarantined. Reset alone proves no external-memory release:
-this adapter preserves unresolved records/ranges and refuses reuse in a later
-transport epoch. An adapter destruction ends its local journal; the frozen host
-independently retains unproven native owners/ranges until process termination.
-Reliable recovery of tokenless owners needs a future host query/cleanup contract.
-Full SDR and producer/consumer synchronization remain separate work.
+The owner-recovery descendant requires an optional QUERY_OWNER session handshake
+before creating any context or allocation. ALLOCATE_RECOVERABLE binds the request
+to that host incarnation; no unsafe fallback to the original ALLOCATE is used.
+QUERY_OWNER and CLEANUP_OWNER reconcile saved context/resource/Surface identities,
+including tokenless errors and lost replies. Cleanup replies RELEASED only after
+actual unmap/native retirement, or a terminal seal preventing a never-allocated
+request from being submitted late. Retained KGSL/Gunyah failures are retryable.
+
+A guest transport reset may reconcile the same host incarnation. A changed host
+incarnation, invalid response or failed cleanup keeps the saved identity and BAR
+suffix reserved. A reset alone never grants reuse. Host terminal records are
+bounded and never evicted during that incarnation. The command path stays
+allocation/mapping-only; full SDR and producer/consumer synchronization remain
+separate work.
+
+Legacy CTX_DESTROY has no terminal journal. A lost/invalid context destruction
+response keeps the dedicated context quarantined even after every allocation
+has a terminal receipt. This remaining limitation is intentionally distinct from
+the newly recoverable allocation ownership. Guest allocation/client and actual
+queue tests cover every setup/cleanup submission and response-loss point, failed
+native release, Surface and transport changes, changed host epoch, strict new
+response framing and unchanged output after malformed receipts.

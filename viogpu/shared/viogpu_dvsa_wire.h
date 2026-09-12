@@ -21,6 +21,14 @@ static_assert(sizeof(VIOGPU_DVSA_U64) == 8, "DVSA requires 64-bit words");
 #define VIOGPU_DVSA_DESTROY 0xd114U
 #define VIOGPU_DVSA_ACK_MAPPING 0xd115U
 #define VIOGPU_DVSA_ALLOCATED_REPLY 0xd211U
+#define VIOGPU_DVSA_QUERY_OWNER 0xd116U
+#define VIOGPU_DVSA_ALLOCATE_RECOVERABLE 0xd117U
+#define VIOGPU_DVSA_CLEANUP_OWNER 0xd118U
+#define VIOGPU_DVSA_OWNER_REPLY 0xd216U
+#define VIOGPU_DVSA_OWNER_SESSION 1U
+#define VIOGPU_DVSA_OWNER_RETAINED 2U
+#define VIOGPU_DVSA_OWNER_RELEASED 3U
+#define VIOGPU_DVSA_OWNER_UNKNOWN 4U
 #define VIOGPU_DVSA_ABGR8888 0x34324241U
 #define VIOGPU_DVSA_LINEAR 1U
 #define VIOGPU_DVSA_FEATURE_MAPPING (1ULL << 1)
@@ -82,6 +90,23 @@ struct VIOGPU_DVSA_ACK
     VIOGPU_DVSA_HEADER query;
     VIOGPU_DVSA_U64 bar_offset, mapped_size;
 };
+struct VIOGPU_DVSA_OWNER_REQUEST
+{
+    VIOGPU_DVSA_HEADER query;
+    VIOGPU_DVSA_U64 host_epoch[2];
+};
+struct VIOGPU_DVSA_RECOVERABLE_ALLOCATE
+{
+    VIOGPU_DVSA_ALLOCATE_REQUEST allocation;
+    VIOGPU_DVSA_U64 host_epoch[2];
+};
+struct VIOGPU_DVSA_OWNER_RESPONSE
+{
+    VIOGPU_DVSA_HEADER query;
+    VIOGPU_DVSA_U64 host_epoch[2];
+    VIOGPU_DVSA_U32 state, owner_context;
+    VIOGPU_DVSA_U64 allocation_size, bar_offset, mapped_size, reserved[2];
+};
 #pragma pack(pop)
 
 static_assert(sizeof(VIOGPU_DVSA_CTRL_HEADER) == 24, "DVSA control header size");
@@ -91,3 +116,6 @@ static_assert(sizeof(VIOGPU_DVSA_ALLOCATE_REQUEST) == 80, "DVSA allocate size");
 static_assert(sizeof(VIOGPU_DVSA_DESCRIPTION) == 64, "DVSA description size");
 static_assert(sizeof(VIOGPU_DVSA_ALLOCATED) == 128, "DVSA allocated size");
 static_assert(sizeof(VIOGPU_DVSA_ACK) == 80, "DVSA ACK size");
+static_assert(sizeof(VIOGPU_DVSA_OWNER_REQUEST) == 80, "DVSA owner request size");
+static_assert(sizeof(VIOGPU_DVSA_RECOVERABLE_ALLOCATE) == 96, "DVSA recoverable allocate size");
+static_assert(sizeof(VIOGPU_DVSA_OWNER_RESPONSE) == 128, "DVSA owner response size");

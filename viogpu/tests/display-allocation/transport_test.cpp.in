@@ -85,6 +85,19 @@ int main()
         require(queue.ExchangeDisplayAllocationCommand(&bad, 80, output, &used) == VioGpuDvsaNotSubmitted &&
                 queue.submissions == 0, "flags fence ring padding rejected before ownership");
     }
+    for (unsigned command : {VIOGPU_DVSA_QUERY_OWNER, VIOGPU_DVSA_ALLOCATE_RECOVERABLE, VIOGPU_DVSA_CLEANUP_OWNER})
+    {
+        VIOGPU_DVSA_RECOVERABLE_ALLOCATE recovery = {};
+        recovery.allocation.query.hdr.type = command;
+        const unsigned exact = command == VIOGPU_DVSA_ALLOCATE_RECOVERABLE ? 96U : 80U;
+        for (unsigned length = 0; length <= 128; ++length)
+        {
+            CtrlQueue queue;
+            const auto result = queue.ExchangeDisplayAllocationCommand(&recovery, length, output, &used);
+            require(result == (length == exact ? VioGpuDvsaCompleted : VioGpuDvsaNotSubmitted) &&
+                    queue.submissions == (length == exact ? 1U : 0U), "new recovery commands require exact framing");
+        }
+    }
     {
         CtrlQueue queue; auto bad = request; bad.query.hdr.type = 0x207;
         require(queue.ExchangeDisplayAllocationCommand(&bad, 80, output, &used) == VioGpuDvsaNotSubmitted, "ordinary SUBMIT excluded");

@@ -1303,6 +1303,9 @@ VIOGPU_DVSA_EXCHANGE_RESULT CtrlQueue::ExchangeDisplayAllocationCommand(const vo
     // This transport is private to the display allocation owner. Ordinary
     // SUBMIT, scanout, memory writes and unversioned commands are excluded.
     const bool supported =
+        (header.type == VIOGPU_DVSA_QUERY_OWNER && commandSize == 80) ||
+        (header.type == VIOGPU_DVSA_ALLOCATE_RECOVERABLE && commandSize == 96) ||
+        (header.type == VIOGPU_DVSA_CLEANUP_OWNER && commandSize == 80) ||
         (header.type == VIOGPU_DVSA_ALLOCATE && commandSize == 80) ||
         (header.type == VIOGPU_DVSA_ACK_MAPPING && commandSize == 80) ||
         (header.type == VIOGPU_DVSA_DESTROY && commandSize == 64) ||

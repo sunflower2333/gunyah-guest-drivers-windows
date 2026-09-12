@@ -12,7 +12,7 @@ foreach ($name in $expected.Keys) {
     }
 }
 $header = Join-Path $PSScriptRoot '../../shared/dvsa_protocol.h'
-if ((Get-FileHash $header -Algorithm SHA256).Hash -ne '41e1b2cc133cf23622d4d78f410eb8497496e41badb49a4f6005512ae0ba3525') {
+if ((Get-FileHash $header -Algorithm SHA256).Hash -ne 'df059c7d9e30aa86194f8cf6660434db5958e674802670e7e315babc970260cc') {
     throw 'Canonical host wire header changed without a coordinated version update'
 }
 Write-Host 'PASS canonical host header and four actual encoded response identities'
