@@ -401,7 +401,7 @@ jobs:
             @{ p='viorng/cng/um/viorngum.vcxproj';          c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='vioinput/hidpassthrough/hidpassthrough.vcxproj'; c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='vioinput/sys/vioinput.vcxproj';           c='Win11 Release'; plat='ARM64' },
-            @{ p='rdmapool/rdmapool.vcxproj';                c='Win11 Release'; plat='ARM64' },
+            @{ p='rdmapool/rdmapool.vcxproj';                c='Release';       plat='ARM64' },
             @{ p='viosnd/sys/viosnd.vcxproj';               c='Win11 Release'; plat='ARM64' },
             @{ p='viogpu/viogpuap/viogpuap.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpusc/viogpusc.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
