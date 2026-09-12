@@ -703,10 +703,13 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
     {
         ExReInitializeRundownProtection(&m_HardwareOperations);
         m_HardwareRundownCompleted = FALSE;
-#if defined(VIOGPU_NATIVE_CONTEXT)
-        RecordNativeActivationPhase(VioGpuActivationStopped);
-#endif
     }
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (NT_SUCCESS(status))
+    {
+        RecordNativeActivationPhase(VioGpuActivationStopped);
+    }
+#endif
     return status;
 }
 
