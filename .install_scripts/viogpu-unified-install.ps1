@@ -205,6 +205,7 @@ function New-ProductionBackend {
         Stage = { param($inf) [DroidVmGpuInstall.Native]::Stage($inf) }
         StoreInf = { param($inf) [DroidVmGpuInstall.Native]::StoreInf($inf) }
         Install = { param($inf,$rollback) [DroidVmGpuInstall.Native]::Install($inf,$rollback) }
+        Remove = { param($inf) [DroidVmGpuInstall.Native]::Remove($inf) }
         CheckBefore = { param($state) Test-AdapterIdentity $state.Previous }
         VerifyCandidate = { param($state) Assert-CandidateBinding $state }
         VerifyPrevious = { param($state)
@@ -289,19 +290,6 @@ try {
     }
     if ((Get-GpuHash $state.Previous.StoreInf) -cne $state.Previous.InfHash -or
         (Get-GpuHash $state.CandidateStoreInf) -cne $state.CandidateInfHash) { throw 'Retained driver identity changed' }
-    $state.Phase = 'restoring'; Write-GpuJournal $state $JournalPath
-    $backend = New-ProductionBackend
-    $state.NeedReboot = [DroidVmGpuInstall.Native]::Install($state.Previous.StoreInf, $true)
-    & $backend.VerifyPrevious $state
-    foreach ($change in $state.LegacyChanges) { Set-GpuRegistrySnapshot @($change.Before) }
-    # Public Khronos loaders can now serve other vendors. Keep verified created
-    # loaders on a successful uninstall/rollback, and retain ownership evidence.
-    # Failure compensation removes only loaders created during that attempt.
-    if ($Action -eq 'Uninstall') {
-        $state.NeedReboot = [DroidVmGpuInstall.Native]::Remove($state.CandidateStoreInf) -or $state.NeedReboot
-        if (!(Test-AdapterIdentity $state.Previous)) { throw 'Removal changed the restored GPU binding' }
-        $state.Phase = 'uninstalled'
-    } else { $state.Phase = 'rolled-back' }
-    Write-GpuJournal $state $JournalPath
-    Write-Output "PASS $Action exact GPU package; NeedReboot=$($state.NeedReboot); retained journal=$JournalPath"
+    $result = Invoke-GpuRemovalTransaction $state $JournalPath (New-ProductionBackend) $Action
+    Write-Output "PASS $Action exact GPU package; NeedReboot=$($result.NeedReboot); retained journal=$JournalPath"
 } finally { $lock.Dispose() }

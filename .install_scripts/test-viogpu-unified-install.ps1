@@ -19,15 +19,20 @@ $script:directory = Join-Path $env:RUNNER_TEMP ('gpu-install-fixture-' + [Guid]:
 New-Item -ItemType Directory $script:directory | Out-Null
 $script:keyName = 'Software\DroidVM\UnifiedInstallerFixture\' + [Guid]::NewGuid().ToString('N')
 $script:entries = @('Registry64','Registry32') | ForEach-Object {
-    [pscustomobject]@{Hive='CurrentUser';View=$_;Key=$script:keyName;Name='C:\Owned\viogpucl.dll';
+    [pscustomobject]@{Hive='CurrentUser';View=$_;Key=($script:keyName + '\' + $_);Name='C:\Owned\viogpucl.dll';
         Present=$true;Kind='DWord';Value=0}
 }
 $script:unrelated = [pscustomobject]@{Hive='CurrentUser';View='Registry64';Key=$script:keyName;
     Name='C:\OtherVendor\OpenCL.dll';Present=$true;Kind='DWord';Value=17}
 $script:active = 'old'; $script:mode = 'success'; $script:installs = @()
+$script:removed = @()
 $backend = @{
     Stage = { param($inf) if ($script:mode -eq 'stage-failure') { throw 'stage injected failure' }; $inf }
     StoreInf = { param($inf) $inf }
+    Remove = { param($inf)
+        if ($script:mode -eq 'remove-failure') { throw 'named removal injected failure' }
+        $script:removed += $inf; return $true
+    }
     Install = { param($inf,$rollback)
         $script:installs += [pscustomobject]@{Inf=$inf;Rollback=$rollback}
         if ($rollback) {
@@ -57,7 +62,7 @@ function New-State([string]$Name) {
     [IO.File]::WriteAllText($old,'retained old package'); [IO.File]::WriteAllText($new,'candidate package')
     $source = Join-Path $folder 'source.dll'; [IO.File]::WriteAllText($source,'owned loader bytes')
     $target = Join-Path $folder 'OpenCL.dll'
-    $script:active='old'; $script:installs=@()
+    $script:active='old'; $script:installs=@(); $script:removed=@()
     Set-GpuRegistrySnapshot $script:entries
     Set-GpuRegistrySnapshot @($script:unrelated)
     $state = [pscustomobject]@{Phase='prepared';CandidateInf=$new;PublishedInf=$null;CandidateStoreInf=$null;
@@ -88,6 +93,30 @@ try {
     Check (Test-Path $result.Previous.StoreInf) 'prior package retained after success'
     Check ($script:installs.Count -eq 1 -and !$script:installs[0].Rollback) 'normal install never forces old/new driver'
     Check ((Import-Clixml $case.Journal).Phase -eq 'installed') 'durable completed journal'
+
+    foreach ($action in @('Rollback','Uninstall')) {
+        $script:mode='success'; $case=New-State ('remove-' + $action)
+        $installed=Invoke-GpuInstallTransaction $case.State $case.Journal $backend
+        $result=Invoke-GpuRemovalTransaction $installed $case.Journal $backend $action
+        Check ($script:active -eq 'old') "$action restores prior exact package"
+        Check (Test-GpuRegistrySnapshot $script:entries) "$action restores prior typed vendor values"
+        Check (Test-GpuRegistrySnapshot @($script:unrelated)) "$action preserves unrelated vendors"
+        Check (Test-Path $result.Loaders[0].Path) "$action preserves potentially shared public loader"
+        Check (Test-Path $result.Previous.StoreInf) "$action never deletes rollback source"
+        Check ($script:installs[-1].Rollback) "$action forces only the explicitly requested prior source"
+        if ($action -eq 'Uninstall') {
+            Check ($script:removed.Count -eq 1 -and $script:removed[0] -ceq $installed.CandidateStoreInf) 'uninstall removes only exact candidate INF'
+            Check ($result.Phase -eq 'uninstalled') 'uninstall persisted'
+        } else {
+            Check ($script:removed.Count -eq 0 -and $result.Phase -eq 'rolled-back') 'rollback retains both packages'
+        }
+    }
+    $script:mode='success'; $case=New-State 'remove-failure'
+    $installed=Invoke-GpuInstallTransaction $case.State $case.Journal $backend
+    $script:mode='remove-failure'
+    Must-Fail { Invoke-GpuRemovalTransaction $installed $case.Journal $backend 'Uninstall' } 'named removal injected failure'
+    Check ((Import-Clixml $case.Journal).Phase -eq 'recovery-required') 'failed removal cannot report complete'
+    Check ($script:active -eq 'old') 'failed candidate deletion retains restored binding'
 
     foreach ($mode in @('stage-failure','loader-failure','staged-only','verify-failure','partial-install')) {
         $script:mode=$mode; $case=New-State $mode

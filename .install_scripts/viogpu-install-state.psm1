@@ -169,6 +169,33 @@ function Invoke-GpuInstallTransaction($State, [string]$Journal, $Backend) {
     }
 }
 
+function Invoke-GpuRemovalTransaction($State, [string]$Journal, $Backend,
+    [ValidateSet('Rollback','Uninstall')][string]$Action) {
+    $State.Phase = 'restoring'; Write-GpuJournal $State $Journal
+    try {
+        $State.NeedReboot = [bool](& $Backend.Install $State.Previous.StoreInf $true) -or $State.NeedReboot
+        & $Backend.VerifyPrevious $State
+        foreach ($change in $State.LegacyChanges) {
+            if (!(Test-GpuRegistrySnapshot @($change.After))) { throw 'Legacy vendor changed during restore' }
+            Set-GpuRegistrySnapshot @($change.Before)
+        }
+        # Public Khronos loaders may now serve other vendors. Successful removal
+        # retains them and ownership evidence; failed installs remove only their
+        # newly created loaders before they were advertised as shared runtime.
+        if ($Action -eq 'Uninstall') {
+            $State.NeedReboot = [bool](& $Backend.Remove $State.CandidateStoreInf) -or $State.NeedReboot
+            if (!(& $Backend.CheckBefore $State)) { throw 'Removal changed restored GPU binding' }
+            $State.Phase = 'uninstalled'
+        } else { $State.Phase = 'rolled-back' }
+        Write-GpuJournal $State $Journal
+        return $State
+    } catch {
+        $State.Phase = 'recovery-required'; $State.RecoveryError = $_.ToString()
+        Write-GpuJournal $State $Journal
+        throw "GPU $Action failed; exact retained packages and journal remain: $_; journal=$Journal"
+    }
+}
+
 Export-ModuleMember -Function Get-GpuHash,Assert-GpuRegularPath,Get-GpuRegistrySnapshot,
     Test-GpuRegistrySnapshot,Set-GpuRegistrySnapshot,Write-GpuJournal,
-    Copy-GpuOwnedLoader,Remove-GpuOwnedLoaders,Invoke-GpuInstallTransaction
+    Copy-GpuOwnedLoader,Remove-GpuOwnedLoaders,Invoke-GpuInstallTransaction,Invoke-GpuRemovalTransaction
