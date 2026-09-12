@@ -84,6 +84,9 @@ jobs:
       - name: Execute native adapter identity and reply compatibility regression
         shell: pwsh
         run: python viogpu/tests/adapter-identity/run.py
+      - name: Check actual host EDID and exact high-refresh timings
+        shell: cmd
+        run: viogpu\tests\display-timing\run-msvc.cmd
 
   mesa-umd:
     name: Mesa D3D10 UMD (ARM64, cross-compiled)
@@ -451,11 +454,10 @@ jobs:
         run: |
           # 逐 vcxproj 建，先按相依順序建 deps（msbuild sln /t:proj 不可靠，會把名稱當 target）：
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
-          # Reserved for this isolated OpenGL small-stack candidate. A fixed
-          # version supports depth-one builds without colliding with the
-          # separately frozen 58460-58469 WDDM candidates. Reserve a new version
-          # before producing another accepted binary after this checkpoint.
-          $minor = 58470
+          # Reserved for the DisplayID timing repair atop signed58470. Keep the
+          # frozen Mesa, GL/CL and installer logic; jointly rebuild/sign the
+          # matched pair and bind every sidecar to this new source and pair.
+          $minor = 58471
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -512,8 +514,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58470) {
-            throw "OpenGL small-stack candidate requires reserved version 100.6.101.58470"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58471) {
+            throw "DisplayID timing candidate requires reserved version 100.6.101.58471"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw

@@ -989,16 +989,16 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58470",
+        "$minor = 58471",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58470",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58471",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must enforce monotonic package versioning: {fragment}")
     if "fetch-depth: 0" in sources["product drivers"] or "git rev-list --count" in sources["product drivers"]:
-        fail("the reserved OpenGL candidate must build from a depth-one checkout")
+        fail("the reserved DisplayID timing candidate must build from a depth-one checkout")
 
 
 def check_d3d_umd_shim_contract() -> None:
