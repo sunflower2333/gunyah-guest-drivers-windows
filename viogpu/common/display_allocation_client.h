@@ -213,7 +213,10 @@ struct VioGpuDisplayAllocationPool
     {
         if (!Busy()) return true;
         closing = true;
-        if (current_reset == 0 || context_cleanup_uncertain) return false;
+        // Legacy context creation/destruction has no tracked incarnation
+        // receipt. An unconfirmed create may have collided with an existing
+        // context, so the allocation contract cannot authorize its destruction.
+        if (current_reset == 0 || !context_confirmed || context_cleanup_uncertain) return false;
         VIOGPU_DVSA_OWNER_RESPONSE recovered = {};
         // A new guest transport may only reconcile the same host incarnation.
         // Reset by itself neither frees owners nor replaces the saved epoch.

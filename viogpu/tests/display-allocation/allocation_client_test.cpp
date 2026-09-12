@@ -318,8 +318,14 @@ int main()
         require(!prepare(pool, host) && pool.Busy() && !pool.Ready(), "every lost create/allocate/map/ACK reply retains owner");
         pool.InvalidateTransport(); host.poisoned = false;
         require(pool.ControlLimit(128ULL << 20) == 8ULL << 20, "reset keeps external range reserved");
-        require(pool.Release(host, 8) && !pool.Busy() && host.owners.empty() && host.context == 0,
-                "new transport verifies same host incarnation and recovers each lost reply");
+        if (call == 2)
+        {
+            const auto before = host.calls;
+            require(!pool.Release(host, 8) && pool.Busy() && host.calls == before && host.release_calls == 0,
+                    "lost legacy context create has no proof of exclusive ownership");
+        }
+        else require(pool.Release(host, 8) && !pool.Busy() && host.owners.empty() && host.context == 0,
+                     "new transport verifies same host incarnation and recovers each lost allocation reply");
     }
     for (unsigned call : {3U, 6U, 9U})
     {
@@ -331,6 +337,15 @@ int main()
                     "tokenless allocation failure reconciled only through explicit release or seal");
             require(!host.terminal.empty(), "cleanup preserved authoritative terminal identity");
         }
+    }
+    {
+        Host host; host.fail_call = 2; host.failure = Host::ErrorWithOwner;
+        VioGpuDisplayAllocationPool pool = {};
+        require(!prepare(pool, host) && pool.Busy() && !pool.context_confirmed,
+                "invalid legacy context create response retains uncertain ownership");
+        const auto before = host.calls;
+        require(!pool.Release(host, 8) && host.calls == before,
+                "context allocation error cannot authorize destroying a possibly foreign context");
     }
     for (unsigned call = 12; call <= 19; ++call)
     {

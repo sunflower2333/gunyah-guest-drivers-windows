@@ -91,9 +91,11 @@ bounded and never evicted during that incarnation. The command path stays
 allocation/mapping-only; full SDR and producer/consumer synchronization remain
 separate work.
 
-Legacy CTX_DESTROY has no terminal journal. A lost/invalid context destruction
-response keeps the dedicated context quarantined even after every allocation
-has a terminal receipt. This remaining limitation is intentionally distinct from
+Legacy CTX_CREATE/CTX_DESTROY have no terminal journal. A lost/invalid context
+creation response does not prove exclusive ownership (the ID may have collided),
+so it cannot authorize destroying that context. A lost/invalid destruction
+response also keeps it quarantined even after every allocation has a terminal
+receipt. This remaining limitation is intentionally distinct from
 the newly recoverable allocation ownership. Guest allocation/client and actual
 queue tests cover every setup/cleanup submission and response-loss point, failed
 native release, Surface and transport changes, changed host epoch, strict new
