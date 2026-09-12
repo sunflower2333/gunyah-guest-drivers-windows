@@ -65,6 +65,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Locate preinstalled Windows SDK and WDK
         shell: pwsh
@@ -114,6 +116,31 @@ jobs:
       - name: Check host EDID and rational display timings
         shell: cmd
         run: viogpu\tests\display-timing\run-msvc.cmd
+
+      - name: Execute actual VidPN commit and all-source negative control
+        shell: pwsh
+        run: |
+          python viogpu/tests/vidpn-commit/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vidpn-commit/run.py --negative-control-source-all
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Compile display-mode diagnostic without running display operations
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.install_scripts/viogpu-test-display-mode.ps1'),
+            [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { throw ($errors | Out-String) }
+          $source = @($ast.FindAll({ param($node)
+            $node -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+              $node.Value.Contains('public static class VioGpuDisplayModeTest')
+          }, $true))
+          if ($source.Count -ne 1) { throw 'Missing unique embedded mode-test source' }
+          Add-Type -TypeDefinition $source[0].Value
+          Write-Host 'PASS display-mode diagnostic PowerShell parse and embedded C# compile; no modeset executed'
 
       - name: Check scheduler fence publication ordering
         shell: cmd

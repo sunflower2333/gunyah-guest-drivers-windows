@@ -4198,14 +4198,28 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
     CountDisplayEvent(5);
+    RecordDisplayValue(6, STATUS_PENDING);
 #endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
     VIOGPU_ASSERT(pCommitVidPn != NULL);
-    VIOGPU_ASSERT(pCommitVidPn->AffectedVidPnSourceId < MAX_VIEWS);
+    // A whole-VidPN modeset uses ID_ALL, which is not an identifier accepted
+    // by the per-source mode/topology callbacks. This adapter has one source
+    // and one target, so the complete transaction resolves to source zero.
+    static_assert(MAX_VIEWS == 1 && MAX_CHILDREN == 1, "CommitVidPn requires one-source transaction semantics");
+    const D3DDDI_VIDEO_PRESENT_SOURCE_ID sourceId = pCommitVidPn->AffectedVidPnSourceId == D3DDDI_ID_ALL
+        ? 0 : pCommitVidPn->AffectedVidPnSourceId;
+    if (sourceId >= MAX_VIEWS)
+    {
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        RecordDisplayValue(6, STATUS_GRAPHICS_INVALID_VIDEO_PRESENT_SOURCE);
+#endif
+        return STATUS_GRAPHICS_INVALID_VIDEO_PRESENT_SOURCE;
+    }
 
     NTSTATUS Status;
     SIZE_T NumPaths = 0;
+    SIZE_T NumPathsFromSource = 0;
     D3DKMDT_HVIDPNTOPOLOGY hVidPnTopology = 0;
     D3DKMDT_HVIDPNSOURCEMODESET hVidPnSourceModeSet = 0;
     CONST DXGK_VIDPN_INTERFACE *pVidPnInterface = NULL;
@@ -4267,7 +4281,7 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
     if (NumPaths != 0)
     {
         Status = pVidPnInterface->pfnAcquireSourceModeSet(pCommitVidPn->hFunctionalVidPn,
-                                                          pCommitVidPn->AffectedVidPnSourceId,
+                                                          sourceId,
                                                           &hVidPnSourceModeSet,
                                                           &pVidPnSourceModeSetInterface);
         if (!NT_SUCCESS(Status))
@@ -4277,7 +4291,7 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
                       "0x%I64x\n",
                       Status,
                       LONG_PTR(pCommitVidPn->hFunctionalVidPn),
-                      pCommitVidPn->AffectedVidPnSourceId));
+                      sourceId));
             goto CommitVidPnExit;
         }
 
@@ -4312,9 +4326,8 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
         goto CommitVidPnExit;
     }
 
-    SIZE_T NumPathsFromSource = 0;
     Status = pVidPnTopologyInterface->pfnGetNumPathsFromSource(hVidPnTopology,
-                                                               pCommitVidPn->AffectedVidPnSourceId,
+                                                               sourceId,
                                                                &NumPathsFromSource);
     if (!NT_SUCCESS(Status))
     {
@@ -4329,7 +4342,7 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
     {
         D3DDDI_VIDEO_PRESENT_TARGET_ID TargetId = D3DDDI_ID_UNINITIALIZED;
         Status = pVidPnTopologyInterface->pfnEnumPathTargetsFromSource(hVidPnTopology,
-                                                                       pCommitVidPn->AffectedVidPnSourceId,
+                                                                       sourceId,
                                                                        PathIndex,
                                                                        &TargetId);
         if (!NT_SUCCESS(Status))
@@ -4339,13 +4352,13 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
                       "0x%I64x, PathIndex = 0x%I64x\n",
                       Status,
                       LONG_PTR(hVidPnTopology),
-                      pCommitVidPn->AffectedVidPnSourceId,
+                      sourceId,
                       PathIndex));
             goto CommitVidPnExit;
         }
 
         Status = pVidPnTopologyInterface->pfnAcquirePathInfo(hVidPnTopology,
-                                                             pCommitVidPn->AffectedVidPnSourceId,
+                                                             sourceId,
                                                              TargetId,
                                                              &pVidPnPresentPath);
         if (!NT_SUCCESS(Status))
@@ -4355,7 +4368,7 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
                       "TargetId = 0x%I64x\n",
                       Status,
                       LONG_PTR(hVidPnTopology),
-                      pCommitVidPn->AffectedVidPnSourceId,
+                      sourceId,
                       TargetId));
             goto CommitVidPnExit;
         }
@@ -4430,7 +4443,10 @@ CommitVidPnExit:
         NT_ASSERT(NT_SUCCESS(TempStatus));
     }
 
-    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    RecordDisplayValue(6, Status);
+#endif
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s status=0x%08X source=%u\n", __FUNCTION__, Status, sourceId));
 
     return Status;
 }
