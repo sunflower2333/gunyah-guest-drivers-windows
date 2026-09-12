@@ -8,15 +8,20 @@ $scratch = Join-Path $env:RUNNER_TEMP ('flat-gl-controls-' + [guid]::NewGuid().T
 New-Item -ItemType Directory $scratch | Out-Null
 function Invoke-Probe([string]$Probe, [string[]]$Arguments, [bool]$Success) {
     $process = Start-Process -FilePath $Probe -ArgumentList $Arguments -NoNewWindow -PassThru
-    $null = $process.Handle
-    if (!$process.WaitForExit(30000)) {
-        $process.Kill(); $process.WaitForExit()
-        throw 'Flat-runtime probe exceeded 30 seconds'
+    try {
+        $null = $process.Handle
+        if (!$process.WaitForExit(30000)) {
+            $process.Kill(); $process.WaitForExit()
+            throw 'Flat-runtime probe exceeded 30 seconds'
+        }
+        $process.Refresh()
+        if ($null -eq $process.ExitCode) { throw 'Missing probe exit code' }
+        $expected = if ($Success) { 0 } else { 1 }
+        if ($process.ExitCode -ne $expected) { throw "Unexpected probe exit $($process.ExitCode): $Probe $Arguments" }
+    } finally {
+        # Close our process handle before deleting its mapped DLL fixtures.
+        $process.Dispose()
     }
-    $process.Refresh()
-    if ($null -eq $process.ExitCode) { throw 'Missing probe exit code' }
-    $expected = if ($Success) { 0 } else { 1 }
-    if ($process.ExitCode -ne $expected) { throw "Unexpected probe exit $($process.ExitCode): $Probe $Arguments" }
 }
 try {
     foreach ($arch in @('arm64','x64','x86')) {
@@ -53,5 +58,16 @@ try {
         Write-Host "PASS $arch coexists with an already loaded public Vulkan loader"
     }
 } finally {
-    Remove-Item -LiteralPath $scratch -Recurse -Force
+    # Windows/emulation/AV can briefly retain a mapping after process exit.
+    # Retry only this disposable fixture, with a five-second bound; persistent
+    # cleanup errors still fail the job and are not turned into acceptance.
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $scratch -Recurse -Force
+            break
+        } catch {
+            if ($attempt -eq 19) { throw }
+            Start-Sleep -Milliseconds 250
+        }
+    }
 }
