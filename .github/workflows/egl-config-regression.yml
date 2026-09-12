@@ -41,3 +41,4 @@ jobs:
             throw 'Negative control failed without reproducing the actual misselection'
           }
           Write-Host 'PASS actual fixed/float EGL selection plus exact old-source negative control; no GPU executed'
+          exit 0 # The already-validated negative control intentionally returned 1.
