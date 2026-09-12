@@ -32,6 +32,7 @@
 #include "viogpu.h"
 #include "display_timing.h"
 #include "fence_publication.h"
+#include "activation_trace.h"
 #include "viogpu_queue.h"
 
 #pragma pack(push)
@@ -952,6 +953,8 @@ class VioGpuDod
     volatile LONG m_NativeSubmissionFaultPresentSubmitDetail;
     volatile LONG m_NativeContextDestroyAttempt;
     KMUTEX m_NativeContextDestroyDiagnosticMutex;
+    KMUTEX m_NativeActivationTraceMutex;
+    VioGpuActivationTrace m_NativeActivationTrace;
     KSPIN_LOCK m_NativeFenceLock;
     volatile LONG m_NativeFenceEpoch;
     volatile LONG m_NativeFenceResetFloor;
@@ -1757,6 +1760,10 @@ class VioGpuDod
                                                             0));
     }
     VOID RecordNativeStartDiagnostic(_In_ VIOGPU_NATIVE_START_STAGE stage, _In_ NTSTATUS status, _In_ DWORD detail);
+    VOID InitializeNativeActivationTrace(void);
+    VOID PersistNativeActivationTrace(void); // requires m_NativeActivationTraceMutex
+    VOID RecordNativeActivationPhase(_In_ VioGpuActivationPhase phase);
+    VOID RecordNativeActivationQuery(_In_ CONST DXGKARG_QUERYADAPTERINFO *query, _In_ NTSTATUS status);
     VOID RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_CREATE_STAGE stage,
                                              _In_ NTSTATUS status,
                                              _In_ DWORD detail);
