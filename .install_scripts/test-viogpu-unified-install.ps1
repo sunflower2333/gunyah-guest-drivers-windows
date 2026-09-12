@@ -4,6 +4,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'viogpu-install-state.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'viogpu-install-certificates.psm1') -Force
 Add-Type -Path (Join-Path $PSScriptRoot 'viogpu-install-native.cs')
 $script:checks = 0
 function Check($Condition,[string]$Message) {
@@ -177,6 +178,29 @@ try {
     Must-Fail { Remove-GpuOwnedLoaders $case.State.Loaders } 'ownership is uncertain'
     Check (Test-Path $case.State.Loaders[0].Path) 'uncertain ownership never deletes a concurrent file'
 
+    # Execute production readback functions while controlling only the devnode.
+    $tokens=$null; $errors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'viogpu-unified-install.ps1'),[ref]$tokens,[ref]$errors)
+    foreach ($name in @('Assert-FlatName','Read-FlatPackage','Test-AdapterIdentity','New-ProductionBackend')) {
+        $function=$ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq $name
+        Invoke-Expression $function.Extent.Text
+    }
+    function Get-Adapter([string]$Id) { $script:readback }
+    $script:readback=[pscustomobject]@{InstanceId='fixture';InfHash='old';Version='1';Service='VioGpuWddm';
+        Status='OK';ProblemCode=0;DriverKey=$script:keyName}
+    $healthState=[pscustomobject]@{InstanceId='fixture';Previous=$script:readback.PSObject.Copy();PreviousApi=@()}
+    $productionBackend=New-ProductionBackend
+    & $productionBackend.VerifyPrevious $healthState
+    Check $true 'production rollback accepts restored healthy prior adapter'
+    $script:readback.Status='Error'
+    Must-Fail { & $productionBackend.VerifyPrevious $healthState } 'adapter health regressed'
+    $script:readback.Status='OK';$script:readback.ProblemCode=43
+    Must-Fail { & $productionBackend.VerifyPrevious $healthState } 'adapter health regressed'
+    $healthState.Previous.Status='Error';$healthState.Previous.ProblemCode=43
+    Check (& $productionBackend.CheckBefore $healthState) 'original unhealthy adapter can enter repair installation'
+    & $productionBackend.VerifyPrevious $healthState
+    Check $true 'rollback permits restoration of originally unhealthy adapter without claiming health'
+
     # Exercise actual WinVerifyTrust catalog-member verification on Windows.
     Write-Output 'BEGIN signed catalog membership fixture'
     $catalogRoot=Join-Path $script:directory 'catalog'
@@ -187,22 +211,42 @@ try {
     $certificate=New-SelfSignedCertificate -Subject 'CN=DroidVM Unified Installer Fixture' -Type CodeSigningCert -CertStoreLocation Cert:\CurrentUser\My
     $certificateFile=Join-Path $script:directory 'fixture.cer'
     Export-Certificate -Cert $certificate -FilePath $certificateFile | Out-Null
-    Import-Certificate -FilePath $certificateFile -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
-    Import-Certificate -FilePath $certificateFile -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
     Set-AuthenticodeSignature -LiteralPath $catalog -Certificate $certificate -HashAlgorithm SHA256 | Out-Null
+    $public=Assert-GpuBundledCertificate $certificateFile $catalog
+    Check ((Get-GpuCertificateHash $public) -ceq (Get-GpuCertificateHash $certificate)) 'catalog cryptographic signature matches exact bundled public certificate'
+    $otherCertificate=New-SelfSignedCertificate -Subject 'CN=DroidVM Unified Installer Fixture' -Type CodeSigningCert -CertStoreLocation Cert:\CurrentUser\My
+    $otherFile=Join-Path $script:directory 'other.cer'
+    Export-Certificate -Cert $otherCertificate -FilePath $otherFile | Out-Null
+    Must-Fail { Assert-GpuBundledCertificate $otherFile $catalog } 'does not exactly match'
+    $tampered=Join-Path $script:directory 'tampered.cat'
+    $bytes=[IO.File]::ReadAllBytes($catalog);$bytes[$bytes.Length-1]=$bytes[$bytes.Length-1] -bxor 1
+    [IO.File]::WriteAllBytes($tampered,$bytes)
+    Must-Fail { Assert-GpuBundledCertificate $certificateFile $tampered } ''
+    Check $true 'tampered catalog rejected before any trust mutation'
+    $trust=[pscustomobject]@{CertificateTrust=@()}
+    $trustJournal=Join-Path $script:directory 'trust.clixml'
+    # CurrentUser Root opens interactive trust confirmation. Disposable elevated
+    # CI uses LocalMachine like production, with exact-thumbprint cleanup below.
+    Add-GpuPackageTrust $public $trust $trustJournal 'LocalMachine'
+    Check (@($trust.CertificateTrust | Where-Object Created).Count -eq 2) 'exact package trust records both created stores'
+    $repeat=[pscustomobject]@{CertificateTrust=@()}
+    Add-GpuPackageTrust $public $repeat (Join-Path $script:directory 'repeat-trust.clixml') 'LocalMachine'
+    Check (@($repeat.CertificateTrust | Where-Object Created).Count -eq 0) 'native ADD_NEW preserves existing or concurrent certificates'
+    Remove-GpuAttemptTrust $repeat.CertificateTrust
+    Check ((Get-AuthenticodeSignature -LiteralPath $catalog).Status -eq 'Valid') 'cleanup does not remove preexisting trusted certificate'
+    Import-Certificate -FilePath $otherFile -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
     Write-Output 'BEGIN WinVerifyTrust catalog member call'
     [DroidVmGpuInstall.Native]::VerifyCatalogMember($catalog,$member)
     Check $true 'actual trusted catalog membership'
     [IO.File]::WriteAllText($member,'tampered inventory')
     Must-Fail { [DroidVmGpuInstall.Native]::VerifyCatalogMember($catalog,$member) } 'Catalog membership failed'
+    Remove-GpuAttemptTrust $trust.CertificateTrust
+    Check (!(Test-Path "Cert:\LocalMachine\Root\$($public.Thumbprint)")) 'pre-stage verification cleanup removes exact newly created root entry'
+    Check (!(Test-Path "Cert:\LocalMachine\TrustedPublisher\$($public.Thumbprint)")) 'pre-stage verification cleanup removes exact newly created publisher entry'
+    Check (Test-Path "Cert:\LocalMachine\Root\$($otherCertificate.Thumbprint)") 'unrelated same-subject certificate remains trusted'
+    $public.Dispose()
 
     # Execute the actual production manifest function without device entry code.
-    $tokens=$null; $errors=$null
-    $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'viogpu-unified-install.ps1'),[ref]$tokens,[ref]$errors)
-    foreach ($name in @('Assert-FlatName','Read-FlatPackage')) {
-        $function=$ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]},$true) | Where-Object Name -eq $name
-        Invoke-Expression $function.Extent.Text
-    }
     $badRoot=Join-Path $script:directory 'unsigned-package'; New-Item -ItemType Directory $badRoot | Out-Null
     '{"schema":1,"phase":"before-signing","inf":"viogpuwddm.inf","cat":"viogpuwddm.cat","hardware_ids":["PCI\\VEN_1AF4&DEV_1050"]}' |
         Set-Content (Join-Path $badRoot 'viogpu-flat-package.json')
@@ -214,8 +258,15 @@ try {
         try { $base.DeleteSubKeyTree($script:keyName,$false) } finally { $base.Dispose() }
     }
     if (Get-Variable certificate -ErrorAction SilentlyContinue) {
-        foreach ($store in @('My','Root','TrustedPublisher')) {
-            Remove-Item -LiteralPath "Cert:\CurrentUser\$store\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue
+        foreach ($store in @('Root','TrustedPublisher')) {
+            Remove-Item -LiteralPath "Cert:\LocalMachine\$store\$($certificate.Thumbprint)" -ErrorAction SilentlyContinue
+        }
+    }
+    if (Get-Variable otherCertificate -ErrorAction SilentlyContinue) {
+        Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($otherCertificate.Thumbprint)" -ErrorAction SilentlyContinue
+        foreach ($store in @('Root','TrustedPublisher')) {
+            Remove-Item -LiteralPath "Cert:\LocalMachine\$store\$($otherCertificate.Thumbprint)" -ErrorAction SilentlyContinue
         }
     }
     Remove-Item -LiteralPath $script:directory -Recurse -Force

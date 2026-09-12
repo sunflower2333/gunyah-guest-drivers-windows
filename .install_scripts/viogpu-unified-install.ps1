@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'viogpu-install-state.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'viogpu-api-registration.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'viogpu-install-certificates.psm1') -Force
 if (!('DroidVmGpuInstall.Native' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot 'viogpu-install-native.cs') }
 
 function Assert-NativeAdministrator {
@@ -217,6 +218,12 @@ function New-ProductionBackend {
         VerifyPrevious = { param($state)
             if (!(Test-AdapterIdentity $state.Previous)) { throw 'Prior GPU package did not rebind' }
             $current = Get-Adapter $state.InstanceId
+            # Permit repairing an unhealthy original adapter. If it was healthy
+            # before this attempt, a same-INF error devnode is not a rollback.
+            if ($state.Previous.Status -ceq 'OK' -and $state.Previous.ProblemCode -eq 0 -and
+                ($current.Status -cne 'OK' -or $current.ProblemCode -ne 0)) {
+                throw "Prior GPU package rebound but adapter health regressed: Status=$($current.Status) ProblemCode=$($current.ProblemCode)"
+            }
             $values = @($state.PreviousApi | ForEach-Object {
                 [pscustomobject]@{Hive=$_.Hive;View=$_.View;Key=$current.DriverKey;
                     Name=$_.Name;Present=$_.Present;Kind=$_.Kind;Value=$_.Value}
@@ -237,11 +244,27 @@ Assert-NativeAdministrator
 $stateRoot = Get-ProtectedStateRoot
 $lock = [IO.File]::Open((Join-Path $stateRoot 'install.lock'), [IO.FileMode]::OpenOrCreate,
     [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+$trustState = $null; $trustJournal = $null; $stageStarted = $false
 try {
     if ($Action -in @('Verify','Install')) {
-        $script:Package = Read-FlatPackage $PackageRoot
-        if ($Action -eq 'Verify') { Write-Output 'PASS authenticated flat package; GPU execution not tested'; return }
+        if ($Action -eq 'Verify') {
+            $script:Package = Read-FlatPackage $PackageRoot
+            Write-Output 'PASS authenticated flat package; GPU execution not tested'; return
+        }
         $previous = Get-Adapter $InstanceId
+        $transaction = Join-Path $stateRoot ([Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory $transaction | Out-Null
+        $JournalPath = Join-Path $transaction 'state.clixml'
+        $trustJournal = Join-Path $transaction 'trust.clixml'
+        $trustState = [pscustomobject]@{Schema=1;Phase='verifying';CertificateTrust=@();Error=$null}
+        Write-GpuJournal $trustState $trustJournal
+        $certificatePath = Join-Path $PSScriptRoot 'DroidVM_Test.cer'
+        $catalogPath = Join-Path $PackageRoot 'viogpuwddm.cat'
+        Assert-GpuRegularPath $certificatePath; Assert-GpuRegularPath $catalogPath
+        $certificate = Assert-GpuBundledCertificate $certificatePath $catalogPath
+        try { Add-GpuPackageTrust $certificate $trustState $trustJournal }
+        finally { $certificate.Dispose() }
+        $script:Package = Read-FlatPackage $PackageRoot
         if ($previous.InfHash -ceq $script:Package.InfHash) {
             $check = [pscustomobject]@{InstanceId=$previous.InstanceId;CandidateInfHash=$script:Package.InfHash;
                 Version=$script:Package.Manifest.driver_version;Manifest=$script:Package.Manifest;InstalledApi=@();Installed=$null}
@@ -252,24 +275,25 @@ try {
             $backend = New-ProductionBackend
             & $backend.CheckLoaders $targets
             if (@(Get-LegacyOpenClValues).Count) { throw 'Exact INF is active but legacy CL values remain; recover the saved installation transaction' }
+            $trustState.Phase='already-active'; Write-GpuJournal $trustState $trustJournal
             Write-Output 'PASS exact GPU package, adapter registration and public loader ABI already active'; return
         }
-        $transaction = Join-Path $stateRoot ([Guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory $transaction | Out-Null
-        $JournalPath = Join-Path $transaction 'state.clixml'
         $state = [pscustomobject]@{Schema=1;Phase='prepared';InstanceId=$previous.InstanceId;
             Previous=$previous;PreviousApi=@(Get-GpuRegistrySnapshot (Get-AdapterApiEntries $previous.DriverKey));
             CandidateInf=$script:Package.Inf;CandidateInfHash=$script:Package.InfHash;
             CandidateStoreInf=$null;PublishedInf=$null;Version=$script:Package.Manifest.driver_version;
             Manifest=$script:Package.Manifest;ManifestHash=$script:Package.ManifestHash;
             Installed=$null;InstalledApi=@();LegacyBefore=@(Get-LegacyOpenClValues);LegacyChanges=@();
-            Loaders=@();InstallAttempted=$false;NeedReboot=$false;Error=$null;RecoveryError=$null}
+            Loaders=@();InstallAttempted=$false;NeedReboot=$false;Error=$null;RecoveryError=$null;
+            CertificateTrust=$trustState.CertificateTrust;TrustJournal=$trustJournal}
         foreach ($loader in $state.Manifest.system_loaders) {
             $state.Loaders += [pscustomobject]@{Source=(Join-Path $script:Package.Root $loader.source);
                 Path=(Join-Path (Join-Path $env:SystemRoot $loader.system_directory) $loader.name);
                 Hash=$loader.sha256;Architecture=$loader.arch;Preexisting=$false;BeforeHash=$null;Status='pending'}
         }
+        $stageStarted = $true
         $result = Invoke-GpuInstallTransaction $state $JournalPath (New-ProductionBackend)
+        $trustState.Phase='retained-for-staged-package'; Write-GpuJournal $trustState $trustJournal
         Write-Output "PASS exact unified GPU package installed; NeedReboot=$($result.NeedReboot); Journal=$JournalPath"
         Write-Output 'Existing Vulkan public loader is application/system supplied. Rendering validation remains required.'
         return
@@ -298,4 +322,14 @@ try {
         (Get-GpuHash $state.CandidateStoreInf) -cne $state.CandidateInfHash) { throw 'Retained driver identity changed' }
     $result = Invoke-GpuRemovalTransaction $state $JournalPath (New-ProductionBackend) $Action
     Write-Output "PASS $Action exact GPU package; NeedReboot=$($result.NeedReboot); retained journal=$JournalPath"
+} catch {
+    $failure = $_
+    if ($Action -eq 'Install' -and $null -ne $trustState -and !$stageStarted) {
+        try {
+            Remove-GpuAttemptTrust $trustState.CertificateTrust
+            $trustState.Phase='verification-failed';$trustState.Error=$failure.ToString()
+            Write-GpuJournal $trustState $trustJournal
+        } catch { throw "Pre-stage verification failed: $failure; certificate cleanup requires journal $trustJournal : $_" }
+    }
+    throw $failure
 } finally { $lock.Dispose() }

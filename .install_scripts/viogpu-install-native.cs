@@ -45,6 +45,27 @@ namespace DroidVmGpuInstall {
             return reboot;
         }
 
+        [DllImport("crypt32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+        static extern IntPtr CertOpenStore(IntPtr provider, uint encoding, IntPtr crypto,
+            uint flags, string name);
+        [DllImport("crypt32.dll", SetLastError = true)]
+        static extern bool CertAddEncodedCertificateToStore(IntPtr store, uint encoding,
+            byte[] bytes, uint count, uint disposition, IntPtr context);
+        [DllImport("crypt32.dll")]
+        static extern bool CertCloseStore(IntPtr store, uint flags);
+        public static bool AddCertificateNew(string name, byte[] der, bool machine) {
+            if (name != "Root" && name != "TrustedPublisher") throw new ArgumentException("Certificate store");
+            var store = CertOpenStore(new IntPtr(10), 0, IntPtr.Zero,
+                0x4000u | (machine ? 0x20000u : 0x10000u), name);
+            if (store == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "CertOpenStore");
+            try {
+                if (CertAddEncodedCertificateToStore(store, 0x10001, der, (uint)der.Length, 1, IntPtr.Zero)) return true;
+                int error = Marshal.GetLastWin32Error();
+                if (unchecked((uint)error) == 0x80092005u) return false; // CRYPT_E_EXISTS: preserve concurrent entry
+                throw new Win32Exception(error, "CertAddEncodedCertificateToStore ADD_NEW");
+            } finally { CertCloseStore(store, 0); }
+        }
+
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         struct CatalogInfo {
             public uint Size, Version;
