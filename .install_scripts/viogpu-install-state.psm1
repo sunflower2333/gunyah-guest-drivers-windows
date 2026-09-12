@@ -122,14 +122,16 @@ function Invoke-GpuInstallTransaction($State, [string]$Journal, $Backend) {
         $State.CandidateStoreInf = & $Backend.StoreInf $State.PublishedInf
         Write-GpuJournal $State $Journal
         foreach ($loader in $State.Loaders) { Copy-GpuOwnedLoader $loader $State $Journal }
-        & $Backend.CheckLoaders $State.Loaders
+        # These callbacks return no value. Route any diagnostics to the host;
+        # the sole success-stream result of a transaction is its state object.
+        & $Backend.CheckLoaders $State.Loaders | Out-Host
         if (!(Test-GpuRegistrySnapshot $State.LegacyBefore)) { throw 'Legacy registration changed before install' }
         if (!(& $Backend.CheckBefore $State)) { throw 'GPU binding changed before install' }
         $State.Phase = 'installing'; $State.InstallAttempted = $true
         Write-GpuJournal $State $Journal
         $State.NeedReboot = [bool](& $Backend.Install $State.CandidateInf $false)
         Write-GpuJournal $State $Journal
-        & $Backend.VerifyCandidate $State
+        & $Backend.VerifyCandidate $State | Out-Host
         # A failed/only-staged driver never loses its working legacy registration.
         foreach ($entry in $State.LegacyBefore) {
             if (!(Test-GpuRegistrySnapshot @($entry))) { throw 'Legacy registration changed during install' }
@@ -157,7 +159,7 @@ function Invoke-GpuInstallTransaction($State, [string]$Journal, $Backend) {
                 }
                 if (!$State.Previous.StoreInf) { throw 'No prior driver package available for automatic rollback' }
                 $State.NeedReboot = [bool](& $Backend.Install $State.Previous.StoreInf $true) -or $State.NeedReboot
-                & $Backend.VerifyPrevious $State
+                & $Backend.VerifyPrevious $State | Out-Host
             }
             foreach ($change in $State.LegacyChanges) {
                 if (Test-GpuRegistrySnapshot @($change.After)) { Set-GpuRegistrySnapshot @($change.Before) }
@@ -185,7 +187,7 @@ function Invoke-GpuRemovalTransaction($State, [string]$Journal, $Backend,
     $State.Phase = 'restoring'; Write-GpuJournal $State $Journal
     try {
         $State.NeedReboot = [bool](& $Backend.Install $State.Previous.StoreInf $true) -or $State.NeedReboot
-        & $Backend.VerifyPrevious $State
+        & $Backend.VerifyPrevious $State | Out-Host
         foreach ($change in $State.LegacyChanges) {
             if (!(Test-GpuRegistrySnapshot @($change.After))) { throw 'Legacy vendor changed during restore' }
             Set-GpuRegistrySnapshot @($change.Before)

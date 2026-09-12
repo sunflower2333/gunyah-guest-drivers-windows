@@ -202,6 +202,74 @@ try {
     & $productionBackend.VerifyPrevious $healthState
     Check $true 'rollback permits restoration of originally unhealthy adapter without claiming health'
 
+    # Execute the real production CheckLoaders callback with actual child
+    # processes. The fixture executable exercises stdout and native exit codes;
+    # it does not emulate an OpenCL ABI or claim any GPU capability.
+    $probeRoot=Join-Path $script:directory 'native-output'
+    New-Item -ItemType Directory $probeRoot | Out-Null
+    $probeExe=Join-Path $probeRoot 'loader-output-fixture.exe'
+    Add-Type -OutputAssembly $probeExe -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+public static class LoaderOutputFixture {
+    public static int Main(string[] args) {
+        Console.WriteLine("native-loader-stdout: " + args[0]);
+        Console.WriteLine("native-loader-stdout: second line");
+        return args[0].EndsWith("fail.dll", StringComparison.OrdinalIgnoreCase) ? 17 : 0;
+    }
+}
+'@
+    $script:Package=[pscustomobject]@{Root=$probeRoot;Manifest=[pscustomobject]@{
+        loader_probes=[pscustomobject]@{arm64='loader-output-fixture.exe';x64='loader-output-fixture.exe';x86='loader-output-fixture.exe'}}}
+    $targets=@([pscustomobject]@{Architecture='arm64x';Path=(Join-Path $probeRoot 'native.dll')},
+        [pscustomobject]@{Architecture='x86';Path=(Join-Path $probeRoot 'wow.dll')})
+    $outputBackend=$backend.Clone()
+    $outputBackend.CheckLoaders=$productionBackend.CheckLoaders
+    $outputBackend.Install={param($inf,$rollback)
+        $script:installs += [pscustomobject]@{Inf=$inf;Rollback=$rollback}
+        $script:active=if($rollback){'old'}else{'new'}
+        return $false
+    }
+    $outputBackend.VerifyCandidate={param($state)
+        if($script:active -ne 'new'){throw 'output fixture candidate not bound'}
+        Write-Output 'candidate-verification-diagnostic'
+    }
+    $outputBackend.VerifyPrevious={param($state)
+        if($script:active -ne 'old'){throw 'output fixture previous not restored'}
+        Write-Output 'rollback-verification-diagnostic'
+    }
+    $transcript=Join-Path $script:directory 'native-output-transcript.txt'
+    Start-Transcript -Path $transcript | Out-Null
+    try {
+        $probeOutput=@(& $productionBackend.CheckLoaders $targets)
+        Check ($probeOutput.Count -eq 0) 'production CheckLoaders emits no success-stream objects from native stdout'
+        Check ($LASTEXITCODE -eq 0) 'successful native loader exit code preserved'
+        $case=New-State 'native-output-failure'
+        $case.State.Loaders[0].Path=Join-Path (Split-Path $case.Journal) 'fail.dll'
+        Must-Fail { Invoke-GpuInstallTransaction $case.State $case.Journal $outputBackend } 'ExitCode=17'
+        Check ($script:installs.Count -eq 0 -and !$case.State.InstallAttempted) 'nonzero native loader exit still prevents device installation'
+        Check ((Import-Clixml $case.Journal).Phase -eq 'rolled-back') 'native exit failure preserves rollback journal'
+        foreach($action in @('Rollback','Uninstall')) {
+            $case=New-State ('native-output-' + $action)
+            $wow=$case.State.Loaders[0].PSObject.Copy()
+            $wow.Architecture='x86';$wow.Path=Join-Path (Split-Path $case.Journal) 'OpenCL32.dll'
+            $case.State.Loaders += $wow
+            $installOutput=@(Invoke-GpuInstallTransaction $case.State $case.Journal $outputBackend)
+            Check ($installOutput.Count -eq 1 -and $installOutput[0].Phase -eq 'installed') 'install returns exactly one state despite native and verifier diagnostics'
+            Check ($installOutput[0].NeedReboot -is [bool] -and !$installOutput[0].NeedReboot) 'NeedReboot false remains directly readable from sole install state'
+            Check ((Import-Clixml $case.Journal).Phase -eq 'installed' -and !(Import-Clixml $case.Journal).NeedReboot) 'reported single-state install agrees with durable journal'
+            $removalOutput=@(Invoke-GpuRemovalTransaction $installOutput[0] $case.Journal $outputBackend $action)
+            Check ($removalOutput.Count -eq 1 -and $removalOutput[0].NeedReboot -is [bool] -and
+                !$removalOutput[0].NeedReboot) "$action returns exactly one state despite verification diagnostics"
+            Check ($removalOutput[0].Phase -eq $(if($action -eq 'Rollback'){'rolled-back'}else{'uninstalled'})) "$action final state remains correct"
+        }
+    } finally { Stop-Transcript | Out-Null }
+    $diagnostics=Get-Content -LiteralPath $transcript -Raw
+    Check ($diagnostics.Contains('native-loader-stdout: ' + $targets[0].Path) -and
+        $diagnostics.Contains('native-loader-stdout: ' + $targets[1].Path) -and
+        $diagnostics.Contains('native-loader-stdout: second line')) 'all native probe stdout remains visible in host transcript'
+    Check ($diagnostics.Contains('candidate-verification-diagnostic') -and
+        $diagnostics.Contains('rollback-verification-diagnostic')) 'transaction verification diagnostics remain visible'
+
     # Exercise actual WinVerifyTrust catalog-member verification on Windows.
     Write-Output 'BEGIN signed catalog membership fixture'
     $principal=New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
