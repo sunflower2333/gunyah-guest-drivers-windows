@@ -3120,6 +3120,20 @@ BOOLEAN RetirePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     return TRUE;
 }
 
+/* Present stage timing. 28.27 primary publications per second measured on
+ * 2026-09-12 is 35.4 ms per frame, while the Host transfer and flush together
+ * account for only 6.6 ms of it. Time each guest-side stage separately so the
+ * remaining ~29 ms is attributed rather than guessed. */
+static LONG VioGpuPresentElapsedUsec(_In_ LONGLONG start, _In_ LONGLONG end, _In_ LARGE_INTEGER frequency)
+{
+    if (frequency.QuadPart <= 0 || end <= start)
+    {
+        return 0;
+    }
+    const LONGLONG usec = ((end - start) * 1000000LL) / frequency.QuadPart;
+    return static_cast<LONG>(usec > MAXLONG ? MAXLONG : usec);
+}
+
 VOID ProbePresentCopy(_In_ const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                       _Out_ VIOGPU_NATIVE_PRESENT_COPY_PROBE *probe)
 {
@@ -3224,6 +3238,15 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                                      : VioGpuWddmPresentExecuteSourceLifecycle;
     }
     VIOGPU_NATIVE_PRESENT_COPY_PROBE copyProbe = {};
+    /* Slot 75 stores whether the device key switched the two per-present
+     * aperture scans off, so their cost can be measured without another build.
+     * It stores "disabled" rather than "enabled" deliberately: any path that
+     * clears the counter array then leaves the scans running, which is the
+     * behaviour this build inherits. */
+    VioGpuDod *timingAdapter = transaction->Adapter;
+    const BOOLEAN presentDiagnostics = timingAdapter->ReadDisplayCounter(75) == 0;
+    LARGE_INTEGER presentTimerFrequency = {0};
+    const LONGLONG presentExecuteStart = KeQueryPerformanceCounter(&presentTimerFrequency).QuadPart;
 
     VIOGPU_NATIVE_CONTEXT_SNAPSHOT sourceSnapshot = {};
     BOOLEAN sourceSnapshotAcquired = FALSE;
@@ -3345,7 +3368,9 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
              * resource whose host texture is never read back; the fix differs.
              * Classify every present and keep the largest non-zero sample per
              * class, so the two cases can be told apart from the driver key. */
+            if (presentDiagnostics)
             {
+                const LONGLONG classifyStart = KeQueryPerformanceCounter(NULL).QuadPart;
                 VioGpuDod *classifyAdapter = transaction->Adapter;
                 BOOLEAN classifyNative = IsNativeAllocation(source);
                 LONG nonZero = 0;
@@ -3364,8 +3389,14 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                 {
                     classifyAdapter->RecordDisplayValue(maxIndex, nonZero);
                 }
+                const LONG classifyUsec = VioGpuPresentElapsedUsec(classifyStart,
+                                                                   KeQueryPerformanceCounter(NULL).QuadPart,
+                                                                   presentTimerFrequency);
+                timingAdapter->RecordDisplayValue(64, classifyUsec);
+                timingAdapter->RecordDisplayMaximum(65, classifyUsec);
             }
 #endif
+            const LONGLONG copyStart = KeQueryPerformanceCounter(NULL).QuadPart;
             for (UINT index = 0; index < transaction->RectCount; ++index)
             {
                 const RECT *destinationRect = &transaction->DestinationSubRects[index];
@@ -3384,9 +3415,26 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                     RtlCopyMemory(destinationBase + destinationOffset, sourceBase + sourceOffset, rowBytes);
                 }
             }
+            const LONG copyUsec = VioGpuPresentElapsedUsec(copyStart,
+                                                            KeQueryPerformanceCounter(NULL).QuadPart,
+                                                            presentTimerFrequency);
+            timingAdapter->RecordDisplayValue(66, copyUsec);
+            timingAdapter->RecordDisplayMaximum(67, copyUsec);
             KeMemoryBarrier();
+            const LONGLONG flushStart = KeQueryPerformanceCounter(NULL).QuadPart;
             KeFlushIoBuffers(destination->ApertureMdl, FALSE, TRUE);
+            const LONG flushUsec = VioGpuPresentElapsedUsec(flushStart,
+                                                             KeQueryPerformanceCounter(NULL).QuadPart,
+                                                             presentTimerFrequency);
+            timingAdapter->RecordDisplayValue(68, flushUsec);
+            timingAdapter->RecordDisplayMaximum(69, flushUsec);
+            const LONGLONG probeStart = KeQueryPerformanceCounter(NULL).QuadPart;
             ProbePresentCopy(transaction, &copyProbe);
+            const LONG probeUsec = VioGpuPresentElapsedUsec(probeStart,
+                                                             KeQueryPerformanceCounter(NULL).QuadPart,
+                                                             presentTimerFrequency);
+            timingAdapter->RecordDisplayValue(70, probeUsec);
+            timingAdapter->RecordDisplayMaximum(71, probeUsec);
         }
     }
 
@@ -3428,6 +3476,13 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     if (sourceSnapshotAcquired)
     {
         VioGpuAdapter::ReleaseNativeContextSnapshot(&sourceSnapshot);
+    }
+    {
+        const LONG executeUsec = VioGpuPresentElapsedUsec(presentExecuteStart,
+                                                          KeQueryPerformanceCounter(NULL).QuadPart,
+                                                          presentTimerFrequency);
+        timingAdapter->RecordDisplayValue(72, executeUsec);
+        timingAdapter->RecordDisplayMaximum(73, executeUsec);
     }
     if (NT_SUCCESS(status))
     {

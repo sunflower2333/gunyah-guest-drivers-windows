@@ -915,7 +915,7 @@ class VioGpuDod
     /* Windows persists no VidPn path for this adapter even with the display
      * DDIs registered and the child reporting connected, so the question is
      * which DDI Windows stops at.  One array rather than a dozen members. */
-    volatile LONG m_DisplayCounters[64];
+    volatile LONG m_DisplayCounters[96];
     volatile LONG m_UmdPresentActive;
     volatile LONG m_PublishSequence;
     volatile LONG m_PublishSequenceAtFlip;

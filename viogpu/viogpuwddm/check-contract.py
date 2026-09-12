@@ -7785,7 +7785,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if geometry_reject < 0 or geometry_count < geometry_reject or \
        geometry_success < geometry_count or first_copy < geometry_success:
         fail("mismatched present geometry must succeed without copying or publishing")
-    if "volatileLONGm_DisplayCounters[64];" not in canonical_code(VIOGPU_HEADER_CODE):
+    if "volatileLONGm_DisplayCounters[96];" not in canonical_code(VIOGPU_HEADER_CODE):
         fail("display diagnostics must keep independent slots for geometry and timing")
     for fragment in (
         "adapter->RecordDisplayValue(46,static_cast<LONG>(request.ReadbackUsec>MAXLONG?MAXLONG:request.ReadbackUsec));",
@@ -7807,6 +7807,12 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         'L"NativeDisplayPresent2DFlushMaxUsec"',
         'L"NativeDisplayPresent2DFlushResult"',
         'L"NativeDisplayPresent2DResourceId"',
+        'L"NativeDisplayPresentClassifyLastUsec"',
+        'L"NativeDisplayPresentCopyLastUsec"',
+        'L"NativeDisplayPresentFlushIoLastUsec"',
+        'L"NativeDisplayPresentProbeLastUsec"',
+        'L"NativeDisplayPresentExecuteLastUsec"',
+        'L"NativeDisplayPresentDiagnosticsDisabled"',
     ):
         if fragment not in canonical_code(WDDM_DDI_CODE + VIOGPU_SOURCE):
             fail(f"display diagnostics must keep distinct counter ownership: {fragment}")

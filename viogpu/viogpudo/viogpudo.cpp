@@ -5714,6 +5714,17 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayPresent2DFlushMaxUsec = ReadDisplayCounter(61);
     DWORD displayPresent2DFlushResult = ReadDisplayCounter(62);
     DWORD displayPresent2DResourceId = ReadDisplayCounter(63);
+    DWORD displayPresentClassifyLastUsec = ReadDisplayCounter(64);
+    DWORD displayPresentClassifyMaxUsec = ReadDisplayCounter(65);
+    DWORD displayPresentCopyLastUsec = ReadDisplayCounter(66);
+    DWORD displayPresentCopyMaxUsec = ReadDisplayCounter(67);
+    DWORD displayPresentFlushIoLastUsec = ReadDisplayCounter(68);
+    DWORD displayPresentFlushIoMaxUsec = ReadDisplayCounter(69);
+    DWORD displayPresentProbeLastUsec = ReadDisplayCounter(70);
+    DWORD displayPresentProbeMaxUsec = ReadDisplayCounter(71);
+    DWORD displayPresentExecuteLastUsec = ReadDisplayCounter(72);
+    DWORD displayPresentExecuteMaxUsec = ReadDisplayCounter(73);
+    DWORD displayPresentDiagnosticsDisabled = ReadDisplayCounter(75);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -6111,6 +6122,28 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayPresent2DFlushResult},
                                                                                                         {L"NativeDisplayPresent2DResourceId",
                                                                                                          &displayPresent2DResourceId},
+                                                                                                        {L"NativeDisplayPresentClassifyLastUsec",
+                                                                                                         &displayPresentClassifyLastUsec},
+                                                                                                        {L"NativeDisplayPresentClassifyMaxUsec",
+                                                                                                         &displayPresentClassifyMaxUsec},
+                                                                                                        {L"NativeDisplayPresentCopyLastUsec",
+                                                                                                         &displayPresentCopyLastUsec},
+                                                                                                        {L"NativeDisplayPresentCopyMaxUsec",
+                                                                                                         &displayPresentCopyMaxUsec},
+                                                                                                        {L"NativeDisplayPresentFlushIoLastUsec",
+                                                                                                         &displayPresentFlushIoLastUsec},
+                                                                                                        {L"NativeDisplayPresentFlushIoMaxUsec",
+                                                                                                         &displayPresentFlushIoMaxUsec},
+                                                                                                        {L"NativeDisplayPresentProbeLastUsec",
+                                                                                                         &displayPresentProbeLastUsec},
+                                                                                                        {L"NativeDisplayPresentProbeMaxUsec",
+                                                                                                         &displayPresentProbeMaxUsec},
+                                                                                                        {L"NativeDisplayPresentExecuteLastUsec",
+                                                                                                         &displayPresentExecuteLastUsec},
+                                                                                                        {L"NativeDisplayPresentExecuteMaxUsec",
+                                                                                                         &displayPresentExecuteMaxUsec},
+                                                                                                        {L"NativeDisplayPresentDiagnosticsDisabled",
+                                                                                                         &displayPresentDiagnosticsDisabled},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -7620,6 +7653,17 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
     {
         SetUsePresentProgress(!!value);
     }
+
+    /* The present path runs two diagnostic aperture scans on every Present.
+     * Publish the device key's choice into a counter slot so the WDDM present
+     * path can honour it and so its current state is visible in the key. */
+    value = 1;
+    StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"PresentDiagnostics", &value);
+    if (!NT_SUCCESS(StatusOptional))
+    {
+        value = 1;
+    }
+    RecordDisplayValue(75, value != 0 ? 0 : 1);
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
     value = 1;
