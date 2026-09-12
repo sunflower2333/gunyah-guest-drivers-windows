@@ -1,0 +1,30 @@
+name: VIOGPU installed API registration contract
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.install_scripts/viogpu-api-registration.psm1'
+      - '.install_scripts/test-viogpu-api-registration.ps1'
+      - '.github/workflows/viogpu-api-registration-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-registry:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Validate typed native and Wow registrations in real Windows registry
+        shell: powershell
+        run: ./.install_scripts/test-viogpu-api-registration.ps1 -RegistryFixture
+      - name: Validate saved registry journal shapes in PowerShell 7
+        shell: pwsh
+        run: ./.install_scripts/test-viogpu-api-registration.ps1 -RegistryFixture

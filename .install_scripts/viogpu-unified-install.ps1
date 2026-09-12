@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Import-Module (Join-Path $PSScriptRoot 'viogpu-install-state.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'viogpu-api-registration.psm1') -Force
 if (!('DroidVmGpuInstall.Native' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot 'viogpu-install-native.cs') }
 
 function Assert-NativeAdministrator {
@@ -85,7 +86,7 @@ function Get-Adapter([string]$Id) {
     if ($devices.Count -ne 1) { throw 'Exactly one matching present VIOGPU display adapter is required' }
     $device = $devices[0]
     $properties = @{}
-    foreach ($name in @('DriverInfPath','DriverVersion','Driver','Service')) {
+    foreach ($name in @('DriverInfPath','DriverVersion','Driver','Service','ProblemCode')) {
         $properties[$name] = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName "DEVPKEY_Device_$name").Data
     }
     if ($properties.DriverInfPath -notmatch '^[A-Za-z0-9_.-]+\.inf$' -or
@@ -98,7 +99,7 @@ function Get-Adapter([string]$Id) {
     [pscustomobject]@{InstanceId=$device.InstanceId; PublishedInf=$inf; StoreInf=$store;
         InfHash=(Get-GpuHash $store); Version=[string]$properties.DriverVersion;
         DriverKey="SYSTEM\CurrentControlSet\Control\Class\$($properties.Driver)";
-        Service=[string]$properties.Service; Status=[string]$device.Status}
+        Service=[string]$properties.Service; Status=[string]$device.Status; ProblemCode=[uint32]$properties.ProblemCode}
 }
 
 function Get-AdapterApiEntries([string]$Key) {
@@ -119,17 +120,15 @@ function Assert-CandidateBinding($State) {
     $actual = Get-Adapter $State.InstanceId
     if ($actual.InfHash -cne $State.CandidateInfHash -or $actual.Version -cne $State.Version -or
         $actual.Service -ine 'VioGpuWddm') { throw 'Driver staged but adapter did not bind the exact candidate' }
+    if ($actual.Status -cne 'OK' -or $actual.ProblemCode -ne 0) {
+        throw "Candidate adapter not healthy: Status=$($actual.Status) ProblemCode=$($actual.ProblemCode)"
+    }
     $store = Split-Path -Parent $actual.StoreInf
     foreach ($entry in $State.Manifest.files.PSObject.Properties) {
         if ((Get-GpuHash (Join-Path $store $entry.Name)) -cne $entry.Value) { throw "DriverStore file mismatch: $($entry.Name)" }
     }
     $snap = @(Get-GpuRegistrySnapshot (Get-AdapterApiEntries $actual.DriverKey))
-    foreach ($entry in $State.Manifest.registration.PSObject.Properties) {
-        $value = @($snap | Where-Object Name -ceq $entry.Name)[0]
-        $expected = Join-Path $store $entry.Value
-        if (!$value.Present -or @($value.Value).Count -ne 1 -or
-            [string]@($value.Value)[0] -ine $expected) { throw "Adapter registration mismatch: $($entry.Name)" }
-    }
+    Assert-VioGpuApiRegistration -Manifest $State.Manifest -StoreRoot $store -DriverKey $actual.DriverKey -Snapshot $snap
     $State.InstalledApi = $snap
     $State.Installed = $actual
 }
@@ -207,6 +206,13 @@ function New-ProductionBackend {
         Install = { param($inf,$rollback) [DroidVmGpuInstall.Native]::Install($inf,$rollback) }
         Remove = { param($inf) [DroidVmGpuInstall.Native]::Remove($inf) }
         CheckBefore = { param($state) Test-AdapterIdentity $state.Previous }
+        BindingKind = { param($state)
+            $current = Get-Adapter $state.InstanceId
+            if ($current.InfHash -ceq $state.CandidateInfHash -and $current.Version -ceq $state.Version -and
+                $current.Service -ieq 'VioGpuWddm') { 'candidate' }
+            elseif (Test-AdapterIdentity $state.Previous) { 'previous' }
+            else { 'unknown' }
+        }
         VerifyCandidate = { param($state) Assert-CandidateBinding $state }
         VerifyPrevious = { param($state)
             if (!(Test-AdapterIdentity $state.Previous)) { throw 'Prior GPU package did not rebind' }
@@ -257,7 +263,7 @@ try {
             CandidateStoreInf=$null;PublishedInf=$null;Version=$script:Package.Manifest.driver_version;
             Manifest=$script:Package.Manifest;ManifestHash=$script:Package.ManifestHash;
             Installed=$null;InstalledApi=@();LegacyBefore=@(Get-LegacyOpenClValues);LegacyChanges=@();
-            Loaders=@();NeedReboot=$false;Error=$null;RecoveryError=$null}
+            Loaders=@();InstallAttempted=$false;NeedReboot=$false;Error=$null;RecoveryError=$null}
         foreach ($loader in $state.Manifest.system_loaders) {
             $state.Loaders += [pscustomobject]@{Source=(Join-Path $script:Package.Root $loader.source);
                 Path=(Join-Path (Join-Path $env:SystemRoot $loader.system_directory) $loader.name);

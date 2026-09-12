@@ -9,6 +9,7 @@ $script:checks = 0
 function Check($Condition,[string]$Message) {
     $script:checks++
     if (!$Condition) { throw "FAIL $Message" }
+    Write-Output "PASS $script:checks $Message"
 }
 function Must-Fail([scriptblock]$Action,[string]$Text) {
     $errorText = $null
@@ -27,7 +28,11 @@ $script:unrelated = [pscustomobject]@{Hive='CurrentUser';View='Registry64';Key=$
 $script:active = 'old'; $script:mode = 'success'; $script:installs = @()
 $script:removed = @()
 $backend = @{
-    Stage = { param($inf) if ($script:mode -eq 'stage-failure') { throw 'stage injected failure' }; $inf }
+    Stage = { param($inf)
+        if ($script:mode -eq 'stage-failure') { throw 'stage injected failure' }
+        if ($script:mode -eq 'stage-external-switch') { $script:active='external' }
+        $inf
+    }
     StoreInf = { param($inf) $inf }
     Remove = { param($inf)
         if ($script:mode -eq 'remove-failure') { throw 'named removal injected failure' }
@@ -41,10 +46,12 @@ $backend = @{
         }
         if ($script:mode -eq 'staged-only') { return $false }
         $script:active = 'new'
+        if ($script:mode -eq 'install-external-switch') { $script:active='external'; throw 'external post-attempt binding' }
         if ($script:mode -eq 'partial-install') { throw 'partial install injected failure' }
         return $true
     }
     CheckBefore = { param($state) $script:active -eq 'old' }
+    BindingKind = { param($state) if($script:active -eq 'new') {'candidate'} elseif($script:active -eq 'old') {'previous'} else {'unknown'} }
     VerifyCandidate = { param($state)
         if ($script:mode -in @('staged-only','verify-failure','rollback-failure')) { throw 'candidate binding verification failed' }
         if ($script:mode -eq 'concurrent-registry') {
@@ -53,7 +60,10 @@ $backend = @{
         }
     }
     VerifyPrevious = { param($state) if ($script:active -ne 'old') { throw 'prior binding not restored' } }
-    CheckLoaders = { param($loaders) if ($script:mode -eq 'loader-failure') { throw 'loader ABI injected failure' } }
+    CheckLoaders = { param($loaders)
+        if ($script:mode -eq 'loader-failure') { throw 'loader ABI injected failure' }
+        if ($script:mode -eq 'loader-external-switch') { $script:active='external' }
+    }
 }
 function New-State([string]$Name) {
     $folder = Join-Path $script:directory $Name
@@ -67,7 +77,7 @@ function New-State([string]$Name) {
     Set-GpuRegistrySnapshot @($script:unrelated)
     $state = [pscustomobject]@{Phase='prepared';CandidateInf=$new;PublishedInf=$null;CandidateStoreInf=$null;
         Previous=[pscustomobject]@{StoreInf=$old};LegacyBefore=@(Get-GpuRegistrySnapshot $script:entries);
-        LegacyChanges=@();NeedReboot=$false;Error=$null;RecoveryError=$null;
+        LegacyChanges=@();InstallAttempted=$false;NeedReboot=$false;Error=$null;RecoveryError=$null;
         Loaders=@([pscustomobject]@{Source=$source;Path=$target;Hash=(Get-GpuHash $source);
             Architecture='arm64x';Preexisting=$false;BeforeHash=$null;Status='pending'})}
     return [pscustomobject]@{State=$state;Journal=(Join-Path $folder 'state.clixml')}
@@ -118,6 +128,20 @@ try {
     Check ((Import-Clixml $case.Journal).Phase -eq 'recovery-required') 'failed removal cannot report complete'
     Check ($script:active -eq 'old') 'failed candidate deletion retains restored binding'
 
+    foreach ($mode in @('stage-external-switch','loader-external-switch')) {
+        $script:mode=$mode; $case=New-State $mode
+        Must-Fail { Invoke-GpuInstallTransaction $case.State $case.Journal $backend } 'GPU binding changed before install'
+        Check ($script:installs.Count -eq 0) "$mode never invokes native install or forced rollback"
+        Check ($script:active -eq 'external') "$mode retains concurrent external binding"
+        Check (Test-GpuRegistrySnapshot $script:entries) "$mode does not remove previous legacy values"
+        Check ((Import-Clixml $case.Journal).Phase -eq 'cancelled-external-binding') "$mode reports cancellation without claiming prior binding restored"
+    }
+    $script:mode='install-external-switch'; $case=New-State 'install-external-switch'
+    Must-Fail { Invoke-GpuInstallTransaction $case.State $case.Journal $backend } 'unrelated or uncertain'
+    Check ($script:installs.Count -eq 1 -and !$script:installs[0].Rollback) 'unknown post-attempt binding is never force-rolled back'
+    Check ($script:active -eq 'external') 'unknown post-attempt external binding retained'
+    Check ((Import-Clixml $case.Journal).Phase -eq 'recovery-required') 'uncertain attribution journal requires recovery'
+
     foreach ($mode in @('stage-failure','loader-failure','staged-only','verify-failure','partial-install')) {
         $script:mode=$mode; $case=New-State $mode
         Must-Fail { Invoke-GpuInstallTransaction $case.State $case.Journal $backend } 'prior state restored'
@@ -154,6 +178,7 @@ try {
     Check (Test-Path $case.State.Loaders[0].Path) 'uncertain ownership never deletes a concurrent file'
 
     # Exercise actual WinVerifyTrust catalog-member verification on Windows.
+    Write-Output 'BEGIN signed catalog membership fixture'
     $catalogRoot=Join-Path $script:directory 'catalog'
     New-Item -ItemType Directory $catalogRoot | Out-Null
     $member=Join-Path $catalogRoot 'manifest.json'; [IO.File]::WriteAllText($member,'authenticated inventory')
@@ -165,6 +190,7 @@ try {
     Import-Certificate -FilePath $certificateFile -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
     Import-Certificate -FilePath $certificateFile -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
     Set-AuthenticodeSignature -LiteralPath $catalog -Certificate $certificate -HashAlgorithm SHA256 | Out-Null
+    Write-Output 'BEGIN WinVerifyTrust catalog member call'
     [DroidVmGpuInstall.Native]::VerifyCatalogMember($catalog,$member)
     Check $true 'actual trusted catalog membership'
     [IO.File]::WriteAllText($member,'tampered inventory')

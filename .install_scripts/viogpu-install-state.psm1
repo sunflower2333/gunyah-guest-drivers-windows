@@ -125,7 +125,8 @@ function Invoke-GpuInstallTransaction($State, [string]$Journal, $Backend) {
         & $Backend.CheckLoaders $State.Loaders
         if (!(Test-GpuRegistrySnapshot $State.LegacyBefore)) { throw 'Legacy registration changed before install' }
         if (!(& $Backend.CheckBefore $State)) { throw 'GPU binding changed before install' }
-        $State.Phase = 'installing'; Write-GpuJournal $State $Journal
+        $State.Phase = 'installing'; $State.InstallAttempted = $true
+        Write-GpuJournal $State $Journal
         $State.NeedReboot = [bool](& $Backend.Install $State.CandidateInf $false)
         Write-GpuJournal $State $Journal
         & $Backend.VerifyCandidate $State
@@ -147,9 +148,13 @@ function Invoke-GpuInstallTransaction($State, [string]$Journal, $Backend) {
         $State.Error = $failure.ToString(); $State.Phase = 'restoring'
         Write-GpuJournal $State $Journal
         try {
-            # CheckBefore detects whether install actually changed the devnode.
-            # A false API result may still have partially changed it.
-            if (!(& $Backend.CheckBefore $State)) {
+            # A binding change before our call belongs to another installer.
+            # After our call, only an exact candidate binding is attributable;
+            # an unknown newer package must never be forced back to Previous.
+            if ($State.InstallAttempted -and !(& $Backend.CheckBefore $State)) {
+                if ((& $Backend.BindingKind $State) -cne 'candidate') {
+                    throw 'Current GPU binding is unrelated or uncertain; preserve it'
+                }
                 if (!$State.Previous.StoreInf) { throw 'No prior driver package available for automatic rollback' }
                 $State.NeedReboot = [bool](& $Backend.Install $State.Previous.StoreInf $true) -or $State.NeedReboot
                 & $Backend.VerifyPrevious $State
@@ -159,11 +164,17 @@ function Invoke-GpuInstallTransaction($State, [string]$Journal, $Backend) {
                 elseif (!(Test-GpuRegistrySnapshot @($change.Before))) { throw 'Legacy registration changed; recovery snapshot retained' }
             }
             Remove-GpuOwnedLoaders $State.Loaders
-            $State.Phase = 'rolled-back'; Write-GpuJournal $State $Journal
+            $State.Phase = if (!$State.InstallAttempted -and !(& $Backend.CheckBefore $State)) {
+                'cancelled-external-binding'
+            } else { 'rolled-back' }
+            Write-GpuJournal $State $Journal
         } catch {
             $State.Phase = 'recovery-required'; $State.RecoveryError = $_.ToString()
             Write-GpuJournal $State $Journal
             throw "GPU install failed: $failure; recovery needs attention: $_; journal=$Journal"
+        }
+        if ($State.Phase -eq 'cancelled-external-binding') {
+            throw "GPU install cancelled; external binding preserved: $failure; journal=$Journal"
         }
         throw "GPU install failed and prior state restored: $failure; journal=$Journal"
     }

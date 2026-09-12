@@ -17,13 +17,16 @@ jobs:
         with:
           fetch-depth: 1
       - name: Parse production scripts and run real Windows registry and catalog fixtures
+        timeout-minutes: 6
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($path in @('.install_scripts/install-drivers.ps1', '.install_scripts/viogpu-unified-install.ps1', '.install_scripts/viogpu-install-state.psm1', '.install_scripts/test-viogpu-unified-install.ps1')) {
+          foreach ($path in @('.install_scripts/install-drivers.ps1', '.install_scripts/viogpu-unified-install.ps1', '.install_scripts/viogpu-install-state.psm1', '.install_scripts/viogpu-api-registration.psm1', '.install_scripts/test-viogpu-unified-install.ps1')) {
             $tokens=$null; $errors=$null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path),[ref]$tokens,[ref]$errors)
             if ($errors.Count) { throw "Parse error $path $errors" }
           }
           & ./.install_scripts/test-viogpu-unified-install.ps1
           if ($LASTEXITCODE) { throw 'Unified installer fixture failed' }
+          & ./.install_scripts/test-viogpu-api-registration.ps1
+          if ($LASTEXITCODE) { throw 'Typed API registration fixture failed' }
