@@ -228,6 +228,10 @@ try {
     Check $true 'tampered catalog rejected before any trust mutation'
     $trust=[pscustomobject]@{CertificateTrust=@()}
     $trustJournal=Join-Path $script:directory 'trust.clixml'
+    foreach ($storeName in @('Root','TrustedPublisher')) {
+        $physical="HKLM:\SOFTWARE\Microsoft\SystemCertificates\$storeName\Certificates"
+        Write-Output "Before bootstrap $storeName physical certificate key exists=$(Test-Path $physical)"
+    }
     # CurrentUser Root opens interactive trust confirmation. Disposable elevated
     # CI uses LocalMachine like production, with exact-thumbprint cleanup below.
     Add-GpuPackageTrust $public $trust $trustJournal 'LocalMachine'
