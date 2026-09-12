@@ -1241,6 +1241,55 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::FlushResourceSynchronous(UINT resource_id,
     return result;
 }
 
+BOOLEAN CtrlQueue::QueryDisplayAllocationDiscovery(ULONGLONG pci_region_size,
+                                                   _Out_ VIOGPU_DVSA_DISCOVERY *discovery)
+{
+    PAGED_CODE();
+    if (discovery == NULL || m_pBuf == NULL)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(discovery, sizeof(*discovery));
+    if (!BeginSynchronousRequest())
+    {
+        return FALSE;
+    }
+    VIOGPU_DVSA_DISCOVERY *response = static_cast<VIOGPU_DVSA_DISCOVERY *>(
+        m_pBuf->AllocateMemory(sizeof(VIOGPU_DVSA_DISCOVERY)));
+    if (response == NULL)
+    {
+        EndSynchronousRequest();
+        return FALSE;
+    }
+    RtlZeroMemory(response, sizeof(*response));
+    PGPU_VBUFFER vbuf = NULL;
+    VIOGPU_DVSA_HEADER *command = static_cast<VIOGPU_DVSA_HEADER *>(
+        AllocCmdResp(&vbuf, sizeof(VIOGPU_DVSA_HEADER), response, sizeof(*response)));
+    if (command == NULL)
+    {
+        m_pBuf->FreeMemory(response);
+        EndSynchronousRequest();
+        return FALSE;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    VioGpuInitializeDisplayAllocationQuery(command);
+    BOOLEAN releaseBuffer = TRUE;
+    const BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) &&
+                            VioGpuParseDisplayAllocationDiscovery(response,
+                                                                  vbuf->response_size,
+                                                                  pci_region_size,
+                                                                  discovery);
+    /* Unsupported old hosts return an ordinary error. Preserve the current
+     * display path; only transport timeout/reset follows the queue's existing
+     * quarantine rules. An in-flight response is never freed by this caller. */
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
+    return success;
+}
+
 BOOLEAN CtrlQueue::QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info)
 {
     PAGED_CODE();

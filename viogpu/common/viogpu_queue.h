@@ -30,6 +30,7 @@
 #pragma once
 #include "viogpu.h"
 #include "viogpu_pci.h"
+#include "../shared/viogpu_display_allocation.h"
 
 #pragma pack(1)
 typedef struct virtio_gpu_config
@@ -468,6 +469,8 @@ class CtrlQueue : public VioGpuQueue
      * detached.  A poisoned backlog must never silently carry into D0. */
     BOOLEAN ResetNativeSubmitBacklog(void);
     BOOLEAN QueryCapsetInfo(UINT capset_index, PGPU_RESP_CAPSET_INFO capset_info);
+    BOOLEAN QueryDisplayAllocationDiscovery(ULONGLONG pci_region_size,
+                                            _Out_ VIOGPU_DVSA_DISCOVERY *discovery);
     BOOLEAN QueryCapset(UINT capset_id, UINT capset_version, UINT capset_size, PGPU_CAPSET_DRM capset);
     VIOGPU_HOST_CONTEXT_RESULT
     CreateNativeContext(UINT context_id, _Out_opt_ PVIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC diagnostic = NULL);

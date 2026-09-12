@@ -88,6 +88,10 @@ jobs:
         shell: cmd
         run: viogpu\tests\display-timing\run-msvc.cmd
 
+      - name: Check actual host DVSA discovery and strict unavailable boundaries
+        shell: cmd
+        run: viogpu\tests\display-allocation\run-msvc.cmd
+
   mesa-umd:
     name: Mesa D3D10 UMD (ARM64, cross-compiled)
     needs: zink-wait-tests

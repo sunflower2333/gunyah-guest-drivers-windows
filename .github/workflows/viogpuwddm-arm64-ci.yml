@@ -16,6 +16,9 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/display-timing/**"
+      - "viogpu/tests/display-allocation/**"
+      - "viogpu/shared/dvsa_protocol.h"
+      - "viogpu/shared/viogpu_display_allocation.h"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/backing-entries/**"
@@ -43,6 +46,9 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/display-timing/**"
+      - "viogpu/tests/display-allocation/**"
+      - "viogpu/shared/dvsa_protocol.h"
+      - "viogpu/shared/viogpu_display_allocation.h"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/backing-entries/**"
@@ -114,6 +120,10 @@ jobs:
       - name: Check host EDID and rational display timings
         shell: cmd
         run: viogpu\tests\display-timing\run-msvc.cmd
+
+      - name: Check actual host DVSA discovery and strict unavailable boundaries
+        shell: cmd
+        run: viogpu\tests\display-allocation\run-msvc.cmd
 
       - name: Check scheduler fence publication ordering
         shell: cmd

@@ -12321,6 +12321,26 @@ BOOLEAN VioGpuAdapter::GetDisplayInfo(void)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    /* Query the actual host allocation window when refreshing display state.
+     * Discovery alone never changes scanout or advertises zero-copy support. */
+    UINT sharedBar = 0;
+    ULONGLONG sharedOffset = 0;
+    ULONGLONG sharedSize = 0;
+    VIOGPU_DVSA_DISCOVERY sharedDiscovery = {};
+    if (m_PciResources.QueryHostVisibleRegion(&sharedBar, &sharedOffset, &sharedSize) &&
+        sharedOffset == 0 && m_CtrlQueue.QueryDisplayAllocationDiscovery(sharedSize, &sharedDiscovery))
+    {
+        DbgPrint(TRACE_LEVEL_INFORMATION,
+                 ("DVSA discovery: surface=%I64u bar=%I64u reserved=%I64u available=%I64u "
+                  "alignment=%I64u triple=%I64u features=0x%I64x unavailable=0x%I64x\n",
+                  sharedDiscovery.query.surface_generation, sharedDiscovery.bar_size,
+                  sharedDiscovery.reserved_prefix, sharedDiscovery.dynamic_capacity,
+                  sharedDiscovery.mapping_alignment, sharedDiscovery.triple_bytes_lower_bound,
+                  sharedDiscovery.feature_bits, sharedDiscovery.unavailable_reasons));
+    }
+#endif
+
     ULONG xres = 0;
     ULONG yres = 0;
     for (UINT32 i = 0; i < m_u32NumScanouts; i++)
