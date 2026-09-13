@@ -12966,14 +12966,16 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
                     violations.append(f"missing default DVCL wrapper {wrapper}")
         if dvcl_calls.search(default):
             violations.append(f"default WDDM2.0 {name} issues a DVCL display color command")
-        for token in ("HpdAwarenessInterruptible", "ColorTransformCaps", "DXGKDDI_WDDMv2_3",
+        for token in ("RequestColorConnectionRefresh", "RefreshColorConnection", "ColorTransformCaps", "DXGKDDI_WDDMv2_3",
                       "DXGKQAITYPE_QUERYCOLORIMETRYOVERRIDES", "advanced_color_ddi", "VioGpuWddmSetTimingsFromVidPn",
                       "VioGpuWddmSetTargetGamma", "VioGpuWddmSetVidPnSourceAddressMpo3",
                       "DXGKDDI_INTERFACE_VERSION_WDDM2_3;"):
             if token in default:
                 violations.append(f"default WDDM2.0 {name} exposes {token}")
     dod_default = interface_view(code["viogpudo.cpp"], advanced=False)
-    need("HpdAwarenessAlwaysConnected", dod_default, "default WDDM2.0 monitor must stay always connected")
+    relations_default = body("VioGpuDod::QueryChildRelations", dod_default)
+    need("constVioGpuChildDescriptordescriptor=VioGpuChildDescriptorFor(m_ChildDescriptorMode);", relations_default,
+         "default WDDM2.0 child must come from the selected descriptor")
     need("constD3DDDIFORMATstorageFormat=pCurrentMode->DispInfo.ColorFormat;",
          body("VioGpuDod::SetSourceModeAndPath", dod_default),
          "default WDDM2.0 mode set must preserve framebuffer storage")
@@ -13041,7 +13043,21 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
          acdi, "an MPO3 PQ plane must require usable PQ")
     if "PreserveInherited" in acdi and "STATUS_NOT_SUPPORTED" in acdi[acdi.find("PreserveInherited") - 40:acdi.find("PreserveInherited") + 80]:
         violations.append("PreserveInherited must be applied and reported, not refused")
+    relations = body("VioGpuDod::QueryChildRelations", dod)
+    for fragment in ("ChildCapabilities.HpdAwareness=static_cast<DXGK_CHILD_DEVICE_HPD_AWARENESS>(descriptor.HpdAwareness);",
+                     "InterfaceTechnology=static_cast<D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY>(descriptor.InterfaceTechnology);"):
+        need(fragment, relations, "the Advanced Color child must keep the selected descriptor")
+    if re.search(r"HpdAwareness=HpdAwareness|InterfaceTechnology=D3DKMDT_VOT_", relations):
+        violations.append("the Advanced Color candidate must not hard-code the child descriptor")
+    need("LinkTargetType=static_cast<D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY>(adapter->ChildDescriptor().InterfaceTechnology);",
+         acdi, "timing target state must report the selected connector technology")
+    config = body("VioGpuAdapter::ConfigChanged", dod)
+    need("if(InterlockedCompareExchange(&m_pVioGpuDod->m_ColorMonitorConnected,0,0)!=0){UpdateChildStatus(TRUE);}"
+         "InterlockedExchange(&m_ColorConnectionRefreshRequested,1);", config,
+         "a display event must keep the SDR connected report before the HDR refresh")
     refresh = body("VioGpuAdapter::RefreshColorConnection", dod)
+    need("constboolinterruptible=m_pVioGpuDod->ChildDescriptor().HpdAwareness==VioGpuHpdInterruptible;", refresh,
+         "only an interruptible child may be pulsed")
     require_fragments = ("discovered=m_pVioGpuDod->QueryDisplayColor(&caps)&&caps.generation!=0;",
                          "VioGpuColorConnectionAction(", "if(action==VioGpuColorConnectionReenumerate)",
                          "UpdateChildStatus(FALSE)", "if(action!=VioGpuColorConnectionNone)", "UpdateChildStatus(TRUE)")

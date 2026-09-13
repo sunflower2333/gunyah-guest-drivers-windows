@@ -13969,6 +13969,13 @@ void VioGpuAdapter::ConfigChanged(void)
         events_clear |= VIRTIO_GPU_EVENT_DISPLAY;
         virtio_set_config(&m_VioDev, FIELD_OFFSET(GPU_CONFIG, events_clear), &events_clear, sizeof(m_u32NumScanouts));
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        // Keep the SDR display-event report of the default build unless a PQ
+        // renegotiation pulse currently holds the monitor disconnected; the
+        // color refresh that follows in the worker applies the HDR policy.
+        if (InterlockedCompareExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 0, 0) != 0)
+        {
+            UpdateChildStatus(TRUE);
+        }
         InterlockedExchange(&m_ColorConnectionRefreshRequested, 1);
 #else
         UpdateChildStatus(TRUE);
@@ -14001,8 +14008,9 @@ void VioGpuAdapter::RefreshColorConnection()
         discovered = m_pVioGpuDod->QueryDisplayColor(&caps) && caps.generation != 0;
         m_pVioGpuDod->ClearColorPresentCompletion();
     }
-    // QueryChildRelations reports this candidate's child with interruptible HPD.
-    const bool interruptible = true;
+    // Only an interruptible child may be reported disconnected; the descriptor
+    // is the registry-selected one QueryChildRelations reported.
+    const bool interruptible = m_pVioGpuDod->ChildDescriptor().HpdAwareness == VioGpuHpdInterruptible;
     const auto action =
         VioGpuColorConnectionAction(m_ColorConnectionInitialized != FALSE, interruptible, discovered != FALSE,
                                     &m_ColorNotifiedCapabilities, discovered ? &caps : nullptr);

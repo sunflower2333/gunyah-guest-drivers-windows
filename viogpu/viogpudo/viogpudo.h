@@ -1316,6 +1316,11 @@ class VioGpuDod
     volatile LONG m_ColorMonitorConnected = 1;
     volatile LONG m_ColorModeAvailable = 0;
     volatile LONG m_ColorModeEpoch = 0;
+    // The video output child reported by QueryChildRelations for this start.
+    VioGpuChildDescriptor ChildDescriptor() const
+    {
+        return VioGpuChildDescriptorFor(m_ChildDescriptorMode);
+    }
     BOOLEAN IsNativeHdrModeAvailable() const
     {
         return !IsHardwareResetRequested() &&
