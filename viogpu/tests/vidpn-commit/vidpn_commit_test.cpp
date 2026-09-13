@@ -30,9 +30,15 @@ constexpr unsigned MAX_VIEWS = 1, MAX_CHILDREN = 1, DXGK_VIDPN_INTERFACE_VERSION
 #define NT_ASSERT(x) assert(x)
 #define NT_SUCCESS(x) ((x) >= 0)
 #define DbgPrint(...) ((void)0)
+// The default WDDM 2.0 interface: Advanced Color color-state serialization is
+// compiled out, while the explicit required-output-format contract is not.
+#define DXGKDDI_INTERFACE_VERSION_WDDM2_0 0x5023
+#define DXGKDDI_INTERFACE_VERSION_WDDM2_3 0x8001
+#define DXGKDDI_INTERFACE_VERSION DXGKDDI_INTERFACE_VERSION_WDDM2_0
+enum D3DDDIFORMAT { D3DDDIFMT_UNKNOWN = 0, D3DDDIFMT_A8R8G8B8 = 21, D3DDDIFMT_A2B10G10R10 = 31 };
 
 struct D3DKMDT_VIDEO_SIGNAL_INFO { uint64_t PixelRate = 1160680000; };
-struct D3DKMDT_VIDPN_SOURCE_MODE {};
+struct D3DKMDT_VIDPN_SOURCE_MODE { struct { struct { D3DDDIFORMAT PixelFormat = D3DDDIFMT_A8R8G8B8; } Graphics; } Format; };
 struct D3DKMDT_VIDPN_TARGET_MODE { D3DKMDT_VIDEO_SIGNAL_INFO VideoSignalInfo; };
 struct D3DKMDT_VIDPN_PRESENT_PATH {};
 struct DXGKARG_COMMITVIDPN {
@@ -142,7 +148,7 @@ struct VioGpuDod {
         if (peer.step("setSource")) return Refusal;
         ++peer.commits; peer.currentClock=signal->PixelRate; return STATUS_SUCCESS;
     }
-    NTSTATUS CommitVidPn(const DXGKARG_COMMITVIDPN*);
+    NTSTATUS CommitVidPn(const DXGKARG_COMMITVIDPN*, D3DDDIFORMAT requiredOutputFormat = D3DDDIFMT_UNKNOWN);
 };
 // INSERT_PRODUCTION
 
@@ -184,6 +190,25 @@ int main() {
     check(device.CommitVidPn(&request)==STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED && peer.released() &&
           !peer.commits && device.counters[6]==STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED,
           "missing target rejected with resources released");
+    // SetTimingsFromVidPn names the output format its wire color space needs.
+    // A pinned primary of the other depth is refused before any mode change;
+    // an unpinned source cannot satisfy an explicit requirement.
+    for (D3DDDIFORMAT required : {D3DDDIFMT_A2B10G10R10, D3DDDIFMT_A8R8G8B8}) {
+        peer=Peer{}; peer.source.Format.Graphics.PixelFormat=D3DDDIFMT_A8R8G8B8; VioGpuDod device;
+        DXGKARG_COMMITVIDPN request;
+        NTSTATUS status=device.CommitVidPn(&request,required);
+        if (required==D3DDDIFMT_A8R8G8B8)
+            check(status==STATUS_SUCCESS && peer.commits==1 && peer.released(),"matching required format commits");
+        else
+            check(status==STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED && !peer.commits && peer.released() &&
+                  peer.currentClock==422060000 && device.counters[6]==STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED,
+                  "eight-bit primary never satisfies a ten-bit output");
+    }
+    {
+        peer=Peer{}; peer.pinSource=false; VioGpuDod device; DXGKARG_COMMITVIDPN request;
+        check(device.CommitVidPn(&request,D3DDDIFMT_A8R8G8B8)==STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED &&
+              !peer.commits && peer.released(),"unpinned source cannot satisfy a required output format");
+    }
     std::printf("Production VidPN commit: %u/%u checks passed\n",checks-failures,checks);
     return failures ? 1 : 0;
 }
