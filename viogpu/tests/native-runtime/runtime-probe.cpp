@@ -165,6 +165,19 @@ static ComPtr<IDXGIAdapter1> adapterFor(IDXGIFactory4 *factory, bool warp)
                  static_cast<unsigned long>(desc.AdapterLuid.HighPart),
                  desc.AdapterLuid.LowPart,
                  (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? 1u : 0u);
+    for (UINT index = 0; index < 16; ++index)
+    {
+        ComPtr<IDXGIOutput> output;
+        const HRESULT status = selected->EnumOutputs(index, &output);
+        std::printf("ADAPTER_OUTPUT index=%u hr=0x%08lx\n", index, static_cast<unsigned long>(status));
+        if (status == DXGI_ERROR_NOT_FOUND)
+            break;
+        checked(status, "enumerate-selected-adapter-output");
+        DXGI_OUTPUT_DESC outputDesc{};
+        checked(output->GetDesc(&outputDesc), "selected-adapter-output-description");
+        std::wprintf(L"ADAPTER_MONITOR=%ls attached=%u monitor=%p\n", outputDesc.DeviceName,
+                     outputDesc.AttachedToDesktop ? 1u : 0u, outputDesc.Monitor);
+    }
     return selected;
 }
 
@@ -383,6 +396,12 @@ static void d3d11(IDXGIFactory4 *factory,
                          desc.DeviceName, desc.AttachedToDesktop ? 1u : 0u,
                          desc.DesktopCoordinates.left, desc.DesktopCoordinates.top,
                          desc.DesktopCoordinates.right, desc.DesktopCoordinates.bottom);
+            ComPtr<IDXGIAdapter> owner;
+            checked(output->GetParent(IID_PPV_ARGS(&owner)), "swapchain-output-owner");
+            DXGI_ADAPTER_DESC ownerDesc{};
+            checked(owner->GetDesc(&ownerDesc), "swapchain-output-owner-description");
+            std::wprintf(L"SWAPCHAIN_OUTPUT_OWNER=%ls LUID=%08lx:%08lx\n", ownerDesc.Description,
+                         static_cast<unsigned long>(ownerDesc.AdapterLuid.HighPart), ownerDesc.AdapterLuid.LowPart);
         }
     }
     for (UINT frame = 0; frame < 4; ++frame)
