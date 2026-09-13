@@ -5768,41 +5768,56 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
         getHandleData.Type = DXGK_HANDLE_ALLOCATION;
         getHandleData.Flags.Value = 0;
 
-        VIOGPU_WDDM_ALLOCATION *allocation = static_cast<VIOGPU_WDDM_ALLOCATION *>(dxgkInterface->DxgkCbGetHandleData(
-                                                                                                            &getHandleData));
+        /* WDDM 2.0 refuses DxgkCbGetHandleData ("WDDM2 driver calls WDDM1.x
+         * DDI!") and returns NULL, which failed every D3DKMTCreateAllocation
+         * here. The WDDM 2.0 form pins dxgkrnl's object until the matching
+         * release; the open reference taken below outlives that pin. */
+        DXGKARG_RELEASE_HANDLE releaseHandle = NULL;
+        VIOGPU_WDDM_ALLOCATION *allocation = static_cast<VIOGPU_WDDM_ALLOCATION *>(
+            dxgkInterface->DxgkCbAcquireHandleData(&getHandleData, &releaseHandle));
+        VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = NULL;
         if (!IsOwnedAllocation(allocation, device->Adapter))
         {
             status = STATUS_INVALID_HANDLE;
-            break;
         }
-        if (RtlCompareMemory(&privateData, &allocation->PrivateData, sizeof(privateData)) != sizeof(privateData))
+        else if (RtlCompareMemory(&privateData, &allocation->PrivateData, sizeof(privateData)) != sizeof(privateData))
         {
             status = STATUS_GRAPHICS_DRIVER_MISMATCH;
-            break;
         }
-
-        VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = new (NonPagedPoolNx) VIOGPU_WDDM_OPEN_ALLOCATION;
-        if (deviceAllocation == NULL)
+        else if ((deviceAllocation = new (NonPagedPoolNx) VIOGPU_WDDM_OPEN_ALLOCATION) == NULL)
         {
             status = STATUS_NO_MEMORY;
-            break;
         }
-        if (!ReferenceDevice(device))
+        else if (!ReferenceDevice(device))
         {
             delete deviceAllocation;
+            deviceAllocation = NULL;
             status = STATUS_DEVICE_NOT_READY;
-            break;
         }
-        status = AcquireAllocationLifecycle(allocation);
-        if (status == STATUS_SUCCESS)
+        else
         {
-            status = ReferenceAllocationOpen(allocation, device->Adapter);
-            KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+            status = AcquireAllocationLifecycle(allocation);
+            if (status == STATUS_SUCCESS)
+            {
+                status = ReferenceAllocationOpen(allocation, device->Adapter);
+                KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+            }
+            if (status != STATUS_SUCCESS)
+            {
+                DereferenceDevice(device);
+                delete deviceAllocation;
+                deviceAllocation = NULL;
+            }
+        }
+        if (releaseHandle != NULL)
+        {
+            DXGKARGCB_RELEASEHANDLEDATA release = {};
+            release.ReleaseHandle = releaseHandle;
+            release.Type = DXGK_HANDLE_ALLOCATION;
+            dxgkInterface->DxgkCbReleaseHandleData(release);
         }
         if (status != STATUS_SUCCESS)
         {
-            DereferenceDevice(device);
-            delete deviceAllocation;
             break;
         }
 

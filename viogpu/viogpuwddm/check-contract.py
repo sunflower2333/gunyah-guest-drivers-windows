@@ -990,9 +990,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58487",
+        "$minor = 58488",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58487",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58488",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -8307,7 +8307,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "openInfo->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_ALLOCATION_INFO)",
         "VIOGPU_WDDM_ALLOCATION_INFOprivateData={};",
         "RtlCopyMemory(&privateData,openInfo->pPrivateDriverData,sizeof(privateData));",
-        "allocation=static_cast<VIOGPU_WDDM_ALLOCATION*>(dxgkInterface->DxgkCbGetHandleData(&getHandleData));",
+        "allocation=static_cast<VIOGPU_WDDM_ALLOCATION*>(dxgkInterface->DxgkCbAcquireHandleData(&getHandleData,&releaseHandle));",
         "RtlCompareMemory(&privateData,&allocation->PrivateData,sizeof(privateData))!=sizeof(privateData)",
         "if(!ReferenceDevice(device))",
         "deviceAllocation->Device=device;",
@@ -8320,6 +8320,25 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     for fragment in open_allocation_sequence:
         if open_allocation.count(fragment) != 1:
             fail(f"OpenAllocation private-data identity must be unique: {fragment}")
+    # WDDM 2.0 rejects the WDDM 1.x handle lookup outright; every acquired pin
+    # is released once, before the iteration can break out of the loop.
+    if "DxgkCbGetHandleData" in WDDM_DDI_CODE or "DxgkCbGetHandleData" in VIOGPU_CODE:
+        fail("a WDDM 2.0 miniport must not call the WDDM 1.x DxgkCbGetHandleData callback")
+    require_order(
+        open_allocation,
+        (
+            "DXGKARG_RELEASE_HANDLEreleaseHandle=NULL;",
+            "dxgkInterface->DxgkCbAcquireHandleData(&getHandleData,&releaseHandle)",
+            "status=ReferenceAllocationOpen(allocation,device->Adapter);",
+            "if(releaseHandle!=NULL){DXGKARGCB_RELEASEHANDLEDATArelease={};release.ReleaseHandle=releaseHandle;"
+            "release.Type=DXGK_HANDLE_ALLOCATION;dxgkInterface->DxgkCbReleaseHandleData(release);}"
+            "if(status!=STATUS_SUCCESS){break;}",
+            "openInfo->hDeviceSpecificAllocation=deviceAllocation;",
+        ),
+        "OpenAllocation must release its dxgkrnl handle pin exactly once before leaving the iteration",
+    )
+    if open_allocation.count("DxgkCbReleaseHandleData(") != 1 or open_allocation.count("break;") != 3:
+        fail("OpenAllocation must have one release and no break path that skips it")
     if re.search(r"(?:openAllocation|mutableOpenAllocation)->(?:SubresourceOffset|Pitch)=", open_allocation):
         fail("OpenAllocation must not publish conditional GDI aperture outputs for the current segment")
     rollback_sequence = (
