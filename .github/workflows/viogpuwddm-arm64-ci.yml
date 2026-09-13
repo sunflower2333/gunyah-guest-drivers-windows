@@ -16,6 +16,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/display-timing/**"
+      - "viogpu/tests/present-formats/**"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/backing-entries/**"
@@ -43,6 +44,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/display-timing/**"
+      - "viogpu/tests/present-formats/**"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/backing-entries/**"
@@ -119,6 +121,14 @@ jobs:
       - name: Check Native Context full-miniport contract
         shell: pwsh
         run: python viogpu/viogpuwddm/check-contract.py
+
+      - name: Execute actual Present format conversion and raw-copy negative control
+        shell: pwsh
+        run: |
+          python viogpu/tests/present-formats/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/present-formats/run.py --negative-control-raw-copy
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Check host EDID and rational display timings
         shell: cmd

@@ -2844,12 +2844,9 @@ BOOLEAN ValidatePresentGeometry(_In_ const VIOGPU_WDDM_ALLOCATION *source,
 {
     if (source == NULL || destination == NULL || sourceRect == NULL || destinationRect == NULL ||
         destinationSubRects == NULL || rectCount == 0 || rectCount > VIOGPU_WDDM_PRESENT_RECTS_PER_PASS ||
-        // Window redirection also copies A8R8G8B8 into X8R8G8B8. The RGB bytes
-        // have the same layout and destination alpha is ignored. The reverse
-        // conversion needs opaque alpha insertion and is not a raw copy.
-        (source->Format != destination->Format &&
-         !(source->Format == D3DDDIFMT_A8R8G8B8 && destination->Format == D3DDDIFMT_X8R8G8B8)) ||
-        !IsSupportedSurfaceFormat(source->Format) ||
+        // DXGI can leave the destination unknown until kernel presentation.
+        // Every advertised 32-bit layout is converted by CopyPresentRow below.
+        !IsSupportedSurfaceFormat(source->Format) || !IsSupportedSurfaceFormat(destination->Format) ||
         static_cast<ULONGLONG>(source->Pitch) < static_cast<ULONGLONG>(source->Width) * 4 ||
         static_cast<ULONGLONG>(destination->Pitch) < static_cast<ULONGLONG>(destination->Width) * 4 ||
         static_cast<ULONGLONG>(source->Pitch) * source->Height > source->BackingSize ||
@@ -2880,6 +2877,45 @@ BOOLEAN ValidatePresentGeometry(_In_ const VIOGPU_WDDM_ALLOCATION *source,
         }
     }
     return TRUE;
+}
+
+VOID CopyPresentRow(_Out_writes_bytes_(rowBytes) VOID *destination,
+                    _In_reads_bytes_(rowBytes) const VOID *source,
+                    _In_ SIZE_T rowBytes,
+                    _In_ D3DDDIFORMAT sourceFormat,
+                    _In_ D3DDDIFORMAT destinationFormat)
+{
+    // The caller validates both 32-bit formats, rectangles, pitches and backing
+    // spans while holding both allocation lifecycles. Preserve encoded color
+    // values: Present must not decode sRGB into a non-sRGB destination.
+    BOOLEAN swapRedBlue = (sourceFormat == D3DDDIFMT_A8B8G8R8) !=
+                          (destinationFormat == D3DDDIFMT_A8B8G8R8);
+    BOOLEAN opaqueAlpha = sourceFormat == D3DDDIFMT_X8R8G8B8 &&
+                          destinationFormat != D3DDDIFMT_X8R8G8B8;
+    if (!swapRedBlue && !opaqueAlpha)
+    {
+        RtlCopyMemory(destination, source, rowBytes);
+        return;
+    }
+    PUCHAR destinationBytes = static_cast<PUCHAR>(destination);
+    const unsigned char *sourceBytes = static_cast<const unsigned char *>(source);
+    for (SIZE_T offset = 0; offset < rowBytes; offset += sizeof(DWORD))
+    {
+        DWORD pixel;
+        // Use byte copies because an otherwise valid surface pitch can make
+        // row starts unaligned. Each source pixel is read exactly once.
+        RtlCopyMemory(&pixel, sourceBytes + offset, sizeof(pixel));
+        if (swapRedBlue)
+        {
+            pixel = (pixel & 0xFF00FF00U) | ((pixel & 0x000000FFU) << 16) |
+                    ((pixel & 0x00FF0000U) >> 16);
+        }
+        if (opaqueAlpha)
+        {
+            pixel |= 0xFF000000U;
+        }
+        RtlCopyMemory(destinationBytes + offset, &pixel, sizeof(pixel));
+    }
 }
 
 BOOLEAN ReferencePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
@@ -3454,7 +3490,8 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                     SIZE_T sourceOffset = (sourceTop + row) * source->Pitch + sourceLeft * 4;
                     SIZE_T destinationOffset = static_cast<SIZE_T>(destinationRect->top + row) * destination->Pitch +
                                                static_cast<SIZE_T>(destinationRect->left) * 4;
-                    RtlCopyMemory(destinationBase + destinationOffset, sourceBase + sourceOffset, rowBytes);
+                    CopyPresentRow(destinationBase + destinationOffset, sourceBase + sourceOffset,
+                                   rowBytes, source->Format, destination->Format);
                 }
             }
             KeMemoryBarrier();

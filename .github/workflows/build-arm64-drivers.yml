@@ -97,6 +97,13 @@ jobs:
       - name: Execute fragmented backing and control descriptor regression
         shell: pwsh
         run: python viogpu/tests/backing-entries/run.py
+      - name: Execute Present format conversion and raw-copy negative control
+        shell: pwsh
+        run: |
+          python viogpu/tests/present-formats/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/present-formats/run.py --negative-control-raw-copy
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Execute guest scanout layout and backing bounds
         shell: pwsh
         run: python viogpu/tests/guest-scanout/run.py
