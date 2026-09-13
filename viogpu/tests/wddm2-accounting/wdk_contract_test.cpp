@@ -3,7 +3,7 @@
 #include <windef.h>
 #include <d3dkmddi.h>
 #include <dispmprt.h> // DXGKRNL_INTERFACE
-#include "../../common/mmio_flip.h"
+#include "mmio_flip.h" // run.py adds viogpu/common; the unit is compiled from a temp copy
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

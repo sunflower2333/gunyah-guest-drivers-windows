@@ -43,7 +43,8 @@ with tempfile.TemporaryDirectory(prefix='viogpu-wddm2-accounting-') as output:
             kit = Path(os.environ['DROIDVM_KIT_ROOT']) / 'Include' / os.environ['DROIDVM_KIT_VERSION']
             command += ['/D_AMD64_', '/DAMD64', '/DWINVER=0x0A00', '/D_WIN32_WINNT=0x0A00',
                         '/DDXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WDDM2_0',
-                        *[f'/I{kit / part}' for part in ('km', 'shared', 'um')]]
+                        *[f'/I{kit / part}' for part in ('km', 'shared', 'um')],
+                        f'/I{root / "viogpu" / "common"}']
     else:
         if args.wdk:
             parser.error('--wdk requires actual Windows MSVC and WDK')
