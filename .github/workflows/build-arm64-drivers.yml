@@ -492,7 +492,7 @@ jobs:
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
           # Unified flat API installation atop frozen 58473. All API files
           # share the display INF and the same signed catalog as the KMD/UMD.
-          $minor = 58478
+          $minor = 58479
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -549,8 +549,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58478) {
-            throw "Unified flat candidate requires reserved version 100.6.101.58478"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58479) {
+            throw "Unified flat candidate requires reserved version 100.6.101.58479"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -781,7 +781,7 @@ jobs:
             }
             if ($d.n -eq 'viogpu') {
               python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
-                --mesa 431ba7625e4cdd8bf15bd268e340045a45e7dbd5 --clvk fd4454676a30ca5e04ed567cb3d51b5f008113db
+                --mesa 431ba7625e4cdd8bf15bd268e340045a45e7dbd5 --clvk 2bf028507ffc45fa47ddf0a770dd35611617e807
               if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
               if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
@@ -864,7 +864,7 @@ jobs:
         run: |
           python viogpu/package/verify_bundle.py --output out `
             --mesa 431ba7625e4cdd8bf15bd268e340045a45e7dbd5 --mesa-run 34731498360 `
-            --clvk fd4454676a30ca5e04ed567cb3d51b5f008113db --clvk-run 34736596797 --version 100.6.101.58478
+            --clvk 2bf028507ffc45fa47ddf0a770dd35611617e807 --clvk-run 34739833418 --version 100.6.101.58479
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact
