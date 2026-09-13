@@ -33,9 +33,12 @@ enum
     D3DKMDT_VSS_OTHER = 1,
     D3DDDI_VSSLO_PROGRESSIVE = 2,
     D3DKMDT_MCO_DRIVER = 3,
+    D3DKMDT_CB_SRGB = 6,
+};
+enum D3DKMDT_MODE_PREFERENCE
+{
     D3DKMDT_MP_PREFERRED = 4,
     D3DKMDT_MP_NOTPREFERRED = 5,
-    D3DKMDT_CB_SRGB = 6,
 };
 struct Size
 {
@@ -56,7 +59,8 @@ struct D3DKMDT_VIDEO_SIGNAL_INFO
 struct D3DKMDT_MONITOR_SOURCE_MODE
 {
     D3DKMDT_VIDEO_SIGNAL_INFO VideoSignalInfo;
-    unsigned Origin, Preference, ColorBasis;
+    unsigned Origin, ColorBasis;
+    D3DKMDT_MODE_PREFERENCE Preference;
     struct
     {
         unsigned FirstChannel, SecondChannel, ThirdChannel, FourthChannel;
