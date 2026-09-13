@@ -990,9 +990,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58485",
+        "$minor = 58486",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58485",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58486",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -5045,7 +5045,26 @@ def check_wddm_standard_primary_scanout() -> None:
        "FlipOnVSyncMmIo" in query_caps or "FlipOnVSyncMmIo" in wddm_query_caps:
         fail("only the Native Context DriverCaps helper may advertise MMIO flip capability")
     check_mmio_flip_contract(native_caps)
+    check_wddm2_start_queries()
 
+
+def check_wddm2_start_queries() -> None:
+    """WDDM 2.0 AddAdapter rejects STATUS_NOT_SUPPORTED for its start queries."""
+
+    query = canonical_code(function_body("VioGpuWddmQueryAdapterInfo", WDDM_DDI_CODE))
+    for query_type, handler in (
+        ("DXGKQAITYPE_PHYSICALADAPTERCAPS", "QueryPhysicalAdapterCaps(adapter,pQueryAdapterInfo)"),
+        ("DXGKQAITYPE_64BITONLYCAPS", "Query64BitOnlyCaps(pQueryAdapterInfo)"),
+        ("DXGKQAITYPE_QUERYSEGMENT4", "QuerySegment4(adapter,pQueryAdapterInfo)"),
+        ("DXGKQAITYPE_HISTORYBUFFERPRECISION", "QueryHistoryBufferPrecision(pQueryAdapterInfo)"),
+        ("DXGKQAITYPE_DISPLAY_DRIVERCAPS_EXTENSION", "QueryDisplayDriverCapsExtension(pQueryAdapterInfo)"),
+    ):
+        dispatch = f"pQueryAdapterInfo->Type=={query_type}){{status={handler};}}"
+        if query.count(dispatch) != 1:
+            fail(f"WDDM 2.0 start query must be answered by its handler: {query_type}")
+    for handler in ("QueryHistoryBufferPrecision", "QueryDisplayDriverCapsExtension"):
+        if "STATUS_NOT_SUPPORTED" in canonical_code(function_body(handler, WDDM_DDI_CODE)):
+            fail(f"{handler} must not return a status WDDM 2.0 start rejects")
 
 def check_mmio_flip_contract(native_caps: str) -> None:
     """FlipOnVSyncMmIo: validate at Present, publish at DIRQL, bind at PASSIVE."""

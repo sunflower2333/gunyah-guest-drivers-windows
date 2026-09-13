@@ -104,6 +104,16 @@ struct DXGK_PHYSICALADAPTERCAPS
     } Flags;
     UINT VPRPagingNode;
 };
+struct DXGKARG_HISTORYBUFFERPRECISION
+{
+    uint32_t PrecisionBits;
+};
+struct DXGK_DISPLAY_DRIVERCAPS_EXTENSION
+{
+    union {
+        UINT Value;
+    };
+};
 struct DXGKRNL_INTERFACE
 {
     UINT Size;
@@ -313,6 +323,43 @@ int main()
         physical.pInputData = &physicalIn;
         physical.pOutputData = nullptr;
         check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_BUFFER_TOO_SMALL, "missing output rejected");
+    }
+    {
+        std::array<unsigned char, 12> precision;
+        precision.fill(0xa5);
+        DXGKARG_QUERYADAPTERINFO history{nullptr, 4, precision.data(), 4};
+        check(QueryHistoryBufferPrecision(&history) == STATUS_SUCCESS, "one-node history precision answered");
+        DXGKARG_HISTORYBUFFERPRECISION node{};
+        std::memcpy(&node, precision.data(), sizeof(node));
+        check(node.PrecisionBits == 64, "64-bit timestamps, never the FormatHistoryBuffer contract");
+        check(precision[4] == 0xa5 && precision[11] == 0xa5, "bytes beyond one node untouched");
+        history.OutputDataSize = 12;
+        check(QueryHistoryBufferPrecision(&history) == STATUS_SUCCESS, "every node answered");
+        for (UINT offset = 0; offset < 12; offset += 4)
+        {
+            std::memcpy(&node, precision.data() + offset, sizeof(node));
+            check(node.PrecisionBits == 64, "each node precision is valid (32..64)");
+        }
+        history.OutputDataSize = 6;
+        check(QueryHistoryBufferPrecision(&history) == STATUS_INVALID_PARAMETER, "partial node rejected");
+        history.OutputDataSize = 3;
+        check(QueryHistoryBufferPrecision(&history) == STATUS_INVALID_PARAMETER, "short output rejected");
+        history.OutputDataSize = 4;
+        history.pOutputData = nullptr;
+        check(QueryHistoryBufferPrecision(&history) == STATUS_INVALID_PARAMETER, "missing output rejected");
+
+        std::array<unsigned char, 8> extension;
+        extension.fill(0xa5);
+        DXGKARG_QUERYADAPTERINFO display{nullptr, 0, extension.data(), 4};
+        check(QueryDisplayDriverCapsExtension(&display) == STATUS_SUCCESS, "display caps extension answered");
+        check(extension[0] == 0 && extension[1] == 0 && extension[2] == 0 && extension[3] == 0,
+              "no secure display or virtual mode support claimed");
+        check(extension[4] == 0xa5, "bytes beyond the extension untouched");
+        display.OutputDataSize = 3;
+        check(QueryDisplayDriverCapsExtension(&display) == STATUS_INVALID_PARAMETER, "short extension rejected");
+        display.OutputDataSize = 4;
+        display.pOutputData = nullptr;
+        check(QueryDisplayDriverCapsExtension(&display) == STATUS_INVALID_PARAMETER, "missing extension rejected");
     }
     std::printf("PASS: %u production WDDM2 accounting cases\n", checks);
 }

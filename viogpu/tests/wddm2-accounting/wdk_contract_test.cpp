@@ -159,5 +159,25 @@ int main()
         physicalIn.PhysicalAdapterIndex = 1;
         check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_INVALID_PARAMETER, "WDK linked index rejected");
     }
+    {
+        check(sizeof(DXGKARG_HISTORYBUFFERPRECISION) == 4 && sizeof(DXGK_DISPLAY_DRIVERCAPS_EXTENSION) == 4,
+              "WDK start-query payload sizes");
+        DXGKARG_HISTORYBUFFERPRECISION precision = {};
+        DXGKARG_QUERYADAPTERINFO history = {};
+        history.Type = DXGKQAITYPE_HISTORYBUFFERPRECISION;
+        history.pOutputData = &precision;
+        history.OutputDataSize = sizeof(precision);
+        check(QueryHistoryBufferPrecision(&history) == STATUS_SUCCESS && precision.PrecisionBits == 64,
+              "WDK history buffer precision");
+        DXGK_DISPLAY_DRIVERCAPS_EXTENSION extension = {};
+        extension.Value = 0xffffffffU;
+        DXGKARG_QUERYADAPTERINFO display = {};
+        display.Type = DXGKQAITYPE_DISPLAY_DRIVERCAPS_EXTENSION;
+        display.pOutputData = &extension;
+        display.OutputDataSize = sizeof(extension);
+        check(QueryDisplayDriverCapsExtension(&display) == STATUS_SUCCESS && extension.Value == 0 &&
+                  !extension.SecureDisplaySupport && !extension.VirtualModeSupport,
+              "WDK display caps extension claims nothing");
+    }
     std::printf("PASS: %u actual WDK WDDM2 ABI and production contract assertions\n", checks);
 }

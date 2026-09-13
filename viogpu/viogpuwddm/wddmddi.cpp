@@ -3877,6 +3877,42 @@ static NTSTATUS QueryPhysicalAdapterCaps(VioGpuDod *adapter, const DXGKARG_QUERY
     return STATUS_SUCCESS;
 }
 
+/* WDDM 2.0 adapter start asks for these two after QuerySegment4 and treats
+ * STATUS_NOT_SUPPORTED as an invalid NTSTATUS ("Driver returned an invalid
+ * NTSTATUS code: 0xc00000bb"), failing StartAdapter_AddAdapterFailed. Answer
+ * with the documented error status for malformed buffers only. */
+
+/* One DXGKARG_HISTORYBUFFERPRECISION per node. No history buffer is ever
+ * written, and precision 0 would commit the driver to
+ * DxgkDdiFormatHistoryBuffer, so report full 64-bit timestamps. */
+static NTSTATUS QueryHistoryBufferPrecision(const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
+{
+    const UINT element = sizeof(DXGKARG_HISTORYBUFFERPRECISION);
+    if (queryAdapterInfo->pOutputData == NULL || queryAdapterInfo->OutputDataSize < element ||
+        queryAdapterInfo->OutputDataSize % element != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    DXGKARG_HISTORYBUFFERPRECISION *precision = static_cast<DXGKARG_HISTORYBUFFERPRECISION *>(queryAdapterInfo->pOutputData);
+    for (UINT node = 0; node < queryAdapterInfo->OutputDataSize / element; ++node)
+    {
+        precision[node].PrecisionBits = 64;
+    }
+    return STATUS_SUCCESS;
+}
+
+/* Secure display and virtual modes are not implemented; every bit stays clear. */
+static NTSTATUS QueryDisplayDriverCapsExtension(const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
+{
+    if (queryAdapterInfo->pOutputData == NULL ||
+        queryAdapterInfo->OutputDataSize < sizeof(DXGK_DISPLAY_DRIVERCAPS_EXTENSION))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(queryAdapterInfo->pOutputData, sizeof(DXGK_DISPLAY_DRIVERCAPS_EXTENSION));
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
 {
     /* Accept any buffer that can hold the ABI header rather than demanding an
@@ -4725,6 +4761,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     else if (pQueryAdapterInfo->Type == DXGKQAITYPE_PHYSICALADAPTERCAPS)
     {
         status = QueryPhysicalAdapterCaps(adapter, pQueryAdapterInfo);
+    }
+    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_HISTORYBUFFERPRECISION)
+    {
+        status = QueryHistoryBufferPrecision(pQueryAdapterInfo);
+    }
+    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_DISPLAY_DRIVERCAPS_EXTENSION)
+    {
+        status = QueryDisplayDriverCapsExtension(pQueryAdapterInfo);
     }
     else if (static_cast<UINT>(pQueryAdapterInfo->Type) == 24U || static_cast<UINT>(pQueryAdapterInfo->Type) == 25U)
     {
