@@ -8,18 +8,29 @@ Load/ABI/GPU verification is performed separately by the corresponding CI jobs.
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import struct
+import subprocess
 
 ARCHES = ("arm64", "x64", "x86")
 MACHINES = {"arm64": 0xAA64, "arm64x": 0xAA64, "x64": 0x8664, "x86": 0x14C}
-DRIVER_ROLES = {"runtime", "icd", "compiler", "data", "installer-helper"}
+DRIVER_ROLES = {"runtime", "icd", "compiler", "data", "installer-helper", "candidate-runtime"}
 ROLES = DRIVER_ROLES | {"system-loader", "probe"}
 LOADER_PROBES = {arch: f"opencl-loader-check-{arch}.exe" for arch in ARCHES}
 MANIFEST = "flat-runtime.json"
 RECEIPT = "viogpu-flat-package.json"
+CANDIDATE_MANIFEST = "candidate-sources.json"
+CANDIDATE_SOURCES = {
+    "dxvk": "a98c19fbc8020ef7f7b47c79ccffe2fcb3c9ad74",
+    "vkd3d": "ac1debbbcba455e2faa10e3a4990711c813b6e63",
+}
+CANDIDATE_UMDS = {
+    "viogpudxvk.dll": ("dxvk", "arm64"),
+    "viogpud3d12.dll": ("vkd3d", "arm64"),
+}
 REGISTRATION = {
     "OpenGLDriverName": ("opengl", "viogpuopengl.dll", "arm64x", "0x00010000"),
     "OpenGLDriverNameWow": ("opengl", "viogpuopengl_x86.dll", "x86", "0x00010000"),
@@ -89,6 +100,48 @@ def read_manifest(root, family, expected_sources):
                     f"{family} PE machine mismatch: {name}")
         else:
             require(machine == "data", f"Non-PE file has an executable machine: {name}")
+    return data
+
+
+def build_candidate_umds():
+    require(os.name == "nt", "Candidate UMD auto-build is available only on Windows")
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    require(runner_temp, "RUNNER_TEMP is required for candidate UMD auto-build")
+    output = Path(runner_temp) / "droidvm-candidate-umd-package"
+    script = Path(__file__).with_name("build_candidate_umds.ps1")
+    require(script.is_file(), f"Missing candidate UMD builder: {script}")
+    subprocess.run([
+        "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+        "-OutputRoot", str(output),
+        "-DxvkCommit", CANDIDATE_SOURCES["dxvk"],
+        "-Vkd3dCommit", CANDIDATE_SOURCES["vkd3d"],
+    ], check=True)
+    return output
+
+
+def read_candidate_umds(root):
+    require(root.is_dir() and not root.is_symlink(), "Invalid candidate UMD directory")
+    paths = list(root.iterdir())
+    require(all(p.is_file() and not p.is_symlink() for p in paths),
+            "Candidate UMD input must be flat regular files, no subdirectories/links")
+    data = json.loads((root / CANDIDATE_MANIFEST).read_text(encoding="utf-8-sig"))
+    require(data.get("schema") == 1 and data.get("activation") == "unregistered-candidate",
+            "Wrong candidate UMD manifest schema/activation")
+    require(data.get("sources") == CANDIDATE_SOURCES, "Candidate UMD source pin mismatch")
+    files = data.get("files")
+    require(isinstance(files, dict) and set(files) == set(CANDIDATE_UMDS),
+            "Wrong candidate UMD inventory")
+    require({p.name for p in paths} == set(CANDIDATE_UMDS) | {CANDIDATE_MANIFEST},
+            "Candidate UMD manifest must cover the exact flat input")
+    for name, (family, machine) in CANDIDATE_UMDS.items():
+        entry = files[name]
+        flat_name(name)
+        require(entry.get("family") == family and entry.get("machine") == machine and
+                entry.get("role") == "candidate-runtime", f"Wrong candidate metadata: {name}")
+        require(isinstance(entry.get("sha256"), str) and
+                re.fullmatch(r"[a-fA-F0-9]{64}", entry["sha256"]) and
+                sha(root / name) == entry["sha256"].lower(), f"Changed candidate UMD: {name}")
+        require(pe_machine(root / name) == MACHINES[machine], f"Candidate PE machine mismatch: {name}")
     return data
 
 
@@ -174,15 +227,16 @@ def compose_inf(text, files):
     return text
 
 
-def assemble(driver, gl, cl, mesa, clvk):
+def assemble(driver, gl, cl, mesa, clvk, candidates):
     require(driver.is_dir() and not driver.is_symlink(), "Missing staged driver directory")
     require(all(p.is_file() and not p.is_symlink() for p in driver.iterdir()),
             "Staged driver must contain flat regular files")
     require(not any(p.suffix.lower() == ".cat" for p in driver.iterdir()),
             "Cannot modify a driver directory after catalog creation")
-    roots = {"opengl": gl, "opencl": cl}
+    roots = {"opengl": gl, "opencl": cl, "dxvk": candidates, "vkd3d": candidates}
     manifests = {"opengl": read_manifest(gl, "opengl", {"mesa": mesa}),
                  "opencl": read_manifest(cl, "opencl", {"clvk": clvk})}
+    candidate_manifest = read_candidate_umds(candidates)
     check_required(manifests)
     for name, proxy in (("turnip.json", "viogpuopengl.dll"),
                         ("turnip-wow.json", "viogpuopengl_x86.dll")):
@@ -206,11 +260,17 @@ def assemble(driver, gl, cl, mesa, clvk):
             require(entry["role"] in DRIVER_ROLES | {"system-loader"},
                     f"Unsupported driver file: {name}")
             files[name] = {**entry, "family": family}
+    for name, entry in candidate_manifest["files"].items():
+        family = entry["family"]
+        require(name.casefold() not in all_names, f"Candidate/driver collision: {name}")
+        all_names.add(name.casefold())
+        files[name] = {**entry, "family": family}
+    registered = {value[1].casefold() for value in REGISTRATION.values()}
+    require(not registered.intersection(name.casefold() for name in CANDIDATE_UMDS),
+            "Candidate UMD must not replace an active registered runtime")
     inf = driver / "viogpuwddm.inf"
     original = inf.read_text(encoding="utf-8-sig")
     updated = compose_inf(original, sorted(set(files) | {RECEIPT}, key=str.casefold))
-    # All inputs and the complete resulting INF are checked before any mutation.
-    # Preserve exact filenames: DIRID13 forbids CopyFiles renaming.
     for name, entry in files.items():
         source = roots[entry["family"]] / name
         require(sha(source) == entry["sha256"].lower(), f"Input changed during assembly: {name}")
@@ -221,6 +281,9 @@ def assemble(driver, gl, cl, mesa, clvk):
     inf.write_text(updated, encoding="utf-8")
     receipt = {"schema": 1, "layout": "flat-driverstore", "phase": "before-signing",
                "sources": {family: data["sources"] for family, data in manifests.items()},
+               "candidate_sources": candidate_manifest["sources"],
+               "candidate_activation": candidate_manifest["activation"],
+               "candidate_umds": {name: files[name] for name in CANDIDATE_UMDS},
                "inf_sha256": sha(inf), "api_files_before_signing": files,
                "public_loaders": public_loaders,
                "loader_probes": manifests["opencl"]["loader_probes"],
@@ -257,6 +320,22 @@ def source_files(inf_text):
     return names
 
 
+def check_candidates_in_receipt(inventory):
+    require(inventory.get("candidate_sources") == CANDIDATE_SOURCES,
+            "Wrong candidate UMD source pins")
+    require(inventory.get("candidate_activation") == "unregistered-candidate",
+            "Candidate UMDs must remain unregistered candidates")
+    candidates = inventory.get("candidate_umds")
+    require(isinstance(candidates, dict) and set(candidates) == set(CANDIDATE_UMDS),
+            "Wrong candidate UMD receipt inventory")
+    registered = {name.casefold() for name in inventory.get("registration", {}).values()}
+    for name, (family, machine) in CANDIDATE_UMDS.items():
+        entry = candidates[name]
+        require(entry.get("family") == family and entry.get("machine") == machine and
+                entry.get("role") == "candidate-runtime", f"Wrong candidate UMD receipt: {name}")
+        require(name.casefold() not in registered, f"Candidate UMD became active registration: {name}")
+
+
 def finalize(driver):
     """Inventory signed PEs immediately before Inf2Cat; signature is checked by CI/install."""
     manifest_path = driver / RECEIPT
@@ -266,10 +345,16 @@ def finalize(driver):
             inventory.get("phase") == "before-signing", "Expected fresh before-signing inventory")
     require(inventory.get("loader_probes") == LOADER_PROBES,
             "Missing/wrong public loader probe mapping")
+    check_candidates_in_receipt(inventory)
     for arch, name in LOADER_PROBES.items():
         entry = inventory["api_files_before_signing"].get(name, {})
         require(entry.get("machine") == arch and entry.get("role") == "installer-helper",
                 f"Missing/wrong installed {arch} public loader helper: {name}")
+    for name, (_, machine) in CANDIDATE_UMDS.items():
+        entry = inventory["api_files_before_signing"].get(name, {})
+        require(entry.get("machine") == machine and entry.get("role") == "candidate-runtime",
+                f"Missing/wrong candidate runtime: {name}")
+        require(pe_machine(driver / name) == MACHINES[machine], f"Wrong candidate PE architecture: {name}")
     inf_name = "viogpuwddm.inf"
     inf = driver / inf_name
     require(sha(inf) == inventory["inf_sha256"], "INF changed after flat composition")
@@ -300,9 +385,10 @@ def finalize(driver):
               "inf": inf_name, "cat": "viogpuwddm.cat", "files": files,
               "sources": inventory["sources"], "system_loaders": loaders,
               "loader_probes": inventory["loader_probes"],
+              "candidate_sources": inventory["candidate_sources"],
+              "candidate_activation": inventory["candidate_activation"],
+              "candidate_umds": inventory["candidate_umds"],
               "registration": inventory["registration"]}
-    # No circular catalog/manifest hashes: the INF copies this manifest and
-    # Inf2Cat covers it. A separate final receipt can hash the signed catalog.
     manifest_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
@@ -315,6 +401,7 @@ def main():
     parser.add_argument("--cl", type=Path)
     parser.add_argument("--mesa")
     parser.add_argument("--clvk")
+    parser.add_argument("--candidate-root", type=Path)
     args = parser.parse_args()
     if args.finalize:
         receipt = finalize(args.driver)
@@ -322,8 +409,10 @@ def main():
         return
     parser.error("--gl --cl --mesa --clvk required for staging") if any(
         value is None for value in (args.gl, args.cl, args.mesa, args.clvk)) else None
-    receipt = assemble(args.driver, args.gl, args.cl, args.mesa, args.clvk)
+    candidates = args.candidate_root if args.candidate_root is not None else build_candidate_umds()
+    receipt = assemble(args.driver, args.gl, args.cl, args.mesa, args.clvk, candidates)
     print(f"PASS staged {len(receipt['api_files_before_signing'])} flat API files in display INF")
+    print("PASS staged DXVK/VKD3D ARM64 candidates flat and unregistered")
     print("PENDING PE/catalog signing, InfVerif, public-loader install, ABI and GPU tests")
 
 
