@@ -134,6 +134,11 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     initialData->DxgkDdiQueryEngineStatus = VioGpuWddmQueryEngineStatus;
     initialData->DxgkDdiResetEngine = VioGpuWddmResetEngine;
     initialData->DxgkDdiGetNodeMetadata = VioGpuWddmGetNodeMetadata;
+    /* Required by WDDM 2.0 adapter start in both modes: "Driver is compiled
+     * against DXGKDDI_INTERFACE_VERSION_WDDM2_0_M2_2_1 or greater, but does not
+     * fill in the pfnCalibrateGpuClock or pfnSetStablePowerState DDI". */
+    initialData->DxgkDdiCalibrateGpuClock = VioGpuWddmCalibrateGpuClock;
+    initialData->DxgkDdiSetStablePowerState = VioGpuWddmSetStablePowerState;
 
     if (!renderOnly)
     {

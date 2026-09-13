@@ -4633,6 +4633,34 @@ NTSTATUS ApplyRenderPrepatches(_Inout_ VIOGPU_WDDM_RENDER_COMMAND *header,
 }
 } // namespace
 
+/* dxgkrnl calibrates GPU timestamps against QPC for history buffers and
+ * vsync reports that carry a GPU clock. This adapter reports neither: no
+ * history buffer is written and CRTC vsync carries no GpuClockCounter. Define
+ * the GPU clock as the performance counter itself, sampled once for both. */
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCalibrateGpuClock(CONST HANDLE hAdapter,
+                                                                     UINT32 NodeOrdinal,
+                                                                     UINT32 EngineOrdinal,
+                                                                     DXGKARG_CALIBRATEGPUCLOCK *pClockCalibration)
+{
+    if (hAdapter == NULL || pClockCalibration == NULL || NodeOrdinal != 0 || EngineOrdinal != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    const LARGE_INTEGER now = KeQueryPerformanceCounter(NULL);
+    pClockCalibration->GpuClockCounter = static_cast<UINT64>(now.QuadPart);
+    pClockCalibration->CpuClockCounter = static_cast<UINT64>(now.QuadPart);
+    return STATUS_SUCCESS;
+}
+
+/* The host GPU owns its power states and exposes no control to the guest, so
+ * there is no dynamic scaling to pin or release. */
+_Use_decl_annotations_ VOID APIENTRY VioGpuWddmSetStablePowerState(CONST HANDLE hAdapter,
+                                                                   CONST DXGKARG_SETSTABLEPOWERSTATE *pArgs)
+{
+    UNREFERENCED_PARAMETER(hAdapter);
+    UNREFERENCED_PARAMETER(pArgs);
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetNodeMetadata(CONST HANDLE hAdapter,
                                                                    UINT nodeOrdinalAndAdapterIndex,
                                                                    DXGKARG_GETNODEMETADATA *metadata)

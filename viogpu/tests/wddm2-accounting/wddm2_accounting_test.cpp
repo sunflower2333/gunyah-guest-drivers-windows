@@ -18,6 +18,8 @@ using BYTE = unsigned char;
 using UINT = unsigned int;
 using SIZE_T = size_t;
 using ULONGLONG = uint64_t;
+using UINT32 = uint32_t;
+using UINT64 = uint64_t;
 using BOOLEAN = bool;
 using NTSTATUS = int;
 constexpr NTSTATUS STATUS_SUCCESS = 0;
@@ -103,6 +105,24 @@ struct DXGK_PHYSICALADAPTERCAPS
         UINT Value;
     } Flags;
     UINT VPRPagingNode;
+};
+struct LARGE_INTEGER
+{
+    int64_t QuadPart;
+};
+uint64_t performanceSamples;
+LARGE_INTEGER KeQueryPerformanceCounter(LARGE_INTEGER *frequency)
+{
+    if (frequency != nullptr)
+    {
+        frequency->QuadPart = 1000000;
+    }
+    return LARGE_INTEGER{static_cast<int64_t>(0x100000000ULL + 7919 * ++performanceSamples)};
+}
+struct DXGKARG_CALIBRATEGPUCLOCK
+{
+    uint64_t GpuClockCounter;
+    uint64_t CpuClockCounter;
 };
 struct DXGKARG_HISTORYBUFFERPRECISION
 {
@@ -347,6 +367,18 @@ int main()
         history.OutputDataSize = 4;
         history.pOutputData = nullptr;
         check(QueryHistoryBufferPrecision(&history) == STATUS_INVALID_PARAMETER, "missing output rejected");
+
+        DXGKARG_CALIBRATEGPUCLOCK clock{0xdeadbeef, 0xfeedface};
+        performanceSamples = 0;
+        check(VioGpuWddmCalibrateGpuClock(&adapter, 0, 0, &clock) == STATUS_SUCCESS, "clock calibration answered");
+        check(performanceSamples == 1 && clock.GpuClockCounter == clock.CpuClockCounter &&
+                  clock.CpuClockCounter == 0x100000000ULL + 7919,
+              "GPU and CPU counters come from one performance counter sample");
+        check(VioGpuWddmCalibrateGpuClock(&adapter, 1, 0, &clock) == STATUS_INVALID_PARAMETER, "unknown node rejected");
+        check(VioGpuWddmCalibrateGpuClock(&adapter, 0, 1, &clock) == STATUS_INVALID_PARAMETER, "unknown engine rejected");
+        check(VioGpuWddmCalibrateGpuClock(nullptr, 0, 0, &clock) == STATUS_INVALID_PARAMETER, "missing adapter rejected");
+        check(VioGpuWddmCalibrateGpuClock(&adapter, 0, 0, nullptr) == STATUS_INVALID_PARAMETER, "missing output rejected");
+        check(performanceSamples == 1, "refused calibrations take no sample");
 
         std::array<unsigned char, 8> extension;
         extension.fill(0xa5);

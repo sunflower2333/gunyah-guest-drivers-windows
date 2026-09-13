@@ -53,6 +53,14 @@ void check(bool ok, const char *message)
 }
 int main()
 {
+    // Calibration fills both 64-bit counters of the real WDK structure.
+    DXGKARG_CALIBRATEGPUCLOCK clock = {};
+    clock.GpuClockCounter = 0xffffffffffffffffULL;
+    clock.CpuClockCounter = clock.GpuClockCounter;
+    check(sizeof(clock.GpuClockCounter) == 8 && sizeof(clock.CpuClockCounter) == 8, "WDK clock calibration counters");
+    DXGKARG_SETSTABLEPOWERSTATE stable = {};
+    stable.Enabled = TRUE;
+    check(stable.Enabled != FALSE, "WDK stable power state argument");
     // The WDK-free MMIO flip policy uses the real bit-field positions.
     DXGK_SETVIDPNSOURCEADDRESS_FLAGS sourceFlags = {};
     sourceFlags.ModeChange = 1;

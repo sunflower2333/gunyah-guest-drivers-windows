@@ -25,14 +25,17 @@ def function(signature):
         end += 1
     return text[start:end]
 
+# The WDK unit links as a user-mode image, so kernel imports stay host-only.
+host_only = ('_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCalibrateGpuClock(',)
 production = '\n'.join(function(signature) for signature in (
     'VOID InitializeAllocationInfo(',
     'static NTSTATUS QuerySegment4(',
     'static NTSTATUS QueryPhysicalAdapterCaps(',
     'static NTSTATUS QueryHistoryBufferPrecision(',
     'static NTSTATUS QueryDisplayDriverCapsExtension(',
+    '_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCalibrateGpuClock(',
     '_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmGetNodeMetadata(',
-))
+) if not (args.wdk and signature in host_only))
 unit = (here / ('wdk_contract_test.cpp' if args.wdk else 'wddm2_accounting_test.cpp')).read_text().replace('// INSERT_PRODUCTION', production)
 with tempfile.TemporaryDirectory(prefix='viogpu-wddm2-accounting-') as output:
     directory = Path(output)
