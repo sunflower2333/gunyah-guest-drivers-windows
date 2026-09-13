@@ -5,6 +5,7 @@ import argparse
 import shutil
 import subprocess
 import tempfile
+import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--negative-control-reset', action='store_true')
@@ -31,6 +32,15 @@ with tempfile.TemporaryDirectory(prefix='gpu-timestamp-') as temporary:
     result = subprocess.run([str(binary)], cwd=output, capture_output=True, text=True)
     print(result.stdout, end='')
     print(result.stderr, end='')
+    # Windows antivirus can briefly retain the just-exited image.
+    for attempt in range(21):
+        try:
+            binary.unlink()
+            break
+        except PermissionError:
+            if attempt == 20:
+                raise
+            time.sleep(0.25)
     if args.negative_control_reset:
         if result.returncode != 1 or 'FAIL reset during timestamp read' not in result.stdout:
             raise SystemExit('Missing reset rejection was not detected')
