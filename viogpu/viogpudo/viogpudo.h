@@ -676,6 +676,7 @@ class VioGpuAdapter : IVioGpuPCI
     static BOOLEAN IsNativeContextAllocationBindingRetired(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
     static void ReleaseNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
 #if defined(VIOGPU_NATIVE_CONTEXT)
+    // snapshot retains the lifecycle mutex and adapter reference for this call.
     NTSTATUS QueryNativeGpuTimestamp(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
                                      _Out_ PULONGLONG timestamp);
 #endif

@@ -18,8 +18,7 @@ constexpr NTSTATUS STATUS_INVALID_PARAMETER = -1;
 constexpr NTSTATUS STATUS_DEVICE_NOT_READY = -2;
 constexpr NTSTATUS STATUS_NOT_SUPPORTED = -3;
 constexpr NTSTATUS STATUS_INSUFFICIENT_RESOURCES = -4;
-constexpr NTSTATUS STATUS_TIMEOUT = 0x102;
-constexpr int PASSIVE_LEVEL = 0, FALSE = 0;
+constexpr int PASSIVE_LEVEL = 0;
 constexpr int VioGpuNativeContextOwnerLive = 1;
 constexpr int MSM_PARAM_TIMESTAMP = 5;
 enum VIOGPU_HOST_CONTEXT_RESULT { VioGpuHostContextConfirmed, VioGpuHostContextRejected,
@@ -35,20 +34,16 @@ struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT {
    int Registration = 1, ContextId = 42, Generation = 1;
    ULONGLONG ResetGeneration = 2;
 };
-static int released, checks, failures;
+static int checks, failures;
 static bool faults;
 static int KeGetCurrentIrql() { return PASSIVE_LEVEL; }
-static void KeReleaseMutex(int *, int) { released++; }
 static bool VioGpuNativeControlFaultsClear(VioGpuAdapter *, VIOGPU_NATIVE_CONTEXT_OWNER *) { return !faults; }
 class VioGpuAdapter {
 public:
-   int m_NativeContextLifecycleMutex = 0;
    bool current = true, reset_on_read = false, fault_on_read = false;
-   NTSTATUS wait = 0;
    LONG error = 0;
    ULONGLONG sample = 0x123456789ab;
    VIOGPU_HOST_CONTEXT_RESULT injectedResult = VioGpuHostContextConfirmed;
-   NTSTATUS WaitNativeContextLifecycle() { return wait; }
    bool IsNativeContextGenerationCurrent(int, ULONGLONG) { return current; }
    VIOGPU_HOST_CONTEXT_RESULT QueryNativeContextParameterLocked(VIOGPU_NATIVE_CONTEXT_OWNER *, int param,
                                                                PULONGLONG ticks, LONG *hostError) {
@@ -72,10 +67,6 @@ int main() {
    ULONGLONG sample = 99;
    auto run = [&]() { return adapter.QueryNativeGpuTimestamp(&snapshot, &sample); };
    check(run() == 0 && sample == adapter.sample, "physical sample preserved");
-   adapter.wait = STATUS_TIMEOUT;
-   int previous = released;
-   check(run() == STATUS_TIMEOUT && sample == 0 && released == previous, "timed-out mutex not released");
-   adapter.wait = 0;
    adapter.sample = 0;
    check(run() == STATUS_NOT_SUPPORTED && sample == 0, "legacy fabricated zero rejected");
    adapter.sample = 0x123456789ab;

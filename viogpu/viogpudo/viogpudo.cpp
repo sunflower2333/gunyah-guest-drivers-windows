@@ -9749,11 +9749,10 @@ NTSTATUS VioGpuAdapter::QueryNativeGpuTimestamp(_In_ const VIOGPU_NATIVE_CONTEXT
         return STATUS_INVALID_PARAMETER;
     }
     *timestamp = 0;
-    NTSTATUS status = WaitNativeContextLifecycle();
-    if (status != STATUS_SUCCESS)
-    {
-        return status;
-    }
+    // AcquireNativeContextSnapshot holds the lifecycle mutex and adapter
+    // reference until ReleaseNativeContextSnapshot. Use that ownership for
+    // LastControlSeqno/response-window serialization, as allocation calls do.
+    NTSTATUS status = STATUS_DEVICE_NOT_READY;
     VIOGPU_NATIVE_CONTEXT_OWNER *owner = snapshot->Owner;
     if (owner->State != VioGpuNativeContextOwnerLive || owner->Registration != snapshot->Registration ||
         owner->ContextId != snapshot->ContextId || owner->Generation != snapshot->Generation ||
@@ -9793,7 +9792,6 @@ NTSTATUS VioGpuAdapter::QueryNativeGpuTimestamp(_In_ const VIOGPU_NATIVE_CONTEXT
             status = STATUS_SUCCESS;
         }
     }
-    KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
     return status;
 }
 
