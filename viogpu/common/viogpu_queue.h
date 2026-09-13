@@ -267,6 +267,7 @@ enum VIOGPU_2D_RESOURCE_STATE : LONG
     VioGpu2DResourceCreated,
     VioGpu2DResourceBackingAttached,
     VioGpu2DResourceUnknown,
+    VioGpuWddmAllocationHostUnknown,
     VioGpu2DResourceGuestBlobBackingAttached,
 };
 
@@ -301,6 +302,7 @@ class VioGpuBuf
     {
         return m_uCount != 0;
     }
+    PVOID AllocateMemoryUninitialized(SIZE_T size);
     PVOID AllocateMemory(SIZE_T size, SIZE_T alignment = PAGE_SIZE);
     void FreeMemory(PVOID address);
 
