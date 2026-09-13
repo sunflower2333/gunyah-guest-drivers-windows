@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 
+from flat_package import CANDIDATE_SOURCES, CANDIDATE_UMDS
 from flat_package import LOADER_PROBES, MACHINES, RECEIPT, REGISTRATION
 from flat_package import flat_name, pe_machine, require, sha, source_files
 
@@ -36,8 +37,22 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
     require(cl["compiler_original_sha256"] ==
             "79e236af8febd67fd02adfd93f81295c87e868e9fd861f71d03d1057e6be1f9d",
             "Wrong OpenCL compiler source identity")
+    require(manifest.get("candidate_sources") == CANDIDATE_SOURCES,
+            "Wrong DXVK/VKD3D candidate source pins")
+    require(manifest.get("candidate_activation") == "unregistered-candidate",
+            "DXVK/VKD3D candidates must remain unregistered")
+    candidates = manifest.get("candidate_umds")
+    require(isinstance(candidates, dict) and set(candidates) == set(CANDIDATE_UMDS),
+            "Wrong DXVK/VKD3D candidate inventory")
     require(manifest["registration"] == {k: v[1] for k, v in REGISTRATION.items()},
             "Wrong API registration mapping")
+    registered = {name.casefold() for name in manifest["registration"].values()}
+    for name, (family, machine) in CANDIDATE_UMDS.items():
+        entry = candidates[name]
+        require(entry.get("family") == family and entry.get("machine") == machine and
+                entry.get("role") == "candidate-runtime", f"Wrong candidate metadata: {name}")
+        require(name.casefold() not in registered, f"Candidate UMD became registered: {name}")
+        require(pe_machine(driver / name) == MACHINES[machine], f"Wrong candidate PE architecture: {name}")
     require(manifest["loader_probes"] == LOADER_PROBES, "Wrong loader helper mapping")
     inf = (driver / manifest["inf"]).read_text(encoding="utf-8-sig")
     require(re.search(r"(?m)^DriverVer\s*=\s*[^,\r\n]+,\s*" + re.escape(version) + r"\s*$", inf),
@@ -46,6 +61,7 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
     require(set(manifest["files"]) == (names - {RECEIPT}) | {manifest["inf"]},
             "Final manifest and INF copy inventory differ")
     require(set(LOADER_PROBES.values()) <= names, "Missing cataloged loader helpers")
+    require(set(CANDIDATE_UMDS) <= names, "Missing cataloged DXVK/VKD3D candidates")
     for key, (_, name, _, flags) in REGISTRATION.items():
         require(f'HKR,,{key},{flags},"%13%\\{name}"' in inf, f"Wrong INF API value: {key}")
     paths = list(driver.iterdir())
@@ -69,6 +85,9 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
             "Obsolete sidecar or private signing key in final bundle")
     return {"schema": 1, "layout": "flat-driverstore", "parent_commit": parent,
             "driver_version": version, "sources": manifest["sources"],
+            "candidate_sources": manifest["candidate_sources"],
+            "candidate_activation": manifest["candidate_activation"],
+            "candidate_umds": manifest["candidate_umds"],
             "validation": "signed catalog and architecture loading; actual GPU acceptance remains separate",
             "gpu_files": {p.name: sha(p) for p in sorted(paths)},
             "installer_files": {name: sha(output / name) for name in INSTALLER_FILES}}
@@ -82,8 +101,10 @@ def main():
     for option in ("mesa-run", "clvk-run"):
         parser.add_argument("--" + option, required=True, type=int)
     args = parser.parse_args()
+
     def git(*arguments):
         return subprocess.check_output(["git", *arguments], text=True).strip()
+
     parent = git("rev-parse", "HEAD")
     require(parent == os.environ.get("GITHUB_SHA", parent), "CI parent mismatch")
     require(git("rev-parse", "HEAD:external/mesa") == args.mesa, "Committed Mesa gitlink mismatch")
