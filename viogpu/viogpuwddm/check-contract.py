@@ -17,6 +17,7 @@ WDDM_DDI_SOURCE = WDDM_DDI_SOURCE_PATH.read_text(encoding="utf-8")
 WDDM_DDI_HEADER_PATH = (PROJECT_DIR / "wddmddi.h").resolve()
 WDDM_DDI_HEADER_SOURCE = WDDM_DDI_HEADER_PATH.read_text(encoding="utf-8")
 VIOGPU_SOURCE_PATH = (PROJECT_DIR.parent / "viogpudo" / "viogpudo.cpp").resolve()
+MMIO_FLIP_HEADER = PROJECT_DIR.parent / "common" / "mmio_flip.h"
 VIOGPU_HEADER_PATH = (PROJECT_DIR.parent / "viogpudo" / "viogpudo.h").resolve()
 DOD_DRIVER_SOURCE_PATH = (PROJECT_DIR.parent / "viogpudo" / "driver.cpp").resolve()
 QUEUE_HEADER_PATH = (PROJECT_DIR.parent / "common" / "viogpu_queue.h").resolve()
@@ -989,9 +990,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58484",
+        "$minor = 58485",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58484",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58485",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -2644,9 +2645,15 @@ def check_native_driver_caps_contract() -> None:
         "PreemptionCaps",
         "SupportPerEngineTDR",
         "MemoryManagementCaps",
+        "FlipCaps",
     }
     if helper_fields != expected_helper_fields:
         fail(f"Native Context DriverCaps helper writes an unexpected capability field: {helper_fields}")
+    # WDDM 2.0 refuses a display adapter without FlipOnVSyncMmIo; no other flip
+    # capability has a DIRQL implementation behind it.
+    if helper.count("driverCaps->FlipCaps.") != 1 or \
+       "if(!renderOnly){driverCaps->FlipCaps.FlipOnVSyncMmIo=1;}" not in helper:
+        fail("Native Context DriverCaps must advertise exactly FlipOnVSyncMmIo, and only for a display adapter")
 
     query_body = function_body("VioGpuDod::QueryAdapterInfo", VIOGPU_CODE)
     driver_caps_case = re.search(
@@ -4993,23 +5000,29 @@ def check_wddm_standard_primary_scanout() -> None:
             fail(f"2D scanout ownership query must fail closed: {fragment}")
 
     set_ddi = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
+    bind_primary = canonical_code(function_body("BindStandardPrimaryScanout", WDDM_DDI_CODE))
     for fragment in (
         "KeGetCurrentIrql()!=PASSIVE_LEVEL",
         "setVidPnSourceAddress->VidPnSourceId!=0",
         "setVidPnSourceAddress->ContextCount!=0",
         "setVidPnSourceAddress->Flags.Value!=1",
         "setVidPnSourceAddress->PrimarySegment!=VIOGPU_WDDM_SEGMENT_ID",
-        "IsStandardPrimaryAllocation(allocation)",
-        "EnsureStandard2DAllocationBacking(allocation)",
-        "!VioGpuResourceBackingAttached(allocation->Resource2DState)",
-        "!allocation->PlacementValid",
-        "setVidPnSourceAddress->PrimaryAddress.QuadPart)!=allocation->PlacementOffset",
-        "adapter->Set2DScanout(0,allocation->ResourceId,allocation->Width,allocation->Height,&previousResourceId,guestBlob?&guestLayout:NULL)",
         "result==VioGpuHostContextConfirmed?STATUS_SUCCESS:STATUS_DEVICE_NOT_READY",
     ):
         if fragment not in set_ddi:
             fail(f"SetVidPnSourceAddress must retain the exact mode-change primary contract: {fragment}")
-    if "STATUS_NOT_SUPPORTED" in set_ddi:
+    for fragment in (
+        "IsStandardPrimaryAllocation(allocation)",
+        "EnsureStandard2DAllocationBacking(allocation)",
+        "!VioGpuResourceBackingAttached(allocation->Resource2DState)",
+        "!allocation->PlacementValid",
+        "static_cast<ULONGLONG>(primaryAddress)!=allocation->PlacementOffset",
+        "adapter->Set2DScanout(0,allocation->ResourceId,allocation->Width,allocation->Height,&previousResourceId,guestBlob?&guestLayout:NULL)",
+        "status=result==VioGpuHostContextConfirmed?STATUS_SUCCESS:STATUS_DEVICE_NOT_READY;",
+    ):
+        if fragment not in bind_primary:
+            fail(f"the shared primary bind must retain the exact standard primary contract: {fragment}")
+    if "STATUS_NOT_SUPPORTED" in set_ddi or "STATUS_NOT_SUPPORTED" in bind_primary:
         fail("SetVidPnSourceAddress must no longer reject the completed standard primary mode-change path")
 
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
@@ -5029,15 +5042,100 @@ def check_wddm_standard_primary_scanout() -> None:
     # capability reappear behind the refactor.
     native_caps = canonical_code(function_body("VioGpuQueryNativeDriverCaps", VIOGPU_CODE))
     if "RtlZeroMemory(pDriverCaps,pQueryAdapterInfo->OutputDataSize);" not in query_caps or \
-       "FlipOnVSyncMmIo" in query_caps or "FlipOnVSyncMmIo" in wddm_query_caps or \
-       "FlipOnVSyncMmIo" in native_caps or "FlipCaps" in native_caps:
-        fail("the synchronous PASSIVE_LEVEL scanout path must not advertise MMIO flip capability")
+       "FlipOnVSyncMmIo" in query_caps or "FlipOnVSyncMmIo" in wddm_query_caps:
+        fail("only the Native Context DriverCaps helper may advertise MMIO flip capability")
+    check_mmio_flip_contract(native_caps)
+
+
+def check_mmio_flip_contract(native_caps: str) -> None:
+    """FlipOnVSyncMmIo: validate at Present, publish at DIRQL, bind at PASSIVE."""
+
+    if "if(!renderOnly){driverCaps->FlipCaps.FlipOnVSyncMmIo=1;}" not in native_caps:
+        fail("a WDDM 2.0 display adapter must advertise FlipOnVSyncMmIo")
+
+    set_ddi = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
+    dispatch = set_ddi.find("returnQueueMmioFlip(adapter,setVidPnSourceAddress);")
+    passive_gate = set_ddi.find("KeGetCurrentIrql()!=PASSIVE_LEVEL")
+    if "VioGpuClassifySourceAddress(setVidPnSourceAddress->Flags.Value,setVidPnSourceAddress->ContextCount)==VioGpuSourceAddressFlip" not in set_ddi or \
+       dispatch < 0 or passive_gate < 0 or dispatch > passive_gate:
+        fail("MMIO flips must be dispatched before the PASSIVE_LEVEL mode-change gate")
+    for fragment in ("adapter->AcquireFlipApply();", "(VOID)adapter->TakePendingFlip();", "adapter->ReleaseFlipApply();"):
+        if set_ddi.count(fragment) != 1:
+            fail(f"a mode change must supersede an unbound flip under the flip-apply mutex: {fragment}")
+
+    queue = canonical_code(function_body("QueueMmioFlip", WDDM_DDI_CODE))
+    for fragment in (
+        "VioGpuValidateFlipTarget(target)",
+        "adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(target.Address));",
+        "adapter->PublishPendingFlip(setVidPnSourceAddress->hAllocation);",
+    ):
+        if queue.count(fragment) != 1:
+            fail(f"the DIRQL flip half must validate and publish exactly once: {fragment}")
+    if queue.find("VioGpuValidateFlipTarget(target)") > queue.find("adapter->PublishPendingFlip("):
+        fail("the DIRQL flip half must validate before publishing")
+    for forbidden in ("KeWaitForSingleObject", "KeAcquireSpinLock", "AcquireAllocationLifecycle", "Set2DScanout",
+                      "Flush2DResource", "AcquireFlipApply", "IsOwnedAllocation", "ExAcquireRundownProtection"):
+        if forbidden in queue:
+            fail(f"the DIRQL flip half must not wait, lock or reach the virtqueue: {forbidden}")
+    header = MMIO_FLIP_HEADER.read_text()
+    if "KeAcquire" in header or "KeWait" in header:
+        fail("the MMIO flip policy header must stay lock-free")
+
+    apply_flip = canonical_code(function_body("VioGpuWddmApplyPendingFlip", WDDM_DDI_CODE))
+    order = [apply_flip.find(fragment) for fragment in (
+        "KeGetCurrentIrql()!=PASSIVE_LEVEL",
+        "adapter->AcquireFlipApply();",
+        "adapter->TakePendingFlip()",
+        "BindStandardPrimaryScanout(adapter,allocation,static_cast<LONGLONG>(allocation->PlacementOffset),FALSE)",
+        "adapter->ReleaseFlipApply();",
+    )]
+    if any(position < 0 for position in order) or order != sorted(order):
+        fail("the flip worker must take and bind the mailbox under the flip-apply mutex at PASSIVE_LEVEL")
+
+    bind = canonical_code(function_body("BindStandardPrimaryScanout", WDDM_DDI_CODE))
+    if "if(modeChange){adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));}" not in bind:
+        fail("only a mode change may republish the vsync address from the PASSIVE bind")
+
+    destroy = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
+    cancel = destroy.find("adapter->CancelPendingFlip(allocation);")
+    detach = destroy.find("Detach2DScanoutResource(allocation->ResourceId,&detached)")
+    if cancel < 0 or detach < 0 or cancel > detach or "if(IsStandardPrimaryAllocation(allocation))" not in destroy:
+        fail("DestroyAllocation must drain the flip mailbox before any primary teardown")
+
+    cancel_body = canonical_code(function_body("VioGpuDod::CancelPendingFlip", VIOGPU_CODE))
+    if cancel_body != ("AcquireFlipApply();(VOID)InterlockedCompareExchangePointer(&m_PendingFlipAllocation,NULL,allocation);"
+                       "ReleaseFlipApply();"):
+        fail("CancelPendingFlip must drain only its own allocation under the flip-apply mutex")
+
+    worker = canonical_code(function_body("VioGpuAdapter::ThreadWorkRoutine", VIOGPU_CODE))
+    if worker.find("VioGpuWddmApplyPendingFlip(m_pVioGpuDod);") < 0 or \
+       worker.find("VioGpuWddmApplyPendingFlip(m_pVioGpuDod);") > worker.find("RefreshActiveScanout();"):
+        fail("the display worker must bind a pending flip before refreshing the bound scanout")
+    refresh = canonical_code(function_body("VioGpuAdapter::RequestScanoutRefresh", VIOGPU_CODE))
+    if "m_pVioGpuDod->HasPendingFlip()" not in refresh or "if(!flipPending&&resourceId!=0" not in refresh:
+        fail("the vsync wake must reach the worker whenever a flip is pending")
+
+    flip_present = canonical_code(function_body("ValidateMmioFlipPresent", WDDM_DDI_CODE))
+    for fragment in (
+        "KeGetCurrentIrql()!=PASSIVE_LEVEL",
+        "ExAcquireRundownProtection(&context->Operations)",
+        "present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX].hDeviceSpecificAllocation",
+        "IsOwnedAllocation(sourceOpen->Allocation,adapter)",
+        "IsStandardPrimaryAllocation(sourceOpen->Allocation)",
+        "ExReleaseRundownProtection(&context->Operations);",
+    ):
+        if fragment not in flip_present:
+            fail(f"a DMA-less flip present must validate its primary: {fragment}")
+    if "pDmaBuffer" in flip_present or "pPatchLocationListOut" in flip_present:
+        fail("a DMA-less flip present must not touch DMA or patch output")
 
 
 def check_shared_allocation_copy_contract() -> None:
     wrapper = canonical_code(function_body("VioGpuWddmPresent", WDDM_DDI_CODE))
-    if wrapper != "returnBuildAllocationBlit(hContext,present,FALSE);":
-        fail("display DDI must always select scanout publication")
+    if wrapper != ("if(present!=NULL&&VioGpuIsMmioFlipPresent(present->Flags.Value,present->pDmaBuffer==NULL))"
+                   "{returnValidateMmioFlipPresent(hContext,present);}"
+                   "returnBuildAllocationBlit(hContext,present,FALSE);"):
+        fail("display DDI must select scanout publication for every present that carries a DMA buffer")
     copy = canonical_code(function_body("TryBuildAllocationCopy", WDDM_DDI_CODE))
     for fragment in (
         "ProbeForRead(const_cast<PVOID>(render->pCommand),sizeof(copy),1);",
@@ -7869,7 +7967,8 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if geometry_reject < 0 or geometry_count < geometry_reject or \
        geometry_success < geometry_count or first_copy < geometry_success:
         fail("mismatched present geometry must succeed without copying or publishing")
-    if "volatileLONGm_DisplayCounters[64];" not in canonical_code(VIOGPU_HEADER_CODE):
+    if "volatileLONGm_DisplayCounters[VioGpuDisplayCounterCount];" not in canonical_code(VIOGPU_HEADER_CODE) or \
+       "VioGpuDisplayMmioFlipCalls=64," not in canonical_code(strip_cpp_comments_and_literals(MMIO_FLIP_HEADER.read_text())):
         fail("display diagnostics must keep independent slots for geometry and timing")
     for fragment in (
         "adapter->RecordDisplayValue(46,static_cast<LONG>(request.ReadbackUsec>MAXLONG?MAXLONG:request.ReadbackUsec));",
@@ -7951,7 +8050,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if canonical_code(function_body("VioGpuDod::DeliverCrtcVsync", VIOGPU_SOURCE)).count(
             "adapter->RequestScanoutRefresh();") != 1:
         fail("the scanout refresh must run on the display's own cadence")
-    set_source_address = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
+    set_source_address = canonical_code(function_body("BindStandardPrimaryScanout", WDDM_DDI_CODE))
     # The compositor owns the scanout whenever it flips; latching it to the
     # user-mode driver's published surface froze the desktop on the last frame
     # an application published.
@@ -9424,7 +9523,7 @@ def check_allocation_lifecycle_wait_status_contract() -> None:
         ("MapApertureAllocation", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
         ("UnmapApertureAllocation", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
         ("VioGpuWddmPatch", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
-        ("VioGpuWddmSetVidPnSourceAddress", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
+        ("BindStandardPrimaryScanout", "status=AcquireAllocationLifecycle(allocation);", "if(status!=STATUS_SUCCESS)"),
     )
     for function_name, acquisition, guard in exact_guards:
         body = canonical_code(function_body(function_name, WDDM_DDI_CODE))

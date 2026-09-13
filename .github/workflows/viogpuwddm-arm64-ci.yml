@@ -186,6 +186,9 @@ jobs:
       - name: Check WDDM child descriptor selection contract
         shell: pwsh
         run: python viogpu/tests/child-descriptor/run.py
+      - name: Execute MMIO flip classification and target policy
+        shell: pwsh
+        run: python viogpu/tests/mmio-flip/run.py
       - name: Execute Render prepatch and final residency regression
         shell: pwsh
         run: python viogpu/tests/render-prepatch/run.py

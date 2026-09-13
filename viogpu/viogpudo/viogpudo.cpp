@@ -48,6 +48,7 @@ extern "C" UCHAR __ImageBase;
 
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
+VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter);
 
 static const ULONG VIOGPU_WIN7_DRIVERCAPS_SIZE = FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps);
 static_assert(VIOGPU_WIN7_DRIVERCAPS_SIZE == 528, "unexpected Win7 DXGK_DRIVERCAPS prefix size");
@@ -233,6 +234,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     RtlZeroMemory(&m_NativeActivationTrace, sizeof(m_NativeActivationTrace));
     m_ChildDescriptorMode =
         VioGpuDefaultChildDescriptorMode(DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_0);
+    m_PendingFlipAllocation = NULL;
+    KeInitializeMutex(&m_FlipApplyMutex, 0);
     m_NativeFenceHead = 0;
     m_NativeFenceCount = 0;
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
@@ -1160,6 +1163,41 @@ void VioGpuDod::DiscardDeferredNativePreemption(void)
 VOID VioGpuDod::SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address)
 {
     InterlockedExchange64(&m_CrtcVsyncPrimaryAddress, static_cast<LONG64>(address));
+}
+
+VOID VioGpuDod::PublishPendingFlip(_In_ PVOID allocation)
+{
+    InterlockedExchangePointer(&m_PendingFlipAllocation, allocation);
+}
+
+BOOLEAN VioGpuDod::HasPendingFlip(void)
+{
+    return InterlockedCompareExchangePointer(&m_PendingFlipAllocation, NULL, NULL) != NULL;
+}
+
+VOID VioGpuDod::AcquireFlipApply(void)
+{
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    (VOID) KeWaitForSingleObject(&m_FlipApplyMutex, Executive, KernelMode, FALSE, NULL);
+}
+
+VOID VioGpuDod::ReleaseFlipApply(void)
+{
+    KeReleaseMutex(&m_FlipApplyMutex, FALSE);
+}
+
+PVOID VioGpuDod::TakePendingFlip(void)
+{
+    return InterlockedExchangePointer(&m_PendingFlipAllocation, NULL);
+}
+
+VOID VioGpuDod::CancelPendingFlip(_In_ PVOID allocation)
+{
+    /* Waiting for the mutex also waits out a bind of this allocation that the
+     * worker already took from the slot. */
+    AcquireFlipApply();
+    (VOID) InterlockedCompareExchangePointer(&m_PendingFlipAllocation, NULL, allocation);
+    ReleaseFlipApply();
 }
 
 VOID VioGpuDod::DeliverCrtcVsync(void)
@@ -2996,14 +3034,18 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
         driverCaps->PointerCaps.MaskedColor = 1;
     }
 
-    /* The scanout is programmed by a synchronous virtqueue round trip that has
-     * to run at PASSIVE_LEVEL, so this miniport cannot flip from an MMIO write
-     * at device IRQL.  Advertising FlipOnVSyncMmIo made dxgkrnl present every
-     * composed frame as a flip through DxgkDdiSetVidPnSourceAddress, which this
-     * driver accepts only for a mode change, so no frame ever became the
-     * scanned-out primary and the desktop stayed black on guest and Host alike.
-     * Publishing no flip capability routes presents to DxgkDdiPresent, the blt
-     * path this driver actually implements. */
+    /* WDDM 2.0 requires FlipOnVSyncMmIo on a display adapter: without it
+     * dxgkrnl fails to create the render adapter and adapter start ends in
+     * StartAdapter_AddAdapterFailed.  An earlier registration advertised the
+     * cap while DxgkDdiSetVidPnSourceAddress still accepted only a PASSIVE_LEVEL
+     * mode change, so every composed frame was refused and the desktop stayed
+     * black.  Flips are now accepted at DIRQL: the flipped primary is reported
+     * by the next CRTC vsync and bound to the Host scanout by the display
+     * worker, because the virtqueue round trip must run at PASSIVE_LEVEL. */
+    if (!renderOnly)
+    {
+        driverCaps->FlipCaps.FlipOnVSyncMmIo = 1;
+    }
     driverCaps->SchedulingCaps.MultiEngineAware = 1;
     /* Physical-mode WDDM2 retains the allocation/patch-list scheduler.
      * Native Context has no Host primitive for preempting an in-flight command. */
@@ -5998,6 +6040,15 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayPresent2DFlushMaxUsec = ReadDisplayCounter(61);
     DWORD displayPresent2DFlushResult = ReadDisplayCounter(62);
     DWORD displayPresent2DResourceId = ReadDisplayCounter(63);
+    DWORD displayMmioFlipCalls = ReadDisplayCounter(VioGpuDisplayMmioFlipCalls);
+    DWORD displayMmioFlipRejects = ReadDisplayCounter(VioGpuDisplayMmioFlipRejects);
+    DWORD displayMmioFlipRejectKind = ReadDisplayCounter(VioGpuDisplayMmioFlipRejectKind);
+    DWORD displayMmioFlipLastFlags = ReadDisplayCounter(VioGpuDisplayMmioFlipLastFlags);
+    DWORD displayMmioFlipApplied = ReadDisplayCounter(VioGpuDisplayMmioFlipApplied);
+    DWORD displayMmioFlipApplyFailures = ReadDisplayCounter(VioGpuDisplayMmioFlipApplyFailures);
+    DWORD displayMmioFlipLastApplyStatus = ReadDisplayCounter(VioGpuDisplayMmioFlipLastApplyStatus);
+    DWORD displayFlipPresentCalls = ReadDisplayCounter(VioGpuDisplayFlipPresentCalls);
+    DWORD displayFlipPresentRejects = ReadDisplayCounter(VioGpuDisplayFlipPresentRejects);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -6395,6 +6446,24 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &displayPresent2DFlushResult},
                                                                                                         {L"NativeDisplayPresent2DResourceId",
                                                                                                          &displayPresent2DResourceId},
+                                                                                                        {L"NativeDisplayMmioFlipCalls",
+                                                                                                         &displayMmioFlipCalls},
+                                                                                                        {L"NativeDisplayMmioFlipRejects",
+                                                                                                         &displayMmioFlipRejects},
+                                                                                                        {L"NativeDisplayMmioFlipRejectKind",
+                                                                                                         &displayMmioFlipRejectKind},
+                                                                                                        {L"NativeDisplayMmioFlipLastFlags",
+                                                                                                         &displayMmioFlipLastFlags},
+                                                                                                        {L"NativeDisplayMmioFlipApplied",
+                                                                                                         &displayMmioFlipApplied},
+                                                                                                        {L"NativeDisplayMmioFlipApplyFailures",
+                                                                                                         &displayMmioFlipApplyFailures},
+                                                                                                        {L"NativeDisplayMmioFlipLastApplyStatus",
+                                                                                                         &displayMmioFlipLastApplyStatus},
+                                                                                                        {L"NativeDisplayFlipPresentCalls",
+                                                                                                         &displayFlipPresentCalls},
+                                                                                                        {L"NativeDisplayFlipPresentRejects",
+                                                                                                         &displayFlipPresentRejects},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPres"
                                                                                                          L"entStage",
@@ -13405,7 +13474,14 @@ VOID VioGpuAdapter::RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _
 VOID VioGpuAdapter::RequestScanoutRefresh(void)
 {
     const LONG resourceId = InterlockedCompareExchange(&m_ActiveScanoutResourceId, 0, 0);
-    if (resourceId != 0 && InterlockedCompareExchange(&m_ExplicitPresentResourceId, 0, 0) == resourceId)
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    /* A published MMIO flip is bound by the worker; wake it regardless. */
+    const BOOLEAN flipPending = m_pVioGpuDod != NULL && m_pVioGpuDod->HasPendingFlip();
+#else
+    const BOOLEAN flipPending = FALSE;
+#endif
+    if (!flipPending && resourceId != 0 &&
+        InterlockedCompareExchange(&m_ExplicitPresentResourceId, 0, 0) == resourceId)
     {
         return;
     }
@@ -13459,6 +13535,9 @@ void VioGpuAdapter::ThreadWorkRoutine(void)
             PsTerminateSystemThread(STATUS_SUCCESS);
             break;
         }
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        VioGpuWddmApplyPendingFlip(m_pVioGpuDod);
+#endif
         RefreshActiveScanout();
         ConfigChanged();
         if (!m_pVioGpuDod->IsRenderOnly())

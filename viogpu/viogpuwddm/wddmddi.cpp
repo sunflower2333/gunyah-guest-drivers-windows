@@ -5410,6 +5410,17 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
         }
     }
 
+    /* A primary may still sit in the MMIO flip mailbox, or be bound by the
+     * display worker right now. Drain it before anything is torn down. */
+    for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
+    {
+        VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
+        if (IsStandardPrimaryAllocation(allocation))
+        {
+            adapter->CancelPendingFlip(allocation);
+        }
+    }
+
     VIOGPU_WDDM_RESOURCE *resource = NULL;
     if (destroyAllocation->Flags.DestroyResource)
     {
@@ -9418,8 +9429,54 @@ static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *pres
     return status;
 }
 
+/* With FlipOnVSyncMmIo a flip reaches DxgkDdiPresent without a DMA buffer:
+ * the driver validates the surface to flip to and dxgkrnl performs the flip
+ * through DxgkDdiSetVidPnSourceAddress. Only a standard primary can become the
+ * Host scanout, so anything else is refused here rather than at DIRQL. */
+static NTSTATUS ValidateMmioFlipPresent(CONST HANDLE hContext, DXGKARG_PRESENT *present)
+{
+    VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(hContext);
+    if (context == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (!ExAcquireRundownProtection(&context->Operations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    NTSTATUS status = STATUS_INVALID_PARAMETER;
+    if (context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE && context->Device != NULL &&
+        context->Device->Signature == VIOGPU_WDDM_DEVICE_SIGNATURE && context->Device->Adapter != NULL)
+    {
+        VioGpuDod *adapter = context->Device->Adapter;
+        adapter->CountDisplayEvent(VioGpuDisplayFlipPresentCalls);
+        const VIOGPU_WDDM_OPEN_ALLOCATION *sourceOpen =
+            present->pAllocationList == NULL
+                ? NULL
+                : reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX].hDeviceSpecificAllocation);
+        if (sourceOpen != NULL && sourceOpen->Signature == VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE &&
+            sourceOpen->Device == context->Device && sourceOpen->Allocation != NULL &&
+            IsOwnedAllocation(sourceOpen->Allocation, adapter) && IsStandardPrimaryAllocation(sourceOpen->Allocation))
+        {
+            status = STATUS_SUCCESS;
+        }
+        else
+        {
+            adapter->CountDisplayEvent(VioGpuDisplayFlipPresentRejects);
+            adapter->RecordDisplayValue(26, static_cast<LONG>(present->Flags.Value));
+        }
+    }
+    ExReleaseRundownProtection(&context->Operations);
+    return status;
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPresent(CONST HANDLE hContext, DXGKARG_PRESENT *present)
 {
+    if (present != NULL && VioGpuIsMmioFlipPresent(present->Flags.Value, present->pDmaBuffer == NULL))
+    {
+        return ValidateMmioFlipPresent(hContext, present);
+    }
     return BuildAllocationBlit(hContext, present, FALSE);
 }
 
@@ -10374,42 +10431,56 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRestartFromTimeout(CONST HAND
 
 #pragma code_seg(pop)
 
-_Use_decl_annotations_ NTSTATUS APIENTRY
-VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOURCEADDRESS *setVidPnSourceAddress)
+/* DIRQL half of an MMIO flip (FlipOnVSyncMmIo). Only nonpaged allocation
+ * fields are read and nothing is locked: the flipped primary is published for
+ * the next CRTC vsync report, which is what completes the flip in dxgkrnl, and
+ * left in the adapter's one-slot mailbox for the display worker to bind. A
+ * newer flip replaces an unbound one, as a flip-pending register would. */
+static NTSTATUS QueueMmioFlip(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_SETVIDPNSOURCEADDRESS *setVidPnSourceAddress)
 {
-    VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
-#if defined(VIOGPU_NATIVE_CONTEXT)
-    if (adapter != NULL)
+    const VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<const VIOGPU_WDDM_ALLOCATION *>(setVidPnSourceAddress->hAllocation);
+    VioGpuFlipTarget target = {};
+    target.SourceId = setVidPnSourceAddress->VidPnSourceId;
+    target.Segment = setVidPnSourceAddress->PrimarySegment;
+    target.ExpectedSegment = VIOGPU_WDDM_SEGMENT_ID;
+    target.Address = setVidPnSourceAddress->PrimaryAddress.QuadPart;
+    target.HasAllocation = allocation != NULL;
+    if (allocation != NULL)
     {
-        adapter->CountDisplayEvent(7);
+        target.OwnedByAdapter = allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE && allocation->Adapter == adapter;
+        target.StandardPrimary = target.OwnedByAdapter && IsStandardPrimaryAllocation(allocation);
+        target.PlacementValid = target.OwnedByAdapter && allocation->PlacementValid;
+        target.PlacementOffset = allocation->PlacementOffset;
     }
-#endif
-    if (adapter == NULL || setVidPnSourceAddress == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL ||
-        setVidPnSourceAddress->VidPnSourceId != 0 || setVidPnSourceAddress->ContextCount != 0 ||
-        setVidPnSourceAddress->Flags.Value != 1U)
+
+    adapter->CountDisplayEvent(VioGpuDisplayMmioFlipCalls);
+    adapter->RecordDisplayValue(VioGpuDisplayMmioFlipLastFlags, static_cast<LONG>(setVidPnSourceAddress->Flags.Value));
+    const VioGpuFlipTargetStatus verdict = VioGpuValidateFlipTarget(target);
+    if (verdict != VioGpuFlipTargetAccepted)
     {
+        adapter->CountDisplayEvent(VioGpuDisplayMmioFlipRejects);
+        adapter->RecordDisplayValue(VioGpuDisplayMmioFlipRejectKind, static_cast<LONG>(verdict));
         return STATUS_INVALID_PARAMETER;
     }
 
-    UINT previousResourceId = 0;
-    if (setVidPnSourceAddress->hAllocation == NULL)
-    {
-        if (setVidPnSourceAddress->PrimarySegment != 0 || setVidPnSourceAddress->PrimaryAddress.QuadPart != 0)
-        {
-            return STATUS_INVALID_PARAMETER;
-        }
-        VIOGPU_HOST_CONTEXT_RESULT result = adapter->Set2DScanout(0, 0, 0, 0, &previousResourceId);
-        if (result == VioGpuHostContextConfirmed)
-        {
-            adapter->SetCrtcVsyncPrimaryAddress(0);
-        }
-        return result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
-    }
+    adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(target.Address));
+    adapter->PublishPendingFlip(setVidPnSourceAddress->hAllocation);
+    return STATUS_SUCCESS;
+}
 
-    VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(setVidPnSourceAddress->hAllocation);
+/* Binds a standard primary to the Host scanout at PASSIVE_LEVEL. Shared by
+ * the mode-change DDI and by the worker that completes MMIO flips. The caller
+ * holds the adapter's flip-apply mutex. A flip already published its vsync
+ * address at DIRQL, and a newer flip may have replaced it since, so only a
+ * mode change publishes the address here. */
+static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
+                                           _In_ VIOGPU_WDDM_ALLOCATION *allocation,
+                                           _In_ LONGLONG primaryAddress,
+                                           _In_ BOOLEAN modeChange)
+{
+    UINT previousResourceId = 0;
     if (allocation == NULL || allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE ||
-        allocation->Adapter != adapter || setVidPnSourceAddress->PrimarySegment != VIOGPU_WDDM_SEGMENT_ID ||
-        setVidPnSourceAddress->PrimaryAddress.QuadPart < 0)
+        allocation->Adapter != adapter || primaryAddress < 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -10424,7 +10495,7 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
         allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || allocation->BlobId != 0 ||
         !EnsureStandard2DAllocationBacking(allocation) || !VioGpuResourceBackingAttached(allocation->Resource2DState) ||
         !allocation->PlacementValid ||
-        static_cast<ULONGLONG>(setVidPnSourceAddress->PrimaryAddress.QuadPart) != allocation->PlacementOffset)
+        static_cast<ULONGLONG>(primaryAddress) != allocation->PlacementOffset)
     {
 #if defined(VIOGPU_NATIVE_CONTEXT)
         /* A primary that is not a standard 2D resource -- i.e. a native,
@@ -10480,7 +10551,10 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
         if (result == VioGpuHostContextConfirmed)
         {
             /* The vsync report carries the primary dxgkrnl programmed here. */
-            adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(setVidPnSourceAddress->PrimaryAddress.QuadPart));
+            if (modeChange)
+            {
+                adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));
+            }
 
             /* SET_SCANOUT only binds the resource: virtio-gpu has no autonomous
              * scanout of guest memory, so the host keeps showing whatever that
@@ -10518,4 +10592,87 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
     }
     KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
     return status;
+}
+
+_Use_decl_annotations_ NTSTATUS APIENTRY
+VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOURCEADDRESS *setVidPnSourceAddress)
+{
+    VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (adapter != NULL)
+    {
+        adapter->CountDisplayEvent(7);
+    }
+#endif
+    if (adapter != NULL && setVidPnSourceAddress != NULL &&
+        VioGpuClassifySourceAddress(setVidPnSourceAddress->Flags.Value, setVidPnSourceAddress->ContextCount) ==
+            VioGpuSourceAddressFlip)
+    {
+        return QueueMmioFlip(adapter, setVidPnSourceAddress);
+    }
+    if (adapter == NULL || setVidPnSourceAddress == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        setVidPnSourceAddress->VidPnSourceId != 0 || setVidPnSourceAddress->ContextCount != 0 ||
+        setVidPnSourceAddress->Flags.Value != 1U)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    /* A mode change supersedes any flip the worker has not bound yet, and
+     * binds in order with it. */
+    adapter->AcquireFlipApply();
+    (VOID) adapter->TakePendingFlip();
+    NTSTATUS status;
+    if (setVidPnSourceAddress->hAllocation == NULL)
+    {
+        UINT previousResourceId = 0;
+        if (setVidPnSourceAddress->PrimarySegment != 0 || setVidPnSourceAddress->PrimaryAddress.QuadPart != 0)
+        {
+            status = STATUS_INVALID_PARAMETER;
+        }
+        else
+        {
+            VIOGPU_HOST_CONTEXT_RESULT result = adapter->Set2DScanout(0, 0, 0, 0, &previousResourceId);
+            if (result == VioGpuHostContextConfirmed)
+            {
+                adapter->SetCrtcVsyncPrimaryAddress(0);
+            }
+            status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+        }
+    }
+    else if (setVidPnSourceAddress->PrimarySegment != VIOGPU_WDDM_SEGMENT_ID)
+    {
+        status = STATUS_INVALID_PARAMETER;
+    }
+    else
+    {
+        status = BindStandardPrimaryScanout(adapter,
+                                            reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(setVidPnSourceAddress->hAllocation),
+                                            setVidPnSourceAddress->PrimaryAddress.QuadPart,
+                                            TRUE);
+    }
+    adapter->ReleaseFlipApply();
+    return status;
+}
+
+/* PASSIVE_LEVEL half of an MMIO flip, run by the display worker after the
+ * vsync that reported the flip. */
+VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter)
+{
+    if (adapter == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || !adapter->HasPendingFlip())
+    {
+        return;
+    }
+    adapter->AcquireFlipApply();
+    VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(adapter->TakePendingFlip());
+    if (allocation != NULL)
+    {
+        const NTSTATUS status = BindStandardPrimaryScanout(adapter,
+                                                           allocation,
+                                                           static_cast<LONGLONG>(allocation->PlacementOffset),
+                                                           FALSE);
+        adapter->CountDisplayEvent(status == STATUS_SUCCESS ? VioGpuDisplayMmioFlipApplied
+                                                            : VioGpuDisplayMmioFlipApplyFailures);
+        adapter->RecordDisplayValue(VioGpuDisplayMmioFlipLastApplyStatus, static_cast<LONG>(status));
+    }
+    adapter->ReleaseFlipApply();
 }

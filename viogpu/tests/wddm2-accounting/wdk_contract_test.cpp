@@ -3,6 +3,7 @@
 #include <windef.h>
 #include <d3dkmddi.h>
 #include <dispmprt.h> // DXGKRNL_INTERFACE
+#include "../../common/mmio_flip.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -52,6 +53,31 @@ void check(bool ok, const char *message)
 }
 int main()
 {
+    // The WDK-free MMIO flip policy uses the real bit-field positions.
+    DXGK_SETVIDPNSOURCEADDRESS_FLAGS sourceFlags = {};
+    sourceFlags.ModeChange = 1;
+    check(sourceFlags.Value == VioGpuSourceAddressFlagModeChange, "SetVidPnSourceAddress ModeChange bit");
+    sourceFlags.Value = 0;
+    sourceFlags.FlipImmediate = 1;
+    check(sourceFlags.Value == VioGpuSourceAddressFlagFlipImmediate, "SetVidPnSourceAddress FlipImmediate bit");
+    sourceFlags.Value = 0;
+    sourceFlags.FlipOnNextVSync = 1;
+    check(sourceFlags.Value == VioGpuSourceAddressFlagFlipOnNextVSync, "SetVidPnSourceAddress FlipOnNextVSync bit");
+    DXGK_PRESENTFLAGS presentFlags = {};
+    presentFlags.Blt = 1;
+    check(presentFlags.Value == VioGpuPresentFlagBlt, "Present Blt bit");
+    presentFlags.Value = 0;
+    presentFlags.ColorFill = 1;
+    check(presentFlags.Value == VioGpuPresentFlagColorFill, "Present ColorFill bit");
+    presentFlags.Value = 0;
+    presentFlags.Flip = 1;
+    check(presentFlags.Value == VioGpuPresentFlagFlip, "Present Flip bit");
+    DXGK_FLIPCAPS flipCaps = {};
+    flipCaps.FlipOnVSyncMmIo = 1;
+    check(flipCaps.Value == VioGpuFlipCapsOnVSyncMmIo, "FlipCaps FlipOnVSyncMmIo bit");
+    check(FIELD_OFFSET(DXGK_DRIVERCAPS, FlipCaps) < FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps),
+          "FlipCaps lies inside the Win7 DriverCaps prefix every reply writes");
+
     VioGpuDod adapter;
     DXGK_QUERYSEGMENTIN4 input = {};
     DXGK_QUERYSEGMENTOUT4 output;

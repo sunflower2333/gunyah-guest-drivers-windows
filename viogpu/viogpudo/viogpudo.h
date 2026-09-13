@@ -34,6 +34,7 @@
 #include "fence_publication.h"
 #include "activation_trace.h"
 #include "child_descriptor.h"
+#include "mmio_flip.h"
 #include "viogpu_queue.h"
 
 #pragma pack(push)
@@ -942,7 +943,7 @@ class VioGpuDod
     /* Windows persists no VidPn path for this adapter even with the display
      * DDIs registered and the child reporting connected, so the question is
      * which DDI Windows stops at.  One array rather than a dozen members. */
-    volatile LONG m_DisplayCounters[64];
+    volatile LONG m_DisplayCounters[VioGpuDisplayCounterCount];
     volatile LONG m_UmdPresentActive;
     volatile LONG m_PublishSequence;
     volatile LONG m_PublishSequenceAtFlip;
@@ -964,6 +965,12 @@ class VioGpuDod
     KMUTEX m_NativeActivationTraceMutex;
     VioGpuActivationTrace m_NativeActivationTrace;
     VioGpuChildDescriptorMode m_ChildDescriptorMode;
+    /* One-slot MMIO flip mailbox. DxgkDdiSetVidPnSourceAddress publishes the
+     * flipped primary at DIRQL; the display worker binds it at PASSIVE_LEVEL
+     * under m_FlipApplyMutex, and primary destroy drains the slot under the
+     * same mutex, so a published pointer is never used after it is freed. */
+    volatile PVOID m_PendingFlipAllocation;
+    KMUTEX m_FlipApplyMutex;
     KSPIN_LOCK m_NativeFenceLock;
     volatile LONG m_NativeFenceEpoch;
     volatile LONG m_NativeFenceResetFloor;
@@ -1166,6 +1173,16 @@ class VioGpuDod
     VOID DisarmCrtcVsyncTimer(void);
     VOID DeliverCrtcVsync(void);
     VOID SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    // Any IRQL up to DIRQL.
+    __declspec(noinline) __declspec(code_seg(".text")) VOID PublishPendingFlip(_In_ PVOID allocation);
+    __declspec(noinline) __declspec(code_seg(".text")) BOOLEAN HasPendingFlip(void);
+    // PASSIVE_LEVEL. Take returns the published primary with the mutex held.
+    VOID AcquireFlipApply(void);
+    VOID ReleaseFlipApply(void);
+    PVOID TakePendingFlip(void);
+    VOID CancelPendingFlip(_In_ PVOID allocation);
+#endif
     __declspec(noinline) __declspec(code_seg(".text")) NTSTATUS SetCrtcTiming(const VIOGPU_DISPLAY_TIMING &timing);
     DWORD ReadCrtcVsyncDeliveredCount(void)
     {
