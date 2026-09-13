@@ -675,6 +675,10 @@ class VioGpuAdapter : IVioGpuPCI
     static BOOLEAN DereferenceNativeContextAllocation(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
     static BOOLEAN IsNativeContextAllocationBindingRetired(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration);
     static void ReleaseNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    NTSTATUS QueryNativeGpuTimestamp(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
+                                     _Out_ PULONGLONG timestamp);
+#endif
     /* Every lifecycle-mutex wait in this driver used a ten-second timeout and
      * answered STATUS_TIMEOUT with FailNativeContextAtAnyIrql, which bumps the
      * context generation, poisons the control queue and sets the boot-lifetime
@@ -769,7 +773,8 @@ class VioGpuAdapter : IVioGpuPCI
     UINT AllocateNativeResourceIdLocked(void);
     VIOGPU_HOST_CONTEXT_RESULT QueryNativeContextParameterLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner,
                                                                  _In_ ULONG parameter,
-                                                                 _Out_ PULONGLONG value);
+                                                                 _Out_ PULONGLONG value,
+                                                                 _Out_opt_ PLONG hostError = NULL);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner,
                                                              _Out_ PUINT queueId);
     VIOGPU_HOST_CONTEXT_RESULT CloseNativeSubmitQueueLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner);

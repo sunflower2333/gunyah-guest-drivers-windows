@@ -109,6 +109,13 @@ jobs:
         shell: cmd
         run: viogpu\tests\wddm-private-abi\run-msvc.cmd
 
+      - name: Execute timestamp ownership and reset regression
+        shell: pwsh
+        run: |
+          python viogpu/tests/gpu-timestamp/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/gpu-timestamp/run.py --negative-control-reset
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Check Native Context full-miniport contract
         shell: pwsh
         run: python viogpu/viogpuwddm/check-contract.py

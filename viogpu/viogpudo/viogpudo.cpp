@@ -4984,20 +4984,20 @@ VioGpuConsumeNativeControlResponse(_In_ VioGpuAdapter *adapter,
         }
         return FALSE;
     }
-    if (response.ret != 0)
-    {
-        if (diagnostic != NULL)
-        {
-            diagnostic->Validation = VioGpuHostResponseRejected;
-        }
-        return FALSE;
-    }
     if (response.param.pipe != MSM_PIPE_3D0 || response.param.param != parameter || response.param.len != 0 ||
         response.param.pad != 0)
     {
         if (diagnostic != NULL)
         {
             diagnostic->Validation = VioGpuHostResponseMalformed;
+        }
+        return FALSE;
+    }
+    if (response.ret != 0)
+    {
+        if (diagnostic != NULL)
+        {
+            diagnostic->Validation = VioGpuHostResponseRejected;
         }
         return FALSE;
     }
@@ -9610,9 +9610,15 @@ VioGpuAdapter::DestroyNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNA
 
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::QueryNativeContextParameterLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner,
                                                                             _In_ ULONG parameter,
-                                                                            _Out_ PULONGLONG value)
+                                                                            _Out_ PULONGLONG value,
+                                                                            _Out_opt_ PLONG hostError)
 {
     PAGED_CODE();
+
+    if (hostError != NULL)
+    {
+        *hostError = 0;
+    }
 
     VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC diagnostic = {};
     diagnostic.Parameter = parameter;
@@ -9632,7 +9638,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::QueryNativeContextParameterLocked(_Ino
     }
 
     if (owner == NULL || value == NULL || owner->ContextId == 0 || !owner->ControlResourceCreated ||
-        !owner->ControlMapped || (parameter != MSM_PARAM_VA_START && parameter != MSM_PARAM_VA_SIZE) ||
+        !owner->ControlMapped || (parameter != MSM_PARAM_VA_START && parameter != MSM_PARAM_VA_SIZE &&
+                                 parameter != MSM_PARAM_TIMESTAMP) ||
         owner->LastControlSeqno == MAXULONG)
     {
         diagnostic.Result = VioGpuHostContextNotSubmitted;
@@ -9704,6 +9711,16 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::QueryNativeContextParameterLocked(_Ino
     }
     if (!VioGpuConsumeNativeControlResponse(this, owner, sequence, parameter, value, &diagnostic))
     {
+        // An echoed, completed timestamp rejection is an ordinary ioctl error.
+        // Unsupported hosts must not poison the shared control transport.
+        if (parameter == MSM_PARAM_TIMESTAMP && diagnostic.Validation == VioGpuHostResponseRejected)
+        {
+            if (hostError != NULL)
+            {
+                *hostError = static_cast<LONG>(diagnostic.InnerRet);
+            }
+            return VioGpuHostContextRejected;
+        }
         diagnostic.Result = VioGpuHostContextUnknown;
         m_CtrlQueue.PoisonSynchronousRequests();
         if (m_pVioGpuDod != NULL)
@@ -9720,6 +9737,64 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::QueryNativeContextParameterLocked(_Ino
         m_pVioGpuDod->RecordNativeContextParameterDiagnostic(&diagnostic);
     }
     return VioGpuHostContextConfirmed;
+}
+
+NTSTATUS VioGpuAdapter::QueryNativeGpuTimestamp(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
+                                                _Out_ PULONGLONG timestamp)
+{
+    PAGED_CODE();
+    if (timestamp == NULL || snapshot == NULL || snapshot->Adapter != this || snapshot->Owner == NULL ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *timestamp = 0;
+    NTSTATUS status = WaitNativeContextLifecycle();
+    if (status != STATUS_SUCCESS)
+    {
+        return status;
+    }
+    VIOGPU_NATIVE_CONTEXT_OWNER *owner = snapshot->Owner;
+    if (owner->State != VioGpuNativeContextOwnerLive || owner->Registration != snapshot->Registration ||
+        owner->ContextId != snapshot->ContextId || owner->Generation != snapshot->Generation ||
+        owner->ResetGeneration != snapshot->ResetGeneration ||
+        !IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration) ||
+        !VioGpuNativeControlFaultsClear(this, owner))
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else
+    {
+        LONG hostError = 0;
+        ULONGLONG ticks = 0;
+        VIOGPU_HOST_CONTEXT_RESULT result = QueryNativeContextParameterLocked(owner, MSM_PARAM_TIMESTAMP,
+                                                                               &ticks, &hostError);
+        if (result == VioGpuHostContextRejected && (hostError == -25 || hostError == -95 || hostError == -38))
+        {
+            status = STATUS_NOT_SUPPORTED; // ENOTTY, EOPNOTSUPP, ENOSYS
+        }
+        else if (result == VioGpuHostContextRejected && hostError == -12)
+        {
+            status = STATUS_INSUFFICIENT_RESOURCES;
+        }
+        else if (result != VioGpuHostContextConfirmed ||
+                 !IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration) ||
+                 !VioGpuNativeControlFaultsClear(this, owner))
+        {
+            status = STATUS_DEVICE_NOT_READY;
+        }
+        else if (ticks == 0)
+        {
+            status = STATUS_NOT_SUPPORTED; // Old drm2kgsl fabricated zero.
+        }
+        else
+        {
+            *timestamp = ticks & ((1ULL << 48) - 1);
+            status = STATUS_SUCCESS;
+        }
+    }
+    KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
+    return status;
 }
 
 VIOGPU_HOST_CONTEXT_RESULT

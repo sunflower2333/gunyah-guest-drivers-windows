@@ -219,6 +219,7 @@ static inline enum viogpu_host_context_response_validation VioGpuValidateMapInfo
 #define MSM_BO_GUEST_ALLOC              0x80000000U
 #define MSM_PIPE_3D0                    0x10U
 #define MSM_PARAM_VA_START              0x0eU
+#define MSM_PARAM_TIMESTAMP             0x05U
 #define MSM_PARAM_VA_SIZE               0x0fU
 #define DRM_IOCTL_MSM_GET_PARAM         0xc0186440U
 #define MSM_SUBMITQUEUE_ALLOW_PREEMPT   0x00000001U

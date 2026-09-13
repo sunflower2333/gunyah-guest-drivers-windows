@@ -44,6 +44,7 @@ typedef enum VIOGPU_WDDM_ESCAPE_OPCODE
     VIOGPU_WDDM_ESCAPE_GET_CONTEXT_INFO = 1,
     VIOGPU_WDDM_ESCAPE_GET_COMPLETED_FENCE = 2,
     VIOGPU_WDDM_ESCAPE_PRESENT_BLIT = 3,
+    VIOGPU_WDDM_ESCAPE_GET_GPU_TIMESTAMP = 4,
 } VIOGPU_WDDM_ESCAPE_OPCODE;
 
 #pragma pack(push, 4)
@@ -131,6 +132,24 @@ typedef struct VIOGPU_WDDM_FENCE_INFO
     VIOGPU_WDDM_UINT32 ContextId;
     VIOGPU_WDDM_UINT32 Reserved;
 } VIOGPU_WDDM_FENCE_INFO;
+
+/* Additive context escape. Existing ABI v0 buffers and adapter capability bits
+ * stay unchanged. A successful real read is the support probe; old KMDs reject
+ * this distinct size. GPU ticks share the CP timestamp-query epoch and period.
+ * Zero, unsupported hosts and stale reset epochs must not return success. */
+typedef struct VIOGPU_WDDM_TIMESTAMP_INFO
+{
+    VIOGPU_WDDM_ABI_HEADER Header;
+    VIOGPU_WDDM_UINT32 Opcode;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+    VIOGPU_WDDM_UINT64 GpuTimestamp;
+    VIOGPU_WDDM_UINT64 ResetGeneration;
+    VIOGPU_WDDM_UINT32 ContextId;
+    VIOGPU_WDDM_UINT32 TimestampValidBits;
+    VIOGPU_WDDM_UINT64 TimestampFrequency;
+    VIOGPU_WDDM_UINT64 Reserved[2];
+} VIOGPU_WDDM_TIMESTAMP_INFO;
 
 typedef struct VIOGPU_WDDM_RENDER_COMMAND
 {

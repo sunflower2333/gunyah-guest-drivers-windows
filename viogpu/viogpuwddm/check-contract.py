@@ -989,9 +989,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58473",
+        "$minor = 58476",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58473",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58476",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -7555,6 +7555,18 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT64 ResetGeneration;
             VIOGPU_WDDM_UINT32 ContextId;
             VIOGPU_WDDM_UINT32 Reserved;
+        """,
+        "VIOGPU_WDDM_TIMESTAMP_INFO": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            VIOGPU_WDDM_UINT32 Opcode;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+            VIOGPU_WDDM_UINT64 GpuTimestamp;
+            VIOGPU_WDDM_UINT64 ResetGeneration;
+            VIOGPU_WDDM_UINT32 ContextId;
+            VIOGPU_WDDM_UINT32 TimestampValidBits;
+            VIOGPU_WDDM_UINT64 TimestampFrequency;
+            VIOGPU_WDDM_UINT64 Reserved[2];
         """,
         "VIOGPU_WDDM_RENDER_COMMAND": """
             VIOGPU_WDDM_ABI_HEADER Header;

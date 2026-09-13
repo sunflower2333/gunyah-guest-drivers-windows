@@ -3957,6 +3957,89 @@ NTSTATUS QueryContextInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
     return status;
 }
 
+NTSTATUS QueryGpuTimestampInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+    if (adapter == NULL || escape == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || escape->hDevice == NULL ||
+        escape->hContext == NULL || escape->Flags.Value != 0 || escape->pPrivateDriverData == NULL ||
+        escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_TIMESTAMP_INFO))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    VIOGPU_WDDM_TIMESTAMP_INFO request = {};
+    __try
+    {
+        RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return STATUS_INVALID_USER_BUFFER;
+    }
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
+        request.Opcode != VIOGPU_WDDM_ESCAPE_GET_GPU_TIMESTAMP)
+    {
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;
+    }
+    if (request.Flags != 0 || request.ExpectedResetGeneration == 0 || request.GpuTimestamp != 0 ||
+        request.ResetGeneration != 0 || request.ContextId != 0 || request.TimestampValidBits != 0 ||
+        request.TimestampFrequency != 0 || request.Reserved[0] != 0 || request.Reserved[1] != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(escape->hContext);
+    if (!ExAcquireRundownProtection(&context->Operations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    NTSTATUS status = STATUS_DEVICE_NOT_READY;
+    VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+    BOOLEAN snapshotAcquired = FALSE;
+    VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(escape->hDevice);
+    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Type != VioGpuWddmContextNative ||
+        context->Device != device || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || device->Adapter != adapter)
+    {
+        status = STATUS_INVALID_HANDLE;
+    }
+    else if (adapter->IsDriverActive() &&
+             VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+    {
+        snapshotAcquired = TRUE;
+        if (snapshot.ResetGeneration == request.ExpectedResetGeneration && snapshot.ContextId != 0)
+        {
+            VIOGPU_WDDM_TIMESTAMP_INFO response = {};
+#if defined(VIOGPU_NATIVE_CONTEXT)
+            status = snapshot.Adapter->QueryNativeGpuTimestamp(&snapshot, &response.GpuTimestamp);
+#else
+            status = STATUS_NOT_SUPPORTED;
+#endif
+            if (status == STATUS_SUCCESS)
+            {
+                InitializeAbiHeader(&response.Header, sizeof(response));
+                response.Opcode = VIOGPU_WDDM_ESCAPE_GET_GPU_TIMESTAMP;
+                response.ExpectedResetGeneration = request.ExpectedResetGeneration;
+                response.ResetGeneration = snapshot.ResetGeneration;
+                response.ContextId = snapshot.ContextId;
+                response.TimestampValidBits = 48;
+                response.TimestampFrequency = 19200000;
+                __try
+                {
+                    RtlCopyMemory(escape->pPrivateDriverData, &response, sizeof(response));
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    status = STATUS_INVALID_USER_BUFFER;
+                }
+            }
+        }
+    }
+    if (snapshotAcquired)
+    {
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+    }
+    ExReleaseRundownProtection(&context->Operations);
+    return status;
+}
+
 NTSTATUS QueryCompletedFenceInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
 {
     PAGED_CODE();
@@ -4762,6 +4845,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
 
     reinterpret_cast<VioGpuDod *>(hAdapter)->CountDisplayEvent(32);
 
+    if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_TIMESTAMP_INFO))
+    {
+        return QueryGpuTimestampInfo(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
+    }
     if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_FENCE_INFO))
     {
         return QueryCompletedFenceInfo(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
