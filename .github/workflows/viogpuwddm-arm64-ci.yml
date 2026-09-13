@@ -319,6 +319,7 @@ jobs:
           # WDDM 2.2 connection DDIs and a reported 2.3 driver model.
           $hdrExperimentDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objhdrx_win11_arm64/arm64/')
           New-Item -ItemType Directory -Path $hdrExperimentDir -Force | Out-Null
+          Copy-Item -LiteralPath $hdrUmd -Destination (Join-Path $hdrExperimentDir 'viogpud3d.dll') -Force
           msbuild viogpu/viogpuwddm/viogpuwddm.vcxproj /m `
             /p:Configuration="Win11 Release" /p:Platform=ARM64 `
             /p:WindowsTargetPlatformVersion="$env:DROIDVM_KIT_VERSION" `
