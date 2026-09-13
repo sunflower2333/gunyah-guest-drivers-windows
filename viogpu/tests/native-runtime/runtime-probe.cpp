@@ -458,6 +458,28 @@ static void d3d11(IDXGIFactory4 *factory,
             HRESULT hr = swapchain->Present(1, 0);
             std::printf("PRESENT_RESULT frame=%u hr=0x%08lx\n", frame, static_cast<unsigned long>(hr));
             windowState(window, "after-present");
+            if (frame == 0 && hr == DXGI_STATUS_OCCLUDED)
+            {
+                // DXGI may defer a new window's redirection surface until the
+                // compositor processes its first Present. Bound this startup
+                // diagnostic and still require four actual S_OK frame presents.
+                const ULONGLONG began = GetTickCount64();
+                UINT attempts = 0;
+                while (hr == DXGI_STATUS_OCCLUDED && GetTickCount64() - began < 2000)
+                {
+                    Sleep(16);
+                    messages();
+                    const HRESULT visible = swapchain->Present(0, DXGI_PRESENT_TEST);
+                    require(visible == S_OK || visible == DXGI_STATUS_OCCLUDED,
+                            "runtime-present-visibility-test", visible);
+                    if (visible == S_OK)
+                        hr = swapchain->Present(1, 0);
+                    ++attempts;
+                }
+                std::printf("PRESENT_STARTUP attempts=%u elapsed_ms=%llu hr=0x%08lx\n",
+                            attempts, GetTickCount64() - began, static_cast<unsigned long>(hr));
+                windowState(window, "after-startup");
+            }
             require(hr == S_OK, "runtime-present-not-visible-success", hr);
             std::printf("PRESENT_ACCEPTED frame=%u\n", frame);
             messages();
