@@ -194,19 +194,19 @@ int main() {
     // A pinned primary of the other depth is refused before any mode change;
     // an unpinned source cannot satisfy an explicit requirement.
     for (D3DDDIFORMAT required : {D3DDDIFMT_A2B10G10R10, D3DDDIFMT_A8R8G8B8}) {
-        peer=Peer{}; peer.source.Format.Graphics.PixelFormat=D3DDDIFMT_A8R8G8B8; VioGpuDod device;
-        DXGKARG_COMMITVIDPN request;
-        NTSTATUS status=device.CommitVidPn(&request,required);
+        peer=Peer{}; peer.source.Format.Graphics.PixelFormat=D3DDDIFMT_A8R8G8B8; VioGpuDod formatDevice;
+        DXGKARG_COMMITVIDPN formatRequest;
+        NTSTATUS status=formatDevice.CommitVidPn(&formatRequest,required);
         if (required==D3DDDIFMT_A8R8G8B8)
             check(status==STATUS_SUCCESS && peer.commits==1 && peer.released(),"matching required format commits");
         else
             check(status==STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED && !peer.commits && peer.released() &&
-                  peer.currentClock==422060000 && device.counters[6]==STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED,
+                  peer.currentClock==422060000 && formatDevice.counters[6]==STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED,
                   "eight-bit primary never satisfies a ten-bit output");
     }
     {
-        peer=Peer{}; peer.pinSource=false; VioGpuDod device; DXGKARG_COMMITVIDPN request;
-        check(device.CommitVidPn(&request,D3DDDIFMT_A8R8G8B8)==STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED &&
+        peer=Peer{}; peer.pinSource=false; VioGpuDod formatDevice; DXGKARG_COMMITVIDPN formatRequest;
+        check(formatDevice.CommitVidPn(&formatRequest,D3DDDIFMT_A8R8G8B8)==STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED &&
               !peer.commits && peer.released(),"unpinned source cannot satisfy a required output format");
     }
     std::printf("Production VidPN commit: %u/%u checks passed\n",checks-failures,checks);
