@@ -116,6 +116,9 @@
     <FilesToPackage Include="$(TargetPath)" />
     <FilesToPackage Include="$(OutDir)viogpud3d.dll" />
   </ItemGroup>
+  <Target Name="ApplyDroidVmPerfCpp" BeforeTargets="ClCompile">
+    <Exec Command="python &quot;$(MSBuildProjectDirectory)\..\perf\apply_perf_cpp.py&quot;" />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="$(MSBuildProjectDirectory)\..\..\build\Driver.Common.targets" />
   <ImportGroup Label="ExtensionTargets" />
