@@ -13051,6 +13051,8 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     policy = canonical_code(code["viogpu_display_color.h"])
     need("if(!discovered||current==NULL){returnwasAdmitted?VioGpuColorConnectionReenumerate:VioGpuColorConnectionNone;}",
          policy, "lost discovery may only withdraw an admitted HDR monitor")
+    need("if(!interruptible){returnVioGpuColorConnectionNone;}", policy,
+         "an always-connected child must never be reported disconnected")
     need("if(!isAdmitted){returnVioGpuColorConnectionNone;}", policy, "SDR generations must never pulse the monitor")
     if re.search(r"DXGKDDI_WDDMv2_3", code["viogpudo.cpp"]) and not re.search(
             r"#\s*if\s*\(\s*DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\s*\)\s*&&\s*"

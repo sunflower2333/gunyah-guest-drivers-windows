@@ -168,8 +168,12 @@ inline bool VioGpuDisplayColorPqAdmitted(const VIOGPU_DISPLAY_COLOR_RESPONSE *ca
 }
 
 /* notified: the last successfully discovered capabilities that Windows has
- * seen (all zero when none). current: valid only when discovered is true. */
+ * seen (all zero when none). current: valid only when discovered is true.
+ * interruptible: the child was reported with interruptible HPD. An
+ * always-connected child is never reported disconnected, so it cannot
+ * renegotiate; HDR admission then changes only with a new mode enumeration. */
 inline VIOGPU_COLOR_CONNECTION_ACTION VioGpuColorConnectionAction(bool initialized,
+                                                                  bool interruptible,
                                                                   bool discovered,
                                                                   const VIOGPU_DISPLAY_COLOR_RESPONSE *notified,
                                                                   const VIOGPU_DISPLAY_COLOR_RESPONSE *current)
@@ -177,6 +181,10 @@ inline VIOGPU_COLOR_CONNECTION_ACTION VioGpuColorConnectionAction(bool initializ
     if (!initialized)
     {
         return VioGpuColorConnectionConnect;
+    }
+    if (!interruptible)
+    {
+        return VioGpuColorConnectionNone;
     }
     const bool wasAdmitted = VioGpuDisplayColorPqAdmitted(notified);
     if (!discovered || current == nullptr)

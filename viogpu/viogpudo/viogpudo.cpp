@@ -14001,8 +14001,10 @@ void VioGpuAdapter::RefreshColorConnection()
         discovered = m_pVioGpuDod->QueryDisplayColor(&caps) && caps.generation != 0;
         m_pVioGpuDod->ClearColorPresentCompletion();
     }
+    // QueryChildRelations reports this candidate's child with interruptible HPD.
+    const bool interruptible = true;
     const auto action =
-        VioGpuColorConnectionAction(m_ColorConnectionInitialized != FALSE, discovered != FALSE,
+        VioGpuColorConnectionAction(m_ColorConnectionInitialized != FALSE, interruptible, discovered != FALSE,
                                     &m_ColorNotifiedCapabilities, discovered ? &caps : nullptr);
     // Callbacks run outside ColorStateOperation: an OS callback may
     // immediately query the driver again.
