@@ -168,6 +168,40 @@ static ComPtr<IDXGIAdapter1> adapterFor(IDXGIFactory4 *factory, bool warp)
     return selected;
 }
 
+static void messages();
+
+static void windowState(HWND window, const char *stage)
+{
+    RECT rect{}, client{};
+    GetWindowRect(window, &rect);
+    GetClientRect(window, &client);
+    DWORD session = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &session);
+    MONITORINFO monitor{};
+    monitor.cbSize = sizeof(monitor);
+    GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor);
+    wchar_t desktopName[256] = {}, inputName[256] = {};
+    DWORD needed = 0;
+    GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME,
+                             desktopName, sizeof(desktopName), &needed);
+    HDESK input = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    const DWORD inputError = input ? ERROR_SUCCESS : GetLastError();
+    if (input)
+    {
+        GetUserObjectInformationW(input, UOI_NAME, inputName, sizeof(inputName), &needed);
+        CloseDesktop(input);
+    }
+    std::printf("WINDOW_STATE stage=%s visible=%u iconic=%u foreground=%u session=%lu "
+                "rect=%ld,%ld,%ld,%ld client=%ld,%ld monitor=%ld,%ld,%ld,%ld\n",
+                stage, IsWindowVisible(window) ? 1u : 0u, IsIconic(window) ? 1u : 0u,
+                GetForegroundWindow() == window ? 1u : 0u, session,
+                rect.left, rect.top, rect.right, rect.bottom, client.right, client.bottom,
+                monitor.rcMonitor.left, monitor.rcMonitor.top,
+                monitor.rcMonitor.right, monitor.rcMonitor.bottom);
+    std::wprintf(L"WINDOW_DESKTOP stage=%hs current=%ls input=%ls input_error=%lu\n",
+                 stage, desktopName, inputName, inputError);
+}
+
 static HWND makeWindow()
 {
     WNDCLASSW wc{};
@@ -188,7 +222,19 @@ static HWND makeWindow()
                                   wc.hInstance,
                                   nullptr);
     require(window != nullptr, "create-window");
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    GetStartupInfoW(&startup);
+    std::printf("WINDOW_STARTUP flags=0x%08lx show=%u\n", startup.dwFlags,
+                static_cast<unsigned>(startup.wShowWindow));
     ShowWindow(window, SW_SHOW);
+    windowState(window, "initial-show");
+    // First ShowWindow can be overridden by the process startup show state.
+    // This test requires a normal visible window and services its initial paint.
+    ShowWindow(window, SW_SHOWNORMAL);
+    UpdateWindow(window);
+    messages();
+    windowState(window, "ready");
     return window;
 }
 
@@ -326,6 +372,18 @@ static void d3d11(IDXGIFactory4 *factory,
         swap.Windowed = TRUE;
         swap.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
         checked(factory->CreateSwapChain(device.Get(), &swap, &swapchain), "create-runtime-swapchain");
+        ComPtr<IDXGIOutput> output;
+        const HRESULT outputStatus = swapchain->GetContainingOutput(&output);
+        std::printf("SWAPCHAIN_OUTPUT hr=0x%08lx\n", static_cast<unsigned long>(outputStatus));
+        if (SUCCEEDED(outputStatus) && output)
+        {
+            DXGI_OUTPUT_DESC desc{};
+            checked(output->GetDesc(&desc), "swapchain-output-description");
+            std::wprintf(L"SWAPCHAIN_MONITOR=%ls attached=%u rect=%ld,%ld,%ld,%ld\n",
+                         desc.DeviceName, desc.AttachedToDesktop ? 1u : 0u,
+                         desc.DesktopCoordinates.left, desc.DesktopCoordinates.top,
+                         desc.DesktopCoordinates.right, desc.DesktopCoordinates.bottom);
+        }
     }
     for (UINT frame = 0; frame < 4; ++frame)
     {
@@ -395,7 +453,11 @@ static void d3d11(IDXGIFactory4 *factory,
             ComPtr<ID3D11Texture2D> backbuffer;
             checked(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer)), "get-backbuffer");
             context->CopyResource(backbuffer.Get(), target.Get());
+            messages();
+            windowState(window, "before-present");
             HRESULT hr = swapchain->Present(1, 0);
+            std::printf("PRESENT_RESULT frame=%u hr=0x%08lx\n", frame, static_cast<unsigned long>(hr));
+            windowState(window, "after-present");
             require(hr == S_OK, "runtime-present-not-visible-success", hr);
             std::printf("PRESENT_ACCEPTED frame=%u\n", frame);
             messages();
