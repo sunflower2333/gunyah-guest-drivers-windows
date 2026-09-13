@@ -19,10 +19,11 @@ static unsigned failures;
 
 int main()
 {
-    // Public WDK enumerator values the driver static_asserts against.
-    CHECK(VioGpuVotInternal == 0x80000000U);
-    CHECK(VioGpuVotHdmi == 5U && VioGpuVotDisplayPortExternal == 10U);
-    CHECK(VioGpuHpdAlwaysConnected == 1U && VioGpuHpdInterruptible == 4U);
+    // Public WDK enumerator values the driver static_asserts against. Constant
+    // conditions are compile-time checks (MSVC /W4 rejects them in CHECK).
+    static_assert(VioGpuVotInternal == 0x80000000U, "D3DKMDT_VOT_INTERNAL");
+    static_assert(VioGpuVotHdmi == 5U && VioGpuVotDisplayPortExternal == 10U, "HDMI/DisplayPort output technology");
+    static_assert(VioGpuHpdAlwaysConnected == 1U && VioGpuHpdInterruptible == 4U, "HPD awareness");
 
     // The WIN8 table keeps the exact descriptor it has always published.
     CHECK(VioGpuDefaultChildDescriptorMode(false) == VioGpuChildInternalAlwaysConnected);
@@ -65,12 +66,13 @@ int main()
           VioGpuHpdAlwaysConnected);
 
     // Child DDI trace entries can never collide with DXGKQAITYPE values.
-    for (unsigned type : {VioGpuActivationChildRelations, VioGpuActivationChildStatus, VioGpuActivationChildDescriptor})
-    {
-        CHECK((type & VioGpuActivationChildDdiFlag) != 0 && type > 0xFFFFU);
-    }
-    CHECK(VioGpuActivationChildRelations != VioGpuActivationChildStatus &&
-          VioGpuActivationChildStatus != VioGpuActivationChildDescriptor);
+    static_assert((VioGpuActivationChildRelations & VioGpuActivationChildDdiFlag) != 0 &&
+                      (VioGpuActivationChildStatus & VioGpuActivationChildDdiFlag) != 0 &&
+                      (VioGpuActivationChildDescriptor & VioGpuActivationChildDdiFlag) != 0,
+                  "child DDI trace type flag");
+    static_assert(VioGpuActivationChildRelations > 0xFFFFU && VioGpuActivationChildRelations != VioGpuActivationChildStatus &&
+                      VioGpuActivationChildStatus != VioGpuActivationChildDescriptor,
+                  "distinct child DDI trace types");
 
     std::printf("child descriptor: %u checks, %u failures\n", checks, failures);
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
