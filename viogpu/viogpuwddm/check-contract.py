@@ -12867,6 +12867,218 @@ def check_installation_contract() -> None:
         fail("ARM64-only legacy package must not claim WoW64 or D3D12 UMD support")
 
 
+ADVANCED_COLOR_DDI_PATH = PROJECT_DIR / "advanced_color_ddi.inc"
+SHARED_DISPLAY_COLOR_PATH = (PROJECT_DIR.parent / "shared" / "viogpu_display_color.h").resolve()
+ADVANCED_COLOR_IF = re.compile(
+    r"#\s*if\s*\(\s*DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\s*\)\s*$")
+ADVANCED_COLOR_IF_AND = re.compile(
+    r"#\s*if\s*\(\s*DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\s*\)\s*&&")
+
+
+STRIPPED_SOURCE_CACHE: dict[str, str] = {}
+
+
+def interface_view(code: str, advanced: bool) -> str:
+    """Blank the branches one DDI interface selection excludes.
+
+    Only the WDDM2.3 Advanced Color selector is evaluated. Every other
+    conditional keeps all of its branches, so an absence requirement on the
+    default view can only err toward failing, never toward passing.
+    """
+    lines = code.split("\n")
+    stack: list[tuple[Optional[bool], bool]] = []
+    active = True
+    view = []
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"#\s*if", stripped):
+            if ADVANCED_COLOR_IF.match(stripped):
+                value: Optional[bool] = advanced
+            elif ADVANCED_COLOR_IF_AND.match(stripped):
+                value = False if not advanced else None
+            else:
+                value = None
+            stack.append((value, active))
+            if value is not None:
+                active = active and value
+            view.append("")
+            continue
+        if re.match(r"#\s*elif", stripped):
+            if stack and stack[-1][0] is not None:
+                return "#elif-after-advanced-color-selector"
+            view.append("")
+            continue
+        if re.match(r"#\s*else", stripped):
+            if stack and stack[-1][0] is not None:
+                active = stack[-1][1] and not stack[-1][0]
+            view.append("")
+            continue
+        if re.match(r"#\s*endif", stripped):
+            if stack:
+                active = stack.pop()[1]
+            view.append("")
+            continue
+        view.append(line if active else "")
+    return "\n".join(view)
+
+
+def advanced_color_violations(sources: dict[str, str]) -> list[str]:
+    """Return every broken default-build or HDR-admission requirement.
+
+    sources maps viogpudo.cpp, viogpudo.h, wddmddi.cpp, driver_entry.cpp,
+    advanced_color_ddi.inc, viogpu_display_color.h and viogpuwddm.vcxproj to
+    their text. Comments and literals are stripped here.
+    """
+    violations: list[str] = []
+    code = {name: STRIPPED_SOURCE_CACHE.setdefault(text, strip_cpp_comments_and_literals(text))
+            if text not in STRIPPED_SOURCE_CACHE else STRIPPED_SOURCE_CACHE[text]
+            for name, text in sources.items() if not name.endswith(".vcxproj")}
+
+    def body(name: str, text: str) -> str:
+        try:
+            return canonical_code(function_body(name, text))
+        except SystemExit:
+            violations.append(f"missing definition {name}")
+            return ""
+
+    def need(fragment: str, text: str, message: str) -> None:
+        if fragment not in text:
+            violations.append(f"{message}: {fragment}")
+
+    # Default WDDM 2.0 build: a superset of the SDR baseline, with nothing HDR
+    # reachable. DVCL wrappers may exist but must have no caller.
+    ten_bit = re.compile(r"\bD3DDDIFMT_A2(?:B10G10R10|R10G10B10)\b")
+    dvcl_calls = re.compile(r"\b(?:QueryDisplayColor|SetResourceColor|SetTargetTransform|PresentColorResource)\s*\(")
+    wrappers = ("VioGpuDod::QueryDisplayColor", "VioGpuDod::SetTargetTransform", "VioGpuDod::SetResourceColor",
+                "VioGpuDod::PresentColorResource", "VioGpuAdapter::SetTargetTransform",
+                "VioGpuAdapter::SetResourceColor", "VioGpuAdapter::PresentColorResource")
+    for name in ("viogpudo.cpp", "wddmddi.cpp", "driver_entry.cpp"):
+        default = interface_view(code[name], advanced=False)
+        if ten_bit.search(default):
+            violations.append(f"default WDDM2.0 {name} references a ten-bit format")
+        if name == "viogpudo.cpp":
+            for wrapper in wrappers:
+                try:
+                    _, start, end = function_body_span(wrapper, default)
+                    signature = default.rfind(wrapper, 0, start)
+                    default = default[:signature] + default[end + 1:]
+                except SystemExit:
+                    violations.append(f"missing default DVCL wrapper {wrapper}")
+        if dvcl_calls.search(default):
+            violations.append(f"default WDDM2.0 {name} issues a DVCL display color command")
+        for token in ("HpdAwarenessInterruptible", "ColorTransformCaps", "DXGKDDI_WDDMv2_3",
+                      "DXGKQAITYPE_QUERYCOLORIMETRYOVERRIDES", "advanced_color_ddi", "VioGpuWddmSetTimingsFromVidPn",
+                      "VioGpuWddmSetTargetGamma", "VioGpuWddmSetVidPnSourceAddressMpo3",
+                      "DXGKDDI_INTERFACE_VERSION_WDDM2_3;"):
+            if token in default:
+                violations.append(f"default WDDM2.0 {name} exposes {token}")
+    dod_default = interface_view(code["viogpudo.cpp"], advanced=False)
+    need("HpdAwarenessAlwaysConnected", dod_default, "default WDDM2.0 monitor must stay always connected")
+    need("constD3DDDIFORMATstorageFormat=pCurrentMode->DispInfo.ColorFormat;",
+         body("VioGpuDod::SetSourceModeAndPath", dod_default),
+         "default WDDM2.0 mode set must preserve framebuffer storage")
+    if not body("ColorFormat", dod_default).endswith("returnVIRTIO_GPU_FORMAT_B8G8R8A8_UNORM;"):
+        violations.append("default WDDM2.0 framebuffer format fallback must be unchanged")
+    ddi_default = interface_view(code["wddmddi.cpp"], advanced=False)
+
+    def exact_body(name: str, parameters: str, text: str) -> str:
+        try:
+            return canonical_code(function_body_with_parameters(name, parameters, text))
+        except SystemExit:
+            violations.append(f"missing definition {name}({parameters})")
+            return ""
+
+    if exact_body("IsHighPrecisionSurfaceFormat", "D3DDDIFORMAT format", ddi_default) != "(void)format;returnFALSE;":
+        violations.append("default WDDM2.0 build must refuse ten-bit surfaces")
+    entry_default = canonical_code(interface_view(code["driver_entry.cpp"], advanced=False))
+    if entry_default.count("initialData->Version=DXGKDDI_INTERFACE_VERSION_WDDM2_0;") != 1:
+        violations.append("default registration must remain exactly WDDM2.0")
+
+    # Both builds: legacy Present never reinterprets ten-bit pixels.
+    geometry = code["wddmddi.cpp"]
+    geometry = canonical_code(geometry[geometry.find("BOOLEAN ValidatePresentGeometry("):])
+    need("!IsPresentFormatPairSupported(source->Format,destination->Format)", geometry[:geometry.find("}")],
+         "Present must validate the format pair")
+    need("if(IsHighPrecisionSurfaceFormat(source)||IsHighPrecisionSurfaceFormat(destination)){returnsource==destination;}",
+         exact_body("IsPresentFormatPairSupported", "D3DDDIFORMAT source, D3DDDIFORMAT destination", code["wddmddi.cpp"]),
+         "ten-bit Present must be an exact same-format copy")
+
+    # Advanced Color candidate: every HDR exposure requires negotiated PQ.
+    dod = interface_view(code["viogpudo.cpp"], advanced=True)
+    header = interface_view(code["viogpudo.h"], advanced=True)
+    acdi = canonical_code(code["advanced_color_ddi.inc"])
+    need("result&&caps->generation!=0&&(caps->usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ)?1:0",
+         body("VioGpuDod::QueryDisplayColor", dod), "HDR mode availability must require usable PQ")
+    available = body("IsNativeHdrModeAvailable", header)
+    for fragment in ("!IsHardwareResetRequested()", "m_ColorMonitorConnected", "m_ColorModeAvailable",
+                     "==QueryNativeFenceEpoch()"):
+        need(fragment, available, "native HDR availability must be current and negotiated")
+    need("volatileLONGm_ColorMonitorConnected=1;", canonical_code(header),
+         "the SDR monitor must be connected before the first DVCL refresh")
+    need("if(QueryDisplayColor(&colorCaps)&&IsNativeHdrModeAvailable()){formatCount=2;}",
+         body("VioGpuDod::AddSingleSourceMode", dod), "ten-bit source modes must require native HDR")
+    need("PixelFormat==D3DDDIFMT_A2B10G10R10&&IsNativeHdrModeAvailable()",
+         body("VioGpuDod::IsVidPnSourceModeFieldsValid", dod), "ten-bit source validation must require native HDR")
+    need("if(IsNativeHdrModeAvailable()){pVidPnTargetModeInfo->WireFormatAndPreference.Rgb|=D3DKMDT_BITS_PER_COMPONENT_10;}",
+         body("VioGpuDod::AddSingleTargetMode", dod), "ten-bit wire modes must require native HDR")
+    query = body("VioGpuDod::QueryAdapterInfo", dod)
+    colorimetry = query[query.find("caseDXGKQAITYPE_QUERYCOLORIMETRYOVERRIDES:"):]
+    require_gate = "if(QueryDisplayColor(&caps)&&IsNativeHdrModeAvailable())"
+    if require_gate not in colorimetry or colorimetry.find(require_gate) > colorimetry.find("StandardColorimetryFlags.ST2084=1;"):
+        violations.append("colorimetry overrides must require native HDR before ST2084")
+    caps_gate = "QueryDisplayColor(&colorCaps)&&IsNativeHdrModeAvailable()"
+    if caps_gate not in query or query.find(caps_gate) > query.find("ColorTransformCaps.Transform_3x4Matrix_HighColor=1;"):
+        violations.append("color transform caps must require native HDR")
+    storage = body("VioGpuDod::SetSourceModeAndPath", dod)
+    need("?D3DDDIFMT_A2B10G10R10:D3DDDIFMT_X8R8G8B8;", storage,
+         "candidate SDR modes must keep X8R8G8B8 framebuffer storage")
+    need("pCurrentMode->DispInfo.ColorFormat=storageFormat;", storage, "mode storage must use the selected format")
+    need("args->Supported=adapter->QueryDisplayColor(&caps)&&(caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ)!=0&&",
+         acdi, "CheckMPO3 must require usable PQ")
+    need("if(!adapter->QueryDisplayColor(&caps)||!(caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ)){returnSTATUS_NOT_SUPPORTED;}",
+         acdi, "an HDR timing must require usable PQ")
+    need("if(caps.generation==0||!(caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ)){returnSTATUS_NOT_SUPPORTED;}",
+         acdi, "an MPO3 PQ plane must require usable PQ")
+    if "PreserveInherited" in acdi and "STATUS_NOT_SUPPORTED" in acdi[acdi.find("PreserveInherited") - 40:acdi.find("PreserveInherited") + 80]:
+        violations.append("PreserveInherited must be applied and reported, not refused")
+    refresh = body("VioGpuAdapter::RefreshColorConnection", dod)
+    require_fragments = ("discovered=m_pVioGpuDod->QueryDisplayColor(&caps)&&caps.generation!=0;",
+                         "VioGpuColorConnectionAction(", "if(action==VioGpuColorConnectionReenumerate)",
+                         "UpdateChildStatus(FALSE)", "if(action!=VioGpuColorConnectionNone)", "UpdateChildStatus(TRUE)")
+    offsets = [refresh.find(fragment) for fragment in require_fragments]
+    if min(offsets) < 0 or offsets != sorted(offsets):
+        violations.append("monitor refresh must follow the SDR-preserving connection policy")
+    policy = canonical_code(code["viogpu_display_color.h"])
+    need("if(!discovered||current==NULL){returnwasAdmitted?VioGpuColorConnectionReenumerate:VioGpuColorConnectionNone;}",
+         policy, "lost discovery may only withdraw an admitted HDR monitor")
+    need("if(!isAdmitted){returnVioGpuColorConnectionNone;}", policy, "SDR generations must never pulse the monitor")
+    if re.search(r"DXGKDDI_WDDMv2_3", code["viogpudo.cpp"]) and not re.search(
+            r"#\s*if\s*\(\s*DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\s*\)\s*&&\s*"
+            r"defined\s*\(\s*VIOGPU_REPORT_WDDM2_3\s*\)\s*/?\*?[^\n]*\n(?:[^\n]*\n)*?\s*driverCaps->WDDMVersion\s*=\s*DXGKDDI_WDDMv2_3\s*;",
+            code["viogpudo.cpp"]):
+        violations.append("driver model 2.3 may be reported only by the explicit VIOGPU_REPORT_WDDM2_3 experiment")
+    project = sources["viogpuwddm.vcxproj"]
+    if project.count("VIOGPU_REPORT_WDDM2_3=1") != 1 or \
+            "Condition=\"'$(VIOGPU_ADVANCED_COLOR)'=='1' and '$(VIOGPU_REPORT_WDDM2_3)'=='1'\"" not in project:
+        violations.append("the reported 2.3 model must require both explicit build properties")
+    return violations
+
+
+def check_advanced_color_admission_contract() -> None:
+    sources = {
+        "viogpudo.cpp": VIOGPU_SOURCE,
+        "viogpudo.h": VIOGPU_HEADER_SOURCE,
+        "wddmddi.cpp": WDDM_DDI_SOURCE,
+        "driver_entry.cpp": DRIVER_SOURCE,
+        "advanced_color_ddi.inc": ADVANCED_COLOR_DDI_PATH.read_text(encoding="utf-8"),
+        "viogpu_display_color.h": SHARED_DISPLAY_COLOR_PATH.read_text(encoding="utf-8"),
+        "viogpuwddm.vcxproj": PROJECT.read_text(encoding="utf-8"),
+    }
+    violations = advanced_color_violations(sources)
+    if violations:
+        fail("Advanced Color default-build/admission contract: " + "; ".join(violations))
+
+
 def main() -> None:
     root = ET.parse(PROJECT).getroot()
     sources = project_compile_sources(root)
@@ -12921,6 +13133,7 @@ def main() -> None:
     check_adapter_lifecycle()
     check_worker_thread_lifetime()
     check_project_safety(root)
+    check_advanced_color_admission_contract()
     check_installation_contract()
     print("viogpuwddm Native Context full-miniport contract: PASS")
 

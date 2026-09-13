@@ -137,6 +137,12 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python viogpu/tests/present-formats/run.py --negative-control-raw-copy
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/present-formats/run.py --negative-control-high-precision-pair
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Exercise Advanced Color default-build and admission contract negative controls
+        shell: pwsh
+        run: python viogpu/tests/advanced-color-contract/run.py
 
       - name: Check host EDID and rational display timings
         shell: cmd
