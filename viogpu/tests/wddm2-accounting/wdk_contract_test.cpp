@@ -23,6 +23,11 @@ struct VIOGPU_WDDM_ALLOCATION
 };
 struct VioGpuDod
 {
+    DXGKRNL_INTERFACE Interface = {};
+    PDXGKRNL_INTERFACE GetDxgkInterface()
+    {
+        return &Interface;
+    }
     bool Ready = true;
     bool QueryNativeContextReadiness(GPU_CAPSET_DRM *, void *, void *, ULONGLONG *generation)
     {
@@ -99,5 +104,33 @@ int main()
     check(info.FlagsWddm2.Value == (0x8000U | 1U |
                                     4U) && info.PhysicalAdapterIndex == 0 && info.hAllocation == &allocation,
           "actual allocation flag union has AccessedPhysically and no reserved legacy paging bit");
+        {
+        adapter.Ready = true;
+        adapter.Interface.DeviceHandle = reinterpret_cast<HANDLE>(0x5678);
+        DXGK_QUERYPHYSICALADAPTERCAPSIN physicalIn = {};
+        std::array<unsigned char, sizeof(DXGK_PHYSICALADAPTERCAPS) + 8> caps;
+        const UINT prefix = static_cast<UINT>(FIELD_OFFSET(DXGK_PHYSICALADAPTERCAPS, Flags) +
+                                              sizeof(static_cast<DXGK_PHYSICALADAPTERCAPS *>(nullptr)->Flags));
+        check(prefix == 20, "actual WDK WDDM2.0 physical adapter caps prefix matches the observed OS extent");
+        caps.fill(0xa5);
+        DXGKARG_QUERYADAPTERINFO physical = {};
+        physical.Type = DXGKQAITYPE_PHYSICALADAPTERCAPS;
+        physical.pInputData = &physicalIn;
+        physical.InputDataSize = sizeof(physicalIn);
+        physical.pOutputData = caps.data();
+        physical.OutputDataSize = prefix;
+        check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_SUCCESS, "WDK physical adapter caps accepted");
+        DXGK_PHYSICALADAPTERCAPS decoded = {};
+        std::memcpy(&decoded, caps.data(), prefix);
+        check(decoded.NumExecutionNodes == 1 && decoded.PagingNodeIndex == 0 &&
+                  decoded.DxgkPhysicalAdapterHandle == adapter.Interface.DeviceHandle && decoded.Flags.Value == 0,
+              "actual WDK caps: one self-paging node, real handle, no MMU/move-paging flags");
+        for (size_t i = prefix; i < caps.size(); ++i)
+        {
+            check(caps[i] == 0xa5, "WDK bytes beyond extent untouched");
+        }
+        physicalIn.PhysicalAdapterIndex = 1;
+        check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_INVALID_PARAMETER, "WDK linked index rejected");
+    }
     std::printf("PASS: %u actual WDK WDDM2 ABI and production contract assertions\n", checks);
 }

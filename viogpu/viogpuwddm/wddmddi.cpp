@@ -3848,6 +3848,35 @@ static NTSTATUS QuerySegment4(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS QueryPhysicalAdapterCaps(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
+{
+    /* dxgkrnl asks every WDDM2 adapter for this before AddAdapter. Refusing it
+     * failed start with StartAdapter_AddAdapterFailed/STATUS_INVALID_PARAMETER.
+     * The OS passes the WDDM 2.0 extent ending at Flags (20 bytes), shorter
+     * than the padded structure, so only that prefix is required. */
+    if (queryAdapterInfo->pInputData == NULL ||
+        queryAdapterInfo->InputDataSize < sizeof(DXGK_QUERYPHYSICALADAPTERCAPSIN) ||
+        static_cast<const DXGK_QUERYPHYSICALADAPTERCAPSIN *>(queryAdapterInfo->pInputData)->PhysicalAdapterIndex != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    const UINT required = static_cast<UINT>(FIELD_OFFSET(DXGK_PHYSICALADAPTERCAPS, Flags) +
+                                            sizeof(static_cast<DXGK_PHYSICALADAPTERCAPS *>(NULL)->Flags));
+    if (queryAdapterInfo->pOutputData == NULL || queryAdapterInfo->OutputDataSize < required)
+    {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    DXGK_PHYSICALADAPTERCAPS *caps = static_cast<DXGK_PHYSICALADAPTERCAPS *>(queryAdapterInfo->pOutputData);
+    RtlZeroMemory(caps, queryAdapterInfo->OutputDataSize);
+    /* Must match DriverCaps GpuEngineTopology and GetNodeMetadata: one
+     * physical 3D node that also executes paging buffers. No GpuMmu, IoMmu or
+     * move paging is implemented, so every flag stays clear. */
+    caps->NumExecutionNodes = 1;
+    caps->PagingNodeIndex = 0;
+    caps->DxgkPhysicalAdapterHandle = adapter->GetDxgkInterface()->DeviceHandle;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS QueryUmdPrivateInfo(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryAdapterInfo)
 {
     /* Accept any buffer that can hold the ABI header rather than demanding an
@@ -4692,6 +4721,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryAdapterInfo(CONST HANDLE
     else if (pQueryAdapterInfo->Type == DXGKQAITYPE_64BITONLYCAPS)
     {
         status = Query64BitOnlyCaps(pQueryAdapterInfo);
+    }
+    else if (pQueryAdapterInfo->Type == DXGKQAITYPE_PHYSICALADAPTERCAPS)
+    {
+        status = QueryPhysicalAdapterCaps(adapter, pQueryAdapterInfo);
     }
     else if (static_cast<UINT>(pQueryAdapterInfo->Type) == 24U || static_cast<UINT>(pQueryAdapterInfo->Type) == 25U)
     {

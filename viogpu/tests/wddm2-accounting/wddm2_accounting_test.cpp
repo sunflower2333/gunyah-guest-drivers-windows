@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstddef>
 #include <cstring>
 
 #ifndef _Use_decl_annotations_
@@ -24,6 +25,7 @@ constexpr NTSTATUS STATUS_INVALID_PARAMETER = -1;
 constexpr NTSTATUS STATUS_BUFFER_TOO_SMALL = -2;
 constexpr NTSTATUS STATUS_DEVICE_NOT_READY = -3;
 constexpr UINT PAGE_SIZE = 4096;
+#define FIELD_OFFSET(type, field) offsetof(type, field)
 constexpr SIZE_T VIOGPU_WDDM_APERTURE_SIZE = 512ULL << 20;
 constexpr UINT VIOGPU_WDDM_SEGMENT_ID = 1;
 constexpr UINT VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE = 1;
@@ -88,8 +90,32 @@ struct DXGKARG_GETNODEMETADATA
     BOOLEAN GpuMmuSupported;
     BOOLEAN IoMmuSupported;
 };
+struct DXGK_QUERYPHYSICALADAPTERCAPSIN
+{
+    UINT PhysicalAdapterIndex;
+};
+struct DXGK_PHYSICALADAPTERCAPS
+{
+    UINT NumExecutionNodes;
+    UINT PagingNodeIndex;
+    HANDLE DxgkPhysicalAdapterHandle;
+    union {
+        UINT Value;
+    } Flags;
+    UINT VPRPagingNode;
+};
+struct DXGKRNL_INTERFACE
+{
+    UINT Size;
+    HANDLE DeviceHandle;
+};
 struct VioGpuDod
 {
+    DXGKRNL_INTERFACE Interface{sizeof(DXGKRNL_INTERFACE), reinterpret_cast<HANDLE>(0x1234)};
+    DXGKRNL_INTERFACE *GetDxgkInterface()
+    {
+        return &Interface;
+    }
     bool Ready = true;
     uint64_t Generation = 1;
     bool QueryNativeContextReadiness(GPU_CAPSET_DRM *, void *, void *, ULONGLONG *generation)
@@ -250,5 +276,43 @@ int main()
     InitializeAllocationInfo(&allocInfo, &allocation, 16384);
     check(!allocInfo.FlagsWddm2.CpuVisible && !allocInfo.FlagsWddm2.Cached && allocInfo.FlagsWddm2.AccessedPhysically,
           "GPU-only allocation still participates in physical residency");
+        {
+        DXGK_QUERYPHYSICALADAPTERCAPSIN physicalIn{};
+        std::array<unsigned char, sizeof(DXGK_PHYSICALADAPTERCAPS) + 8> caps;
+        const UINT prefix = static_cast<UINT>(offsetof(DXGK_PHYSICALADAPTERCAPS, Flags) + sizeof(UINT));
+        caps.fill(0xa5);
+        DXGKARG_QUERYADAPTERINFO physical{&physicalIn, sizeof(physicalIn), caps.data(), prefix};
+        check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_SUCCESS, "OS WDDM2.0 20-byte extent accepted");
+        DXGK_PHYSICALADAPTERCAPS decoded{};
+        std::memcpy(&decoded, caps.data(), prefix);
+        check(decoded.NumExecutionNodes == 1 && decoded.PagingNodeIndex == 0 &&
+                  decoded.DxgkPhysicalAdapterHandle == adapter.Interface.DeviceHandle && decoded.Flags.Value == 0,
+              "one physical node pages itself with the actual DXGK handle and no MMU flags");
+        for (size_t i = prefix; i < caps.size(); ++i)
+        {
+            check(caps[i] == 0xa5, "bytes beyond the supplied extent untouched");
+        }
+        physical.OutputDataSize = static_cast<UINT>(caps.size());
+        caps.fill(0xa5);
+        check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_SUCCESS, "larger future extent accepted");
+        for (size_t i = prefix; i < caps.size(); ++i)
+        {
+            check(caps[i] == 0, "unimplemented later fields zeroed");
+        }
+        physical.OutputDataSize = prefix - 1;
+        check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_BUFFER_TOO_SMALL, "short extent rejected");
+        physical.OutputDataSize = prefix;
+        physicalIn.PhysicalAdapterIndex = 1;
+        check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_INVALID_PARAMETER, "no linked adapter invented");
+        physicalIn.PhysicalAdapterIndex = 0;
+        physical.InputDataSize = sizeof(physicalIn) - 1;
+        check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_INVALID_PARAMETER, "short input rejected");
+        physical.InputDataSize = sizeof(physicalIn);
+        physical.pInputData = nullptr;
+        check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_INVALID_PARAMETER, "missing input rejected");
+        physical.pInputData = &physicalIn;
+        physical.pOutputData = nullptr;
+        check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_BUFFER_TOO_SMALL, "missing output rejected");
+    }
     std::printf("PASS: %u production WDDM2 accounting cases\n", checks);
 }
