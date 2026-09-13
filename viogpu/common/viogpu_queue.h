@@ -267,7 +267,6 @@ enum VIOGPU_2D_RESOURCE_STATE : LONG
     VioGpu2DResourceCreated,
     VioGpu2DResourceBackingAttached,
     VioGpu2DResourceUnknown,
-    VioGpuWddmAllocationHostUnknown,
     VioGpu2DResourceGuestBlobBackingAttached,
 };
 
