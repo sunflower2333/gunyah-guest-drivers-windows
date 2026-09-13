@@ -13075,6 +13075,12 @@ def check_advanced_color_admission_contract() -> None:
         "viogpuwddm.vcxproj": PROJECT.read_text(encoding="utf-8"),
     }
     violations = advanced_color_violations(sources)
+    product = PRODUCT_WORKFLOW_PATH.read_text(encoding="utf-8")
+    if (product.count("@{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64' ; hdr=$true },") != 1 or
+            product.count("hdr=$true") != 1 or product.count("$projectFlags += '/p:VIOGPU_ADVANCED_COLOR=1'") != 1 or
+            "VIOGPU_REPORT_WDDM2_3" in product):
+        violations.append("the signed 58482 package must build exactly the KMD as the Advanced Color candidate "
+                          "without the reported-2.3 experiment")
     if violations:
         fail("Advanced Color default-build/admission contract: " + "; ".join(violations))
 

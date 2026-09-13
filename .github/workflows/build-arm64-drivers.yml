@@ -529,7 +529,7 @@ jobs:
             @{ p='viogpu/viogpusc/viogpusc.vcxproj';        c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpures/viogpures.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
             @{ p='viogpu/viogpud3d/viogpud3d.vcxproj';      c='Win11 Release'; plat='ARM64' ; dep=$true },
-            @{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64' },
+            @{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64' ; hdr=$true },
             @{ p='viostor/viostor.vcxproj';                 c='Win11 Release'; plat='ARM64' },
             @{ p='vioscsi/vioscsi.vcxproj';                 c='Win11 Release'; plat='ARM64' },
             @{ p='vioserial/sys/vioser.vcxproj';            c='Win11 Release'; plat='ARM64' },
@@ -541,7 +541,13 @@ jobs:
           $failed = @()
           foreach ($j in $jobs) {
             Write-Host "::group::build $($j.p) [$($j.c)|$($j.plat)]"
-            msbuild $j.p /p:Configuration="$($j.c)" /p:Platform="$($j.plat)" @common
+            $projectFlags = @()
+            if ($j.hdr) {
+              # 58482 packages the explicit fail-closed Advanced Color candidate:
+              # WDDM 2.3 DDI interface and color DDIs, DriverCaps still WDDMv2.
+              $projectFlags += '/p:VIOGPU_ADVANCED_COLOR=1'
+            }
+            msbuild $j.p /p:Configuration="$($j.c)" /p:Platform="$($j.plat)" @common @projectFlags
             if ($LASTEXITCODE -ne 0) {
               $failed += $j.p
               if ($j.dep) { Write-Host "::error::dependency $($j.p) failed — 後續驅動可能連不到" }
