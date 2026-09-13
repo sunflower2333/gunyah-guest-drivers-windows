@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: sunflower2333/clvk
-          ref: 0f436fe7110813ddf01dfaebc44b9de7cd39b3b8
+          ref: 9844406dc08e6f15293da3878572bf11f714da28
           path: clvk
           fetch-depth: 1
       - uses: actions/checkout@v4
@@ -50,11 +50,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run watch 34698553838 -R sunflower2333/clvk --exit-status --interval 30
+          gh run watch 34731501490 -R sunflower2333/clvk --exit-status --interval 30
           if ($LASTEXITCODE) { throw 'OpenCL runtime CI failed' }
-          $source = gh run view 34698553838 -R sunflower2333/clvk --json headSha --jq .headSha
-          if ($LASTEXITCODE -or $source.Trim() -ne '0f436fe7110813ddf01dfaebc44b9de7cd39b3b8') { throw 'OpenCL source mismatch' }
-          gh run download 34698553838 -R sunflower2333/clvk --dir opencl-runtime
+          $source = gh run view 34731501490 -R sunflower2333/clvk --json headSha --jq .headSha
+          if ($LASTEXITCODE -or $source.Trim() -ne '9844406dc08e6f15293da3878572bf11f714da28') { throw 'OpenCL source mismatch' }
+          gh run download 34731501490 -R sunflower2333/clvk --dir opencl-runtime
           if ($LASTEXITCODE) { throw 'OpenCL download failed' }
           python viogpu/opencl/test-system-probe-contract.py --runtime opencl-runtime --probes opencl-system-probes
           if ($LASTEXITCODE) { throw 'Ordinary OpenCL probe regression failed' }

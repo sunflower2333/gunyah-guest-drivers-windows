@@ -6,8 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 
-CLVK = '0f436fe7110813ddf01dfaebc44b9de7cd39b3b8'
-PARENT = '240d258d7bba36db67c3a1f75f82dc075c683d6b'
+CLVK = '9844406dc08e6f15293da3878572bf11f714da28'
 LOADER = 'f27c925e782499eebc4df20e121144358ccd5ac6'
 HEADERS = '386ca390b2f52efeb3e1a55a500690eb8013f60e'
 PROBE_SHA = '224033cb16045a784dd1f5c29a9204536598159ae219535dc6c234ba1aefe9a7'
@@ -49,9 +48,8 @@ def main():
     receipt = {
         'schema':1, 'family':'opencl-system-probes',
         'scope':'probe-only supplement; installed runtime manifest and hashes unchanged',
-        'installed_runtime':{'parent':PARENT, 'unified_ci':34703356654,
-                             'clvk':CLVK, 'clvk_runtime_ci':34698553838,
-                             'runtime_rebuilt':False, 'driver_rebuilt':False},
+        'companion_runtime':{'clvk':CLVK, 'clvk_runtime_ci':34731501490,
+                             'target_installation':'not verified by probe packaging'},
         'probe_build':{'parent':revision('.'), 'ci':os.environ.get('GITHUB_RUN_ID'),
                        'clvk_test_source':CLVK, 'test_source_path':str(source),
                        'test_source_sha256':PROBE_SHA, 'khronos_loader':LOADER,
