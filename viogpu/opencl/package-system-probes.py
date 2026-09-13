@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 
-CLVK = '2bf028507ffc45fa47ddf0a770dd35611617e807'
+CLVK = '92116c1f71bb6f79fd9e4981fa6c3d27d51c830f'
 LOADER = 'f27c925e782499eebc4df20e121144358ccd5ac6'
 HEADERS = '386ca390b2f52efeb3e1a55a500690eb8013f60e'
 PROBE_SHA = '224033cb16045a784dd1f5c29a9204536598159ae219535dc6c234ba1aefe9a7'
@@ -48,7 +48,7 @@ def main():
     receipt = {
         'schema':1, 'family':'opencl-system-probes',
         'scope':'probe-only supplement; installed runtime manifest and hashes unchanged',
-        'companion_runtime':{'clvk':CLVK, 'clvk_runtime_ci':34739833418,
+        'companion_runtime':{'clvk':CLVK, 'clvk_runtime_ci':34742232147,
                              'target_installation':'not verified by probe packaging'},
         'probe_build':{'parent':revision('.'), 'ci':os.environ.get('GITHUB_RUN_ID'),
                        'clvk_test_source':CLVK, 'test_source_path':str(source),
