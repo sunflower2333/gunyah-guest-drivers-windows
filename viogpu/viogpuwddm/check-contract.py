@@ -989,9 +989,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58473",
+        "$minor = 58476",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58473",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58476",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -5069,7 +5069,7 @@ def check_shared_allocation_copy_contract() -> None:
             fail("scheduled Present and copies must accept CPU-visible redirection destinations through Patch and Execute")
     require_order(execute, (
         "AcquirePresentAllocationLifecycles(", "source->ApertureAddress==NULL",
-        "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
+        "CopyPresentRow(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes,source->Format,destination->Format);",
         "KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);",
         "if(NT_SUCCESS(status)&&!transaction->CopyOnly&&IsStandardPrimaryAllocation(destination))",
         "transaction->Adapter->Present2DResource(",
@@ -5279,8 +5279,7 @@ def check_wddm_present_contract() -> None:
         fail("Present multipass must retain one bounded subrectangle chunk size")
     for fragment in (
         "rectCount==0||rectCount>VIOGPU_WDDM_PRESENT_RECTS_PER_PASS",
-        "(source->Format!=destination->Format&&"
-        "!(source->Format==D3DDDIFMT_A8R8G8B8&&destination->Format==D3DDDIFMT_X8R8G8B8))",
+        "!IsSupportedSurfaceFormat(source->Format)||!IsSupportedSurfaceFormat(destination->Format)",
         "static_cast<ULONGLONG>(source->Pitch)*source->Height>source->BackingSize",
         "static_cast<ULONGLONG>(destination->Pitch)*destination->Height>destination->BackingSize",
         "sourceRect->right-sourceRect->left!=destinationRect->right-destinationRect->left",
@@ -5899,7 +5898,7 @@ def check_wddm_present_contract() -> None:
         "ReconcileGdiSourcePlacementAfterReset(source)",
         "HasLiveGdiPresentIdentity(source,transaction->Context,transaction->Adapter)",
         "source->ApertureAddress==NULL||destination->ApertureAddress==NULL",
-        "RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);",
+        "CopyPresentRow(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes,source->Format,destination->Format);",
         "ProbePresentCopy(transaction,&copyProbe);",
         "transaction->Adapter->Present2DResource(destination->ResourceId,0,destination->Width,"
         "destination->Height,0,0,",
@@ -5928,7 +5927,7 @@ def check_wddm_present_contract() -> None:
         source_acquire,
         source_release,
         source_clear,
-        execute.find("RtlCopyMemory(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes);", source_clear),
+        execute.find("CopyPresentRow(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes,source->Format,destination->Format);", source_clear),
         execute.find("KeMemoryBarrier();", source_clear),
         execute.find("KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);", source_clear),
         execute.find("ProbePresentCopy(transaction,&copyProbe);", source_clear),
