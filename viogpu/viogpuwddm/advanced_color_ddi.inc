@@ -38,12 +38,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
         return STATUS_INVALID_PARAMETER;
     }
     const auto wire = path.SelectedWireFormat;
-    // This backend cannot prove preservation of a firmware-owned scanout
-    // across virtio device reset. Do not report success after replacing it.
-    if (path.Input.PreserveInherited)
-    {
-        return STATUS_NOT_SUPPORTED;
-    }
+    // This backend cannot preserve a firmware-owned scanout across the virtio
+    // device reset. The DDI contract reserves failure for bad parameters, so a
+    // PreserveInherited request is applied as a normal timing set and the
+    // replacement is reported below as a black-content timing-change glitch.
     const bool hdr = path.OutputWireColorSpace == D3DDDI_OUTPUT_WIRE_COLOR_SPACE_G2084_P2020;
     if (path.Input.Active &&
         (wire.YCbCr444 != 0 || wire.YCbCr422 != 0 || wire.YCbCr420 != 0 || wire.Intensity != 0 ||
