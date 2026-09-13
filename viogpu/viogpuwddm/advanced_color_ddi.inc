@@ -74,7 +74,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
         path.TargetState.ConnectionStatus = connected ? MonitorStatusConnected : MonitorStatusDisconnected;
         if (connected)
         {
-            path.TargetState.MonitorConnect.LinkTargetType = D3DKMDT_VOT_INTERNAL;
+            // Report the connector technology QueryChildRelations published
+            // (DisplayPort external by default for WDDM 2.x).
+            path.TargetState.MonitorConnect.LinkTargetType =
+                static_cast<D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY>(adapter->ChildDescriptor().InterfaceTechnology);
         }
         path.Output.RecheckMPO = 1;
         path.GlitchCause = DXGK_GLITCH_CAUSE_TIMING_CHANGE;
