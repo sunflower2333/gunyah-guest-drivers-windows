@@ -77,8 +77,13 @@ int main()
     hdr.max_luminance = 10000000;
     auto act = [](bool initialized, bool discovered, const VIOGPU_DISPLAY_COLOR_RESPONSE &n,
                   const VIOGPU_DISPLAY_COLOR_RESPONSE &c) {
-        return VioGpuColorConnectionAction(initialized, discovered, &n, &c);
+        return VioGpuColorConnectionAction(initialized, true, discovered, &n, &c);
     };
+    // An always-connected child reports its first connection and is never
+    // pulsed, even when admission changes.
+    assert(VioGpuColorConnectionAction(false, false, true, &none, &hdr) == VioGpuColorConnectionConnect);
+    assert(VioGpuColorConnectionAction(true, false, true, &sdr, &hdr) == VioGpuColorConnectionNone);
+    assert(VioGpuColorConnectionAction(true, false, false, &hdr, &none) == VioGpuColorConnectionNone);
     // First refresh always reports the monitor, even without DVCL.
     assert(act(false, false, none, none) == VioGpuColorConnectionConnect);
     assert(act(false, true, none, hdr) == VioGpuColorConnectionConnect);
