@@ -35,7 +35,7 @@ jobs:
           cl /nologo /std:c++17 /EHsc /W4 /WX /MT /DUNICODE /D_UNICODE
           viogpu\tests\native-runtime\runtime-probe.cpp
           /Fe:runtime-probe-${{ matrix.name }}.exe
-          /link bcrypt.lib dxguid.lib user32.lib
+          /link bcrypt.lib dxguid.lib user32.lib gdi32.lib dwmapi.lib
       - name: Record exact probe identity
         shell: pwsh
         run: |

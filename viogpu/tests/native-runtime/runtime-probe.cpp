@@ -9,6 +9,7 @@
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <dxgi1_4.h>
+#include <dwmapi.h>
 #include <wrl/client.h>
 #include <array>
 #include <cstdio>
@@ -213,6 +214,46 @@ static void windowState(HWND window, const char *stage)
                 monitor.rcMonitor.right, monitor.rcMonitor.bottom);
     std::wprintf(L"WINDOW_DESKTOP stage=%hs current=%ls input=%ls input_error=%lu\n",
                  stage, desktopName, inputName, inputError);
+
+    // IsWindowVisible only describes WS_VISIBLE. DWM cloaking, an empty
+    // effective clip, and a stalled compositor are separate observations.
+    BOOL composition = FALSE;
+    const HRESULT compositionStatus = DwmIsCompositionEnabled(&composition);
+    DWORD cloaked = 0;
+    const HRESULT cloakStatus = DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
+    DWM_TIMING_INFO timing{};
+    timing.cbSize = sizeof(timing);
+    const HRESULT timingStatus = DwmGetCompositionTimingInfo(nullptr, &timing);
+    std::printf("WINDOW_COMPOSITION stage=%s enabled_hr=0x%08lx enabled=%u "
+                "cloak_hr=0x%08lx cloaked=0x%lx style=0x%lx exstyle=0x%lx "
+                "timing_hr=0x%08lx frame=%llu displayed=%llu refresh=%llu qpc_vblank=%llu\n",
+                stage, static_cast<unsigned long>(compositionStatus), composition ? 1u : 0u,
+                static_cast<unsigned long>(cloakStatus), cloaked,
+                static_cast<unsigned long>(GetWindowLongPtrW(window, GWL_STYLE)),
+                static_cast<unsigned long>(GetWindowLongPtrW(window, GWL_EXSTYLE)),
+                static_cast<unsigned long>(timingStatus), timing.cFrame, timing.cFramesDisplayed,
+                timing.cRefresh, timing.qpcVBlank);
+
+    HDC dc = GetDC(window);
+    HRGN region = CreateRectRgn(0, 0, 0, 0);
+    RECT clip{}, systemClip{};
+    const int clipKind = dc ? GetClipBox(dc, &clip) : ERROR;
+    const int systemResult = dc && region ? GetRandomRgn(dc, region, SYSRGN) : -1;
+    const int systemKind = systemResult == 1 ? GetRgnBox(region, &systemClip) : ERROR;
+    POINT center = {client.right / 2, client.bottom / 2};
+    ClientToScreen(window, &center);
+    const HWND centerWindow = WindowFromPoint(center);
+    std::printf("WINDOW_CLIP stage=%s dc=%u kind=%d rect=%ld,%ld,%ld,%ld "
+                "system_result=%d system_kind=%d system_rect=%ld,%ld,%ld,%ld "
+                "center=%ld,%ld center_owned=%u\n",
+                stage, dc ? 1u : 0u, clipKind, clip.left, clip.top, clip.right, clip.bottom,
+                systemResult, systemKind, systemClip.left, systemClip.top,
+                systemClip.right, systemClip.bottom, center.x, center.y,
+                centerWindow == window || IsChild(window, centerWindow) ? 1u : 0u);
+    if (region)
+        DeleteObject(region);
+    if (dc)
+        ReleaseDC(window, dc);
 }
 
 static HWND makeWindow()
