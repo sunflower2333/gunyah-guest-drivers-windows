@@ -5330,7 +5330,7 @@ def check_wddm_present_contract() -> None:
         fail("Present multipass must retain one bounded subrectangle chunk size")
     for fragment in (
         "rectCount==0||rectCount>VIOGPU_WDDM_PRESENT_RECTS_PER_PASS",
-        "!IsSupportedSurfaceFormat(source->Format)||!IsSupportedSurfaceFormat(destination->Format)",
+        "!IsPresentFormatPairSupported(source->Format,destination->Format)",
         "static_cast<ULONGLONG>(source->Pitch)*source->Height>source->BackingSize",
         "static_cast<ULONGLONG>(destination->Pitch)*destination->Height>destination->BackingSize",
         "sourceRect->right-sourceRect->left!=destinationRect->right-destinationRect->left",

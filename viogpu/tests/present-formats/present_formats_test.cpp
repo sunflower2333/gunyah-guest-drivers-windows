@@ -21,7 +21,15 @@ using PUCHAR = unsigned char *;
 using VOID = void;
 constexpr bool FALSE = false, TRUE = true;
 enum D3DDDIFORMAT { D3DDDIFMT_UNKNOWN = 0, D3DDDIFMT_A8R8G8B8 = 21,
-                   D3DDDIFMT_X8R8G8B8 = 22, D3DDDIFMT_A8B8G8R8 = 32 };
+                   D3DDDIFMT_X8R8G8B8 = 22, D3DDDIFMT_A2B10G10R10 = 31, D3DDDIFMT_A8B8G8R8 = 32,
+                   D3DDDIFMT_A2R10G10B10 = 35 };
+// run.py builds this fixture for the default WDDM 2.0 interface and for the
+// explicit Advanced Color (WDDM 2.3) candidate; values match d3dukmdt.h.
+#define DXGKDDI_INTERFACE_VERSION_WDDM2_0 0x5023
+#define DXGKDDI_INTERFACE_VERSION_WDDM2_3 0x8001
+#ifndef DXGKDDI_INTERFACE_VERSION
+#error run.py must select the DDI interface version
+#endif
 constexpr UINT VIOGPU_WDDM_PRESENT_RECTS_PER_PASS = 256;
 struct RECT { int32_t left, top, right, bottom; };
 struct VIOGPU_WDDM_ALLOCATION {
@@ -100,6 +108,37 @@ static bool color_copy(D3DDDIFORMAT sourceFormat, D3DDDIFORMAT destinationFormat
     return true;
 }
 
+// Ten-bit words are copied only between identical layouts and must arrive
+// bit-exact, including the two alpha bits, with borders untouched.
+static bool ten_bit_copy(D3DDDIFORMAT format)
+{
+    std::vector<unsigned char> src(4 * 31, 0xcc), dst(6 * 37, 0x9d);
+    for (UINT y = 0; y < 4; ++y) {
+        for (UINT x = 0; x < 6; ++x) {
+            const DWORD word = (x * 97 + 513) | ((y * 131 + 3) << 10) | ((1023 - x - y) << 20) |
+                               (((x + y) & 3U) << 30);
+            std::memcpy(src.data() + y * 31 + x * 4, &word, sizeof(word));
+        }
+    }
+    const auto original = src;
+    VIOGPU_WDDM_ALLOCATION s{format, 6, 4, 31, src.size(), src.data()};
+    VIOGPU_WDDM_ALLOCATION d{format, 8, 6, 37, dst.size(), dst.data()};
+    RECT clips[]{{2, 2, 4, 3}, {5, 3, 6, 4}};
+    VIOGPU_WDDM_PRESENT_TRANSACTION tx{&s, &d, {1, 1, 5, 3}, {2, 2, 6, 4}, clips, 2};
+    if (!ValidatePresentGeometry(&s, &d, &tx.SourceRect, &tx.DestinationRect, clips, 2)) return false;
+    ExecuteCopy(&tx);
+    if (src != original) return false;
+    for (UINT y = 0; y < 6; ++y) {
+        for (UINT offset = 0; offset < 37; ++offset) {
+            UINT x = offset / 4;
+            bool copied = offset < 32 && ((y == 2 && x >= 2 && x < 4) || (y == 3 && x == 5));
+            const unsigned char expected = copied ? src[(y - 1) * 31 + (x - 1) * 4 + offset % 4] : 0x9d;
+            if (dst[y * 37 + offset] != expected) return false;
+        }
+    }
+    return true;
+}
+
 int main()
 {
     const D3DDDIFORMAT formats[]{D3DDDIFMT_A8R8G8B8, D3DDDIFMT_X8R8G8B8, D3DDDIFMT_A8B8G8R8};
@@ -132,6 +171,30 @@ int main()
     check(!ValidatePresentGeometry(&source, &destination, &area, &area, &clipped, 0), "zero clip count");
     check(!ValidatePresentGeometry(&source, &destination, &area, &area, &clipped, 257), "excess clip count");
     check(!ValidatePresentGeometry(nullptr, &destination, &area, &area, &clipped, 1), "null source");
+    auto pair = [&](D3DDDIFORMAT from, D3DDDIFORMAT to) {
+        source.Format = from; destination.Format = to;
+        const bool accepted = valid();
+        source.Format = destination.Format = D3DDDIFMT_A8R8G8B8;
+        return accepted;
+    };
+#if DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3
+    check(IsSupportedSurfaceFormat(D3DDDIFMT_A2B10G10R10) && IsSupportedSurfaceFormat(D3DDDIFMT_A2R10G10B10),
+          "candidate allocates ten-bit layouts");
+    check(ten_bit_copy(D3DDDIFMT_A2B10G10R10), "RGB10 to RGB10 exact copy");
+    check(ten_bit_copy(D3DDDIFMT_A2R10G10B10), "BGR10 to BGR10 exact copy");
+    for (D3DDDIFORMAT eight : {D3DDDIFMT_A8R8G8B8, D3DDDIFMT_X8R8G8B8, D3DDDIFMT_A8B8G8R8}) {
+        check(!pair(D3DDDIFMT_A2B10G10R10, eight), "RGB10 to eight-bit refused");
+        check(!pair(eight, D3DDDIFMT_A2B10G10R10), "eight-bit to RGB10 refused");
+        check(!pair(D3DDDIFMT_A2R10G10B10, eight), "BGR10 to eight-bit refused");
+    }
+    check(!pair(D3DDDIFMT_A2B10G10R10, D3DDDIFMT_A2R10G10B10), "RGB10 to BGR10 refused");
+    check(!pair(D3DDDIFMT_A2R10G10B10, D3DDDIFMT_A2B10G10R10), "BGR10 to RGB10 refused");
+#else
+    check(!IsSupportedSurfaceFormat(D3DDDIFMT_A2B10G10R10) && !IsSupportedSurfaceFormat(D3DDDIFMT_A2R10G10B10),
+          "default WDDM2.0 build refuses ten-bit allocations");
+    check(!pair(D3DDDIFMT_A2B10G10R10, D3DDDIFMT_A2B10G10R10) && !ten_bit_copy(D3DDDIFMT_A2R10G10B10),
+          "default WDDM2.0 build refuses ten-bit presents");
+#endif
     std::printf("%u cases, %u failures\n", cases, failures);
     return failures ? 1 : 0;
 }

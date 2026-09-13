@@ -3829,10 +3829,12 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
             pVidPnSourceModeInfo->Format.Graphics.VisibleRegionSize = pVidPnSourceModeInfo->Format.Graphics.PrimSurfSize;
             pVidPnSourceModeInfo->Format.Graphics.Stride = pModeInfo->ScreenStride;
             pVidPnSourceModeInfo->Format.Graphics.PixelFormat = D3DDDIFMT_A8R8G8B8;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
             if (formatIndex == 1)
             {
                 pVidPnSourceModeInfo->Format.Graphics.PixelFormat = D3DDDIFMT_A2B10G10R10;
             }
+#endif
             pVidPnSourceModeInfo->Format.Graphics.ColorBasis = D3DKMDT_CB_SCRGB;
             pVidPnSourceModeInfo->Format.Graphics.PixelValueAccessMode = D3DKMDT_PVAM_DIRECT;
 
@@ -4852,8 +4854,20 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
 
     NTSTATUS Status = STATUS_SUCCESS;
     CURRENT_MODE *pCurrentMode = &m_CurrentMode;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    // A ten-bit source mode owns real RGB10A2 storage. Every eight-bit source
+    // mode keeps the X8R8G8B8 driver framebuffer of the SDR baseline, so an
+    // unchanged SDR mode never recreates or re-formats the host resource.
+    const D3DDDIFORMAT storageFormat = pSourceMode->Format.Graphics.PixelFormat == D3DDDIFMT_A2B10G10R10
+                                           ? D3DDDIFMT_A2B10G10R10
+                                           : D3DDDIFMT_X8R8G8B8;
+#else
+    // The default WDDM 2.0 build offers only the eight-bit source mode and
+    // preserves the framebuffer storage format exactly as before.
+    const D3DDDIFORMAT storageFormat = pCurrentMode->DispInfo.ColorFormat;
+#endif
     const bool resize = !pCurrentMode->Flags.FrameBufferIsActive ||
-                        pCurrentMode->DispInfo.ColorFormat != pSourceMode->Format.Graphics.PixelFormat ||
+                        pCurrentMode->DispInfo.ColorFormat != storageFormat ||
                         pCurrentMode->DispInfo.Width != pSourceMode->Format.Graphics.PrimSurfSize.cx ||
                         pCurrentMode->DispInfo.Height != pSourceMode->Format.Graphics.PrimSurfSize.cy;
     DbgPrint(TRACE_LEVEL_FATAL,
@@ -4868,7 +4882,7 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
 
     pCurrentMode->DispInfo.Width = pSourceMode->Format.Graphics.PrimSurfSize.cx;
     pCurrentMode->DispInfo.Height = pSourceMode->Format.Graphics.PrimSurfSize.cy;
-    pCurrentMode->DispInfo.ColorFormat = pSourceMode->Format.Graphics.PixelFormat;
+    pCurrentMode->DispInfo.ColorFormat = storageFormat;
     pCurrentMode->DispInfo.Pitch = pSourceMode->Format.Graphics.PrimSurfSize.cx *
                                    BPPFromPixelFormat(pCurrentMode->DispInfo.ColorFormat) / BITS_PER_BYTE;
 
@@ -14125,13 +14139,21 @@ UINT ColorFormat(UINT format)
             return VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM;
         case D3DDDIFMT_X8B8G8R8:
             return VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
         case D3DDDIFMT_A2B10G10R10:
             return VIRTIO_GPU_FORMAT_R10G10B10A2_UNORM;
         case D3DDDIFMT_A2R10G10B10:
             return VIRTIO_GPU_FORMAT_B10G10R10A2_UNORM;
+#endif
     }
     DbgPrint(TRACE_LEVEL_ERROR, ("---> %s Unsupported color format %d\n", __FUNCTION__, format));
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    // With ten-bit storage available an unknown layout must never be guessed
+    // as BGRA: CreateFrameBufferObj refuses it instead.
     return 0;
+#else
+    return VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM;
+#endif
 }
 
 PAGED_CODE_SEG_BEGIN
@@ -14180,6 +14202,7 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
         delete obj;
         return FALSE;
     }
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     // A ten-bit fallback primary is real PQ storage too. Tag it before the
     // first binding/flush; an untagged import must never fall back to RGBA8.
     if (pCurrentMode->DispInfo.ColorFormat == D3DDDIFMT_A2B10G10R10)
@@ -14201,6 +14224,7 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
             return FALSE;
         }
     }
+#endif
     RecordActiveScanout(resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight);
     if (!m_CtrlQueue.SetScanout(0, resid, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||
         !m_CtrlQueue.TransferToHost2D(resid, 0, pModeInfo->VisScreenWidth, pModeInfo->VisScreenHeight, 0, 0) ||

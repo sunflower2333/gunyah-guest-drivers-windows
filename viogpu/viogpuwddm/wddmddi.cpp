@@ -283,10 +283,39 @@ void DereferenceDevice(VIOGPU_WDDM_DEVICE *device)
     UNREFERENCED_PARAMETER(state);
 }
 
+BOOLEAN IsHighPrecisionSurfaceFormat(D3DDDIFORMAT format)
+{
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    return format == D3DDDIFMT_A2B10G10R10 || format == D3DDDIFMT_A2R10G10B10;
+#else
+    // The default WDDM 2.0 build has no DVCL color negotiation: the host
+    // refuses to scan out or flush an untagged ten-bit resource. Keep refusing
+    // such allocations up front, exactly as the SDR baseline did.
+    (void)format;
+    return FALSE;
+#endif
+}
+
 BOOLEAN IsSupportedSurfaceFormat(D3DDDIFORMAT format)
 {
     return format == D3DDDIFMT_A8R8G8B8 || format == D3DDDIFMT_X8R8G8B8 || format == D3DDDIFMT_A8B8G8R8 ||
-           format == D3DDDIFMT_A2B10G10R10 || format == D3DDDIFMT_A2R10G10B10;
+           IsHighPrecisionSurfaceFormat(format);
+}
+
+BOOLEAN IsPresentFormatPairSupported(D3DDDIFORMAT source, D3DDDIFORMAT destination)
+{
+    if (!IsSupportedSurfaceFormat(source) || !IsSupportedSurfaceFormat(destination))
+    {
+        return FALSE;
+    }
+    // CopyPresentRow converts only among the eight-bit layouts. A legacy
+    // Present carries no color space, so a ten-bit surface is accepted only as
+    // an exact copy into the identical ten-bit layout, never re-encoded.
+    if (IsHighPrecisionSurfaceFormat(source) || IsHighPrecisionSurfaceFormat(destination))
+    {
+        return source == destination;
+    }
+    return TRUE;
 }
 
 VIOGPU_WDDM_UINT32 ToPrivateFormat(D3DDDIFORMAT format)
@@ -299,10 +328,12 @@ VIOGPU_WDDM_UINT32 ToPrivateFormat(D3DDDIFORMAT format)
             return VIOGPU_WDDM_FORMAT_B8G8R8X8_UNORM;
         case D3DDDIFMT_A8B8G8R8:
             return VIOGPU_WDDM_FORMAT_R8G8B8A8_UNORM;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
         case D3DDDIFMT_A2B10G10R10:
             return VIOGPU_WDDM_FORMAT_R10G10B10A2_UNORM;
         case D3DDDIFMT_A2R10G10B10:
             return VIOGPU_WDDM_FORMAT_B10G10R10A2_UNORM;
+#endif
         default:
             return VIOGPU_WDDM_FORMAT_NONE;
     }
@@ -318,10 +349,12 @@ D3DDDIFORMAT FromPrivateFormat(VIOGPU_WDDM_UINT32 format)
             return D3DDDIFMT_X8R8G8B8;
         case VIOGPU_WDDM_FORMAT_R8G8B8A8_UNORM:
             return D3DDDIFMT_A8B8G8R8;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
         case VIOGPU_WDDM_FORMAT_R10G10B10A2_UNORM:
             return D3DDDIFMT_A2B10G10R10;
         case VIOGPU_WDDM_FORMAT_B10G10R10A2_UNORM:
             return D3DDDIFMT_A2R10G10B10;
+#endif
         default:
             return D3DDDIFMT_UNKNOWN;
     }
@@ -2472,12 +2505,14 @@ BOOLEAN ResolveStandard2DFormat(D3DDDIFORMAT format, _Out_ UINT *virtioFormat)
         case D3DDDIFMT_X8B8G8R8:
             *virtioFormat = VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
             return TRUE;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
         case D3DDDIFMT_A2B10G10R10:
             *virtioFormat = VIRTIO_GPU_FORMAT_R10G10B10A2_UNORM;
             return TRUE;
         case D3DDDIFMT_A2R10G10B10:
             *virtioFormat = VIRTIO_GPU_FORMAT_B10G10R10A2_UNORM;
             return TRUE;
+#endif
         default:
             *virtioFormat = 0;
             return FALSE;
@@ -2864,8 +2899,9 @@ BOOLEAN ValidatePresentGeometry(_In_ const VIOGPU_WDDM_ALLOCATION *source,
     if (source == NULL || destination == NULL || sourceRect == NULL || destinationRect == NULL ||
         destinationSubRects == NULL || rectCount == 0 || rectCount > VIOGPU_WDDM_PRESENT_RECTS_PER_PASS ||
         // DXGI can leave the destination unknown until kernel presentation.
-        // Every advertised 32-bit layout is converted by CopyPresentRow below.
-        !IsSupportedSurfaceFormat(source->Format) || !IsSupportedSurfaceFormat(destination->Format) ||
+        // Every eight-bit layout is converted by CopyPresentRow below; ten-bit
+        // layouts are accepted only as exact same-format copies.
+        !IsPresentFormatPairSupported(source->Format, destination->Format) ||
         static_cast<ULONGLONG>(source->Pitch) < static_cast<ULONGLONG>(source->Width) * 4 ||
         static_cast<ULONGLONG>(destination->Pitch) < static_cast<ULONGLONG>(destination->Width) * 4 ||
         static_cast<ULONGLONG>(source->Pitch) * source->Height > source->BackingSize ||
