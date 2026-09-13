@@ -903,11 +903,13 @@ def check_arm64_workflow_contract() -> None:
         fail(f"full-miniport workflow driver projects must all target ARM64: {contract_platforms or ['none']}")
     if not product_platforms or set(product_platforms) != {"ARM64"}:
         fail(f"product workflow driver projects must all target ARM64: {product_platforms or ['none']}")
-    if sources["Native Context full-miniport"].count("/p:Platform=ARM64") != 4:
+    if sources["Native Context full-miniport"].count("/p:Platform=ARM64") != 5:
         fail("the full WDDM contract, UMD, and opt-in test targets must be built explicitly for ARM64")
     experimental_workflow = sources["Native Context full-miniport"]
-    if experimental_workflow.count("/p:VIOGPU_ADVANCED_COLOR=1") != 1 or "objhdr_win11_arm64/arm64/" not in experimental_workflow:
-        fail("the opt-in2.3 candidate must compile once into an independent ARM64 output tree")
+    if experimental_workflow.count("/p:VIOGPU_ADVANCED_COLOR=1") != 2 or "objhdr_win11_arm64/arm64/" not in experimental_workflow or \
+            experimental_workflow.count("/p:VIOGPU_ADVANCED_COLOR=1 /p:VIOGPU_ADVANCED_COLOR_MPO3=1 /p:VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS=1") != 1 or \
+            "objhdrx_win11_arm64/arm64/" not in experimental_workflow:
+        fail("the opt-in 2.3 candidate and its unpackaged experiments must each compile once into independent ARM64 trees")
     if experimental_workflow.count("Compile opt-in WDDM test implementations") != 1:
         fail("the full WDDM workflow must compile the opt-in test implementations exactly once")
     if experimental_workflow.count("/p:VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1") != 2:
@@ -2766,11 +2768,16 @@ def check_callback_table() -> None:
         fail("Advanced Color registration must preserve the exact default2.0/opt-in2.3 version selection")
     advanced_callbacks = re.compile(
         r"#if\s*\(DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\)\s*"
-        r"initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3\s*=\s*VioGpuWddmSetVidPnSourceAddressMpo3;\s*"
-        r"initialData->DxgkDdiCheckMultiPlaneOverlaySupport3\s*=\s*VioGpuWddmCheckMultiPlaneOverlaySupport3;\s*"
         r"initialData->DxgkDdiSetTargetAdjustedColorimetry\s*=\s*VioGpuWddmSetTargetAdjustedColorimetry;\s*"
         r"initialData->DxgkDdiSetTargetGamma\s*=\s*VioGpuWddmSetTargetGamma;\s*"
-        r"initialData->DxgkDdiSetTimingsFromVidPn\s*=\s*VioGpuWddmSetTimingsFromVidPn;\s*#endif"
+        r"initialData->DxgkDdiSetTimingsFromVidPn\s*=\s*VioGpuWddmSetTimingsFromVidPn;\s*"
+        r"initialData->DxgkDdiUpdateMonitorLinkInfo\s*=\s*VioGpuWddmUpdateMonitorLinkInfo;\s*"
+        r"#if\s+defined\(VIOGPU_ADVANCED_COLOR_MPO3\)\s*"
+        r"initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3\s*=\s*VioGpuWddmSetVidPnSourceAddressMpo3;\s*"
+        r"initialData->DxgkDdiCheckMultiPlaneOverlaySupport3\s*=\s*VioGpuWddmCheckMultiPlaneOverlaySupport3;\s*#endif\s*"
+        r"#if\s+defined\(VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS\)\s*"
+        r"initialData->DxgkDdiDisplayDetectControl\s*=\s*VioGpuWddmDisplayDetectControl;\s*"
+        r"initialData->DxgkDdiQueryConnectionChange\s*=\s*VioGpuWddmQueryConnectionChange;\s*#endif\s*#endif"
     )
     body, count = advanced_callbacks.subn("", body)
     if count != 1:
@@ -13108,6 +13115,7 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
         if dvcl_calls.search(default):
             violations.append(f"default WDDM2.0 {name} issues a DVCL display color command")
         for token in ("RequestColorConnectionRefresh", "RefreshColorConnection", "ColorTransformCaps", "DXGKDDI_WDDMv2_3",
+                      "VioGpuWddmUpdateMonitorLinkInfo", "VioGpuWddmDisplayDetectControl", "VioGpuWddmQueryConnectionChange",
                       "DXGKQAITYPE_QUERYCOLORIMETRYOVERRIDES", "advanced_color_ddi", "VioGpuWddmSetTimingsFromVidPn",
                       "VioGpuWddmSetTargetGamma", "VioGpuWddmSetVidPnSourceAddressMpo3",
                       "DXGKDDI_INTERFACE_VERSION_WDDM2_3;"):
@@ -13221,8 +13229,26 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
          "InterlockedExchange(&m_ColorConnectionRefreshRequested,1);", config,
          "a display event must keep the SDR connected report before the HDR refresh")
     refresh = body("VioGpuAdapter::RefreshColorConnection", dod)
-    need("constboolinterruptible=m_pVioGpuDod->ChildDescriptor().HpdAwareness==VioGpuHpdInterruptible;", refresh,
-         "only an interruptible child may be pulsed")
+    need("constboolinterruptible=m_pVioGpuDod->ChildDescriptor().HpdAwareness==VioGpuHpdInterruptible&&"
+         "InterlockedCompareExchange(&m_pVioGpuDod->m_ColorHpdEnabled,0,0)!=0;", refresh,
+         "only an interruptible child with HPD enabled may be pulsed")
+    # WDDM 2.1/2.2 display DDIs added for Advanced Color.
+    need("#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)", code["advanced_color_ddi.inc"].replace("  ", " "),
+         "monitor link color capabilities must require canonical FP16 scanout")
+    link = body("VioGpuWddmUpdateMonitorLinkInfo", interface_view(code["advanced_color_ddi.inc"], advanced=True))
+    need("args->MonitorLinkInfo.Capabilities.Value=VioGpuMonitorLinkCapabilities(NULL,FALSE);", link,
+         "without canonical FP16 scanout no monitor link color capability may be claimed")
+    need("returncanonicalFp16Scanout&&VioGpuDisplayColorPqAdmitted(caps)?(VIOGPU_LINK_CAP_WIDE_COLOR_SPACE|VIOGPU_LINK_CAP_HIGH_COLOR_SPACE):0;",
+         canonical_code(code["viogpu_display_color.h"]), "Wide/HighColorSpace require canonical FP16 scanout and admitted PQ")
+    detect = body("VioGpuWddmDisplayDetectControl", code["advanced_color_ddi.inc"])
+    need("VioGpuDisplayDetectControl(&hpdEnabled,", detect, "detect control must use the tested HPD policy")
+    need("if(result==VioGpuDetectInvalid){returnSTATUS_INVALID_PARAMETER;}", detect, "invalid detect control must fail")
+    need("returnSTATUS_ALREADY_COMPLETE;", body("VioGpuWddmQueryConnectionChange", code["advanced_color_ddi.inc"]),
+         "no numbered connection change is ever queued")
+    for name in ("VIOGPU_ADVANCED_COLOR_MPO3", "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS"):
+        if sources["viogpuwddm.vcxproj"].count(f"{name}=1") != 1 or \
+                f"Condition=\"'$(VIOGPU_ADVANCED_COLOR)'=='1' and '$({name})'=='1'\"" not in sources["viogpuwddm.vcxproj"]:
+            violations.append(f"{name} must require both explicit build properties")
     require_fragments = ("discovered=m_pVioGpuDod->QueryDisplayColor(&caps)&&caps.generation!=0;",
                          "VioGpuColorConnectionAction(", "if(action==VioGpuColorConnectionReenumerate)",
                          "UpdateChildStatus(FALSE)", "if(action!=VioGpuColorConnectionNone)", "UpdateChildStatus(TRUE)")
@@ -13262,7 +13288,8 @@ def check_advanced_color_admission_contract() -> None:
     product = PRODUCT_WORKFLOW_PATH.read_text(encoding="utf-8")
     if (product.count("@{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64' ; hdr=$true },") != 1 or
             product.count("hdr=$true") != 1 or product.count("$projectFlags += '/p:VIOGPU_ADVANCED_COLOR=1'") != 1 or
-            "VIOGPU_REPORT_WDDM2_3" in product):
+            "VIOGPU_REPORT_WDDM2_3" in product or "VIOGPU_ADVANCED_COLOR_MPO3" in product or
+            "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product or "VIOGPU_CANONICAL_FP16_SCANOUT" in product):
         violations.append("the signed 58491 package must build exactly the KMD as the Advanced Color candidate "
                           "without the reported-2.3 experiment")
     if violations:

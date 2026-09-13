@@ -4,6 +4,9 @@
 #include <d3dkmddi.h>
 #include <dispmprt.h> // DXGKRNL_INTERFACE
 #include "mmio_flip.h" // run.py adds viogpu/common; the unit is compiled from a temp copy
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#include "viogpu_display_color.h" // run.py adds viogpu/shared for the Advanced Color interface
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -187,5 +190,40 @@ int main()
                   !extension.SecureDisplaySupport && !extension.VirtualModeSupport,
               "WDK display caps extension claims nothing");
     }
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    {
+        // The Advanced Color candidate's WDK-free policy constants against the
+        // real 2.1-2.3 unions and enumerations it registers.
+        check(DXGKDDI_INTERFACE_VERSION == DXGKDDI_INTERFACE_VERSION_WDDM2_3, "WDK Advanced Color interface");
+        DXGK_MONITORLINKINFO_CAPABILITIES link = {};
+        link.WideColorSpace = 1;
+        check(link.Value == VIOGPU_LINK_CAP_WIDE_COLOR_SPACE, "WDK WideColorSpace bit");
+        link.Value = 0;
+        link.HighColorSpace = 1;
+        check(link.Value == VIOGPU_LINK_CAP_HIGH_COLOR_SPACE, "WDK HighColorSpace bit");
+        check(DXGK_DDCT_POLLONE == VioGpuDetectPollOne && DXGK_DDCT_POLLALL == VioGpuDetectPollAll &&
+                  DXGK_DDCT_ENABLEHPD == VioGpuDetectEnableHpd && DXGK_DDCT_DISABLEHPD == VioGpuDetectDisableHpd,
+              "WDK display detect control types");
+        DXGK_COLORTRANSFORMCAPS transform = {};
+        transform.Transform_3x4Matrix_HighColor = 1;
+        check(transform.Value == 0x10U, "WDK HighColor transform bit");
+        check(D3DDDIFMT_A2B10G10R10 == 31 && D3DDDIFMT_A2R10G10B10 == 35, "WDK ten-bit formats");
+        // At interface 2.3 the display caps extension has no HDR scanout bits
+        // (those start at 2.5), so the zero answer claims nothing about HDR.
+        DXGK_DISPLAY_DRIVERCAPS_EXTENSION extension = {};
+        extension.Value = 0xffffffffU;
+        DXGKARG_QUERYADAPTERINFO display = {};
+        display.Type = DXGKQAITYPE_DISPLAY_DRIVERCAPS_EXTENSION;
+        display.pOutputData = &extension;
+        display.OutputDataSize = sizeof(extension);
+        check(QueryDisplayDriverCapsExtension(&display) == STATUS_SUCCESS && extension.Value == 0,
+              "WDK 2.3 display caps extension claims nothing");
+        DXGKARG_UPDATEMONITORLINKINFO update = {};
+        update.MonitorLinkInfo.Capabilities.Value = VioGpuMonitorLinkCapabilities(nullptr, false);
+        check(update.MonitorLinkInfo.Capabilities.Value == 0, "WDK monitor link capabilities stay zero");
+        DXGKARG_QUERYCONNECTIONCHANGE change = {};
+        check(sizeof(change.ConnectionChange.ConnectionChangeId) == 8, "WDK connection change id");
+    }
+#endif
     std::printf("PASS: %u actual WDK WDDM2 ABI and production contract assertions\n", checks);
 }

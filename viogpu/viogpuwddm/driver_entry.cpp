@@ -147,11 +147,22 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
     if (!renderOnly)
     {
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
-        initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3 = VioGpuWddmSetVidPnSourceAddressMpo3;
-        initialData->DxgkDdiCheckMultiPlaneOverlaySupport3 = VioGpuWddmCheckMultiPlaneOverlaySupport3;
         initialData->DxgkDdiSetTargetAdjustedColorimetry = VioGpuWddmSetTargetAdjustedColorimetry;
         initialData->DxgkDdiSetTargetGamma = VioGpuWddmSetTargetGamma;
         initialData->DxgkDdiSetTimingsFromVidPn = VioGpuWddmSetTimingsFromVidPn;
+        initialData->DxgkDdiUpdateMonitorLinkInfo = VioGpuWddmUpdateMonitorLinkInfo;
+#if defined(VIOGPU_ADVANCED_COLOR_MPO3)
+        /* Unreachable without overlay caps (MaxOverlays 0); WDDM 2.2 MPO also
+         * needs DxgkDdiGetMultiPlaneOverlayCaps. Separate experiment only. */
+        initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3 = VioGpuWddmSetVidPnSourceAddressMpo3;
+        initialData->DxgkDdiCheckMultiPlaneOverlaySupport3 = VioGpuWddmCheckMultiPlaneOverlaySupport3;
+#endif
+#if defined(VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS)
+        /* WDDM 2.2 connection model beside legacy child status. Separate
+         * experiment: whether dxgkrnl requires or forbids it is a target question. */
+        initialData->DxgkDdiDisplayDetectControl = VioGpuWddmDisplayDetectControl;
+        initialData->DxgkDdiQueryConnectionChange = VioGpuWddmQueryConnectionChange;
+#endif
 #endif
         initialData->DxgkDdiSetPalette = VioGpuWddmSetPalette;
         initialData->DxgkDdiSetPointerPosition = VioGpuDodSetPointerPosition;

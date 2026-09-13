@@ -62,6 +62,16 @@
       <PreprocessorDefinitions>VIOGPU_REPORT_WDDM2_3=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(VIOGPU_ADVANCED_COLOR)'=='1' and '$(VIOGPU_ADVANCED_COLOR_MPO3)'=='1'">
+    <ClCompile>
+      <PreprocessorDefinitions>VIOGPU_ADVANCED_COLOR_MPO3=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(VIOGPU_ADVANCED_COLOR)'=='1' and '$(VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS)'=='1'">
+    <ClCompile>
+      <PreprocessorDefinitions>VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(VIOGPU_WDDM_TEST_IMPLEMENTATIONS)'=='1'">
     <ClCompile>
       <PreprocessorDefinitions>VIOGPU_WDDM_TEST_IMPLEMENTATIONS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>

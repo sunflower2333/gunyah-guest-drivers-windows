@@ -10,6 +10,8 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--wdk', action='store_true', help='Execute against actual WDK declarations on MSVC')
+parser.add_argument('--interface', choices=('wddm2_0', 'wddm2_3'), default='wddm2_0',
+                    help='DDI interface for --wdk: WDDM 2.0 default or the WDDM 2.3 Advanced Color candidate')
 args = parser.parse_args()
 
 here = Path(__file__).resolve().parent
@@ -47,9 +49,9 @@ with tempfile.TemporaryDirectory(prefix='viogpu-wddm2-accounting-') as output:
         if args.wdk:
             kit = Path(os.environ['DROIDVM_KIT_ROOT']) / 'Include' / os.environ['DROIDVM_KIT_VERSION']
             command += ['/D_AMD64_', '/DAMD64', '/DWINVER=0x0A00', '/D_WIN32_WINNT=0x0A00',
-                        '/DDXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_WDDM2_0',
+                        f'/DDXGKDDI_INTERFACE_VERSION=DXGKDDI_INTERFACE_VERSION_{args.interface.upper()}',
                         *[f'/I{kit / part}' for part in ('km', 'shared', 'um')],
-                        f'/I{root / "viogpu" / "common"}']
+                        f'/I{root / "viogpu" / "common"}', f'/I{root / "viogpu" / "shared"}']
     else:
         if args.wdk:
             parser.error('--wdk requires actual Windows MSVC and WDK')

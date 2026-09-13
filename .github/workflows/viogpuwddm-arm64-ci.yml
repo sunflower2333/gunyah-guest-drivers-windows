@@ -214,6 +214,8 @@ jobs:
         run: |
           python viogpu/tests/wddm2-accounting/run.py --wdk
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python viogpu/tests/wddm2-accounting/run.py --wdk --interface wddm2_3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python viogpu/tests/wddm2-accounting/run.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise activation recorder faults and decoder
@@ -313,6 +315,18 @@ jobs:
             /p:VIOGPU_ADVANCED_COLOR=1 /p:OutDir="$hdrOutDir" /p:IntDir="$hdrOutDir"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path (Join-Path $hdrOutDir 'viogpuwddm.sys'))) { throw 'No Advanced Color candidate binary' }
+          # Unpackaged experiments must keep compiling: MPO3 registration, the
+          # WDDM 2.2 connection DDIs and a reported 2.3 driver model.
+          $hdrExperimentDir = [IO.Path]::GetFullPath('viogpu/viogpuwddm/objhdrx_win11_arm64/arm64/')
+          New-Item -ItemType Directory -Path $hdrExperimentDir -Force | Out-Null
+          msbuild viogpu/viogpuwddm/viogpuwddm.vcxproj /m `
+            /p:Configuration="Win11 Release" /p:Platform=ARM64 `
+            /p:WindowsTargetPlatformVersion="$env:DROIDVM_KIT_VERSION" `
+            /p:ApiValidator_Enable=false /p:SpectreMitigation=false /p:SignMode=Off `
+            /p:VIOGPU_ADVANCED_COLOR=1 /p:VIOGPU_ADVANCED_COLOR_MPO3=1 /p:VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS=1 `
+            /p:VIOGPU_REPORT_WDDM2_3=1 /p:OutDir="$hdrExperimentDir" /p:IntDir="$hdrExperimentDir"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path (Join-Path $hdrExperimentDir 'viogpuwddm.sys'))) { throw 'No Advanced Color experiment binary' }
 
       - name: Compile opt-in WDDM test implementations
         shell: pwsh

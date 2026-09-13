@@ -114,6 +114,28 @@ int main()
     zeroGeneration.generation = 0; // never admitted without a generation
     assert(!VioGpuDisplayColorPqAdmitted(&zeroGeneration));
     assert(act(true, true, sdr, zeroGeneration) == VioGpuColorConnectionNone);
+    // Monitor link capabilities: canonical FP16 scanout is not implemented, so
+    // no Wide/HighColorSpace is ever claimed; with it, only admitted PQ may.
+    assert(VioGpuMonitorLinkCapabilities(&hdr, false) == 0);
+    assert(VioGpuMonitorLinkCapabilities(&sdr, false) == 0);
+    assert(VioGpuMonitorLinkCapabilities(&sdr, true) == 0);
+    assert(VioGpuMonitorLinkCapabilities(&zeroGeneration, true) == 0);
+    assert(VioGpuMonitorLinkCapabilities(nullptr, true) == 0);
+    assert(VioGpuMonitorLinkCapabilities(&hdr, true) ==
+           (VIOGPU_LINK_CAP_WIDE_COLOR_SPACE | VIOGPU_LINK_CAP_HIGH_COLOR_SPACE));
+    // Display detect control.
+    bool hpd = true;
+    assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectPollOne, 0, 0) == VioGpuDetectPoll);
+    assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectPollOne, 1, 0) == VioGpuDetectInvalid);
+    assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectPollAll, 5, 0) == VioGpuDetectPoll);
+    assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectPollAll, 0, 1) == VioGpuDetectInvalid && hpd);
+    assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectDisableHpd, 0, 0) == VioGpuDetectAccepted && !hpd);
+    assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectPollOne, 0, 0) == VioGpuDetectInvalid);
+    assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectPollAll, 0, 0) == VioGpuDetectInvalid);
+    assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectEnableHpd, 0, 0) == VioGpuDetectAccepted && hpd);
+    assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectUninitialized, 0, 0) == VioGpuDetectInvalid);
+    assert(VioGpuDisplayDetectControl(&hpd, 5U, 0, 0) == VioGpuDetectInvalid);
+    assert(VioGpuDisplayDetectControl(nullptr, VioGpuDetectEnableHpd, 0, 0) == VioGpuDetectInvalid);
     std::puts("DVCL wire, HDR10 metadata and float-bit transform validation: PASS");
     std::puts("Advanced Color monitor connection policy: PASS");
 }

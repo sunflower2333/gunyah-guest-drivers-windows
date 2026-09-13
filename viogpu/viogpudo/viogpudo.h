@@ -1333,6 +1333,9 @@ class VioGpuDod
     volatile LONG m_ColorMonitorConnected = 1;
     volatile LONG m_ColorModeAvailable = 0;
     volatile LONG m_ColorModeEpoch = 0;
+    // DxgkDdiDisplayDetectControl HPD state; enabled from enumeration.
+    volatile LONG m_ColorHpdEnabled = 1;
+    VOID RequestColorConnectionRefresh();
     // The video output child reported by QueryChildRelations for this start.
     VioGpuChildDescriptor ChildDescriptor() const
     {

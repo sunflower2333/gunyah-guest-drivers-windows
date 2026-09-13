@@ -208,6 +208,69 @@ inline VIOGPU_COLOR_CONNECTION_ACTION VioGpuColorConnectionAction(bool initializ
                : VioGpuColorConnectionNone;
 }
 
+/* DXGK_MONITORLINKINFO_CAPABILITIES (d3dkmdt.h, WDDM 2.1+), reported by
+ * DxgkDdiUpdateMonitorLinkInfo. The WDK contract test asserts the positions.
+ * WideColorSpace: a 3x3 matrix from sRGB/709 to panel primaries on 8888,
+ * 10:10:10:2 and FP16 inputs in [-2, 2], plus display signaling.
+ * HighColorSpace: all of that plus canonical FP16 data in [-128, 256] and
+ * the display's transfer curve. Both describe canonical (scRGB) scanout that
+ * this driver and the paired host do not implement, so neither is claimed,
+ * even with PQ admitted: a ten-bit PQ primary alone is not HighColorSpace. */
+#define VIOGPU_LINK_CAP_WIDE_COLOR_SPACE 0x2U
+#define VIOGPU_LINK_CAP_HIGH_COLOR_SPACE 0x4U
+
+inline unsigned VioGpuMonitorLinkCapabilities(const VIOGPU_DISPLAY_COLOR_RESPONSE *caps, bool canonicalFp16Scanout)
+{
+    return canonicalFp16Scanout && VioGpuDisplayColorPqAdmitted(caps)
+               ? (VIOGPU_LINK_CAP_WIDE_COLOR_SPACE | VIOGPU_LINK_CAP_HIGH_COLOR_SPACE)
+               : 0U;
+}
+
+/* DXGK_DISPLAYDETECTCONTROLTYPE (d3dkmddi.h, WDDM 2.2+). */
+typedef enum VIOGPU_DETECT_CONTROL_TYPE
+{
+    VioGpuDetectUninitialized = 0,
+    VioGpuDetectPollOne = 1,
+    VioGpuDetectPollAll = 2,
+    VioGpuDetectEnableHpd = 3,
+    VioGpuDetectDisableHpd = 4,
+} VIOGPU_DETECT_CONTROL_TYPE;
+
+typedef enum VIOGPU_DETECT_CONTROL_RESULT
+{
+    VioGpuDetectInvalid = 0,  /* STATUS_INVALID_PARAMETER */
+    VioGpuDetectAccepted = 1, /* STATUS_SUCCESS, nothing to poll */
+    VioGpuDetectPoll = 2,     /* STATUS_SUCCESS after scheduling a status poll */
+} VIOGPU_DETECT_CONTROL_RESULT;
+
+/* One target (0). HPD starts enabled: the child is reported connected from
+ * enumeration. A poll while HPD is disabled is an OS error per the DDI. */
+inline VIOGPU_DETECT_CONTROL_RESULT VioGpuDisplayDetectControl(bool *hpdEnabled,
+                                                               unsigned type,
+                                                               unsigned targetId,
+                                                               unsigned reserved)
+{
+    if (hpdEnabled == nullptr || reserved != 0)
+    {
+        return VioGpuDetectInvalid;
+    }
+    switch (type)
+    {
+        case VioGpuDetectEnableHpd:
+            *hpdEnabled = true;
+            return VioGpuDetectAccepted;
+        case VioGpuDetectDisableHpd:
+            *hpdEnabled = false;
+            return VioGpuDetectAccepted;
+        case VioGpuDetectPollOne:
+            return *hpdEnabled && targetId == 0 ? VioGpuDetectPoll : VioGpuDetectInvalid;
+        case VioGpuDetectPollAll:
+            return *hpdEnabled ? VioGpuDetectPoll : VioGpuDetectInvalid;
+        default:
+            return VioGpuDetectInvalid;
+    }
+}
+
 static_assert(sizeof(VIOGPU_DISPLAY_CONTROL_HEADER) == 24, "DVCL control header");
 static_assert(sizeof(VIOGPU_GET_DISPLAY_COLOR) == 40, "DVCL discovery request");
 static_assert(sizeof(VIOGPU_DISPLAY_COLOR_RESPONSE) == 72, "DVCL discovery response");

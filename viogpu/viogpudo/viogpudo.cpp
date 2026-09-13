@@ -1205,6 +1205,14 @@ VOID VioGpuDod::CancelPendingFlip(_In_ PVOID allocation)
 }
 
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+VOID VioGpuDod::RequestColorConnectionRefresh()
+{
+    if (m_pHWDevice != NULL && !IsRenderOnly())
+    {
+        m_pHWDevice->RequestColorConnectionRefresh();
+    }
+}
+
 BOOLEAN VioGpuDod::BeginColorStateOperation(BOOLEAN wait)
 {
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
@@ -14094,7 +14102,8 @@ void VioGpuAdapter::RefreshColorConnection()
     }
     // Only an interruptible child may be reported disconnected; the descriptor
     // is the registry-selected one QueryChildRelations reported.
-    const bool interruptible = m_pVioGpuDod->ChildDescriptor().HpdAwareness == VioGpuHpdInterruptible;
+    const bool interruptible = m_pVioGpuDod->ChildDescriptor().HpdAwareness == VioGpuHpdInterruptible &&
+                               InterlockedCompareExchange(&m_pVioGpuDod->m_ColorHpdEnabled, 0, 0) != 0;
     const auto action =
         VioGpuColorConnectionAction(m_ColorConnectionInitialized != FALSE, interruptible, discovered != FALSE,
                                     &m_ColorNotifiedCapabilities, discovered ? &caps : nullptr);

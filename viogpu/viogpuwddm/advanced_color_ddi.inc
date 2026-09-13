@@ -378,3 +378,69 @@ VioGpuWddmSetVidPnSourceAddressMpo3(CONST HANDLE hAdapter, DXGKARG_SETVIDPNSOURC
     ExQueueWorkItem(&work->Work, DelayedWorkQueue);
     return STATUS_SUCCESS;
 }
+
+/* WDDM 2.1 monitor link capabilities, queried after RecommendMonitorModes and
+ * before mode enumeration. Usage hints are inputs. Wide/HighColorSpace promise
+ * canonical FP16 scanout with gamut/transfer conversion, which neither this
+ * driver nor the paired host implements, so the capabilities stay zero. */
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmUpdateMonitorLinkInfo(CONST HANDLE hAdapter,
+                                                                         DXGKARG_UPDATEMONITORLINKINFO *args)
+{
+    auto adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    if (adapter == NULL || args == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || args->VideoPresentTargetId != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+    const bool admitted = adapter->QueryDisplayColor(&caps) && adapter->IsNativeHdrModeAvailable();
+    args->MonitorLinkInfo.Capabilities.Value = VioGpuMonitorLinkCapabilities(admitted ? &caps : nullptr, true);
+#else
+    args->MonitorLinkInfo.Capabilities.Value = VioGpuMonitorLinkCapabilities(nullptr, false);
+#endif
+    return STATUS_SUCCESS;
+}
+
+#if defined(VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS)
+/* WDDM 2.2 detection control. Polls schedule the same DVCL connection refresh
+ * the display config event uses; HPD state also gates renegotiation pulses. */
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDisplayDetectControl(CONST HANDLE hAdapter,
+                                                                        CONST DXGKARG_DISPLAYDETECTCONTROL *args)
+{
+    auto adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    if (adapter == NULL || args == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    bool hpdEnabled = InterlockedCompareExchange(&adapter->m_ColorHpdEnabled, 0, 0) != 0;
+    const VIOGPU_DETECT_CONTROL_RESULT result = VioGpuDisplayDetectControl(&hpdEnabled,
+                                                                          static_cast<unsigned>(args->Type),
+                                                                          static_cast<unsigned>(args->TargetId),
+                                                                          static_cast<unsigned>(args->Reserved));
+    InterlockedExchange(&adapter->m_ColorHpdEnabled, hpdEnabled ? 1 : 0);
+    if (result == VioGpuDetectInvalid)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (result == VioGpuDetectPoll)
+    {
+        adapter->RequestColorConnectionRefresh();
+    }
+    return STATUS_SUCCESS;
+}
+
+/* Connection is reported through child status (DxgkCbIndicateChildStatus).
+ * This driver never calls DxgkCbIndicateConnectorChange and never sets
+ * ConnectionStatusChanges from SetTimingsFromVidPn, so no numbered change is
+ * ever queued: every change has already been reported. */
+_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmQueryConnectionChange(CONST HANDLE hAdapter,
+                                                                         DXGKARG_QUERYCONNECTIONCHANGE *args)
+{
+    if (hAdapter == NULL || args == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    RtlZeroMemory(&args->ConnectionChange, sizeof(args->ConnectionChange));
+    return STATUS_ALREADY_COMPLETE;
+}
+#endif
