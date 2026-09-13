@@ -231,6 +231,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     KeInitializeMutex(&m_NativeContextDestroyDiagnosticMutex, 0);
     KeInitializeMutex(&m_NativeActivationTraceMutex, 0);
     RtlZeroMemory(&m_NativeActivationTrace, sizeof(m_NativeActivationTrace));
+    m_ChildDescriptorMode =
+        VioGpuDefaultChildDescriptorMode(DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_0);
     m_NativeFenceHead = 0;
     m_NativeFenceCount = 0;
     RtlZeroMemory(m_NativeFences, sizeof(m_NativeFences));
@@ -392,6 +394,9 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
     VIOGPU_ASSERT(pNumberOfChildren != NULL);
 
     VIOGPU_RECORD_NATIVE_START(this, VioGpuNativeStartEntered, STATUS_PENDING, VioGpuNativeStartDetailNone);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    LoadChildDescriptorMode();
+#endif
 
     if (IsDriverActive())
     {
@@ -2670,6 +2675,13 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
     ULONG ChildRelationsCount = (ChildRelationsSize / sizeof(DXGK_CHILD_DESCRIPTOR)) - 1;
     VIOGPU_ASSERT(ChildRelationsCount <= MAX_CHILDREN);
 
+    static_assert(VioGpuVotInternal == D3DKMDT_VOT_INTERNAL, "child descriptor output technology");
+    static_assert(VioGpuVotHdmi == D3DKMDT_VOT_HDMI, "child descriptor output technology");
+    static_assert(VioGpuVotDisplayPortExternal == D3DKMDT_VOT_DISPLAYPORT_EXTERNAL, "child descriptor output technology");
+    static_assert(VioGpuHpdAlwaysConnected == HpdAwarenessAlwaysConnected, "child descriptor HPD awareness");
+    static_assert(VioGpuHpdInterruptible == HpdAwarenessInterruptible, "child descriptor HPD awareness");
+    const VioGpuChildDescriptor descriptor = VioGpuChildDescriptorFor(m_ChildDescriptorMode);
+
     for (UINT ChildIndex = 0; ChildIndex < ChildRelationsCount; ++ChildIndex)
     {
         pChildRelations[ChildIndex].ChildDeviceType = TypeVideoOutput;
@@ -2682,14 +2694,26 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
          * no 1AF4 entry under GraphicsDrivers\Connectivity, a VidPn committed
          * with the source inactive, and DxgkDdiSetVidPnSourceAddress never
          * called, which is a black scanout with no presents. */
-        pChildRelations[ChildIndex].ChildCapabilities.HpdAwareness = HpdAwarenessAlwaysConnected;
-        pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.InterfaceTechnology = D3DKMDT_VOT_INTERNAL;
+        /* Interruptible modes answer the port driver's enumeration-time
+         * QueryChildStatus as connected instead (see child_descriptor.h). */
+        pChildRelations[ChildIndex].ChildCapabilities.HpdAwareness =
+            static_cast<DXGK_CHILD_DEVICE_HPD_AWARENESS>(descriptor.HpdAwareness);
+        pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.InterfaceTechnology =
+            static_cast<D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY>(descriptor.InterfaceTechnology);
         pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.MonitorOrientationAwareness = D3DKMDT_MOA_NONE;
         pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.SupportsSdtvModes = FALSE;
         pChildRelations[ChildIndex].AcpiUid = 0;
         pChildRelations[ChildIndex].ChildUid = ChildIndex;
     }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    RecordNativeActivationChild(VioGpuActivationChildRelations,
+                                STATUS_SUCCESS,
+                                ChildRelationsCount,
+                                static_cast<UINT>(m_ChildDescriptorMode),
+                                descriptor.InterfaceTechnology,
+                                descriptor.HpdAwareness);
+#endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return STATUS_SUCCESS;
 }
@@ -2703,6 +2727,7 @@ NTSTATUS VioGpuDod::QueryChildStatus(_Inout_ DXGK_CHILD_STATUS *pChildStatus, _I
     VIOGPU_ASSERT(pChildStatus != NULL);
     VIOGPU_ASSERT(pChildStatus->ChildUid < MAX_CHILDREN);
 
+    NTSTATUS status;
     switch (pChildStatus->Type)
     {
         case StatusConnection:
@@ -2712,22 +2737,34 @@ NTSTATUS VioGpuDod::QueryChildStatus(_Inout_ DXGK_CHILD_STATUS *pChildStatus, _I
                 CountDisplayEvent(8);
                 RecordDisplayValue(9, pChildStatus->HotPlug.Connected ? 1 : 0);
 #endif
-                return STATUS_SUCCESS;
+                status = STATUS_SUCCESS;
+                break;
             }
 
         case StatusRotation:
             {
                 DbgPrint(TRACE_LEVEL_ERROR,
                          ("Child status being queried for StatusRotation even though D3DKMDT_MOA_NONE was reported"));
-                return STATUS_INVALID_PARAMETER;
+                status = STATUS_INVALID_PARAMETER;
+                break;
             }
 
         default:
             {
                 DbgPrint(TRACE_LEVEL_WARNING, ("Unknown pChildStatus->Type (0x%I64x) requested.", pChildStatus->Type));
-                return STATUS_NOT_SUPPORTED;
+                status = STATUS_NOT_SUPPORTED;
+                break;
             }
     }
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    RecordNativeActivationChild(VioGpuActivationChildStatus,
+                                status,
+                                pChildStatus->ChildUid,
+                                static_cast<UINT>(pChildStatus->Type),
+                                pChildStatus->Type == StatusConnection && pChildStatus->HotPlug.Connected ? 1U : 0U,
+                                NonDestructiveOnly ? 1U : 0U);
+#endif
+    return status;
 }
 
 NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVICE_DESCRIPTOR *pDeviceDescriptor)
@@ -2746,9 +2783,12 @@ NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVI
     RecordDisplayValue(11, edid != NULL ? 1 : 0);
 #endif
 
+    const ULONG requestedOffset = pDeviceDescriptor->DescriptorOffset;
+    const ULONG requestedLength = pDeviceDescriptor->DescriptorLength;
+    NTSTATUS status;
     if (!edid)
     {
-        return STATUS_GRAPHICS_CHILD_DESCRIPTOR_NOT_SUPPORTED;
+        status = STATUS_GRAPHICS_CHILD_DESCRIPTOR_NOT_SUPPORTED;
     }
     else if (pDeviceDescriptor->DescriptorOffset < edidSize)
     {
@@ -2756,11 +2796,17 @@ NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVI
                         (edidSize - pDeviceDescriptor->DescriptorOffset));
         RtlCopyMemory(pDeviceDescriptor->DescriptorBuffer, (edid + pDeviceDescriptor->DescriptorOffset), len);
         pDeviceDescriptor->DescriptorLength = len;
-        return STATUS_SUCCESS;
+        status = STATUS_SUCCESS;
     }
-
+    else
+    {
+        status = STATUS_MONITOR_NO_MORE_DESCRIPTOR_DATA;
+    }
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    RecordNativeActivationChild(VioGpuActivationChildDescriptor, status, ChildUid, requestedOffset, requestedLength, edidSize);
+#endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
-    return STATUS_MONITOR_NO_MORE_DESCRIPTOR_DATA;
+    return status;
 }
 
 NTSTATUS VioGpuDod::GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine)
@@ -7204,6 +7250,56 @@ VOID VioGpuDod::RecordNativeActivationQuery(_In_ CONST DXGKARG_QUERYADAPTERINFO 
         {
             entry.Values[0] = static_cast<const DXGK_QUERYSEGMENTOUT4 *>(query->pOutputData)->NbSegment;
         }
+    }
+    KeWaitForSingleObject(&m_NativeActivationTraceMutex, Executive, KernelMode, FALSE, NULL);
+    if (VioGpuActivationAppend(&m_NativeActivationTrace, entry))
+    {
+        PersistNativeActivationTrace();
+    }
+    KeReleaseMutex(&m_NativeActivationTraceMutex, FALSE);
+}
+
+VOID VioGpuDod::LoadChildDescriptorMode(void)
+{
+    PAGED_CODE();
+    const bool wddm2Interface = DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_0;
+    DWORD value = 0;
+    bool found = false;
+    HANDLE key = NULL;
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_QUERY_VALUE, &key)))
+    {
+        found = NT_SUCCESS(ReadRegistryDWORD(key, L"VioGpuChildDescriptorMode", &value));
+        ZwClose(key);
+    }
+    m_ChildDescriptorMode = VioGpuSelectChildDescriptorMode(found, value, wddm2Interface);
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu child descriptor mode=%u registry=%u found=%u\n",
+               static_cast<UINT>(m_ChildDescriptorMode),
+               value,
+               found ? 1U : 0U);
+}
+
+VOID VioGpuDod::RecordNativeActivationChild(_In_ UINT ddi,
+                                            _In_ NTSTATUS status,
+                                            _In_ UINT value0,
+                                            _In_ UINT value1,
+                                            _In_ UINT value2,
+                                            _In_ UINT value3)
+{
+    PAGED_CODE();
+    VioGpuActivationQuery entry = {};
+    entry.Type = ddi;
+    entry.Status = static_cast<UINT>(status);
+    entry.Lifecycle = (IsDriverActive() ? 1U : 0U) | (IsHardwareInit() ? 2U : 0U) |
+                      (IsHardwareResetRequested() ? 4U : 0U);
+    // Failed entries must not carry output values (decoder contract).
+    if (NT_SUCCESS(status))
+    {
+        entry.Values[0] = value0;
+        entry.Values[1] = value1;
+        entry.Values[2] = value2;
+        entry.Values[3] = value3;
     }
     KeWaitForSingleObject(&m_NativeActivationTraceMutex, Executive, KernelMode, FALSE, NULL);
     if (VioGpuActivationAppend(&m_NativeActivationTrace, entry))

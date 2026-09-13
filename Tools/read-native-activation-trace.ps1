@@ -21,6 +21,7 @@ function ConvertFrom-NativeActivationTrace {
         if ($failed -and @($w[8..15] | Where-Object { $_ -ne 0 }).Count -ne 0) { throw 'Failed query contains undefined output values' }
         [pscustomobject][ordered]@{
             Sequence = $w[0]; Type = $w[1]; Status = ('0x{0:X8}' -f $w[2]); Failed = $failed
+            Kind = $(switch ($w[1]) { 65537 { 'ChildRelations' } 65538 { 'ChildStatus' } 65539 { 'ChildDescriptor' } default { 'QueryAdapterInfo' } })
             InputSize = $w[3]; OutputSize = $w[4]; Phase = $w[5]
             DriverActive = ($w[6] -band 1) -ne 0; HardwareInitialized = ($w[6] -band 2) -ne 0
             ResetRequested = ($w[6] -band 4) -ne 0; HardwareReferenceAcquired = ($w[6] -band 8) -ne 0
