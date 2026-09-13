@@ -2,8 +2,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#ifndef _In_
 #define _In_
+#endif
+#ifndef _Out_
 #define _Out_
+#endif
 #define PAGED_CODE() ((void)0)
 using ULONGLONG = unsigned long long;
 using PULONGLONG = ULONGLONG *;
@@ -43,7 +47,7 @@ public:
    NTSTATUS wait = 0;
    LONG error = 0;
    ULONGLONG sample = 0x123456789ab;
-   VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextConfirmed;
+   VIOGPU_HOST_CONTEXT_RESULT injectedResult = VioGpuHostContextConfirmed;
    NTSTATUS WaitNativeContextLifecycle() { return wait; }
    bool IsNativeContextGenerationCurrent(int, ULONGLONG) { return current; }
    VIOGPU_HOST_CONTEXT_RESULT QueryNativeContextParameterLocked(VIOGPU_NATIVE_CONTEXT_OWNER *, int param,
@@ -52,7 +56,7 @@ public:
       *ticks = sample; *hostError = error;
       if (reset_on_read) current = false;
       if (fault_on_read) faults = true;
-      return result;
+      return injectedResult;
    }
    NTSTATUS QueryNativeGpuTimestamp(const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *, PULONGLONG);
 };
@@ -75,7 +79,7 @@ int main() {
    adapter.sample = 0;
    check(run() == STATUS_NOT_SUPPORTED && sample == 0, "legacy fabricated zero rejected");
    adapter.sample = 0x123456789ab;
-   adapter.result = VioGpuHostContextRejected;
+   adapter.injectedResult = VioGpuHostContextRejected;
    for (LONG error : {-25, -95, -38}) {
       adapter.error = error;
       check(run() == STATUS_NOT_SUPPORTED && sample == 0, "unsupported ioctl preserved");
@@ -84,9 +88,9 @@ int main() {
    check(run() == STATUS_INSUFFICIENT_RESOURCES && sample == 0, "host allocation failure preserved");
    adapter.error = -5;
    check(run() == STATUS_DEVICE_NOT_READY && sample == 0, "host IO failure rejected");
-   adapter.result = VioGpuHostContextUnknown;
+   adapter.injectedResult = VioGpuHostContextUnknown;
    check(run() == STATUS_DEVICE_NOT_READY && sample == 0, "ambiguous completion rejected");
-   adapter.result = VioGpuHostContextConfirmed;
+   adapter.injectedResult = VioGpuHostContextConfirmed;
    adapter.current = false;
    check(run() == STATUS_DEVICE_NOT_READY && sample == 0, "old reset epoch rejected");
    adapter.current = true; adapter.reset_on_read = true;
