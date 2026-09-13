@@ -72,6 +72,25 @@ jobs:
           if ($LASTEXITCODE) { throw 'All-OOM semantic negative failed' }
           python $test --negative-control-rollback-status
           if ($LASTEXITCODE) { throw 'Rollback status semantic negative failed' }
+      - name: Execute WDDM 2.0 residency regressions with negative controls
+        shell: pwsh
+        run: |
+          $turnip = 'external/mesa/src/freedreno/vulkan/tests/tu_wddm_residency_test.py'
+          python $turnip
+          if ($LASTEXITCODE) { throw 'Turnip WDDM residency regression failed' }
+          foreach ($control in @('no-make-resident', 'no-paging-wait', 'no-evict', 'ungated',
+                                 'pending-as-resident', 'unbounded-retry')) {
+            python $turnip --negative-control $control
+            if ($LASTEXITCODE) { throw "Turnip residency negative control $control failed" }
+          }
+          $d3d = 'external/mesa/src/gallium/frontends/d3d10umd/residency_test.py'
+          python $d3d
+          if ($LASTEXITCODE) { throw 'D3D10 UMD residency regression failed' }
+          foreach ($control in @('no-make-resident', 'no-paging-wait', 'no-trim', 'no-evict-on-destroy',
+                                 'ungated', 'pending-as-failure')) {
+            python $d3d --negative-control $control
+            if ($LASTEXITCODE) { throw "D3D10 UMD residency negative control $control failed" }
+          }
       - name: Execute large command-buffer submission regression
         shell: pwsh
         run: python external/mesa/src/freedreno/vulkan/tests/tu_queue_batch_test.py
@@ -512,7 +531,7 @@ jobs:
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
           # Unified flat API installation atop frozen 58473. All API files
           # share the display INF and the same signed catalog as the KMD/UMD.
-          $minor = 58488
+          $minor = 58490
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -569,8 +588,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58488) {
-            throw "Unified flat candidate requires reserved version 100.6.101.58488"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58490) {
+            throw "Unified flat candidate requires reserved version 100.6.101.58490"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -801,7 +820,7 @@ jobs:
             }
             if ($d.n -eq 'viogpu') {
               python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
-                --mesa 431ba7625e4cdd8bf15bd268e340045a45e7dbd5 --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
+                --mesa 3e50dd4ba4f941fcb4ddeb91d0cbd688cabfdb4a --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
               if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
               if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
@@ -883,8 +902,8 @@ jobs:
         shell: pwsh
         run: |
           python viogpu/package/verify_bundle.py --output out `
-            --mesa 431ba7625e4cdd8bf15bd268e340045a45e7dbd5 --mesa-run 34731498360 `
-            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58488
+            --mesa 3e50dd4ba4f941fcb4ddeb91d0cbd688cabfdb4a --mesa-run 34757244563 `
+            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58490
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact
