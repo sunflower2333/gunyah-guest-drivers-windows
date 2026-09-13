@@ -117,6 +117,20 @@ int main()
     t.Address = 0;
     t.PlacementOffset = 0;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetAccepted);
+    // A ten-bit primary cannot be scanned out through a legacy MMIO flip: it is
+    // refused before segment/placement, but never before ownership or type.
+    t = AcceptedTarget();
+    t.HighPrecision = true;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetHighPrecision);
+    t.Segment = 2;
+    t.PlacementValid = false;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetHighPrecision);
+    t = AcceptedTarget();
+    t.HighPrecision = true;
+    t.StandardPrimary = false;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetNotPrimary);
+    t.OwnedByAdapter = false;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetForeign);
     // A foreign allocation is refused before its unrelated fields are trusted.
     t = AcceptedTarget();
     t.OwnedByAdapter = false;

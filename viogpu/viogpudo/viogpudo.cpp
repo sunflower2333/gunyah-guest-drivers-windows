@@ -4635,7 +4635,12 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
 #endif
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
         UINT previousResource = 0;
+        // Powering the target off supersedes an unbound MMIO flip, which must
+        // not rebind a primary behind the unbind below.
+        AcquireFlipApply();
+        (VOID) TakePendingFlip();
         const auto result = Set2DScanout(0, 0, 0, 0, &previousResource);
+        ReleaseFlipApply();
         Status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
         if (NT_SUCCESS(Status))
         {

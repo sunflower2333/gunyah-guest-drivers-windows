@@ -13184,6 +13184,30 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
          acdi, "an MPO3 PQ plane must require usable PQ")
     if "PreserveInherited" in acdi and "STATUS_NOT_SUPPORTED" in acdi[acdi.find("PreserveInherited") - 40:acdi.find("PreserveInherited") + 80]:
         violations.append("PreserveInherited must be applied and reported, not refused")
+    # MMIO flips (FlipOnVSyncMmIo): a legacy flip never scans out ten-bit pixels,
+    # ends any queued color presentation, and serializes with color state.
+    ddi = interface_view(code["wddmddi.cpp"], advanced=True)
+    queue = body("QueueMmioFlip", ddi)
+    offsets = [queue.find(fragment) for fragment in (
+        "target.HighPrecision=target.StandardPrimary&&IsHighPrecisionSurfaceFormat(allocation->Format);",
+        "VioGpuValidateFlipTarget(target)",
+        "adapter->ClearColorPresentCompletion();",
+        "adapter->PublishPendingFlip(setVidPnSourceAddress->hAllocation);")]
+    if min(offsets) < 0 or offsets != sorted(offsets):
+        violations.append("an MMIO flip must refuse ten-bit primaries and end color presentation before publishing")
+    mode_change = body("VioGpuWddmSetVidPnSourceAddress", ddi)
+    offsets = [mode_change.find(fragment) for fragment in (
+        "VioGpuDod::ColorStateOperationcolorOperation(adapter);", "adapter->ClearColorPresentCompletion();",
+        "adapter->AcquireFlipApply();")]
+    if min(offsets) < 0 or offsets != sorted(offsets):
+        violations.append("a mode change must take the color slot before the flip-apply mutex")
+    need("IsStandardPrimaryAllocation(sourceOpen->Allocation)&&!IsHighPrecisionSurfaceFormat(sourceOpen->Allocation->Format)",
+         body("ValidateMmioFlipPresent", code["wddmddi.cpp"]), "a flip present must refuse a ten-bit source")
+    need("AcquireFlipApply();(VOID)TakePendingFlip();constautoresult=Set2DScanout(0,0,0,0,&previousResource);ReleaseFlipApply();",
+         body("VioGpuDod::CommitVidPn", dod), "target power-off must supersede an unbound flip")
+    flip_policy = canonical_code(code["mmio_flip.h"])
+    need("if(!target.StandardPrimary)returnVioGpuFlipTargetNotPrimary;if(target.HighPrecision)returnVioGpuFlipTargetHighPrecision;",
+         flip_policy, "the flip policy must refuse ten-bit primaries after ownership and type")
     relations = body("VioGpuDod::QueryChildRelations", dod)
     for fragment in ("ChildCapabilities.HpdAwareness=static_cast<DXGK_CHILD_DEVICE_HPD_AWARENESS>(descriptor.HpdAwareness);",
                      "InterfaceTechnology=static_cast<D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY>(descriptor.InterfaceTechnology);"):
@@ -13231,6 +13255,7 @@ def check_advanced_color_admission_contract() -> None:
         "driver_entry.cpp": DRIVER_SOURCE,
         "advanced_color_ddi.inc": ADVANCED_COLOR_DDI_PATH.read_text(encoding="utf-8"),
         "viogpu_display_color.h": SHARED_DISPLAY_COLOR_PATH.read_text(encoding="utf-8"),
+        "mmio_flip.h": MMIO_FLIP_HEADER.read_text(encoding="utf-8"),
         "viogpuwddm.vcxproj": PROJECT.read_text(encoding="utf-8"),
     }
     violations = advanced_color_violations(sources)

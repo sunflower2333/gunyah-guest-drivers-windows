@@ -9651,7 +9651,8 @@ static NTSTATUS ValidateMmioFlipPresent(CONST HANDLE hContext, DXGKARG_PRESENT *
                 : reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX].hDeviceSpecificAllocation);
         if (sourceOpen != NULL && sourceOpen->Signature == VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE &&
             sourceOpen->Device == context->Device && sourceOpen->Allocation != NULL &&
-            IsOwnedAllocation(sourceOpen->Allocation, adapter) && IsStandardPrimaryAllocation(sourceOpen->Allocation))
+            IsOwnedAllocation(sourceOpen->Allocation, adapter) && IsStandardPrimaryAllocation(sourceOpen->Allocation) &&
+            !IsHighPrecisionSurfaceFormat(sourceOpen->Allocation->Format))
         {
             status = STATUS_SUCCESS;
         }
@@ -10649,6 +10650,9 @@ static NTSTATUS QueueMmioFlip(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_SETVID
         target.StandardPrimary = target.OwnedByAdapter && IsStandardPrimaryAllocation(allocation);
         target.PlacementValid = target.OwnedByAdapter && allocation->PlacementValid;
         target.PlacementOffset = allocation->PlacementOffset;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        target.HighPrecision = target.StandardPrimary && IsHighPrecisionSurfaceFormat(allocation->Format);
+#endif
     }
 
     adapter->CountDisplayEvent(VioGpuDisplayMmioFlipCalls);
@@ -10662,6 +10666,12 @@ static NTSTATUS QueueMmioFlip(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_SETVID
     }
 
     adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(target.Address));
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    /* The next vsync must report this flip's CRTC address, not a stale MPO3
+     * PresentId: an eight-bit flip ends any queued color presentation.
+     * Interlocked writes only, so this stays lock-free at DIRQL. */
+    adapter->ClearColorPresentCompletion();
+#endif
     adapter->PublishPendingFlip(setVidPnSourceAddress->hAllocation);
     return STATUS_SUCCESS;
 }
@@ -10823,6 +10833,16 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
         return STATUS_INVALID_PARAMETER;
     }
 
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    /* Serialize with CommitVidPn/SetTimings and queued color presents. The
+     * color slot is taken before the flip-apply mutex, as in CommitVidPn. */
+    VioGpuDod::ColorStateOperation colorOperation(adapter);
+    if (!colorOperation.Acquired())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    adapter->ClearColorPresentCompletion();
+#endif
     /* A mode change supersedes any flip the worker has not bound yet, and
      * binds in order with it. */
     adapter->AcquireFlipApply();

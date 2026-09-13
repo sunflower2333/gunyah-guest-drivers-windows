@@ -65,6 +65,9 @@ struct VioGpuFlipTarget
     bool OwnedByAdapter;
     bool StandardPrimary;
     bool PlacementValid;
+    /* Ten-bit primary. Set only by the Advanced Color build, where such
+     * allocations exist; a legacy flip carries no color space to scan it out. */
+    bool HighPrecision;
 };
 
 /* Values are published as NativeDisplayMmioFlipRejectKind. */
@@ -78,6 +81,7 @@ enum VioGpuFlipTargetStatus : unsigned
     VioGpuFlipTargetBadSegment = 5,
     VioGpuFlipTargetNotPlaced = 6,
     VioGpuFlipTargetAddressMismatch = 7,
+    VioGpuFlipTargetHighPrecision = 8,
 };
 
 inline VioGpuFlipTargetStatus VioGpuValidateFlipTarget(const VioGpuFlipTarget &target)
@@ -90,6 +94,8 @@ inline VioGpuFlipTargetStatus VioGpuValidateFlipTarget(const VioGpuFlipTarget &t
         return VioGpuFlipTargetForeign;
     if (!target.StandardPrimary)
         return VioGpuFlipTargetNotPrimary;
+    if (target.HighPrecision)
+        return VioGpuFlipTargetHighPrecision;
     if (target.Segment != target.ExpectedSegment)
         return VioGpuFlipTargetBadSegment;
     if (!target.PlacementValid)
