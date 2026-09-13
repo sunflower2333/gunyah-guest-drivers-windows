@@ -30,8 +30,9 @@ class ComposerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.driver, self.gl, self.cl = (self.root / name for name in ("driver", "gl", "cl"))
-        for directory in (self.driver, self.gl, self.cl):
+        self.driver, self.gl, self.cl, self.candidates = (
+            self.root / name for name in ("driver", "gl", "cl", "candidates"))
+        for directory in (self.driver, self.gl, self.cl, self.candidates):
             directory.mkdir()
         source = Path(__file__).parents[1] / "viogpuwddm/viogpuwddm.inx"
         self.inf = self.driver / "viogpuwddm.inf"
@@ -64,6 +65,7 @@ class ComposerTests(unittest.TestCase):
         for arch, name in package.LOADER_PROBES.items():
             self.add("opencl", name, arch, "installer-helper")
         self.save()
+        self.save_candidates()
 
     def add(self, family, name, machine, role, content=None):
         directory = self.gl if family == "opengl" else self.cl
@@ -76,8 +78,27 @@ class ComposerTests(unittest.TestCase):
         for family, path in (("opengl", self.gl), ("opencl", self.cl)):
             (path / package.MANIFEST).write_text(json.dumps(self.manifests[family]))
 
+    def save_candidates(self):
+        files = {}
+        for name, (family, machine) in package.CANDIDATE_UMDS.items():
+            path = self.candidates / name
+            if not path.exists():
+                path.write_bytes(pe(machine))
+            files[name] = {
+                "family": family,
+                "machine": machine,
+                "role": "candidate-runtime",
+                "sha256": package.sha(path),
+            }
+        (self.candidates / package.CANDIDATE_MANIFEST).write_text(json.dumps({
+            "schema": 1,
+            "activation": "unregistered-candidate",
+            "sources": dict(package.CANDIDATE_SOURCES),
+            "files": files,
+        }))
+
     def assemble(self):
-        return package.assemble(self.driver, self.gl, self.cl, MESA, CLVK)
+        return package.assemble(self.driver, self.gl, self.cl, MESA, CLVK, self.candidates)
 
     def snapshot(self):
         return {p.name: p.read_bytes() for p in self.driver.iterdir()}
@@ -98,9 +119,14 @@ class ComposerTests(unittest.TestCase):
         self.assertIn("OpenCL.dll", copied)
         self.assertIn("OpenCL32.dll", copied)
         self.assertTrue(set(package.LOADER_PROBES.values()) <= set(copied))
+        self.assertTrue(set(package.CANDIDATE_UMDS) <= set(copied))
+        self.assertEqual(receipt["candidate_sources"], package.CANDIDATE_SOURCES)
+        self.assertEqual(receipt["candidate_activation"], "unregistered-candidate")
         self.assertTrue(all(p.is_file() for p in self.driver.iterdir()))
         for key, (_, name, _, flags) in package.REGISTRATION.items():
             self.assertIn(f'HKR,,{key},{flags},"%13%\\{name}"', text)
+        registered = set(receipt["registration"].values())
+        self.assertFalse(registered.intersection(package.CANDIDATE_UMDS))
         self.assertNotIn("Program Files", text)
         self.assertNotIn("SOFTWARE\\Khronos", text)
 
@@ -120,7 +146,11 @@ class ComposerTests(unittest.TestCase):
         self.assertEqual([x["system_directory"] for x in receipt["system_loaders"]],
                          ["System32", "SysWOW64"])
         self.assertEqual(receipt["loader_probes"], package.LOADER_PROBES)
+        self.assertEqual(receipt["candidate_sources"], package.CANDIDATE_SOURCES)
+        self.assertEqual(receipt["candidate_activation"], "unregistered-candidate")
         for name in receipt["loader_probes"].values():
+            self.assertEqual(receipt["files"][name], package.sha(self.driver / name))
+        for name in package.CANDIDATE_UMDS:
             self.assertEqual(receipt["files"][name], package.sha(self.driver / name))
 
     def test_reject_missing_helper_mapping(self):
@@ -258,6 +288,35 @@ class ComposerTests(unittest.TestCase):
         text = self.inf.read_text().replace("viogpud3d.dll,,,2", "viogpud3d.dll,other.dll,,2")
         with self.assertRaisesRegex(ValueError, "Renamed/non-flat"):
             package.source_files(text)
+
+    def test_reject_candidate_source_pin(self):
+        manifest = json.loads((self.candidates / package.CANDIDATE_MANIFEST).read_text())
+        manifest["sources"]["dxvk"] = "0" * 40
+        (self.candidates / package.CANDIDATE_MANIFEST).write_text(json.dumps(manifest))
+        self.reject_unchanged("source pin")
+
+    def test_reject_candidate_wrong_architecture(self):
+        name = "viogpudxvk.dll"
+        (self.candidates / name).write_bytes(pe("x64"))
+        self.save_candidates()
+        self.reject_unchanged("Candidate PE machine mismatch")
+
+    def test_reject_missing_candidate(self):
+        (self.candidates / "viogpud3d12.dll").unlink()
+        self.reject_unchanged("exact flat input")
+
+    def test_reject_candidate_subdirectory(self):
+        (self.candidates / "nested").mkdir()
+        self.reject_unchanged("no subdirectories")
+
+    def test_finalize_rejects_candidate_activation(self):
+        self.assemble()
+        path = self.driver / package.RECEIPT
+        manifest = json.loads(path.read_text())
+        manifest["candidate_activation"] = "registered"
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "unregistered candidates"):
+            package.finalize(self.driver)
 
     def test_windows_unsafe_names(self):
         for name in ("../escape.dll", "x64\\foo.dll", "file.dll:stream", "CON.dll", "a.", "a,b.dll"):
