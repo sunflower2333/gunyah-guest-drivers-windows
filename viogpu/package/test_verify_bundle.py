@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Final archive identity tests; signature verification runs on real Windows."""
 import json
+import subprocess
 import unittest
 
 import flat_package as package
@@ -45,12 +46,20 @@ class BundleTests(unittest.TestCase):
     def test_complete_bundle(self):
         receipt = self.verify()
         self.assertEqual(receipt["parent_commit"], self.parent)
+        self.assertEqual(receipt["d3d10_mesa"], bundle.D3D10_MESA)
         self.assertTrue(set(package.LOADER_PROBES.values()) <= receipt["gpu_files"].keys())
         self.assertTrue(set(package.CANDIDATE_UMDS) <= receipt["gpu_files"].keys())
         self.assertEqual(receipt["candidate_sources"], package.CANDIDATE_SOURCES)
         self.assertEqual(receipt["candidate_activation"], "unregistered-candidate")
         self.assertIn("viogpu-flat-package.json", receipt["gpu_files"])
         self.assertIn("viogpu-install-native.cs", receipt["installer_files"])
+
+    def test_d3d10_mesa_gitlink_matches_optimized_branch(self):
+        actual = subprocess.check_output(
+            ["git", "rev-parse", "HEAD:external/mesa"],
+            text=True,
+        ).strip()
+        self.assertEqual(actual, bundle.D3D10_MESA)
 
     def test_reject_stale_producer(self):
         self.change_manifest(lambda m: m["sources"]["opencl"].update(parent="d" * 40))
