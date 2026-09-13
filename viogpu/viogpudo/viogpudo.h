@@ -603,6 +603,7 @@ class VioGpuAdapter : IVioGpuPCI
                                                _In_ UINT height,
                                                _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                _Inout_ ULONGLONG *resourceResetGeneration);
+    void RecordSynchronousFailureDiagnostic(void);
     /* Publish a finished frame the user-mode driver rendered on the host into
      * the surface this adapter already scans out.  The guest pages behind the
      * UMD's back buffer are never written, so the frame has to arrive as
@@ -1812,6 +1813,7 @@ class VioGpuDod
     VOID RecordNativeSynchronousPoisonDiagnostic(
         _In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva,
         _In_opt_ const VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *timeoutDiagnostic);
+    VOID RecordNativeSynchronousFailureDiagnostic(void);
     VOID RecordAdapterInfoTypeMap(void);
     VOID RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId,
                                                 _In_ LONG hostResult,

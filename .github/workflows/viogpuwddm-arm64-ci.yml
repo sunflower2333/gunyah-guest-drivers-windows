@@ -16,6 +16,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/display-timing/**"
+      - "viogpu/tests/monitor-modes/**"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/backing-entries/**"
@@ -43,6 +44,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/display-timing/**"
+      - "viogpu/tests/monitor-modes/**"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
       - "viogpu/tests/backing-entries/**"
@@ -117,6 +119,16 @@ jobs:
         shell: cmd
         run: viogpu\tests\display-timing\run-msvc.cmd
 
+      - name: Execute actual monitor-mode enumeration and semantic negatives
+        shell: pwsh
+        run: |
+          python viogpu/tests/monitor-modes/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/monitor-modes/run.py --negative-control-duplicate
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/monitor-modes/run.py --negative-control-add-error
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
       - name: Execute actual VidPN commit and all-source negative control
         shell: pwsh
         run: |
@@ -148,6 +160,8 @@ jobs:
           python viogpu/tests/synchronous-timeout/run.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python viogpu/tests/synchronous-timeout/run.py --negative-control-overwrite
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/synchronous-timeout/run.py --negative-control-mode-publication
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Check scheduler fence publication ordering

@@ -7,6 +7,8 @@
 #include <functional>
 #include <thread>
 #include <vector>
+#include <map>
+#include <string>
 #ifdef _MSC_VER
 #include <intrin.h>
 #else
@@ -35,6 +37,15 @@ constexpr ULONG MAXULONG = UINT32_MAX;
 constexpr int Executive = 0, KernelMode = 0, PASSIVE_LEVEL = 0;
 #ifndef _Out_
 #define _Out_
+#endif
+#ifndef _In_
+#define _In_
+#endif
+#ifndef _Inout_
+#define _Inout_
+#endif
+#ifndef _In_opt_
+#define _In_opt_
 #endif
 #define PAGED_CODE() ((void)0)
 #define DbgPrint(...) ((void)0)
@@ -74,7 +85,8 @@ static LONG FixtureExchange(volatile LONG* dest, LONG value) {
 #define InterlockedExchange FixtureExchange
 #define InterlockedCompareExchange64 _InterlockedCompareExchange64
 #endif
-static int KeGetCurrentIrql() { return PASSIVE_LEVEL; }
+static int fixtureIrql = PASSIVE_LEVEL;
+static int KeGetCurrentIrql() { return fixtureIrql; }
 static void KeClearEvent(KEVENT* event) { event->signaled = false; }
 static void KeReleaseMutex(int*, bool) {}
 static void NotifyEventCompleteCB(void* ctx) { static_cast<KEVENT*>(ctx)->signaled = true; }
@@ -110,6 +122,10 @@ struct CtrlQueue {
     void CompleteSynchronousRequestTeardown();
     BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER, PBOOLEAN);
     BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER, PBOOLEAN, PBOOLEAN);
+    ULONG SynchronousPoisonCallerRva(void);
+    ULONG SynchronousEpochStateValue(void);
+    ULONG SynchronousEpochGenerationValue(void);
+    VIOGPU_HOST_CONTEXT_RESULT FlushResourceSynchronous(UINT, UINT, UINT, UINT, UINT);
 };
 // INSERT_PRODUCTION
 
@@ -277,9 +293,11 @@ static void publication() {
     check(consistent && queue.GetFirstSynchronousTimeout(&diagnostic) && diagnostic.EpochGeneration == 8,
           "published first record remains immutable for concurrent readers");
 }
+// INSERT_MODE_FIXTURE
 int main() {
     lifecycle();
     decoding();
     publication();
+    mode_publication();
     std::printf("PASS synchronous timeout lifecycle and boundaries: %d checks\n",checks);
 }

@@ -19,3 +19,16 @@ failure survives teardown/re-enable; unrelated failures are not accepted.
 
 These fixtures and the WDK build validate source behavior and compilation, not
 host completion latency, physical-device rendering, or the 165 Hz mode change.
+
+The mode-publication case compiles the actual `VioGpuDod::Flush2DResource`
+wrapper, adapter flush leaf, failure diagnostic helper, and persistent registry
+writer. It creates an actual production first-timeout snapshot and drives the
+mode failure entry without destroying a context. Controlled peers verify exact
+registry fields, partial-write invalidation/retry, balanced hardware/registry
+ownership, no submission-gate reopening, no stale adapter access after release,
+and no diagnostic IO for healthy or nonpassive paths. It preserves descriptor
+quarantine and the unchanged five-second timeout.
+
+`--negative-control-mode-publication` removes both publication calls from the
+actual mode flush wrapper. It must fail the precise assertion that a failed
+mode flush publishes the first timeout without waiting for context destruction.

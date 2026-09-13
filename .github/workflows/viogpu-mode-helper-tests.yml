@@ -1,0 +1,40 @@
+name: Validate versioned display mode restoration helper
+on:
+  workflow_dispatch:
+  push:
+    branches: [viogpu-mode-restore-20260912, viogpu-monitor-modes-20260913]
+    paths:
+      - '.install_scripts/viogpu-test-display-mode-v2.ps1'
+      - 'viogpu/tests/display-mode-helper/**'
+      - '.github/workflows/viogpu-mode-helper-tests.yml'
+  pull_request:
+    paths:
+      - '.install_scripts/viogpu-test-display-mode-v2.ps1'
+      - 'viogpu/tests/display-mode-helper/**'
+      - '.github/workflows/viogpu-mode-helper-tests.yml'
+jobs:
+  restoration:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Parse helper without invoking display operations
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.install_scripts/viogpu-test-display-mode-v2.ps1'),
+            [ref]$tokens, [ref]$errors)
+          if ($errors.Count) { throw ($errors | Out-String) }
+          Write-Host 'PASS versioned mode helper PowerShell syntax; no display operations'
+      - name: Execute production helper with controlled display peers
+        shell: pwsh
+        run: |
+          python viogpu/tests/display-mode-helper/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/display-mode-helper/run.py --negative-control-success-gate
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/display-mode-helper/run.py --negative-control-mask-failure
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
