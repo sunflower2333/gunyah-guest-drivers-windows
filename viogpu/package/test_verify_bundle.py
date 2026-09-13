@@ -46,6 +46,9 @@ class BundleTests(unittest.TestCase):
         receipt = self.verify()
         self.assertEqual(receipt["parent_commit"], self.parent)
         self.assertTrue(set(package.LOADER_PROBES.values()) <= receipt["gpu_files"].keys())
+        self.assertTrue(set(package.CANDIDATE_UMDS) <= receipt["gpu_files"].keys())
+        self.assertEqual(receipt["candidate_sources"], package.CANDIDATE_SOURCES)
+        self.assertEqual(receipt["candidate_activation"], "unregistered-candidate")
         self.assertIn("viogpu-flat-package.json", receipt["gpu_files"])
         self.assertIn("viogpu-install-native.cs", receipt["installer_files"])
 
@@ -62,6 +65,16 @@ class BundleTests(unittest.TestCase):
     def test_reject_omitted_helper_inventory(self):
         self.change_manifest(lambda m: m["files"].pop(package.LOADER_PROBES["arm64"]))
         with self.assertRaisesRegex(ValueError, "INF copy inventory differ"):
+            self.verify()
+
+    def test_reject_candidate_pin(self):
+        self.change_manifest(lambda m: m["candidate_sources"].update(dxvk="0" * 40))
+        with self.assertRaisesRegex(ValueError, "candidate source pins"):
+            self.verify()
+
+    def test_reject_candidate_registration(self):
+        self.change_manifest(lambda m: m["registration"].update(D3D11Candidate="viogpudxvk.dll"))
+        with self.assertRaisesRegex(ValueError, "API registration mapping"):
             self.verify()
 
     def test_reject_missing_installer_helper(self):
