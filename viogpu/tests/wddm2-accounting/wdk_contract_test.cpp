@@ -2,6 +2,7 @@
 #include <ntddk.h>
 #include <windef.h>
 #include <d3dkmddi.h>
+#include <dispmprt.h> // DXGKRNL_INTERFACE
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
