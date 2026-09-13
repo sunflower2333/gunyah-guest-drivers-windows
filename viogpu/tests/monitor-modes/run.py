@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--negative-control-duplicate', action='store_true')
@@ -51,6 +52,16 @@ with tempfile.TemporaryDirectory(prefix='viogpu-monitor-modes-') as temporary:
     result = subprocess.run([str(binary)], cwd=output, capture_output=True, text=True)
     print(result.stdout, end='')
     print(result.stderr, end='')
+    # Windows may briefly retain the just-exited x64 image on the ARM runner.
+    # Match the existing synchronous-timeout fixture's bounded cleanup retry.
+    for attempt in range(21):
+        try:
+            binary.unlink()
+            break
+        except PermissionError:
+            if attempt == 20:
+                raise
+            time.sleep(0.25)
     expected = None
     if args.negative_control_duplicate:
         expected = 'FAIL existing preferred mode still admits missing165Hz'
