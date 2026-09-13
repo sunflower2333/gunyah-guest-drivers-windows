@@ -4,9 +4,6 @@
 #include <d3dkmddi.h>
 #include <dispmprt.h> // DXGKRNL_INTERFACE
 #include "mmio_flip.h" // run.py adds viogpu/common; the unit is compiled from a temp copy
-#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
-#include "viogpu_display_color.h" // run.py adds viogpu/shared for the Advanced Color interface
-#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -43,6 +40,13 @@ struct VioGpuDod
 DXGKDDI_GETNODEMETADATA VioGpuWddmGetNodeMetadata;
 
 // INSERT_PRODUCTION
+
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+// After the production units: the private ABI header defines macros such as
+// VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE that the fixture above declares itself.
+#include "viogpu_display_color.h" // run.py adds viogpu/shared for the Advanced Color interface
+#undef VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE // keep the fixture's own constant for main()
+#endif
 
 unsigned checks;
 void check(bool ok, const char *message)
