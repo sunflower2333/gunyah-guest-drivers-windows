@@ -781,7 +781,7 @@ jobs:
             }
             if ($d.n -eq 'viogpu') {
               python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
-                --mesa 431ba7625e4cdd8bf15bd268e340045a45e7dbd5 --clvk 92116c1f71bb6f79fd9e4981fa6c3d27d51c830f
+                --mesa 431ba7625e4cdd8bf15bd268e340045a45e7dbd5 --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
               if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
               if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
@@ -864,7 +864,7 @@ jobs:
         run: |
           python viogpu/package/verify_bundle.py --output out `
             --mesa 431ba7625e4cdd8bf15bd268e340045a45e7dbd5 --mesa-run 34731498360 `
-            --clvk 92116c1f71bb6f79fd9e4981fa6c3d27d51c830f --clvk-run 34742232147 --version 100.6.101.58480
+            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58480
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact
