@@ -3178,7 +3178,11 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
     DXGK_DRIVERCAPS *driverCaps = static_cast<DXGK_DRIVERCAPS *>(queryAdapterInfo->pOutputData);
     RtlZeroMemory(driverCaps, requiredSize);
     driverCaps->WDDMVersion = DXGKDDI_WDDMv2;
-#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3) && defined(VIOGPU_REPORT_WDDM2_3)
+    /* Separate experiment only. The Advanced Color DDIs and color caps are
+     * selected by the 2.3 interface and DDI presence; reporting driver model
+     * 2.3 additionally makes dxgkrnl validate the WDDM 2.1-2.3 mandatory
+     * feature sets, which this physical-mode driver does not claim. */
     driverCaps->WDDMVersion = DXGKDDI_WDDMv2_3;
 #endif
     driverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
@@ -13983,40 +13987,53 @@ void VioGpuAdapter::RefreshColorConnection()
 {
     if (InterlockedExchange(&m_ColorConnectionRefreshRequested, 0) == 0 || m_pVioGpuDod->IsRenderOnly()) return;
     VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
-    BOOLEAN connected = FALSE;
+    BOOLEAN discovered = FALSE;
     {
         VioGpuDod::ColorStateOperation operation(m_pVioGpuDod);
-        if (!operation.Acquired()) return;
-        // DVCL discovery refuses a detached/unknown Surface. A valid SDR
-        // display still answers discovery successfully with usable HDR zero.
-        connected = m_pVioGpuDod->QueryDisplayColor(&caps) && caps.generation != 0;
+        if (!operation.Acquired())
+        {
+            // Retry on the next configuration wake rather than drop the request.
+            InterlockedExchange(&m_ColorConnectionRefreshRequested, 1);
+            return;
+        }
+        // DVCL discovery refuses a detached/unknown Surface and an older host
+        // refuses the command. Neither may remove the SDR monitor.
+        discovered = m_pVioGpuDod->QueryDisplayColor(&caps) && caps.generation != 0;
         m_pVioGpuDod->ClearColorPresentCompletion();
     }
-    const BOOLEAN previous = InterlockedCompareExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 0, 0) != 0;
-    // Ignore request-header fence IDs; compare all capability payload fields,
-    // including a runtime admission change within the same Surface generation.
-    const SIZE_T payloadSize = sizeof(caps) - FIELD_OFFSET(VIOGPU_DISPLAY_COLOR_RESPONSE, generation);
-    if (m_ColorConnectionInitialized && previous == connected &&
-        RtlCompareMemory(&m_ColorNotifiedCapabilities.generation, &caps.generation, payloadSize) == payloadSize) return;
-
-    // Every new Surface generation requires Windows to renegotiate modes,
-    // gamma and resource metadata. Call outside ColorStateOperation: an OS
-    // callback may immediately query the driver again.
-    if (previous)
+    const auto action =
+        VioGpuColorConnectionAction(m_ColorConnectionInitialized != FALSE, discovered != FALSE,
+                                    &m_ColorNotifiedCapabilities, discovered ? &caps : nullptr);
+    // Callbacks run outside ColorStateOperation: an OS callback may
+    // immediately query the driver again.
+    if (action == VioGpuColorConnectionReenumerate)
     {
         InterlockedExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 0);
-        if (!NT_SUCCESS(UpdateChildStatus(FALSE))) return;
+        if (!NT_SUCCESS(UpdateChildStatus(FALSE)))
+        {
+            InterlockedExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 1);
+            InterlockedExchange(&m_ColorConnectionRefreshRequested, 1);
+            return;
+        }
     }
-    if (connected)
+    if (action != VioGpuColorConnectionNone)
     {
         InterlockedExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 1);
         if (!NT_SUCCESS(UpdateChildStatus(TRUE)))
         {
-            InterlockedExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 0);
+            // QueryChildStatus keeps answering connected; retry the report.
+            InterlockedExchange(&m_ColorConnectionRefreshRequested, 1);
             return;
         }
     }
-    m_ColorNotifiedCapabilities = caps;
+    if (discovered)
+    {
+        m_ColorNotifiedCapabilities = caps;
+    }
+    else
+    {
+        RtlZeroMemory(&m_ColorNotifiedCapabilities, sizeof(m_ColorNotifiedCapabilities));
+    }
     m_ColorConnectionInitialized = TRUE;
 }
 #endif

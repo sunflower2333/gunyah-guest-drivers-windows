@@ -1311,7 +1311,9 @@ class VioGpuDod
     VIOGPU_DISPLAY_COLOR_RESPONSE m_ColorCapabilities = {};
     DXGK_COLORIMETRY m_AdjustedColorimetry = {};
     BOOLEAN m_ColorTargetPoweredOff = FALSE;
-    volatile LONG m_ColorMonitorConnected = 0;
+    // The SDR monitor is present from the first query, as in the always-connected
+    // baseline; the connection policy only pulses it for PQ renegotiation.
+    volatile LONG m_ColorMonitorConnected = 1;
     volatile LONG m_ColorModeAvailable = 0;
     volatile LONG m_ColorModeEpoch = 0;
     BOOLEAN IsNativeHdrModeAvailable() const

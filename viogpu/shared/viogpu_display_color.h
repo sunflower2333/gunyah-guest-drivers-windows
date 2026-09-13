@@ -149,6 +149,57 @@ inline bool VioGpuValidDisplayMetadata(const VIOGPU_SET_RESOURCE_COLOR *color)
            (color->max_content_light_level == 0 ||
             color->max_frame_average_light_level <= color->max_content_light_level);
 }
+/* Monitor connection policy for the Advanced Color candidate. The SDR monitor
+ * stays connected whatever DVCL reports: an older host, a detached Surface or
+ * a failed query keeps the baseline always-present monitor. A disconnect and
+ * reconnect is issued only to make Windows renegotiate modes, colorimetry and
+ * gamma when negotiated PQ admission appears, disappears, or moves to a new
+ * Surface generation while admitted. With usable HDR zero no pulse happens. */
+typedef enum VIOGPU_COLOR_CONNECTION_ACTION
+{
+    VioGpuColorConnectionNone = 0,
+    VioGpuColorConnectionConnect = 1,
+    VioGpuColorConnectionReenumerate = 2,
+} VIOGPU_COLOR_CONNECTION_ACTION;
+
+inline bool VioGpuDisplayColorPqAdmitted(const VIOGPU_DISPLAY_COLOR_RESPONSE *caps)
+{
+    return caps != nullptr && caps->generation != 0 && (caps->usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ) != 0;
+}
+
+/* notified: the last successfully discovered capabilities that Windows has
+ * seen (all zero when none). current: valid only when discovered is true. */
+inline VIOGPU_COLOR_CONNECTION_ACTION VioGpuColorConnectionAction(bool initialized,
+                                                                  bool discovered,
+                                                                  const VIOGPU_DISPLAY_COLOR_RESPONSE *notified,
+                                                                  const VIOGPU_DISPLAY_COLOR_RESPONSE *current)
+{
+    if (!initialized)
+    {
+        return VioGpuColorConnectionConnect;
+    }
+    const bool wasAdmitted = VioGpuDisplayColorPqAdmitted(notified);
+    if (!discovered || current == nullptr)
+    {
+        return wasAdmitted ? VioGpuColorConnectionReenumerate : VioGpuColorConnectionNone;
+    }
+    const bool isAdmitted = VioGpuDisplayColorPqAdmitted(current);
+    if (wasAdmitted != isAdmitted)
+    {
+        return VioGpuColorConnectionReenumerate;
+    }
+    if (!isAdmitted)
+    {
+        return VioGpuColorConnectionNone;
+    }
+    return notified->generation != current->generation || notified->usable_hdr_types != current->usable_hdr_types ||
+                   notified->max_luminance != current->max_luminance ||
+                   notified->max_average_luminance != current->max_average_luminance ||
+                   notified->min_luminance != current->min_luminance
+               ? VioGpuColorConnectionReenumerate
+               : VioGpuColorConnectionNone;
+}
+
 static_assert(sizeof(VIOGPU_DISPLAY_CONTROL_HEADER) == 24, "DVCL control header");
 static_assert(sizeof(VIOGPU_GET_DISPLAY_COLOR) == 40, "DVCL discovery request");
 static_assert(sizeof(VIOGPU_DISPLAY_COLOR_RESPONSE) == 72, "DVCL discovery response");

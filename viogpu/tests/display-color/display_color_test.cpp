@@ -1,3 +1,4 @@
+#undef NDEBUG
 #include "../../shared/viogpu_display_color.h"
 #include <cassert>
 #include <cstddef>
@@ -67,5 +68,47 @@ int main()
     transform->lut[1025][0] = 0x3f800000U;
     assert(!VioGpuValidDisplayTransform(transform.get()));
     static_assert(offsetof(VIOGPU_DISPLAY_TRANSFORM, lut) == 96, "shader/wire LUT offset");
+    // Advanced Color monitor connection policy.
+    VIOGPU_DISPLAY_COLOR_RESPONSE none = {}, sdr = {}, hdr = {};
+    sdr.generation = 3;
+    sdr.observed_hdr_types = 3;
+    hdr = sdr;
+    hdr.usable_hdr_types = VIOGPU_DISPLAY_COLOR_PQ;
+    hdr.max_luminance = 10000000;
+    auto act = [](bool initialized, bool discovered, const VIOGPU_DISPLAY_COLOR_RESPONSE &n,
+                  const VIOGPU_DISPLAY_COLOR_RESPONSE &c) {
+        return VioGpuColorConnectionAction(initialized, discovered, &n, &c);
+    };
+    // First refresh always reports the monitor, even without DVCL.
+    assert(act(false, false, none, none) == VioGpuColorConnectionConnect);
+    assert(act(false, true, none, hdr) == VioGpuColorConnectionConnect);
+    // SDR-only (usable zero, the installed host) never pulses the monitor:
+    // not for an old host, a detached Surface, nor a new Surface generation.
+    assert(act(true, false, none, none) == VioGpuColorConnectionNone);
+    assert(act(true, false, sdr, none) == VioGpuColorConnectionNone);
+    auto nextSdr = sdr;
+    nextSdr.generation = 4;
+    nextSdr.max_luminance = 5000000;
+    assert(act(true, true, sdr, nextSdr) == VioGpuColorConnectionNone);
+    auto observedOnly = sdr;
+    observedOnly.usable_hdr_types = VIOGPU_DISPLAY_COLOR_HLG; // HLG alone is not PQ admission
+    assert(act(true, true, sdr, observedOnly) == VioGpuColorConnectionNone);
+    // Admission changes renegotiate in both directions.
+    assert(act(true, true, sdr, hdr) == VioGpuColorConnectionReenumerate);
+    assert(act(true, true, hdr, sdr) == VioGpuColorConnectionReenumerate);
+    assert(act(true, false, hdr, none) == VioGpuColorConnectionReenumerate); // lost discovery withdraws HDR
+    // While admitted, a new Surface generation or panel luminance renegotiates.
+    assert(act(true, true, hdr, hdr) == VioGpuColorConnectionNone);
+    auto nextHdr = hdr;
+    nextHdr.generation = 4;
+    assert(act(true, true, hdr, nextHdr) == VioGpuColorConnectionReenumerate);
+    nextHdr = hdr;
+    nextHdr.max_average_luminance = 4000000;
+    assert(act(true, true, hdr, nextHdr) == VioGpuColorConnectionReenumerate);
+    auto zeroGeneration = hdr;
+    zeroGeneration.generation = 0; // never admitted without a generation
+    assert(!VioGpuDisplayColorPqAdmitted(&zeroGeneration));
+    assert(act(true, true, sdr, zeroGeneration) == VioGpuColorConnectionNone);
     std::puts("DVCL wire, HDR10 metadata and float-bit transform validation: PASS");
+    std::puts("Advanced Color monitor connection policy: PASS");
 }
