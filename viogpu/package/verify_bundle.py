@@ -12,6 +12,8 @@ from flat_package import CANDIDATE_SOURCES, CANDIDATE_UMDS
 from flat_package import LOADER_PROBES, MACHINES, RECEIPT, REGISTRATION
 from flat_package import flat_name, pe_machine, require, sha, source_files
 
+D3D10_MESA = "54801ffe1a2e012d619155677ab7fa2ab361dd67"
+
 INSTALLER_FILES = (
     "INSTALL.cmd", "install-drivers.ps1", "pvmpower-devnode.ps1",
     "viogpu-unified-install.ps1", "viogpu-install-state.psm1",
@@ -32,7 +34,7 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
             "Wrong final driver identity")
     gl, cl = manifest["sources"]["opengl"], manifest["sources"]["opencl"]
     require(gl["parent"] == cl["parent"] == parent, "Mixed producer parent revisions")
-    require(gl["mesa"] == mesa and gl["mesa_run"] == mesa_run, "Wrong Mesa source/run")
+    require(gl["mesa"] == mesa and gl["mesa_run"] == mesa_run, "Wrong OpenGL Mesa source/run")
     require(cl["clvk"] == clvk and cl["clvk_runtime_ci"] == clvk_run, "Wrong CLVK source/run")
     require(cl["compiler_original_sha256"] ==
             "79e236af8febd67fd02adfd93f81295c87e868e9fd861f71d03d1057e6be1f9d",
@@ -85,6 +87,7 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
             "Obsolete sidecar or private signing key in final bundle")
     return {"schema": 1, "layout": "flat-driverstore", "parent_commit": parent,
             "driver_version": version, "sources": manifest["sources"],
+            "d3d10_mesa": D3D10_MESA,
             "candidate_sources": manifest["candidate_sources"],
             "candidate_activation": manifest["candidate_activation"],
             "candidate_umds": manifest["candidate_umds"],
@@ -107,8 +110,10 @@ def main():
 
     parent = git("rev-parse", "HEAD")
     require(parent == os.environ.get("GITHUB_SHA", parent), "CI parent mismatch")
-    require(git("rev-parse", "HEAD:external/mesa") == args.mesa, "Committed Mesa gitlink mismatch")
+    d3d10_mesa = git("rev-parse", "HEAD:external/mesa")
+    require(d3d10_mesa == D3D10_MESA, "Committed D3D10 Mesa gitlink mismatch")
     receipt = verify(args.output, parent, args.mesa, args.mesa_run, args.clvk, args.clvk_run, args.version)
+    require(receipt["d3d10_mesa"] == d3d10_mesa, "D3D10 Mesa receipt mismatch")
     (args.output / "joint-package-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(f"PASS unified flat bundle: {len(receipt['gpu_files'])} GPU files, "
           f"{len(receipt['installer_files'])} installer files, version {args.version}")
