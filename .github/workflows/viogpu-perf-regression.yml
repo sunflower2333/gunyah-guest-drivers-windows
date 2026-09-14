@@ -5,11 +5,15 @@ on:
   push:
     branches: [perf/droidvm-gpu-20260914]
     paths:
+      - 'external/mesa'
+      - '.gitmodules'
       - 'viogpu/**'
       - '.github/workflows/viogpu-perf-regression.yml'
       - '.github/scripts/viogpu-perf-*'
   pull_request:
     paths:
+      - 'external/mesa'
+      - '.gitmodules'
       - 'viogpu/**'
       - '.github/workflows/viogpu-perf-regression.yml'
 
@@ -81,3 +85,32 @@ jobs:
         run: |
           python viogpu/tests/submit-perf/run.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+  mesa-lifetime-pair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: true
+      - name: Verify exact Mesa gitlink and package identity
+        run: |
+          expected=$(git rev-parse HEAD:external/mesa)
+          actual=$(git -C external/mesa rev-parse HEAD)
+          test "$actual" = "$expected"
+          printf 'driver=%s\nmesa=%s\n' "$(git rev-parse HEAD)" "$actual" > mesa-lifetime-pair.txt
+          python3 -m unittest discover -s viogpu/package -p 'test_*.py'
+      - name: Check pinned Mesa policy and extracted production functions
+        run: |
+          python3 external/mesa/src/freedreno/vulkan/tests/check_tu_wddm_policy.py
+          python3 external/mesa/src/freedreno/vulkan/tests/lifetime-perf/run.py
+          for reason in fence busy residency scratch; do
+            python3 external/mesa/src/freedreno/vulkan/tests/lifetime-perf/run.py --negative-control "$reason"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesa-lifetime-pair-${{ github.sha }}
+          path: mesa-lifetime-pair.txt
+          retention-days: 7
+          if-no-files-found: error
