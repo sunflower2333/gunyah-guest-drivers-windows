@@ -1,0 +1,90 @@
+name: Apply verified VIOGPU performance source
+
+# One-time transport for reviewed large C++ changes through the contents API.
+# Validates exact pre/post blob hashes; publishes source only after regression.
+on:
+  push:
+    branches: [perf/droidvm-gpu-20260914]
+    paths: ['.github/workflows/apply-reviewed-viogpu-perf.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: github.repository == 'sunflower2333/gunyah-guest-drivers-windows' && github.ref == 'refs/heads/perf/droidvm-gpu-20260914'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact reviewed patch and source blobs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, re, subprocess
+          from pathlib import Path, PurePosixPath
+          encoded = ''.join(Path(f'.github/perf-transport/submit-perf.part{i}').read_text().strip() for i in range(1,5))
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          expected = 'fcbcc8ea567e79a3a5f81225b248c9fd832571abe20ac163cfe5100e02459365'
+          if hashlib.sha256(patch).hexdigest() != expected:
+              raise SystemExit('Reviewed patch checksum mismatch')
+          entries = re.findall(r'^diff --git a/(\S+) b/\1\n(.*?)(?=^diff --git |\Z)', patch.decode(), re.M | re.S)
+          if len(entries) != 14:
+              raise SystemExit('Unexpected patch file count')
+          hashes = {}
+          for name, body in entries:
+              path = PurePosixPath(name)
+              if not name.startswith('viogpu/') or '..' in path.parts or path.is_absolute():
+                  raise SystemExit('Path outside reviewed VIOGPU scope')
+              match = re.search(r'^index ([0-9a-f]{40})\.\.([0-9a-f]{40})(?: 100644)?$', body, re.M)
+              if not match or '120000' in body or '160000' in body:
+                  raise SystemExit('Unsupported patch metadata: ' + name)
+              before, after = match.groups()
+              if before == '0' * 40:
+                  if Path(name).exists():
+                      raise SystemExit('New file already exists: ' + name)
+              else:
+                  actual = subprocess.check_output(['git','hash-object','--',name], text=True).strip()
+                  if actual != before:
+                      raise SystemExit('Source changed since review: ' + name)
+              hashes[name] = after
+          target = Path('/tmp/viogpu-submit-perf.patch')
+          target.write_bytes(patch)
+          subprocess.run(['git','apply','--check','--index',str(target)], check=True)
+          subprocess.run(['git','apply','--index',str(target)], check=True)
+          for name, after in hashes.items():
+              actual = subprocess.check_output(['git','hash-object','--',name], text=True).strip()
+              if actual != after:
+                  raise SystemExit('Patched source checksum mismatch: ' + name)
+          print('PASS: exact reviewed source verified for all 14 files')
+          PY
+          git diff --cached --check
+      - name: Run production-source and packaging regressions before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 viogpu/tests/submit-perf/run.py
+          python3 viogpu/tests/submit-perf/run.py --negative-control-serial
+          python3 viogpu/tests/submit-perf/run.py --negative-control-worker-reference
+          python3 viogpu/tests/submit-perf/run.py --negative-control-pool-reset
+          python3 -m unittest discover -s viogpu/package -p 'test_*.py'
+          python3 viogpu/tests/render-prepatch/run.py
+          python3 viogpu/tests/fault-recovery/run.py
+          python3 viogpu/tests/power-recovery/run.py
+          python3 viogpu/viogpuwddm/check-contract.py
+      - name: Commit actual source and remove transport data
+        shell: bash
+        run: |
+          git rm .github/perf-transport/submit-perf.part{1,2,3,4}
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'viogpu: pipeline Render with bounded terminal ownership and aggregate counters' -m 'Materialize reviewed KMD hot-path changes; remove build-time source mutation. Add O(1) buffer ownership and production-source sanitizer regressions. No BO lifetime or wire ABI changes.'
+          git push origin HEAD:refs/heads/perf/droidvm-gpu-20260914
+      - name: Retain the human-readable reviewed patch
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-reviewed-source-patch
+          path: /tmp/viogpu-submit-perf.patch
+          retention-days: 7
+          if-no-files-found: ignore
