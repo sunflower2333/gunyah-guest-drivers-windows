@@ -41,6 +41,8 @@ jobs:
             viogpu-perf-revision.txt
           retention-days: 7
           if-no-files-found: error
+      - name: Validate cumulative measurement parsing and A/B arithmetic
+        run: python3 -m unittest discover -s viogpu/perf -p 'test_*.py' -v
       - name: Check Native Context contract
         run: python3 viogpu/viogpuwddm/check-contract.py
       - name: Run extracted production functions under ASan and UBSan
@@ -69,6 +71,11 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - name: Validate measurement CLI on Windows
+        shell: pwsh
+        run: |
+          python -m unittest discover -s viogpu/perf -p 'test_*.py' -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Compile and execute extracted production functions with MSVC
         shell: pwsh
         run: |
