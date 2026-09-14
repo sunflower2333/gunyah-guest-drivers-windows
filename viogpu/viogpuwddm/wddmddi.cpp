@@ -9652,7 +9652,10 @@ static NTSTATUS ValidateMmioFlipPresent(CONST HANDLE hContext, DXGKARG_PRESENT *
         if (sourceOpen != NULL && sourceOpen->Signature == VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE &&
             sourceOpen->Device == context->Device && sourceOpen->Allocation != NULL &&
             IsOwnedAllocation(sourceOpen->Allocation, adapter) && IsStandardPrimaryAllocation(sourceOpen->Allocation) &&
-            !IsHighPrecisionSurfaceFormat(sourceOpen->Allocation->Format))
+            // A ten-bit flip source is only meaningful while Advanced Color is
+            // usable; the DIRQL flip and the PASSIVE bind enforce the same gate.
+            (!IsHighPrecisionSurfaceFormat(sourceOpen->Allocation->Format) ||
+             adapter->IsNativeHdrModeAvailable()))
         {
             status = STATUS_SUCCESS;
         }
@@ -10652,6 +10655,9 @@ static NTSTATUS QueueMmioFlip(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_SETVID
         target.PlacementOffset = allocation->PlacementOffset;
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
         target.HighPrecision = target.StandardPrimary && IsHighPrecisionSurfaceFormat(allocation->Format);
+        /* Interlocked reads only; the PASSIVE bind re-checks the committed mode
+         * and tags the resource before the Host can scan it out. */
+        target.HighPrecisionAdmitted = adapter->IsNativeHdrModeAvailable();
 #endif
     }
 
@@ -10676,6 +10682,43 @@ static NTSTATUS QueueMmioFlip(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_SETVID
     return STATUS_SUCCESS;
 }
 
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+/* PASSIVE_LEVEL. The caller holds the color state operation (the slot is not
+ * recursive) and the allocation lifecycle. Returns FALSE when Advanced Color is
+ * not usable for this exact mode and generation, which is the only case in
+ * which a ten-bit primary must not reach the Host. */
+static BOOLEAN TagHighPrecisionPrimaryColor(_In_ VioGpuDod *adapter, _In_ VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    PAGED_CODE();
+    if (!adapter->MatchesNativeHdrMode(allocation->Width, allocation->Height))
+    {
+        return FALSE;
+    }
+    VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+    if (!adapter->QueryDisplayColor(&caps) || caps.generation == 0 ||
+        (caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ) == 0)
+    {
+        return FALSE;
+    }
+    if (allocation->ColorTaggedGeneration == caps.generation)
+    {
+        return TRUE;
+    }
+    VIOGPU_SET_RESOURCE_COLOR color = {};
+    color.resource_id = allocation->ResourceId;
+    color.format = VIOGPU_DISPLAY_FORMAT_AB30;
+    color.encoding = VIOGPU_DISPLAY_COLOR_PQ;
+    color.generation = caps.generation;
+    if (adapter->SetResourceColor(&color) != VioGpuHostContextConfirmed)
+    {
+        allocation->ColorTaggedGeneration = 0;
+        return FALSE;
+    }
+    allocation->ColorTaggedGeneration = caps.generation;
+    return TRUE;
+}
+#endif
+
 /* Binds a standard primary to the Host scanout at PASSIVE_LEVEL. Shared by
  * the mode-change DDI and by the worker that completes MMIO flips. The caller
  * holds the adapter's flip-apply mutex. A flip already published its vsync
@@ -10693,11 +10736,21 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
         return STATUS_INVALID_PARAMETER;
     }
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
-    if (allocation->Format == D3DDDIFMT_A2B10G10R10 || allocation->Format == D3DDDIFMT_A2R10G10B10)
+    // A high-precision primary carries no color space of its own. MPO3 would
+    // supply one per present, but dxgkrnl never calls it without overlay caps,
+    // so the compositor's ten-bit primary reaches this path instead. The
+    // committed VidPn already negotiated PQ for this target (CommitVidPn /
+    // SetTimingsFromVidPn), and the driver's own fallback framebuffer is
+    // tagged the same way before its first bind, so tag this resource from the
+    // negotiated mode rather than refusing it. Per-frame HDR10 metadata stays
+    // an MPO3-only feature; the Host uses the target's mastering defaults.
+    // STATUS_NOT_SUPPORTED is not a status this DDI may return: dxgkrnl logs
+    // "Driver returned an invalid NTSTATUS code" and fails the caller.
+    const BOOLEAN highPrecision = allocation->Format == D3DDDIFMT_A2B10G10R10 ||
+                                  allocation->Format == D3DDDIFMT_A2R10G10B10;
+    if (highPrecision && !adapter->IsNativeHdrModeAvailable())
     {
-        // Only MPO3 carries the source colorspace and HDR metadata needed to
-        // interpret a high-precision primary. The legacy DDI cannot tag it.
-        return STATUS_NOT_SUPPORTED;
+        return STATUS_INVALID_PARAMETER;
     }
 #endif
 
@@ -10730,6 +10783,19 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
          * outright freezes it. Sample first and only bind a primary that
          * actually holds something. */
         const BOOLEAN guestBlob = allocation->Resource2DState == VioGpu2DResourceGuestBlobBackingAttached;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        /* Tag the Host resource with the negotiated color before it can be
+         * scanned out or flushed. Without this an AB30 import is interpreted as
+         * eight-bit data. The tag is per resource and Host color generation, so
+         * a re-bind of the same primary costs nothing and a generation change
+         * (Surface replaced, admission withdrawn) re-tags or refuses. */
+        const BOOLEAN colorTagged = !highPrecision || TagHighPrecisionPrimaryColor(adapter, allocation);
+        if (!colorTagged)
+        {
+            KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+            return STATUS_INVALID_PARAMETER;
+        }
+#endif
         LONG primaryNonZero = -1;
         if (!guestBlob && allocation->ApertureAddress != NULL && allocation->BackingSize >= 0x1000)
         {
@@ -10888,6 +10954,9 @@ VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter)
     {
         return;
     }
+    /* Same order as a mode change: the color slot before the flip-apply mutex,
+     * so a bind that tags a ten-bit primary cannot deadlock against CommitVidPn. */
+    VioGpuDod::ColorStateOperation colorOperation(adapter);
     adapter->AcquireFlipApply();
     VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(adapter->TakePendingFlip());
     if (allocation != NULL)

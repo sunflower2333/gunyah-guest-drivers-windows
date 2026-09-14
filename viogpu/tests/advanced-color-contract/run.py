@@ -105,16 +105,39 @@ mutations = [
      lambda t: replace_once(t, "    VioGpuDod::ColorStateOperation colorOperation(adapter);\n    if (!colorOperation.Acquired())\n    {\n        return STATUS_DEVICE_NOT_READY;\n    }\n    adapter->ClearColorPresentCompletion();\n#endif\n    /* A mode change",
                             "#endif\n    /* A mode change"),
      "a mode change must take the color slot before the flip-apply mutex"),
-    ("flip present accepts a ten-bit source", "wddmddi.cpp",
-     lambda t: replace_once(t, " &&\n            !IsHighPrecisionSurfaceFormat(sourceOpen->Allocation->Format))", ")"),
-     "a flip present must refuse a ten-bit source"),
+    ("flip present accepts an unadmitted ten-bit source", "wddmddi.cpp",
+     lambda t: replace_once(t, "            (!IsHighPrecisionSurfaceFormat(sourceOpen->Allocation->Format) ||\n"
+                               "             adapter->IsNativeHdrModeAvailable()))", ")"),
+     "a flip present must refuse a ten-bit source unless Advanced Color is usable"),
+    ("shared bind scans out an unadmitted ten-bit primary", "wddmddi.cpp",
+     lambda t: replace_once(t, "    if (highPrecision && !adapter->IsNativeHdrModeAvailable())\n    {\n"
+                               "        return STATUS_INVALID_PARAMETER;\n    }\n", ""),
+     "a ten-bit primary must be refused with a legal status unless Advanced Color is usable"),
+    ("shared bind skips the high-precision color tag", "wddmddi.cpp",
+     lambda t: replace_once(t, "        const BOOLEAN colorTagged = !highPrecision || "
+                               "TagHighPrecisionPrimaryColor(adapter, allocation);",
+                            "        const BOOLEAN colorTagged = TRUE;"),
+     "a ten-bit primary must be tagged with its Host color before the scanout binds it"),
+    ("color tag ignores the negotiated mode", "wddmddi.cpp",
+     lambda t: replace_once(t, "    if (!adapter->MatchesNativeHdrMode(allocation->Width, allocation->Height))\n"
+                               "    {\n        return FALSE;\n    }\n", ""),
+     "the high-precision color tag must stay bound to the negotiated mode: "
+     "adapter->MatchesNativeHdrMode(allocation->Width,allocation->Height)"),
+    ("flip worker takes the flip mutex before the color slot", "wddmddi.cpp",
+     lambda t: replace_once(t, "    VioGpuDod::ColorStateOperation colorOperation(adapter);\n"
+                               "    adapter->AcquireFlipApply();\n    VIOGPU_WDDM_ALLOCATION *allocation =",
+                            "    adapter->AcquireFlipApply();\n"
+                            "    VioGpuDod::ColorStateOperation colorOperation(adapter);\n"
+                            "    VIOGPU_WDDM_ALLOCATION *allocation ="),
+     "the flip worker must take the color slot before the flip-apply mutex"),
     ("power-off leaves a pending flip", "viogpudo.cpp",
      lambda t: replace_once(t, "        AcquireFlipApply();\n        (VOID) TakePendingFlip();\n        const auto result = Set2DScanout(0, 0, 0, 0, &previousResource);\n        ReleaseFlipApply();",
                             "        const auto result = Set2DScanout(0, 0, 0, 0, &previousResource);"),
      "target power-off must supersede an unbound flip"),
     ("flip policy ignores ten-bit primaries", "mmio_flip.h",
-     lambda t: replace_once(t, "    if (target.HighPrecision)\n        return VioGpuFlipTargetHighPrecision;\n", ""),
-     "the flip policy must refuse ten-bit primaries after ownership and type"),
+     lambda t: replace_once(t, "    if (target.HighPrecision && !target.HighPrecisionAdmitted)\n"
+                               "        return VioGpuFlipTargetHighPrecision;\n", ""),
+     "the flip policy must refuse unadmitted ten-bit primaries after ownership and type"),
     ("default Advanced Color registration", "driver_entry.cpp",
      lambda t: ungate(t, "initialData->DxgkDdiSetTargetGamma = VioGpuWddmSetTargetGamma;"),
      "default WDDM2.0 driver_entry.cpp exposes VioGpuWddmSetTargetGamma"),

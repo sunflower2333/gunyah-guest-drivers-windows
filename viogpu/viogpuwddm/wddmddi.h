@@ -164,6 +164,11 @@ struct VIOGPU_WDDM_ALLOCATION
     UINT BlobId;
     VIOGPU_2D_RESOURCE_STATE Resource2DState;
     ULONGLONG Resource2DResetGeneration;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    /* Host color generation this resource was tagged for (0 = untagged). A ten-bit
+     * primary is scanned out only while its tag matches the current generation. */
+    ULONGLONG ColorTaggedGeneration;
+#endif
     ULONGLONG PlacementOffset;
     PPFN_NUMBER AperturePfns;
     PUCHAR ApertureMappedPages;
