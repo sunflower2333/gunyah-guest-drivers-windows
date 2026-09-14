@@ -116,9 +116,14 @@
     <FilesToPackage Include="$(TargetPath)" />
     <FilesToPackage Include="$(OutDir)viogpud3d.dll" />
   </ItemGroup>
-  <Target Name="ApplyDroidVmPerfCpp" BeforeTargets="ClCompile">
-    <Exec Command="python &quot;$(MSBuildProjectDirectory)\..\perf\apply_perf_cpp.py&quot;" />
-  </Target>
+  <PropertyGroup>
+    <VioGpuNativePipelineWindow Condition="'$(VioGpuNativePipelineWindow)' == ''">64</VioGpuNativePipelineWindow>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>VIOGPU_NATIVE_PIPELINE_WINDOW=$(VioGpuNativePipelineWindow);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="$(MSBuildProjectDirectory)\..\..\build\Driver.Common.targets" />
   <ImportGroup Label="ExtensionTargets" />

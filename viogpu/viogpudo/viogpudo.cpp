@@ -266,6 +266,12 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativePagingResetCount = 0;
     KeInitializeSpinLock(&m_NativePassiveLock);
     InitializeListHead(&m_NativePassiveQueue);
+    InitializeListHead(&m_NativePassiveHostPending);
+    m_NativePassivePendingCount = 0;
+    m_NativePassiveHostPendingCount = 0;
+    m_NativePassiveWorkerRunning = FALSE;
+    RtlZeroMemory(&m_NativeSubmitPerf, sizeof(m_NativeSubmitPerf));
+    m_NativeSubmitPerfReported = 0;
     ExInitializeWorkItem(&m_NativePassiveWorkItem, NativePassiveWorker, this);
     m_NativePassiveWorkerQueued = FALSE;
     m_NativePassiveActiveWork = NULL;
@@ -315,6 +321,8 @@ VioGpuDod::~VioGpuDod(void)
     NT_ASSERT(m_pHWDevice == NULL);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     NT_ASSERT(IsListEmpty(&m_NativePassiveQueue));
+    NT_ASSERT(IsListEmpty(&m_NativePassiveHostPending));
+    NT_ASSERT(!m_NativePassiveWorkerRunning);
     NT_ASSERT(!m_NativePassiveWorkerQueued);
     NT_ASSERT(m_NativePassiveActiveWork == NULL);
     NT_ASSERT(m_NativePassiveClosing);
@@ -1691,7 +1699,8 @@ BOOLEAN VioGpuDod::QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *wo
         InterlockedCompareExchange(&work->Retired, 0, 0) == 0 &&
         InterlockedCompareExchange(work->CancelRequested, 0, 0) == 0)
     {
-        BOOLEAN needsWorker = m_NativePassiveActiveWork == NULL && !m_NativePassiveWorkerQueued;
+        BOOLEAN needsWorker = !m_NativePassiveWorkerQueued && !m_NativePassiveWorkerRunning &&
+                              NativePassiveDispatchReadyLocked(work);
         BOOLEAN workerReference = !needsWorker || ExAcquireRundownProtection(&m_HardwareOperations);
         if (workerReference && RecordNativeSubmissionFence(fenceId))
         {
@@ -1699,6 +1708,12 @@ BOOLEAN VioGpuDod::QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *wo
             work->FenceId = fenceId;
             InterlockedExchange(&work->State, VioGpuNativePassiveWorkQueued);
             InsertTailList(&m_NativePassiveQueue, &work->Link);
+            ++m_NativePassivePendingCount;
+            ++m_NativeSubmitPerf.Accepted;
+            if (m_NativePassivePendingCount > m_NativeSubmitPerf.PendingPeak)
+            {
+                m_NativeSubmitPerf.PendingPeak = m_NativePassivePendingCount;
+            }
             inserted = TRUE;
             if (needsWorker)
             {
@@ -1724,6 +1739,52 @@ BOOLEAN VioGpuDod::QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *wo
     return inserted;
 }
 
+// Test FIFO admission without allowing Present or paging to pass in-flight Render.
+BOOLEAN VioGpuDod::NativePassiveDispatchReadyLocked(VIOGPU_NATIVE_PASSIVE_WORK *incoming)
+{
+    if (m_NativePassiveClosing || IsHardwareResetRequested() || m_NativePassiveActiveWork != NULL ||
+        m_NativePassiveHostPendingCount >= VIOGPU_NATIVE_PIPELINE_WINDOW)
+    {
+        return FALSE;
+    }
+    VIOGPU_NATIVE_PASSIVE_WORK *next = IsListEmpty(&m_NativePassiveQueue)
+        ? incoming : CONTAINING_RECORD(m_NativePassiveQueue.Flink, VIOGPU_NATIVE_PASSIVE_WORK, Link);
+    return next != NULL && (next->PipelineEligible || m_NativePassiveHostPendingCount == 0);
+}
+
+// Include host-owned work and a running dispatcher in reset/close drain checks.
+BOOLEAN VioGpuDod::NativePassiveIdleLocked(void)
+{
+    return m_NativePassiveActiveWork == NULL && !m_NativePassiveWorkerQueued &&
+           !m_NativePassiveWorkerRunning && IsListEmpty(&m_NativePassiveQueue) &&
+           IsListEmpty(&m_NativePassiveHostPending);
+}
+
+// Handoff is idempotent if a fast terminal callback already retired this work.
+VOID VioGpuDod::ReleaseNativePassiveDispatch(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativePassiveLock, &oldIrql);
+    if (work != NULL && work->PipelineEligible && m_NativePassiveActiveWork == work &&
+        work->State == VioGpuNativePassiveWorkWorkerOwned)
+    {
+        NT_ASSERT(m_NativePassiveWorkerRunning);
+        NT_ASSERT(m_NativePassiveHostPendingCount < VIOGPU_NATIVE_PIPELINE_WINDOW);
+        m_NativePassiveActiveWork = NULL;
+        InterlockedExchange(&work->State, VioGpuNativePassiveWorkHostPending);
+        InsertTailList(&m_NativePassiveHostPending, &work->Link);
+        ++m_NativePassiveHostPendingCount;
+        ++m_NativeSubmitPerf.PipelineHandoffs;
+        if (m_NativePassiveHostPendingCount > m_NativeSubmitPerf.HostPendingPeak)
+        {
+            m_NativeSubmitPerf.HostPendingPeak = m_NativePassiveHostPendingCount;
+        }
+    }
+    KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
+    /* RunNativePassiveWorker continues its loop; never free the Work reference
+     * here or queue another dispatcher from inside the active dispatcher. */
+}
+
 VOID VioGpuDod::CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work)
 {
     if (work == NULL)
@@ -1732,17 +1793,42 @@ VOID VioGpuDod::CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *wo
     }
 
     BOOLEAN queueWorker = FALSE;
+    BOOLEAN retired = FALSE;
+    const ULONGLONG now = KeQueryInterruptTime();
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativePassiveLock, &oldIrql);
     LONG state = InterlockedCompareExchange(&work->State, 0, 0);
     if (m_NativePassiveActiveWork == work && state == VioGpuNativePassiveWorkWorkerOwned)
     {
         NT_ASSERT(work->Link.Flink == &work->Link && work->Link.Blink == &work->Link);
+        m_NativePassiveActiveWork = NULL;
+        retired = TRUE;
+    }
+    else if (state == VioGpuNativePassiveWorkHostPending)
+    {
+        NT_ASSERT(m_NativePassiveHostPendingCount != 0);
+        RemoveEntryList(&work->Link);
+        InitializeListHead(&work->Link);
+        --m_NativePassiveHostPendingCount;
+        retired = TRUE;
+    }
+    if (retired)
+    {
         InterlockedExchange(&work->Retired, 1);
         InterlockedExchange(&work->State, VioGpuNativePassiveWorkIdle);
-        m_NativePassiveActiveWork = NULL;
-        if (!m_NativePassiveClosing && !IsHardwareResetRequested() && !m_NativePassiveWorkerQueued &&
-            !IsListEmpty(&m_NativePassiveQueue))
+        ++m_NativeSubmitPerf.Retired;
+        if (work->PipelineEligible)
+        {
+            const ULONGLONG elapsed = now - work->DispatchTime100ns;
+            ++m_NativeSubmitPerf.RenderRetired;
+            m_NativeSubmitPerf.RetireDuration100ns += elapsed;
+            if (elapsed > m_NativeSubmitPerf.RetireDurationMax100ns)
+            {
+                m_NativeSubmitPerf.RetireDurationMax100ns = elapsed;
+            }
+        }
+        if (!m_NativePassiveWorkerQueued && !m_NativePassiveWorkerRunning &&
+            NativePassiveDispatchReadyLocked())
         {
             if (ExAcquireRundownProtection(&m_HardwareOperations))
             {
@@ -1755,15 +1841,11 @@ VOID VioGpuDod::CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *wo
             }
         }
     }
-    BOOLEAN idle = m_NativePassiveActiveWork == NULL && m_NativePassiveWorkerQueued == FALSE &&
-                   IsListEmpty(&m_NativePassiveQueue);
-    KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
-
-    if (idle)
+    if (NativePassiveIdleLocked())
     {
         KeSetEvent(&m_NativePassiveIdleEvent, IO_NO_INCREMENT, FALSE);
     }
-
+    KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
     if (queueWorker)
     {
         ExQueueWorkItem(&m_NativePassiveWorkItem, DelayedWorkQueue);
@@ -1772,6 +1854,7 @@ VOID VioGpuDod::CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *wo
 
 VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP VioGpuDod::CancelNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work)
 {
+    BOOLEAN queueWorker = FALSE;
     VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP ownership = VioGpuNativePassiveWorkNotQueued;
     if (work == NULL)
     {
@@ -1794,19 +1877,31 @@ VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP VioGpuDod::CancelNativePassiveWork(_Inout_ 
             RemoveEntryList(&work->Link);
             InitializeListHead(&work->Link);
             InterlockedExchange(&work->State, VioGpuNativePassiveWorkIdle);
+            --m_NativePassivePendingCount;
+            ++m_NativeSubmitPerf.CancelledQueued;
             ownership = VioGpuNativePassiveWorkRemoved;
         }
     }
-    else if (state == VioGpuNativePassiveWorkWorkerOwned && m_NativePassiveActiveWork == work)
+    else if ((state == VioGpuNativePassiveWorkWorkerOwned && m_NativePassiveActiveWork == work) ||
+             state == VioGpuNativePassiveWorkHostPending)
     {
         ownership = VioGpuNativePassiveOwnershipWorkerOwned;
     }
-    BOOLEAN idle = m_NativePassiveActiveWork == NULL && m_NativePassiveWorkerQueued == FALSE &&
-                   IsListEmpty(&m_NativePassiveQueue);
+    if (!m_NativePassiveWorkerQueued && !m_NativePassiveWorkerRunning &&
+        NativePassiveDispatchReadyLocked() && ExAcquireRundownProtection(&m_HardwareOperations))
+    {
+        m_NativePassiveWorkerQueued = TRUE;
+        queueWorker = TRUE;
+    }
+    BOOLEAN idle = NativePassiveIdleLocked();
     KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
     if (idle)
     {
         KeSetEvent(&m_NativePassiveIdleEvent, IO_NO_INCREMENT, FALSE);
+    }
+    if (queueWorker)
+    {
+        ExQueueWorkItem(&m_NativePassiveWorkItem, DelayedWorkQueue);
     }
     return ownership;
 }
@@ -1832,9 +1927,18 @@ VOID VioGpuDod::CloseNativePassiveQueue(void)
             InterlockedExchange(active->CancelRequested, 1);
         }
     }
+    for (PLIST_ENTRY entry = m_NativePassiveHostPending.Flink;
+         entry != &m_NativePassiveHostPending; entry = entry->Flink)
+    {
+        VIOGPU_NATIVE_PASSIVE_WORK *work = CONTAINING_RECORD(entry, VIOGPU_NATIVE_PASSIVE_WORK, Link);
+        InterlockedExchange(&work->Retired, 1);
+        InterlockedExchange(work->CancelRequested, 1);
+    }
     while (!IsListEmpty(&m_NativePassiveQueue))
     {
         PLIST_ENTRY entry = RemoveHeadList(&m_NativePassiveQueue);
+        --m_NativePassivePendingCount;
+        ++m_NativeSubmitPerf.CancelledQueued;
         VIOGPU_NATIVE_PASSIVE_WORK *work = CONTAINING_RECORD(entry, VIOGPU_NATIVE_PASSIVE_WORK, Link);
         InterlockedExchange(&work->Retired, 1);
         if (work->CancelRequested != NULL)
@@ -1844,8 +1948,7 @@ VOID VioGpuDod::CloseNativePassiveQueue(void)
         InterlockedExchange(&work->State, VioGpuNativePassiveWorkIdle);
         InsertTailList(&cancelled, entry);
     }
-    BOOLEAN idle = m_NativePassiveActiveWork == NULL && m_NativePassiveWorkerQueued == FALSE &&
-                   IsListEmpty(&m_NativePassiveQueue);
+    BOOLEAN idle = NativePassiveIdleLocked();
     KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
 
     if (idle)
@@ -1884,10 +1987,42 @@ BOOLEAN VioGpuDod::WaitForNativePassiveQueueIdle(void)
 
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativePassiveLock, &oldIrql);
-    BOOLEAN idle = m_NativePassiveActiveWork == NULL && m_NativePassiveWorkerQueued == FALSE &&
-                   IsListEmpty(&m_NativePassiveQueue);
+    BOOLEAN idle = NativePassiveIdleLocked();
     KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
+    if (idle)
+    {
+        ReportNativeSubmitPerf();
+    }
     return idle;
+}
+
+// Emit cumulative statistics once per newly drained batch, never per submit.
+VOID VioGpuDod::ReportNativeSubmitPerf(void)
+{
+    VIOGPU_NATIVE_SUBMIT_PERF snapshot = {};
+    BOOLEAN report = FALSE;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_NativePassiveLock, &oldIrql);
+    if (NativePassiveIdleLocked() && m_NativeSubmitPerf.Accepted != m_NativeSubmitPerfReported)
+    {
+        snapshot = m_NativeSubmitPerf;
+        m_NativeSubmitPerfReported = snapshot.Accepted;
+        report = TRUE;
+    }
+    KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
+    if (report)
+    {
+        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+                   "viogpu perf: window=%u accepted=%llu dispatched=%llu retired=%llu cancelled_queued=%llu\n"
+                   "  render=%llu bytes=%llu refs=%llu refs_max=%u pending_peak=%u host_pending_peak=%u\n"
+                   "  render_retired=%llu retire_100ns_total=%llu retire_100ns_max=%llu handoffs=%llu\n",
+                   static_cast<UINT>(VIOGPU_NATIVE_PIPELINE_WINDOW),
+                   snapshot.Accepted, snapshot.Dispatched, snapshot.Retired, snapshot.CancelledQueued,
+                   snapshot.RenderDispatched, snapshot.RenderBytes, snapshot.RenderReferences,
+                   snapshot.ReferencesMax, snapshot.PendingPeak, snapshot.HostPendingPeak,
+                   snapshot.RenderRetired, snapshot.RetireDuration100ns,
+                   snapshot.RetireDurationMax100ns, snapshot.PipelineHandoffs);
+    }
 }
 
 BOOLEAN VioGpuDod::OpenNativePassiveQueue(void)
@@ -1903,8 +2038,7 @@ BOOLEAN VioGpuDod::OpenNativePassiveQueue(void)
         {
             opened = TRUE;
         }
-        else if (IsListEmpty(&m_NativePassiveQueue) && m_NativePassiveActiveWork == NULL &&
-                 !m_NativePassiveWorkerQueued)
+        else if (NativePassiveIdleLocked())
         {
             InterlockedExchange(&m_NativePassiveClosing, FALSE);
             opened = TRUE;
@@ -2108,32 +2242,45 @@ _Use_decl_annotations_ VOID VioGpuDod::NativePassiveWorker(PVOID context)
 
 VOID VioGpuDod::RunNativePassiveWorker(void)
 {
-    VIOGPU_NATIVE_PASSIVE_WORK *work = NULL;
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_NativePassiveLock, &oldIrql);
-    NT_ASSERT(m_NativePassiveWorkerQueued);
+    NT_ASSERT(m_NativePassiveWorkerQueued && !m_NativePassiveWorkerRunning);
     m_NativePassiveWorkerQueued = FALSE;
-    if (!m_NativePassiveClosing && !IsHardwareResetRequested() && m_NativePassiveActiveWork == NULL &&
-        !IsListEmpty(&m_NativePassiveQueue))
+    m_NativePassiveWorkerRunning = TRUE;
+    for (;;)
     {
+        if (!NativePassiveDispatchReadyLocked())
+        {
+            m_NativePassiveWorkerRunning = FALSE;
+            if (NativePassiveIdleLocked())
+            {
+                KeSetEvent(&m_NativePassiveIdleEvent, IO_NO_INCREMENT, FALSE);
+            }
+            KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
+            break;
+        }
         PLIST_ENTRY entry = RemoveHeadList(&m_NativePassiveQueue);
         InitializeListHead(entry);
-        work = CONTAINING_RECORD(entry, VIOGPU_NATIVE_PASSIVE_WORK, Link);
+        VIOGPU_NATIVE_PASSIVE_WORK *work = CONTAINING_RECORD(entry, VIOGPU_NATIVE_PASSIVE_WORK, Link);
+        --m_NativePassivePendingCount;
         m_NativePassiveActiveWork = work;
         InterlockedExchange(&work->State, VioGpuNativePassiveWorkWorkerOwned);
-    }
-    BOOLEAN idle = work == NULL && m_NativePassiveActiveWork == NULL && m_NativePassiveWorkerQueued == FALSE &&
-                   IsListEmpty(&m_NativePassiveQueue);
-    KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
-
-    if (idle)
-    {
-        KeSetEvent(&m_NativePassiveIdleEvent, IO_NO_INCREMENT, FALSE);
-    }
-
-    if (work != NULL)
-    {
+        work->DispatchTime100ns = KeQueryInterruptTime();
+        ++m_NativeSubmitPerf.Dispatched;
+        if (work->PipelineEligible)
+        {
+            ++m_NativeSubmitPerf.RenderDispatched;
+            m_NativeSubmitPerf.RenderBytes += work->PayloadBytes;
+            m_NativeSubmitPerf.RenderReferences += work->AllocationReferences;
+            if (work->AllocationReferences > m_NativeSubmitPerf.ReferencesMax)
+            {
+                m_NativeSubmitPerf.ReferencesMax = work->AllocationReferences;
+            }
+        }
+        KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
         work->Routine(work->Context);
+        /* The routine or a fast terminal callback may have freed work. */
+        KeAcquireSpinLock(&m_NativePassiveLock, &oldIrql);
     }
     ExReleaseRundownProtection(&m_HardwareOperations);
 }

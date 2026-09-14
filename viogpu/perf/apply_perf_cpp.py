@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Apply or validate the reviewed viogpu KMD hot-path transforms.
 
-The GitHub contents API replaces whole files, while wddmddi.cpp is very large.
-Keep the performance edits reviewable and deterministic: every transform is an
-exact one-shot replacement and the build fails if the expected source shape is
-missing or ambiguous. Re-running after a successful transform is idempotent.
+Legacy migration/check utility for older perf-branch checkouts. Current builds
+compile the checked-in C++ directly and never invoke this script. Replacements
+must have a unique old or already-applied anchor; partial/mixed input fails
+closed and repeating a successful migration is idempotent.
 """
 import argparse
 from pathlib import Path
@@ -19,15 +19,17 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
     text = path.read_text(encoding="utf-8")
     old_count = text.count(old)
     new_count = text.count(new)
-    if old_count == 1 and new_count == 0:
+    # Count contained matches, not just total substrings: insertion anchors may
+    # survive inside the replacement, and deletion replacements inside the old.
+    if new_count == 1 and old_count == new.count(old):
+        print(f"perf-patch: {label}: already applied")
+        return
+    if old_count == 1 and new_count == old.count(new):
         if CHECK_ONLY:
             print(f"perf-patch: {label}: ready")
         else:
             path.write_text(text.replace(old, new, 1), encoding="utf-8")
             print(f"perf-patch: {label}: applied")
-        return
-    if old_count == 0 and new_count == 1:
-        print(f"perf-patch: {label}: already applied")
         return
     raise RuntimeError(
         f"{label}: expected one old or one new block, got old={old_count} new={new_count}"
@@ -187,6 +189,7 @@ def patch_wddm_bindings() -> None:
         "    delete[] patchedIovas;\n"
         "    delete[] patchedResourceIds;\n"
         "    adapter->ReleaseNativeSubmissionOperation();",
+        "    /* Binding snapshots belong to the submission, not temporary arrays. */\n"
         "    adapter->ReleaseNativeSubmissionOperation();",
         "remove binding-array frees",
     )

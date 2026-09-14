@@ -8929,7 +8929,7 @@ def check_wddm_paging_transaction_gate() -> None:
         passive_queue,
         (
             "KeAcquireSpinLock(&m_NativePassiveLock,&oldIrql);",
-            "BOOLEANneedsWorker=m_NativePassiveActiveWork==NULL&&!m_NativePassiveWorkerQueued;",
+            "BOOLEANneedsWorker=!m_NativePassiveWorkerQueued&&!m_NativePassiveWorkerRunning&&NativePassiveDispatchReadyLocked(work);",
             "BOOLEANworkerReference=!needsWorker||ExAcquireRundownProtection(&m_HardwareOperations);",
             "if(workerReference&&RecordNativeSubmissionFence(fenceId))",
             "KeClearEvent(&m_NativePassiveIdleEvent);",
@@ -10954,25 +10954,21 @@ def check_wddm_submission_lifetime() -> None:
         patch,
         (
             "ResolveSubmissionPrivateData(",
-            "patchedResourceIds=new(NonPagedPoolNx)UINT[submission->AllocationCount];",
-            "patchedIovas=new(NonPagedPoolNx)ULONGLONG[submission->AllocationCount];",
             "IsPatchOffsetForSubmission(patch->PatchOffset,expectedPatchOffset,patchArguments->DmaBufferSubmissionStartOffset)",
             "allocation->PrivateData.RequestedIova<=MAXULONGLONG-reference->AllocationOffset",
-            "patchedResourceIds[index]=allocation->ResourceId;",
-            "patchedIovas[index]=allocation->PrivateData.RequestedIova+reference->AllocationOffset;",
-            "RtlCopyMemory(&submitBo->Handle,&patchedResourceIds[index],sizeof(patchedResourceIds[index]));",
-            "RtlCopyMemory(patchAddress,&patchedIovas[index],sizeof(patchedIovas[index]));",
+            "reference->PatchedResourceId=allocation->ResourceId;",
+            "reference->PatchedIova=allocation->PrivateData.RequestedIova+reference->AllocationOffset;",
+            "RtlCopyMemory(&submitBo->Handle,&reference->PatchedResourceId,sizeof(reference->PatchedResourceId));",
+            "RtlCopyMemory(patchAddress,&reference->PatchedIova,sizeof(reference->PatchedIova));",
             "adapter->RefreshNativeSubmit(submission->VirtioBuffer,submission->CommandStream,submission->CommandStreamSize)",
             "submission->FenceId=patchArguments->SubmissionFenceId;KeMemoryBarrier();submission->PatchApplied=TRUE;",
-            "delete[]patchedIovas;",
-            "delete[]patchedResourceIds;",
         ),
         "Patch must validate placement, write resource IDs and requested IOVAs, refresh payload and publish the WDDM fence",
     )
     if "ReleasePreparedSubmission(submission);" not in patch:
         fail("Patch failure must quarantine the prepared submission")
     if not patch.endswith(
-        "DereferenceRenderSubmission(submission);}delete[]patchedIovas;delete[]patchedResourceIds;"
+        "DereferenceRenderSubmission(submission);}"
         "adapter->ReleaseNativeSubmissionOperation();returnSTATUS_SUCCESS;"
     ):
         fail("Patch must release its resolver reference after success or quarantine failure")
@@ -11195,7 +11191,7 @@ def check_wddm_submission_lifetime() -> None:
         "adapter->AcquireNativeSubmissionOperation();",
         "adapter->QueueNativeSubmit(submission->VirtioBuffer,fenceId)",
         "adapter->ReleaseNativeSubmissionOperation();",
-        "if(queueResult>=0){return;}",
+        "if(queueResult>=0){adapter->ReleaseNativePassiveDispatch(&submission->Work);DereferenceRenderSubmission(submission);return;}",
         "InvalidateContextUmdFenceTracker(submission->Context);",
         "QuarantineSubmission(submission,VioGpuWddmSubmissionHostIssued,TRUE);",
         "adapter->NotifyNativeSubmissionFault(",
@@ -11217,6 +11213,34 @@ def check_wddm_submission_lifetime() -> None:
         ),
         "a failed Host enqueue must quarantine before fault publication and passive-work retirement",
     )
+    if "!ReferenceRenderSubmission(submission)" not in render_worker or \
+       render_worker.count("DereferenceRenderSubmission(submission);") != 3:
+        fail("Render worker must hold a separate temporary owner through inline host completion and all exits")
+    handoff = canonical_code(function_body("VioGpuDod::ReleaseNativePassiveDispatch", VIOGPU_CODE))
+    admission = canonical_code(function_body("VioGpuDod::NativePassiveDispatchReadyLocked", VIOGPU_CODE))
+    idle = canonical_code(function_body("VioGpuDod::NativePassiveIdleLocked", VIOGPU_CODE))
+    retire = canonical_code(function_body("VioGpuDod::CompleteNativePassiveWork", VIOGPU_CODE))
+    for fragment in ("m_NativePassiveHostPendingCount>=VIOGPU_NATIVE_PIPELINE_WINDOW",
+                     "next->PipelineEligible||m_NativePassiveHostPendingCount==0"):
+        if fragment not in admission:
+            fail(f"bounded Render admission and drain barriers must retain: {fragment}")
+    require_order(handoff, (
+        "KeAcquireSpinLock(&m_NativePassiveLock,&oldIrql);",
+        "m_NativePassiveActiveWork==work",
+        "m_NativePassiveActiveWork=NULL;",
+        "InterlockedExchange(&work->State,VioGpuNativePassiveWorkHostPending);",
+        "InsertTailList(&m_NativePassiveHostPending,&work->Link);",
+        "++m_NativePassiveHostPendingCount;",
+        "KeReleaseSpinLock(&m_NativePassiveLock,oldIrql);",
+    ), "dispatch handoff must transfer ownership under the passive lock")
+    if "ReleaseRenderWorkReference" in handoff or "work->Retired" in handoff:
+        fail("dispatch handoff must not release or retire the host-owned submission")
+    if "IsListEmpty(&m_NativePassiveHostPending)" not in idle or \
+       "!m_NativePassiveWorkerRunning" not in idle:
+        fail("reset idle must include host ownership and the executing worker")
+    for fragment in ("VioGpuNativePassiveWorkHostPending", "--m_NativePassiveHostPendingCount;"):
+        if fragment not in retire:
+            fail(f"terminal retirement must drain host ownership: {fragment}")
     render_dispatch_cancelled = canonical_code(function_body("NativeRenderDispatchCancelled", WDDM_DDI_CODE))
     require_order(
         render_dispatch_cancelled,

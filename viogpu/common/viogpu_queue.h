@@ -54,6 +54,9 @@ typedef struct virtio_gpu_vbuffer
     char *resp_buf;
     int resp_size;
     LIST_ENTRY list_entry;
+    /* Internal pool ownership, protected by the owning VioGpuBuf spin lock. */
+    void *pool_owner;
+    BOOLEAN pool_in_use;
 
     void (*complete_cb)(void *ctx);
     void *complete_ctx;

@@ -384,6 +384,7 @@ enum VIOGPU_NATIVE_PASSIVE_WORK_STATE : LONG
     VioGpuNativePassiveWorkIdle = 0,
     VioGpuNativePassiveWorkQueued,
     VioGpuNativePassiveWorkWorkerOwned,
+    VioGpuNativePassiveWorkHostPending,
 };
 
 enum VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP : LONG
@@ -391,6 +392,32 @@ enum VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP : LONG
     VioGpuNativePassiveWorkNotQueued = 0,
     VioGpuNativePassiveWorkRemoved,
     VioGpuNativePassiveOwnershipWorkerOwned,
+};
+
+#ifndef VIOGPU_NATIVE_PIPELINE_WINDOW
+#define VIOGPU_NATIVE_PIPELINE_WINDOW 64
+#endif
+static_assert(VIOGPU_NATIVE_PIPELINE_WINDOW >= 1 && VIOGPU_NATIVE_PIPELINE_WINDOW <= 128,
+              "native pipeline window must be between 1 and 128");
+
+/* Protected by m_NativePassiveLock. HostPending includes the virtqueue backlog;
+ * retire duration includes binding validation and is not GPU execution time. */
+struct VIOGPU_NATIVE_SUBMIT_PERF
+{
+    ULONGLONG Accepted;
+    ULONGLONG Dispatched;
+    ULONGLONG RenderDispatched;
+    ULONGLONG Retired;
+    ULONGLONG CancelledQueued;
+    ULONGLONG PipelineHandoffs;
+    ULONGLONG RenderBytes;
+    ULONGLONG RenderReferences;
+    ULONGLONG RetireDuration100ns;
+    ULONGLONG RetireDurationMax100ns;
+    ULONGLONG RenderRetired;
+    UINT PendingPeak;
+    UINT HostPendingPeak;
+    UINT ReferencesMax;
 };
 
 struct VIOGPU_NATIVE_PASSIVE_WORK
@@ -403,6 +430,11 @@ struct VIOGPU_NATIVE_PASSIVE_WORK
     UINT FenceId;
     volatile LONG State;
     volatile LONG Retired;
+    /* Only Render may overlap host work; Present and paging are drain barriers. */
+    BOOLEAN PipelineEligible;
+    UINT PayloadBytes;
+    UINT AllocationReferences;
+    ULONGLONG DispatchTime100ns;
 };
 #endif
 class VioGpuAdapter;
@@ -1004,6 +1036,12 @@ class VioGpuDod
     volatile LONG m_NativeCompletedFence;
     KSPIN_LOCK m_NativePassiveLock;
     LIST_ENTRY m_NativePassiveQueue;
+    LIST_ENTRY m_NativePassiveHostPending;
+    UINT m_NativePassivePendingCount;
+    UINT m_NativePassiveHostPendingCount;
+    BOOLEAN m_NativePassiveWorkerRunning;
+    VIOGPU_NATIVE_SUBMIT_PERF m_NativeSubmitPerf;
+    ULONGLONG m_NativeSubmitPerfReported;
     WORK_QUEUE_ITEM m_NativePassiveWorkItem;
     BOOLEAN m_NativePassiveWorkerQueued;
     VIOGPU_NATIVE_PASSIVE_WORK *m_NativePassiveActiveWork;
@@ -1863,6 +1901,14 @@ class VioGpuDod
     }
     BOOLEAN QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work, _In_ UINT fenceId);
     VOID CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
+    // Release dispatch ownership but retain the Render/VBUFFER terminal owner.
+    VOID ReleaseNativePassiveDispatch(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
+    // Caller holds m_NativePassiveLock; incoming is a not-yet-linked FIFO tail.
+    BOOLEAN NativePassiveDispatchReadyLocked(VIOGPU_NATIVE_PASSIVE_WORK *incoming = NULL);
+    // Include active, queued, and host-owned work in close/reset drain checks.
+    BOOLEAN NativePassiveIdleLocked(void);
+    // Emit aggregate counters only after a newly drained batch.
+    VOID ReportNativeSubmitPerf(void);
     VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP CancelNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
     VOID CloseNativePassiveQueue(void);
     BOOLEAN WaitForNativePassiveQueueIdle(void);

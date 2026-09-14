@@ -2305,7 +2305,8 @@ PGPU_VBUFFER CtrlQueue::PrepareNativeSubmit(UINT context_id, const void *command
         return NULL;
     }
 
-    PVOID payload = m_pBuf->AllocateMemory(command_size, sizeof(ULONGLONG));
+    /* The validated command stream overwrites the complete payload. */
+    PVOID payload = m_pBuf->AllocateMemoryUninitialized(command_size);
     if (payload == NULL)
     {
         ReleaseBuffer(vbuf);
@@ -2739,6 +2740,7 @@ BOOLEAN VioGpuBuf::Close(void)
         LIST_ENTRY *entry = RemoveHeadList(&m_InUseBufs);
         PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
         buffer->response_size = 0;
+        buffer->pool_in_use = FALSE;
         InsertTailList(&buffers, entry);
     }
     while (!IsListEmpty(&m_FreeBufs))
@@ -2769,6 +2771,7 @@ BOOLEAN VioGpuBuf::Close(void)
         else if (!VioGpuWaitForVbufferTerminalCallbacks(buffer))
         {
             KeAcquireSpinLock(&m_SpinLock, &oldIrql);
+            buffer->pool_in_use = TRUE;
             InsertTailList(&m_InUseBufs, &buffer->list_entry);
             ++m_uCount;
             KeReleaseSpinLock(&m_SpinLock, oldIrql);
@@ -2866,6 +2869,8 @@ PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void 
         pbuf->resp_buf = (char *)resp_buf;
     }
     ASSERT(pbuf->resp_buf);
+    pbuf->pool_owner = this;
+    pbuf->pool_in_use = TRUE;
     InsertTailList(&m_InUseBufs, &pbuf->list_entry);
 
     if (SavedIrql < DISPATCH_LEVEL)
@@ -2905,15 +2910,12 @@ void VioGpuBuf::FreeBuf(_In_ PGPU_VBUFFER pbuf)
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s buf = %p\n", __FUNCTION__, pbuf));
     KeAcquireSpinLock(&m_SpinLock, &OldIrql);
 
-    for (PLIST_ENTRY entry = m_InUseBufs.Flink; entry != &m_InUseBufs; entry = entry->Flink)
+    if (pbuf->pool_owner == this && pbuf->pool_in_use)
     {
-        PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
-        if (buffer == pbuf)
-        {
-            RemoveEntryList(entry);
-            found = TRUE;
-            break;
-        }
+        RemoveEntryList(&pbuf->list_entry);
+        InitializeListHead(&pbuf->list_entry);
+        pbuf->pool_in_use = FALSE;
+        found = TRUE;
     }
 
     if (found)
@@ -2980,6 +2982,7 @@ void VioGpuBuf::ReclaimBuffers(void)
         LIST_ENTRY *entry = RemoveHeadList(&m_InUseBufs);
         PGPU_VBUFFER buffer = CONTAINING_RECORD(entry, GPU_VBUFFER, list_entry);
         buffer->response_size = 0;
+        buffer->pool_in_use = FALSE;
         InsertTailList(&reclaimed, entry);
     }
     while (m_uCount > keepCount && !IsListEmpty(&m_FreeBufs))
@@ -3009,6 +3012,7 @@ void VioGpuBuf::ReclaimBuffers(void)
         else if (!VioGpuWaitForVbufferTerminalCallbacks(buffer))
         {
             KeAcquireSpinLock(&m_SpinLock, &oldIrql);
+            buffer->pool_in_use = TRUE;
             InsertTailList(&m_InUseBufs, &buffer->list_entry);
             KeReleaseSpinLock(&m_SpinLock, oldIrql);
             continue;
@@ -3083,10 +3087,19 @@ PAGED_CODE_SEG_END
 // GetBuf allocates while holding m_SpinLock, and the completion DPC calls
 // FreeBuf. Both pool helpers must remain resident even when their allocation
 // is nonpaged: a PAGE function can fault before reaching ExFreePoolWithTag.
+PVOID VioGpuBuf::AllocateMemoryUninitialized(SIZE_T size)
+{
+    if (size == 0)
+    {
+        return NULL;
+    }
+    return ExAllocatePoolUninitialized(NonPagedPoolNx, size, VIOGPUTAG);
+}
+
 PVOID VioGpuBuf::AllocateMemory(SIZE_T size, SIZE_T alignment)
 {
     UNREFERENCED_PARAMETER(alignment);
-    PVOID address = ExAllocatePoolUninitialized(NonPagedPoolNx, size, VIOGPUTAG);
+    PVOID address = AllocateMemoryUninitialized(size);
     if (address != NULL)
     {
         RtlZeroMemory(address, size);

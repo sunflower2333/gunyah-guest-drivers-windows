@@ -438,6 +438,10 @@ struct VIOGPU_WDDM_SUBMISSION_REFERENCE
     ULONGLONG Length;
     UINT PatchOffset;
     UINT Reserved;
+    /* Worker-time binding snapshot. These fields are not wire ABI. */
+    UINT PatchedResourceId;
+    UINT PatchedReserved;
+    ULONGLONG PatchedIova;
 };
 
 enum VIOGPU_WDDM_SUBMISSION_STATE : LONG

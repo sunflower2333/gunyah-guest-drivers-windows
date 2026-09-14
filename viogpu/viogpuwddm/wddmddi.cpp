@@ -1638,6 +1638,9 @@ NTSTATUS PublishPreparedSubmission(VIOGPU_WDDM_SUBMISSION *submission,
     submission->ContextEntry.Context = context;
     InitializeListHead(&submission->Work.Link);
     submission->Work.Routine = NativeRenderDispatchWorker;
+    submission->Work.PipelineEligible = TRUE;
+    submission->Work.PayloadBytes = header->CommandStreamSize;
+    submission->Work.AllocationReferences = allocationCount;
     submission->Work.CancelRoutine = NativeRenderDispatchCancelled;
     submission->Work.Context = submission;
     submission->Work.CancelRequested = &submission->CancelRequested;
@@ -2177,7 +2180,11 @@ _Use_decl_annotations_ VOID NativeRenderDispatchWorker(PVOID callbackContext)
 {
     VIOGPU_WDDM_SUBMISSION *submission = static_cast<VIOGPU_WDDM_SUBMISSION *>(callbackContext);
     if (submission == NULL || submission->Signature != VIOGPU_WDDM_SUBMISSION_SIGNATURE ||
-        submission->Adapter == NULL || submission->VirtioBuffer == NULL || submission->FenceId == 0 ||
+        !ReferenceRenderSubmission(submission))
+    {
+        return;
+    }
+    if (submission->Adapter == NULL || submission->VirtioBuffer == NULL || submission->FenceId == 0 ||
         submission->FenceId > MAXUINT || InterlockedCompareExchange(&submission->WorkReferenceHeld, 0, 0) != 1 ||
         InterlockedCompareExchange(&submission->CancelRequested, 0, 0) != 0 ||
         InterlockedCompareExchange(&submission->State,
@@ -2192,6 +2199,7 @@ _Use_decl_annotations_ VOID NativeRenderDispatchWorker(PVOID callbackContext)
             adapter->CompleteNativePassiveWork(&submission->Work);
             ReleaseRenderWorkReference(submission);
         }
+        DereferenceRenderSubmission(submission);
         return;
     }
 
@@ -2207,6 +2215,8 @@ _Use_decl_annotations_ VOID NativeRenderDispatchWorker(PVOID callbackContext)
     }
     if (queueResult >= 0)
     {
+        adapter->ReleaseNativePassiveDispatch(&submission->Work);
+        DereferenceRenderSubmission(submission);
         return;
     }
 
@@ -2215,6 +2225,7 @@ _Use_decl_annotations_ VOID NativeRenderDispatchWorker(PVOID callbackContext)
     adapter->NotifyNativeSubmissionFault(fenceId, STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE, nodeOrdinal, 0, TRUE);
     adapter->CompleteNativePassiveWork(&submission->Work);
     ReleaseRenderWorkReference(submission);
+    DereferenceRenderSubmission(submission);
 }
 
 _Use_decl_annotations_ VOID NativeRenderDispatchCancelled(PVOID callbackContext)
@@ -8992,23 +9003,6 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         }
     }
 
-    UINT *patchedResourceIds = NULL;
-    ULONGLONG *patchedIovas = NULL;
-    if (NT_SUCCESS(status))
-    {
-        patchedResourceIds = new (NonPagedPoolNx) UINT[submission->AllocationCount];
-        patchedIovas = new (NonPagedPoolNx) ULONGLONG[submission->AllocationCount];
-        if (patchedResourceIds == NULL || patchedIovas == NULL)
-        {
-            status = STATUS_NO_MEMORY;
-        }
-        else
-        {
-            RtlZeroMemory(patchedResourceIds, (SIZE_T)submission->AllocationCount * sizeof(*patchedResourceIds));
-            RtlZeroMemory(patchedIovas, (SIZE_T)submission->AllocationCount * sizeof(*patchedIovas));
-        }
-    }
-
     BOOLEAN patchClaimed = FALSE;
     if (NT_SUCCESS(status))
     {
@@ -9025,7 +9019,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
     {
         for (UINT index = 0; index < submission->AllocationCount; ++index)
         {
-            const VIOGPU_WDDM_SUBMISSION_REFERENCE *reference = &submission->References[index];
+            VIOGPU_WDDM_SUBMISSION_REFERENCE *reference = &submission->References[index];
             const D3DDDI_PATCHLOCATIONLIST *patch = &patchArguments->pPatchLocationList[patchArguments->PatchLocationListSubmissionStart +
                                                                                         index];
             BOOLEAN relativeOffsetValid = reference->PatchOffset <= MAXUINT - submission->CommandStreamOffset;
@@ -9083,8 +9077,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                             allocation->PrivateData.RequestedIova <= MAXULONGLONG - reference->AllocationOffset;
             if (valid)
             {
-                patchedResourceIds[index] = allocation->ResourceId;
-                patchedIovas[index] = allocation->PrivateData.RequestedIova + reference->AllocationOffset;
+                reference->PatchedResourceId = allocation->ResourceId;
+                reference->PatchedReserved = 0;
+                reference->PatchedIova =
+                    allocation->PrivateData.RequestedIova +
+                    reference->AllocationOffset;
             }
             KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
             if (!valid)
@@ -9104,8 +9101,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                                                                                                 sizeof(MSM_CCMD_GEM_SUBMIT_REQ) +
                                                                                                 (SIZE_T)index * sizeof(VIOGPU_WDDM_MSM_SUBMIT_BO));
             PVOID patchAddress = static_cast<BYTE *>(submission->CommandStream) + reference->PatchOffset;
-            RtlCopyMemory(&submitBo->Handle, &patchedResourceIds[index], sizeof(patchedResourceIds[index]));
-            RtlCopyMemory(patchAddress, &patchedIovas[index], sizeof(patchedIovas[index]));
+            RtlCopyMemory(&submitBo->Handle,
+                          &reference->PatchedResourceId,
+                          sizeof(reference->PatchedResourceId));
+            RtlCopyMemory(patchAddress,
+                          &reference->PatchedIova,
+                          sizeof(reference->PatchedIova));
         }
         if (!adapter->RefreshNativeSubmit(submission->VirtioBuffer,
                                           submission->CommandStream,
@@ -9147,8 +9148,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
     {
         DereferenceRenderSubmission(submission);
     }
-    delete[] patchedIovas;
-    delete[] patchedResourceIds;
+    /* Binding snapshots belong to the submission, not temporary arrays. */
     adapter->ReleaseNativeSubmissionOperation();
     return STATUS_SUCCESS;
 }
