@@ -1,0 +1,45 @@
+name: VIOGPU OpenGL source pairing
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [perf/droidvm-gpu-20260914]
+    paths:
+      - 'external/mesa'
+      - 'viogpu/package/verify_bundle.py'
+      - '.github/workflows/viogpu-opengl-pair.yml'
+  pull_request:
+    paths:
+      - 'external/mesa'
+      - 'viogpu/package/verify_bundle.py'
+      - '.github/workflows/viogpu-opengl-pair.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: true
+      - name: Validate source pin and preserve exact pair
+        run: |
+          expected=$(git rev-parse HEAD:external/mesa)
+          test "$(git -C external/mesa rev-parse HEAD)" = "$expected"
+          printf 'driver=%s\nmesa=%s\n' "$(git rev-parse HEAD)" "$expected" > opengl-pair.txt
+          python3 -m unittest discover -s viogpu/package -p 'test_*.py'
+      - name: Exercise pinned Zink predicate and package contract
+        run: |
+          python3 external/mesa/src/gallium/drivers/zink/tests/droidvm/run_cache_test.py
+          python3 external/mesa/src/gallium/drivers/zink/tests/droidvm/run_cache_test.py --negative-control
+          python3 -m unittest discover -s external/mesa/src/gallium/drivers/zink/tests/droidvm -p 'test_*.py' -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opengl-pair-${{ github.sha }}
+          path: opengl-pair.txt
+          if-no-files-found: error
+          retention-days: 7

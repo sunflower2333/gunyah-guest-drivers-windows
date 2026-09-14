@@ -1,13 +1,15 @@
 # Paired Mesa lifetime experiment
 
-The committed `external/mesa` gitlink and `viogpu/package/verify_bundle.py`
-D3D10 source receipt both select:
+The lifetime implementation was introduced in Mesa:
 
 ```
 241131efe0daea2157e67a2f018feb5104f754fa
 ```
 
-This revision adds three UMD changes: opt-in final BO retirement, per-device
+The current `external/mesa` gitlink and package receipt may select a later
+revision that retains these changes; consult `a8xx-opengl.md` for that pairing.
+
+This baseline added three UMD changes: opt-in final BO retirement, per-device
 CPU submit scratch reuse, and aggregate lifetime/retry diagnostics. It does not
 change the private ABI or bypass KMD native-range collision/host-detach checks.
 The driver pipeline and VBUFFER implementation are unchanged by this pairing.
