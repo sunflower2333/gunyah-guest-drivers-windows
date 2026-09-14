@@ -14,9 +14,15 @@
 using UINT=unsigned int; using u32=uint32_t; using LONG=int; using LONG64=int64_t;
 using BOOLEAN=bool; using VOID=void; using PVOID=void*; using SIZE_T=size_t;
 using ULONG_PTR=uintptr_t; using KIRQL=int;
+#ifndef _In_
 #define _In_
+#endif
+#ifndef _In_opt_
 #define _In_opt_
+#endif
+#ifndef _Inout_
 #define _Inout_
+#endif
 #define TRUE true
 #define FALSE false
 #define ASSERT assert

@@ -20,9 +20,15 @@ using VOID = void;
 using PVOID = void*;
 using KIRQL = int;
 using NTSTATUS = int;
+#ifndef _In_
 #define _In_
+#endif
+#ifndef _Inout_
 #define _Inout_
+#endif
+#ifndef _Use_decl_annotations_
 #define _Use_decl_annotations_
+#endif
 #define TRUE true
 #define FALSE false
 #define MAXUINT UINT32_MAX
