@@ -2,13 +2,32 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Compile actual scheduler/worker code in host fixtures, not a duplicate model."""
 import argparse
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+
+
+# Retry transient Windows image-file locks without hiding test/cleanup failures.
+@contextmanager
+def fixture_directory(prefix):
+    directory = tempfile.mkdtemp(prefix=prefix)
+    try:
+        yield directory
+    finally:
+        for attempt in range(8):
+            try:
+                shutil.rmtree(directory)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(0.05 * (2 ** attempt))
 
 
 def extract(text, signature):
@@ -61,13 +80,13 @@ def main():
     if args.negative_control_pool_reset:
         run_pool(True)
         return
-    with tempfile.TemporaryDirectory(prefix='viogpu-submit-perf-') as temp:
+    with fixture_directory(prefix='viogpu-submit-perf-') as temp:
         out = Path(temp)
         unit = out / 'pipeline.cpp'
         unit.write_text(fixture)
         for window in ([64] if negative else [1, 32, 64, 128]):
             msvc = shutil.which('cl')
-            exe = out / ('pipeline.exe' if msvc else 'pipeline')
+            exe = out / (f'pipeline-{window}.exe' if msvc else f'pipeline-{window}')
             command = (['cl', '/nologo', '/EHsc', '/std:c++17', '/W4', '/WX',
                         f'/DVIOGPU_NATIVE_PIPELINE_WINDOW={window}', str(unit), f'/Fe:{exe}']
                        if msvc else ['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
@@ -107,7 +126,7 @@ def run_pool(negative):
         production = production.replace('buffer->pool_in_use = FALSE;', '(void)0;')
     fixture = (HERE / 'pool_test.cpp').read_text().replace('// INSERT_RECORDS', records)
     fixture = fixture.replace('// INSERT_CLASS', pool_class).replace('// INSERT_PRODUCTION', production)
-    with tempfile.TemporaryDirectory(prefix='viogpu-pool-perf-') as temp:
+    with fixture_directory(prefix='viogpu-pool-perf-') as temp:
         out = Path(temp)
         unit = out / 'pool.cpp'; unit.write_text(fixture)
         msvc = shutil.which('cl')
