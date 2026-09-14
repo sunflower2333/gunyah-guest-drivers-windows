@@ -9623,6 +9623,20 @@ static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *pres
     return status;
 }
 
+/* A ten-bit flip source is only meaningful while Advanced Color is usable; the
+ * DIRQL flip and the PASSIVE bind enforce the same gate. The default WDDM 2.0
+ * build has no such allocations and no color state to consult. */
+static BOOLEAN FlipSourceColorAcceptable(_In_ VioGpuDod *adapter, _In_ const VIOGPU_WDDM_ALLOCATION *allocation)
+{
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    return !IsHighPrecisionSurfaceFormat(allocation->Format) || adapter->IsNativeHdrModeAvailable();
+#else
+    UNREFERENCED_PARAMETER(adapter);
+    UNREFERENCED_PARAMETER(allocation);
+    return TRUE;
+#endif
+}
+
 /* With FlipOnVSyncMmIo a flip reaches DxgkDdiPresent without a DMA buffer:
  * the driver validates the surface to flip to and dxgkrnl performs the flip
  * through DxgkDdiSetVidPnSourceAddress. Only a standard primary can become the
@@ -9649,13 +9663,12 @@ static NTSTATUS ValidateMmioFlipPresent(CONST HANDLE hContext, DXGKARG_PRESENT *
             present->pAllocationList == NULL
                 ? NULL
                 : reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX].hDeviceSpecificAllocation);
+        const BOOLEAN sourceColorAcceptable = sourceOpen != NULL && sourceOpen->Allocation != NULL &&
+                                              FlipSourceColorAcceptable(adapter, sourceOpen->Allocation);
         if (sourceOpen != NULL && sourceOpen->Signature == VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE &&
             sourceOpen->Device == context->Device && sourceOpen->Allocation != NULL &&
             IsOwnedAllocation(sourceOpen->Allocation, adapter) && IsStandardPrimaryAllocation(sourceOpen->Allocation) &&
-            // A ten-bit flip source is only meaningful while Advanced Color is
-            // usable; the DIRQL flip and the PASSIVE bind enforce the same gate.
-            (!IsHighPrecisionSurfaceFormat(sourceOpen->Allocation->Format) ||
-             adapter->IsNativeHdrModeAvailable()))
+            sourceColorAcceptable)
         {
             status = STATUS_SUCCESS;
         }
@@ -10956,7 +10969,9 @@ VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter)
     }
     /* Same order as a mode change: the color slot before the flip-apply mutex,
      * so a bind that tags a ten-bit primary cannot deadlock against CommitVidPn. */
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     VioGpuDod::ColorStateOperation colorOperation(adapter);
+#endif
     adapter->AcquireFlipApply();
     VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(adapter->TakePendingFlip());
     if (allocation != NULL)

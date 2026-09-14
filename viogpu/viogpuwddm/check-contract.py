@@ -13242,10 +13242,15 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
         "adapter->AcquireFlipApply();")]
     if min(offsets) < 0 or offsets != sorted(offsets):
         violations.append("a mode change must take the color slot before the flip-apply mutex")
-    need("IsStandardPrimaryAllocation(sourceOpen->Allocation)&&(!IsHighPrecisionSurfaceFormat("
-         "sourceOpen->Allocation->Format)||adapter->IsNativeHdrModeAvailable())",
-         body("ValidateMmioFlipPresent", code["wddmddi.cpp"]),
+    flip_present_body = body("ValidateMmioFlipPresent", code["wddmddi.cpp"])
+    need("constBOOLEANsourceColorAcceptable=sourceOpen!=NULL&&sourceOpen->Allocation!=NULL&&"
+         "FlipSourceColorAcceptable(adapter,sourceOpen->Allocation);", flip_present_body,
+         "a flip present must decide its source color before validating")
+    need("IsStandardPrimaryAllocation(sourceOpen->Allocation)&&sourceColorAcceptable", flip_present_body,
          "a flip present must refuse a ten-bit source unless Advanced Color is usable")
+    need("!IsHighPrecisionSurfaceFormat(allocation->Format)||adapter->IsNativeHdrModeAvailable()",
+         body("FlipSourceColorAcceptable", code["wddmddi.cpp"]),
+         "the flip source color gate must consult Advanced Color availability")
     need("AcquireFlipApply();(VOID)TakePendingFlip();constautoresult=Set2DScanout(0,0,0,0,&previousResource);ReleaseFlipApply();",
          body("VioGpuDod::CommitVidPn", dod), "target power-off must supersede an unbound flip")
     # The compositor's ten-bit primary reaches the shared bind, not MPO3. It may

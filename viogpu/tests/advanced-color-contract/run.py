@@ -106,9 +106,9 @@ mutations = [
                             "#endif\n    /* A mode change"),
      "a mode change must take the color slot before the flip-apply mutex"),
     ("flip present accepts an unadmitted ten-bit source", "wddmddi.cpp",
-     lambda t: replace_once(t, "            (!IsHighPrecisionSurfaceFormat(sourceOpen->Allocation->Format) ||\n"
-                               "             adapter->IsNativeHdrModeAvailable()))", ")"),
-     "a flip present must refuse a ten-bit source unless Advanced Color is usable"),
+     lambda t: replace_once(t, "    return !IsHighPrecisionSurfaceFormat(allocation->Format) || "
+                               "adapter->IsNativeHdrModeAvailable();", "    return TRUE;"),
+     "the flip source color gate must consult Advanced Color availability"),
     ("shared bind scans out an unadmitted ten-bit primary", "wddmddi.cpp",
      lambda t: replace_once(t, "    if (highPrecision && !adapter->IsNativeHdrModeAvailable())\n    {\n"
                                "        return STATUS_INVALID_PARAMETER;\n    }\n", ""),
@@ -124,9 +124,9 @@ mutations = [
      "the high-precision color tag must stay bound to the negotiated mode: "
      "adapter->MatchesNativeHdrMode(allocation->Width,allocation->Height)"),
     ("flip worker takes the flip mutex before the color slot", "wddmddi.cpp",
-     lambda t: replace_once(t, "    VioGpuDod::ColorStateOperation colorOperation(adapter);\n"
+     lambda t: replace_once(t, "    VioGpuDod::ColorStateOperation colorOperation(adapter);\n#endif\n"
                                "    adapter->AcquireFlipApply();\n    VIOGPU_WDDM_ALLOCATION *allocation =",
-                            "    adapter->AcquireFlipApply();\n"
+                            "#endif\n    adapter->AcquireFlipApply();\n"
                             "    VioGpuDod::ColorStateOperation colorOperation(adapter);\n"
                             "    VIOGPU_WDDM_ALLOCATION *allocation ="),
      "the flip worker must take the color slot before the flip-apply mutex"),
