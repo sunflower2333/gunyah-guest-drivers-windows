@@ -1,0 +1,50 @@
+name: VIOGPU performance regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [perf/droidvm-gpu-20260914]
+    paths:
+      - 'viogpu/**'
+      - '.github/workflows/viogpu-perf-regression.yml'
+      - '.github/scripts/viogpu-perf-*'
+  pull_request:
+    paths:
+      - 'viogpu/tests/submit-perf/**'
+      - '.github/workflows/viogpu-perf-regression.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: viogpu-perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record exact source revision for offline review
+        run: |
+          git rev-parse HEAD > viogpu-perf-revision.txt
+          git archive --format=zip --output=viogpu-perf-source.zip HEAD
+      - name: Upload reproducible source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-perf-source-${{ github.sha }}
+          path: |
+            viogpu-perf-source.zip
+            viogpu-perf-revision.txt
+          retention-days: 7
+          if-no-files-found: error
+      - name: Check Native Context contract
+        run: python3 viogpu/viogpuwddm/check-contract.py
+      - name: Run submit performance fixtures when present
+        run: |
+          if test -f viogpu/tests/submit-perf/run.py; then
+            python3 viogpu/tests/submit-perf/run.py
+          fi
