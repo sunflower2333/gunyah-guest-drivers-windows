@@ -10,7 +10,7 @@ on:
       - '.github/scripts/viogpu-perf-*'
   pull_request:
     paths:
-      - 'viogpu/tests/submit-perf/**'
+      - 'viogpu/**'
       - '.github/workflows/viogpu-perf-regression.yml'
 
 permissions:
@@ -43,8 +43,34 @@ jobs:
           if-no-files-found: error
       - name: Check Native Context contract
         run: python3 viogpu/viogpuwddm/check-contract.py
-      - name: Run submit performance fixtures when present
+      - name: Run extracted production functions under ASan and UBSan
+        run: python3 viogpu/tests/submit-perf/run.py
+      - name: Prove the fixtures reject lifetime and ownership regressions
         run: |
-          if test -f viogpu/tests/submit-perf/run.py; then
-            python3 viogpu/tests/submit-perf/run.py
-          fi
+          python3 viogpu/tests/submit-perf/run.py --negative-control-serial
+          python3 viogpu/tests/submit-perf/run.py --negative-control-worker-reference
+          python3 viogpu/tests/submit-perf/run.py --negative-control-pool-reset
+      - name: Check flat package provenance and migration idempotence
+        run: python3 -m unittest discover -s viogpu/package -p 'test_*.py'
+      - name: Check existing final-binding and recovery behavior
+        run: |
+          python3 viogpu/tests/render-prepatch/run.py
+          python3 viogpu/tests/fault-recovery/run.py
+          python3 viogpu/tests/power-recovery/run.py
+
+  msvc-production-fixtures:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select host MSVC tools (not the driver target)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Compile and execute extracted production functions with MSVC
+        shell: pwsh
+        run: |
+          python viogpu/tests/submit-perf/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
