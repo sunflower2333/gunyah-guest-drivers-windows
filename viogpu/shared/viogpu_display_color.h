@@ -14,6 +14,12 @@
 #define VIOGPU_DISPLAY_COLOR_HLG        2U
 #define VIOGPU_DISPLAY_FORMAT_AB30      0x30334241U
 #define VIOGPU_DISPLAY_FORMAT_AR30      0x30335241U
+/* ABGR16161616F. Canonical scRGB storage: linear BT.709 half floats whose 1.0
+ * is Windows' 80-nit SDR white. It is an encoding value, never a bit in
+ * usable_hdr_types, because the Host admits the PQ output it is transformed
+ * to, not scRGB itself. */
+#define VIOGPU_DISPLAY_FORMAT_AB4H      0x48344241U
+#define VIOGPU_DISPLAY_ENCODING_SCRGB   3U
 
 typedef struct VIOGPU_DISPLAY_CONTROL_HEADER
 {
@@ -167,6 +173,14 @@ inline bool VioGpuDisplayColorPqAdmitted(const VIOGPU_DISPLAY_COLOR_RESPONSE *ca
     return caps != nullptr && caps->generation != 0 && (caps->usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ) != 0;
 }
 
+/* Canonical scRGB scanout is offered only when this build implements it AND
+ * the Host admits the PQ output it becomes. Claiming the mode without the
+ * transform would hand the compositor half floats nothing converts. */
+inline bool VioGpuScRgbScanoutAdmitted(const VIOGPU_DISPLAY_COLOR_RESPONSE *caps, bool canonicalFp16Scanout)
+{
+    return canonicalFp16Scanout && VioGpuDisplayColorPqAdmitted(caps);
+}
+
 /* notified: the last successfully discovered capabilities that Windows has
  * seen (all zero when none). current: valid only when discovered is true.
  * interruptible: the child was reported with interruptible HPD. An
@@ -219,9 +233,12 @@ inline VIOGPU_COLOR_CONNECTION_ACTION VioGpuColorConnectionAction(bool initializ
 
 inline unsigned VioGpuMonitorLinkCapabilities(const VIOGPU_DISPLAY_COLOR_RESPONSE *caps, bool canonicalFp16Scanout)
 {
-    return canonicalFp16Scanout && VioGpuDisplayColorPqAdmitted(caps) ? (VIOGPU_LINK_CAP_WIDE_COLOR_SPACE |
-                                                                         VIOGPU_LINK_CAP_HIGH_COLOR_SPACE)
-                                                                      : 0U;
+    /* Exactly the condition that offers the scRGB source mode: the link is only
+     * described as wide/high color while the mode that carries canonical FP16
+     * data actually exists. */
+    return VioGpuScRgbScanoutAdmitted(caps, canonicalFp16Scanout) ? (VIOGPU_LINK_CAP_WIDE_COLOR_SPACE |
+                                                                     VIOGPU_LINK_CAP_HIGH_COLOR_SPACE)
+                                                                  : 0U;
 }
 
 /* DXGK_DISPLAYDETECTCONTROLTYPE (d3dkmddi.h, WDDM 2.2+). */

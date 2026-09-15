@@ -67,6 +67,11 @@
       <PreprocessorDefinitions>VIOGPU_ADVANCED_COLOR_MPO3=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(VIOGPU_ADVANCED_COLOR)'=='1' and '$(VIOGPU_CANONICAL_FP16_SCANOUT)'=='1'">
+    <ClCompile>
+      <PreprocessorDefinitions>VIOGPU_CANONICAL_FP16_SCANOUT=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(VIOGPU_ADVANCED_COLOR)'=='1' and '$(VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS)'=='1'">
     <ClCompile>
       <PreprocessorDefinitions>VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>

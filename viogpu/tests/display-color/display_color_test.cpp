@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 
 int main()
@@ -125,6 +126,28 @@ int main()
     assert(VioGpuMonitorLinkCapabilities(nullptr, true) == 0);
     assert(VioGpuMonitorLinkCapabilities(&hdr, true) ==
            (VIOGPU_LINK_CAP_WIDE_COLOR_SPACE | VIOGPU_LINK_CAP_HIGH_COLOR_SPACE));
+    // The canonical scRGB scanout gate and the link claim are the same decision:
+    // a build that does not implement the transform must never advertise it,
+    // and an implementing build must still wait for admitted PQ output.
+    for (const VIOGPU_DISPLAY_COLOR_RESPONSE *caps : {&hdr, &sdr, &zeroGeneration})
+    {
+        assert(!VioGpuScRgbScanoutAdmitted(caps, false));
+        assert((VioGpuMonitorLinkCapabilities(caps, true) != 0) == VioGpuScRgbScanoutAdmitted(caps, true));
+    }
+    assert(VioGpuScRgbScanoutAdmitted(&hdr, true));
+    assert(!VioGpuScRgbScanoutAdmitted(&sdr, true));
+    assert(!VioGpuScRgbScanoutAdmitted(&zeroGeneration, true));
+    assert(!VioGpuScRgbScanoutAdmitted(nullptr, true));
+    // scRGB is an encoding, never a usable_hdr_types bit: the Host admits the
+    // PQ output, so the two constants must not be confused.
+    assert(VIOGPU_DISPLAY_ENCODING_SCRGB != VIOGPU_DISPLAY_COLOR_PQ &&
+           VIOGPU_DISPLAY_ENCODING_SCRGB != VIOGPU_DISPLAY_COLOR_HLG);
+    assert(VIOGPU_DISPLAY_FORMAT_AB4H == 0x48344241U); // 'A','B','4','H' little-endian
+    {
+        VIOGPU_DISPLAY_COLOR_RESPONSE hlgOnly = hdr;
+        hlgOnly.usable_hdr_types = VIOGPU_DISPLAY_COLOR_HLG;
+        assert(!VioGpuScRgbScanoutAdmitted(&hlgOnly, true)); // HLG admission is not PQ output
+    }
     // Display detect control.
     bool hpd = true;
     assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectPollOne, 0, 0) == VioGpuDetectPoll);

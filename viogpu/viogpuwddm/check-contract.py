@@ -5112,8 +5112,11 @@ def check_wddm_standard_primary_scanout() -> None:
         "adapter->MatchesNativeHdrMode(allocation->Width,allocation->Height)",
         "caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ",
         "allocation->ColorTaggedGeneration==caps.generation",
-        "color.format=VIOGPU_DISPLAY_FORMAT_AB30;",
-        "color.encoding=VIOGPU_DISPLAY_COLOR_PQ;",
+        # The tag states the allocation's own storage, so it is derived from the
+        # format rather than hard-coded; an untaggable format must refuse.
+        "VioGpuSourceColorTag(allocation->Format,&wireFormat,&wireEncoding)",
+        "color.format=wireFormat;",
+        "color.encoding=wireEncoding;",
         "color.generation=caps.generation;",
         "allocation->ColorTaggedGeneration=caps.generation;",
     ):
@@ -13240,10 +13243,20 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
         need(fragment, available, "native HDR availability must be current and negotiated")
     need("volatileLONGm_ColorMonitorConnected=1;", canonical_code(header),
          "the SDR monitor must be connected before the first DVCL refresh")
-    need("if(QueryDisplayColor(&colorCaps)&&IsNativeHdrModeAvailable()){formatCount=2;}",
+    # The default build stops at formatCount=2; the canonical FP16 mode is a
+    # separate, admission-gated step inside the same branch.
+    need("if(QueryDisplayColor(&colorCaps)&&IsNativeHdrModeAvailable()){formatCount=2;",
          body("VioGpuDod::AddSingleSourceMode", dod), "ten-bit source modes must require native HDR")
-    need("PixelFormat==D3DDDIFMT_A2B10G10R10&&IsNativeHdrModeAvailable()",
-         body("VioGpuDod::IsVidPnSourceModeFieldsValid", dod), "ten-bit source validation must require native HDR")
+    need("VioGpuIsHighPrecisionSourceFormat(pSourceMode->Format.Graphics.PixelFormat)&&IsNativeHdrModeAvailable()",
+         body("VioGpuDod::IsVidPnSourceModeFieldsValid", dod),
+         "high-precision source validation must require native HDR")
+    # The canonical FP16 mode and the monitor link claim share one gate, so the
+    # mode can never be offered on a link that does not advertise it.
+    need("if(VioGpuScRgbScanoutAdmitted(&colorCaps,TRUE)){formatCount=3;}",
+         body("VioGpuDod::AddSingleSourceMode", dod),
+         "the canonical FP16 source mode must require an admitted scRGB scanout")
+    need("VioGpuScRgbScanoutAdmitted(caps,canonicalFp16Scanout)", canonical_code(code["viogpu_display_color.h"]),
+         "the link claim must use the same scRGB scanout gate as the source mode")
     need("if(IsNativeHdrModeAvailable()){pVidPnTargetModeInfo->WireFormatAndPreference.Rgb|=D3DKMDT_BITS_PER_COMPONENT_10;}",
          body("VioGpuDod::AddSingleTargetMode", dod), "ten-bit wire modes must require native HDR")
     query = body("VioGpuDod::QueryAdapterInfo", dod)
@@ -13255,7 +13268,7 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     if caps_gate not in query or query.find(caps_gate) > query.find("ColorTransformCaps.Transform_3x4Matrix_HighColor=1;"):
         violations.append("color transform caps must require native HDR")
     storage = body("VioGpuDod::SetSourceModeAndPath", dod)
-    need("?D3DDDIFMT_A2B10G10R10:D3DDDIFMT_X8R8G8B8;", storage,
+    need("VioGpuIsHighPrecisionSourceFormat(pSourceMode->Format.Graphics.PixelFormat)?pSourceMode->Format.Graphics.PixelFormat:D3DDDIFMT_X8R8G8B8;", storage,
          "candidate SDR modes must keep X8R8G8B8 framebuffer storage")
     need("pCurrentMode->DispInfo.ColorFormat=storageFormat;", storage, "mode storage must use the selected format")
     need("args->Supported=adapter->QueryDisplayColor(&caps)&&(caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ)!=0&&",
@@ -13311,7 +13324,10 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     tagger = body("TagHighPrecisionPrimaryColor", code["wddmddi.cpp"])
     for fragment in ("adapter->MatchesNativeHdrMode(allocation->Width,allocation->Height)",
                      "caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ",
-                     "color.format=VIOGPU_DISPLAY_FORMAT_AB30;", "color.encoding=VIOGPU_DISPLAY_COLOR_PQ;",
+                     # The tag states the allocation's own storage, so it is derived from the
+                     # format rather than hard-coded; an untaggable format must refuse.
+                     "VioGpuSourceColorTag(allocation->Format,&wireFormat,&wireEncoding)",
+                     "color.format=wireFormat;", "color.encoding=wireEncoding;",
                      "color.generation=caps.generation;", "allocation->ColorTaggedGeneration=caps.generation;"):
         need(fragment, tagger, "the high-precision color tag must stay bound to the negotiated mode")
     if "ColorStateOperation" in tagger:
@@ -13347,8 +13363,9 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     link = body("VioGpuWddmUpdateMonitorLinkInfo", interface_view(code["advanced_color_ddi.inc"], advanced=True))
     need("args->MonitorLinkInfo.Capabilities.Value=VioGpuMonitorLinkCapabilities(NULL,FALSE);", link,
          "without canonical FP16 scanout no monitor link color capability may be claimed")
-    need("returncanonicalFp16Scanout&&VioGpuDisplayColorPqAdmitted(caps)?(VIOGPU_LINK_CAP_WIDE_COLOR_SPACE|VIOGPU_LINK_CAP_HIGH_COLOR_SPACE):0;",
-         canonical_code(code["viogpu_display_color.h"]), "Wide/HighColorSpace require canonical FP16 scanout and admitted PQ")
+    need("returnVioGpuScRgbScanoutAdmitted(caps,canonicalFp16Scanout)?(VIOGPU_LINK_CAP_WIDE_COLOR_SPACE|VIOGPU_LINK_CAP_HIGH_COLOR_SPACE):0;",
+         canonical_code(code["viogpu_display_color.h"]),
+         "Wide/HighColorSpace require canonical FP16 scanout and admitted PQ")
     detect = body("VioGpuWddmDisplayDetectControl", code["advanced_color_ddi.inc"])
     need("VioGpuDisplayDetectControl(&hpdEnabled,", detect, "detect control must use the tested HPD policy")
     need("if(result==VioGpuDetectInvalid){returnSTATUS_INVALID_PARAMETER;}", detect, "invalid detect control must fail")

@@ -37,6 +37,70 @@
 #include "mmio_flip.h"
 #include "viogpu_queue.h"
 
+/* Source-mode pixel formats that carry more than eight bits per component, so
+ * the framebuffer keeps the mode's own storage instead of the SDR baseline's
+ * X8R8G8B8. Ten-bit storage is PQ; canonical scRGB half floats exist only in a
+ * build that implements their transform. */
+inline BOOLEAN VioGpuIsHighPrecisionSourceFormat(D3DDDIFORMAT format)
+{
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    if (format == D3DDDIFMT_A2B10G10R10 || format == D3DDDIFMT_A2R10G10B10)
+    {
+        return TRUE;
+    }
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    if (format == D3DDDIFMT_A16B16G16R16F)
+    {
+        return TRUE;
+    }
+#endif
+    return FALSE;
+#else
+    UNREFERENCED_PARAMETER(format);
+    return FALSE;
+#endif
+}
+
+/* The Host colour tag a source-mode format must carry. Ten-bit storage is PQ
+ * in its own container; canonical scRGB is half floats that the Host transforms
+ * into BT.2020 PQ, so both require admitted PQ output but declare different
+ * storage. Returns FALSE for the eight-bit baseline, which carries no tag. */
+inline BOOLEAN VioGpuSourceColorTag(D3DDDIFORMAT format, UINT *wireFormat, UINT *encoding)
+{
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    if (wireFormat == NULL || encoding == NULL)
+    {
+        return FALSE;
+    }
+    if (format == D3DDDIFMT_A2B10G10R10)
+    {
+        *wireFormat = VIOGPU_DISPLAY_FORMAT_AB30;
+        *encoding = VIOGPU_DISPLAY_COLOR_PQ;
+        return TRUE;
+    }
+    if (format == D3DDDIFMT_A2R10G10B10)
+    {
+        *wireFormat = VIOGPU_DISPLAY_FORMAT_AR30;
+        *encoding = VIOGPU_DISPLAY_COLOR_PQ;
+        return TRUE;
+    }
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    if (format == D3DDDIFMT_A16B16G16R16F)
+    {
+        *wireFormat = VIOGPU_DISPLAY_FORMAT_AB4H;
+        *encoding = VIOGPU_DISPLAY_ENCODING_SCRGB;
+        return TRUE;
+    }
+#endif
+    return FALSE;
+#else
+    UNREFERENCED_PARAMETER(format);
+    UNREFERENCED_PARAMETER(wireFormat);
+    UNREFERENCED_PARAMETER(encoding);
+    return FALSE;
+#endif
+}
+
 #pragma pack(push)
 #pragma pack(1)
 

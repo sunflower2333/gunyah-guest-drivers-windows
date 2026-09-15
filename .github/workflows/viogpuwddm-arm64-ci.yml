@@ -332,6 +332,7 @@ jobs:
             /p:WindowsTargetPlatformVersion="$env:DROIDVM_KIT_VERSION" `
             /p:ApiValidator_Enable=false /p:SpectreMitigation=false /p:SignMode=Off `
             /p:VIOGPU_ADVANCED_COLOR=1 /p:VIOGPU_ADVANCED_COLOR_MPO3=1 /p:VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS=1 `
+            /p:VIOGPU_CANONICAL_FP16_SCANOUT=1 `
             /p:VIOGPU_REPORT_WDDM2_3=1 /p:OutDir="$hdrExperimentDir" /p:IntDir="$hdrExperimentDir"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path (Join-Path $hdrExperimentDir 'viogpuwddm.sys'))) { throw 'No Advanced Color experiment binary' }

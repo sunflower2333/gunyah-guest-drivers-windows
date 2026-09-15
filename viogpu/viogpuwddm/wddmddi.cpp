@@ -285,6 +285,14 @@ void DereferenceDevice(VIOGPU_WDDM_DEVICE *device)
 BOOLEAN IsHighPrecisionSurfaceFormat(D3DDDIFORMAT format)
 {
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    // Canonical scRGB half floats are a primary too, but only in a build whose
+    // Host transform turns them into BT.2020 PQ.
+    if (format == D3DDDIFMT_A16B16G16R16F)
+    {
+        return TRUE;
+    }
+#endif
     return format == D3DDDIFMT_A2B10G10R10 || format == D3DDDIFMT_A2R10G10B10;
 #else
     // The default WDDM 2.0 build has no DVCL color negotiation: the host
@@ -10706,10 +10714,19 @@ static BOOLEAN TagHighPrecisionPrimaryColor(_In_ VioGpuDod *adapter, _In_ VIOGPU
     {
         return TRUE;
     }
+    UINT wireFormat = 0;
+    UINT wireEncoding = 0;
+    // The tag states the allocation's own storage: ten-bit stays PQ, canonical
+    // scRGB declares half floats the Host transforms into PQ. Both required the
+    // admitted PQ output checked above.
+    if (!VioGpuSourceColorTag(allocation->Format, &wireFormat, &wireEncoding))
+    {
+        return FALSE;
+    }
     VIOGPU_SET_RESOURCE_COLOR color = {};
     color.resource_id = allocation->ResourceId;
-    color.format = VIOGPU_DISPLAY_FORMAT_AB30;
-    color.encoding = VIOGPU_DISPLAY_COLOR_PQ;
+    color.format = wireFormat;
+    color.encoding = wireEncoding;
     color.generation = caps.generation;
     if (adapter->SetResourceColor(&color) != VioGpuHostContextConfirmed)
     {

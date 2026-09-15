@@ -4036,6 +4036,16 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
     if (QueryDisplayColor(&colorCaps) && IsNativeHdrModeAvailable())
     {
         formatCount = 2;
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+        /* Windows composes Advanced Color in canonical scRGB FP16, so the mode
+         * only exists where this build implements the transform and the Host
+         * admits the PQ output it becomes. The same gate claims the link's
+         * Wide/HighColorSpace, so a mode is never offered unadvertised. */
+        if (VioGpuScRgbScanoutAdmitted(&colorCaps, true))
+        {
+            formatCount = 3;
+        }
+#endif
     }
 #endif
 
@@ -4072,6 +4082,12 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
             {
                 pVidPnSourceModeInfo->Format.Graphics.PixelFormat = D3DDDIFMT_A2B10G10R10;
             }
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+            else if (formatIndex == 2)
+            {
+                pVidPnSourceModeInfo->Format.Graphics.PixelFormat = D3DDDIFMT_A16B16G16R16F;
+            }
+#endif
 #endif
             pVidPnSourceModeInfo->Format.Graphics.ColorBasis = D3DKMDT_CB_SCRGB;
             pVidPnSourceModeInfo->Format.Graphics.PixelValueAccessMode = D3DKMDT_PVAM_DIRECT;
@@ -5121,8 +5137,10 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
     // A ten-bit source mode owns real RGB10A2 storage. Every eight-bit source
     // mode keeps the X8R8G8B8 driver framebuffer of the SDR baseline, so an
     // unchanged SDR mode never recreates or re-formats the host resource.
-    const D3DDDIFORMAT storageFormat = pSourceMode->Format.Graphics.PixelFormat == D3DDDIFMT_A2B10G10R10 ? D3DDDIFMT_A2B10G10R10
-                                                                                                         : D3DDDIFMT_X8R8G8B8;
+    const D3DDDIFORMAT storageFormat =
+        VioGpuIsHighPrecisionSourceFormat(pSourceMode->Format.Graphics.PixelFormat)
+            ? pSourceMode->Format.Graphics.PixelFormat
+            : D3DDDIFMT_X8R8G8B8;
 #else
     // The default WDDM 2.0 build offers only the eight-bit source mode and
     // preserves the framebuffer storage format exactly as before.
@@ -5265,7 +5283,8 @@ NTSTATUS VioGpuDod::IsVidPnSourceModeFieldsValid(CONST D3DKMDT_VIDPN_SOURCE_MODE
             return STATUS_SUCCESS;
         }
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
-        if (pSourceMode->Format.Graphics.PixelFormat == D3DDDIFMT_A2B10G10R10 && IsNativeHdrModeAvailable())
+        if (VioGpuIsHighPrecisionSourceFormat(pSourceMode->Format.Graphics.PixelFormat) &&
+            IsNativeHdrModeAvailable())
         {
             return STATUS_SUCCESS;
         }
@@ -9205,17 +9224,21 @@ NTSTATUS VioGpuAdapter::ResumeFrameBuffer(CURRENT_MODE *pCurrentMode)
     }
     const UINT resource = m_pFrameBuf->GetId();
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextConfirmed;
-    if (pCurrentMode->DispInfo.ColorFormat == D3DDDIFMT_A2B10G10R10)
+    UINT wireFormat = 0;
+    UINT wireEncoding = 0;
+    if (VioGpuSourceColorTag(pCurrentMode->DispInfo.ColorFormat, &wireFormat, &wireEncoding))
     {
         VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+        // Both ten-bit PQ and canonical scRGB leave the Host as BT.2020 PQ, so
+        // both wait on the same admitted output.
         if (!m_pVioGpuDod->QueryDisplayColor(&caps) || !(caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ))
         {
             return STATUS_DEVICE_NOT_READY;
         }
         VIOGPU_SET_RESOURCE_COLOR color = {};
         color.resource_id = resource;
-        color.format = VIOGPU_DISPLAY_FORMAT_AB30;
-        color.encoding = VIOGPU_DISPLAY_COLOR_PQ;
+        color.format = wireFormat;
+        color.encoding = wireEncoding;
         color.generation = caps.generation;
         result = m_CtrlQueue.SetResourceColor(&color);
     }
@@ -14725,6 +14748,10 @@ UINT ColorFormat(UINT format)
             return VIRTIO_GPU_FORMAT_R10G10B10A2_UNORM;
         case D3DDDIFMT_A2R10G10B10:
             return VIRTIO_GPU_FORMAT_B10G10R10A2_UNORM;
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+        case D3DDDIFMT_A16B16G16R16F:
+            return VIRTIO_GPU_FORMAT_R16G16B16A16_FLOAT;
+#endif
 #endif
     }
     DbgPrint(TRACE_LEVEL_ERROR, ("---> %s Unsupported color format %d\n", __FUNCTION__, format));
@@ -14786,13 +14813,15 @@ BOOLEAN VioGpuAdapter::CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, C
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     // A ten-bit fallback primary is real PQ storage too. Tag it before the
     // first binding/flush; an untagged import must never fall back to RGBA8.
-    if (pCurrentMode->DispInfo.ColorFormat == D3DDDIFMT_A2B10G10R10)
+    UINT fallbackFormat = 0;
+    UINT fallbackEncoding = 0;
+    if (VioGpuSourceColorTag(pCurrentMode->DispInfo.ColorFormat, &fallbackFormat, &fallbackEncoding))
     {
         VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
         VIOGPU_SET_RESOURCE_COLOR color = {};
         color.resource_id = resid;
-        color.format = VIOGPU_DISPLAY_FORMAT_AB30;
-        color.encoding = VIOGPU_DISPLAY_COLOR_PQ;
+        color.format = fallbackFormat;
+        color.encoding = fallbackEncoding;
         const BOOLEAN available = m_pVioGpuDod->QueryDisplayColor(&caps) &&
                                   (caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ) != 0;
         color.generation = caps.generation;
