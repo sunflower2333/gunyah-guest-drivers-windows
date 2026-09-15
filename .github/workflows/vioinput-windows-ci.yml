@@ -3,8 +3,6 @@ on:
   push:
     branches: ['work/vioinput-*']
     paths: ['vioinput/**', '.github/workflows/vioinput-windows-ci.yml']
-  pull_request:
-    paths: ['vioinput/**', '.github/workflows/vioinput-windows-ci.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -32,6 +30,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Inspect inbox XInputHID installation contract
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build-logs | Out-Null
+          $inf = Join-Path $env:windir 'INF/xinputhid.inf'
+          if (!(Test-Path $inf)) { throw 'Inbox XInputHID INF missing' }
+          Get-Content $inf | Set-Content build-logs/xinputhid-inbox.txt
+          Get-FileHash $inf | Format-List | Out-File build-logs/xinputhid-hash.txt
+          Get-CimInstance Win32_OperatingSystem | Select-Object Version, BuildNumber, OSArchitecture | Format-List | Out-File build-logs/windows-version.txt
       - name: Locate preinstalled SDK and WDK
         shell: pwsh
         run: ./.github/scripts/locate-windows-kit.ps1
@@ -41,14 +48,13 @@ jobs:
       - name: Compile and link actual kernel drivers
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force build-logs | Out-Null
           $common = @('/m', '/p:Configuration=Win11 Release', '/p:Platform=ARM64',
             '/p:ApiValidator_Enable=false', '/p:SpectreMitigation=false', '/p:SignMode=Off',
             '/p:TreatWarningAsError=true', "/p:WindowsTargetPlatformVersion=$env:DROIDVM_KIT_VERSION")
           foreach ($project in @('VirtIO/VirtioLib.vcxproj', 'VirtIO/WDF/VirtioLib-WDF.vcxproj',
             'vioinput/sys/vioinput.vcxproj', 'vioinput/hidpassthrough/hidpassthrough.vcxproj')) {
             $name = [IO.Path]::GetFileNameWithoutExtension($project)
-            & msbuild $project @common "/bl:build-logs/$name.binlog"
+            & msbuild $project @common "/bl:build-logs/$name.binlog" '/fl' "/flp:logfile=build-logs/$name.log;verbosity=normal"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           git rev-parse HEAD | Set-Content build-logs/source-revision.txt
