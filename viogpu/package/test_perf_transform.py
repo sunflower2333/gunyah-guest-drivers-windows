@@ -52,6 +52,32 @@ class PerfTransformTests(unittest.TestCase):
                         MIGRATION.replace_once(path, old, new, 'fixture')
                     self.assertEqual(path.read_text(), text)
 
+    def test_reviewed_applied_variants_are_preserved(self):
+        for text in ['new block', 'new\nblock']:
+            for check_only in [False, True]:
+                with self.subTest(text=text, check=check_only), tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / 'test.cpp'
+                    path.write_text(text, encoding='utf-8')
+                    try:
+                        MIGRATION.CHECK_ONLY = check_only
+                        with redirect_stdout(io.StringIO()):
+                            MIGRATION.replace_once(path, 'old block', 'new block', 'fixture',
+                                                   applied_variants=('new\nblock',))
+                        self.assertEqual(path.read_text(), text)
+                    finally:
+                        MIGRATION.CHECK_ONLY = False
+
+    def test_variant_duplicates_mixed_and_semantic_changes_fail_closed(self):
+        for text in ['new\nblock' * 2, 'new block new\nblock',
+                     'old block new\nblock', 'new changed block', 'missing block']:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'test.cpp'
+                path.write_text(text, encoding='utf-8')
+                with self.assertRaises(RuntimeError):
+                    MIGRATION.replace_once(path, 'old block', 'new block', 'fixture',
+                                           applied_variants=('new\nblock',))
+                self.assertEqual(path.read_text(), text)
+
     def test_check_only_preserves_unpatched_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'test.cpp'

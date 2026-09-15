@@ -15,16 +15,26 @@ ROOT = Path(__file__).resolve().parents[2]
 CHECK_ONLY = False
 
 
-def replace_once(path: Path, old: str, new: str, label: str) -> None:
+def replace_once(
+    path: Path, old: str, new: str, label: str, *, applied_variants: tuple[str, ...] = ()
+) -> None:
     text = path.read_text(encoding="utf-8")
     old_count = text.count(old)
-    new_count = text.count(new)
+    # Only explicitly reviewed formatting variants are accepted. Do not erase
+    # whitespace globally: it can change literals, comments, or token boundaries.
+    variants = (new, *applied_variants)
+    if any(not variant for variant in variants) or len(set(variants)) != len(variants):
+        raise ValueError("applied variants must be nonempty and unique")
+    counts = [text.count(variant) for variant in variants]
+    new_count = sum(counts)
     # Count contained matches, not just total substrings: insertion anchors may
     # survive inside the replacement, and deletion replacements inside the old.
-    if new_count == 1 and old_count == new.count(old):
-        print(f"perf-patch: {label}: already applied")
-        return
-    if old_count == 1 and new_count == old.count(new):
+    if new_count == 1:
+        applied = variants[counts.index(1)]
+        if old_count == applied.count(old):
+            print(f"perf-patch: {label}: already applied")
+            return
+    if old_count == 1 and new_count == sum(old.count(variant) for variant in variants):
         if CHECK_ONLY:
             print(f"perf-patch: {label}: ready")
         else:
@@ -169,6 +179,14 @@ def patch_wddm_bindings() -> None:
         "                    reference->AllocationOffset;\n"
         "            }",
         "retain validated binding snapshot",
+        applied_variants=(
+            "            if (valid)\n"
+            "            {\n"
+            "                reference->PatchedResourceId = allocation->ResourceId;\n"
+            "                reference->PatchedReserved = 0;\n"
+            "                reference->PatchedIova = allocation->PrivateData.RequestedIova + reference->AllocationOffset;\n"
+            "            }",
+        ),
     )
 
     replace_once(
@@ -182,6 +200,10 @@ def patch_wddm_bindings() -> None:
         "                          &reference->PatchedIova,\n"
         "                          sizeof(reference->PatchedIova));",
         "consume retained binding snapshot",
+        applied_variants=(
+            "            RtlCopyMemory(&submitBo->Handle, &reference->PatchedResourceId, sizeof(reference->PatchedResourceId));\n"
+            "            RtlCopyMemory(patchAddress, &reference->PatchedIova, sizeof(reference->PatchedIova));",
+        ),
     )
 
     replace_once(

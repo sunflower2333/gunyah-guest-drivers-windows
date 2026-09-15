@@ -2,6 +2,7 @@
 """Execute production Present geometry and its actual rectangle-copy loop."""
 from pathlib import Path
 import argparse
+import re
 import shutil
 import subprocess
 import tempfile
@@ -51,9 +52,15 @@ start = execute.index('for (UINT index = 0; index < transaction->RectCount; ++in
 end = execute.index('            KeMemoryBarrier();', start)
 copy = execute[start:end]
 if args.negative_control_raw_copy:
-    old = 'CopyPresentRow(destinationBase + destinationOffset, sourceBase + sourceOffset,\n                                   rowBytes, source->Format, destination->Format);'
-    assert copy.count(old) == 1
-    copy = copy.replace(old, 'RtlCopyMemory(destinationBase + destinationOffset, sourceBase + sourceOffset, rowBytes);')
+    # Match exactly the reviewed call tokens, not its clang-format line wrapping.
+    # Missing, duplicate, or semantically changed anchors must still fail closed.
+    pattern = (r'\bCopyPresentRow\s*\(\s*destinationBase\s*\+\s*destinationOffset\s*,\s*'
+               r'sourceBase\s*\+\s*sourceOffset\s*,\s*rowBytes\s*,\s*'
+               r'source\s*->\s*Format\s*,\s*destination\s*->\s*Format\s*\)\s*;')
+    copy, count = re.subn(
+        pattern, 'RtlCopyMemory(destinationBase + destinationOffset, sourceBase + sourceOffset, rowBytes);', copy)
+    if count != 1:
+        raise SystemExit(f'Expected one reviewed CopyPresentRow call, found {count}')
 fixture = (here / 'present_formats_test.cpp').read_text()
 fixture = fixture.replace('// INSERT_PRODUCTION', '\n\n'.join(parts)).replace('// INSERT_COPY', copy)
 interfaces = [('WDDM2.0', '0x5023')]

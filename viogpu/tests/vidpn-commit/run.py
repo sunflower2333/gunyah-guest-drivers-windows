@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Execute the actual CommitVidPn body against strict per-source VidPN peers."""
 import argparse
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,9 +18,12 @@ start = source.index('NTSTATUS VioGpuDod::CommitVidPn(')
 end = source.index('NTSTATUS VioGpuDod::SetSourceModeAndPath(', start)
 production = source[start:end]
 if args.negative_control_source_all:
-    normalized = '? 0 : pCommitVidPn->AffectedVidPnSourceId;'
-    assert production.count(normalized) == 1
-    production = production.replace(normalized, '? D3DDDI_ID_ALL : pCommitVidPn->AffectedVidPnSourceId;')
+    # Preserve the exact all-source normalization operands across line wrapping.
+    pattern = r'\?\s*0\s*:\s*pCommitVidPn\s*->\s*AffectedVidPnSourceId\s*;'
+    production, count = re.subn(
+        pattern, '? D3DDDI_ID_ALL : pCommitVidPn->AffectedVidPnSourceId;', production)
+    if count != 1:
+        raise SystemExit(f'Expected one reviewed source normalization, found {count}')
 fixture = (here / 'vidpn_commit_test.cpp').read_text().replace('// INSERT_PRODUCTION', production)
 with tempfile.TemporaryDirectory(prefix='viogpu-vidpn-commit-') as temporary:
     output = Path(temporary)
