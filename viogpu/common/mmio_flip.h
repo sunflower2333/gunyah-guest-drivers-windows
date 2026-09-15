@@ -87,21 +87,37 @@ enum VioGpuFlipTargetStatus : unsigned
 inline VioGpuFlipTargetStatus VioGpuValidateFlipTarget(const VioGpuFlipTarget &target)
 {
     if (target.SourceId != 0)
+    {
         return VioGpuFlipTargetBadSource;
+    }
     if (!target.HasAllocation)
+    {
         return VioGpuFlipTargetNoAllocation;
+    }
     if (!target.OwnedByAdapter)
+    {
         return VioGpuFlipTargetForeign;
+    }
     if (!target.StandardPrimary)
+    {
         return VioGpuFlipTargetNotPrimary;
+    }
     if (target.HighPrecision)
+    {
         return VioGpuFlipTargetHighPrecision;
+    }
     if (target.Segment != target.ExpectedSegment)
+    {
         return VioGpuFlipTargetBadSegment;
+    }
     if (!target.PlacementValid)
+    {
         return VioGpuFlipTargetNotPlaced;
+    }
     if (target.Address < 0 || static_cast<unsigned long long>(target.Address) != target.PlacementOffset)
+    {
         return VioGpuFlipTargetAddressMismatch;
+    }
     return VioGpuFlipTargetAccepted;
 }
 

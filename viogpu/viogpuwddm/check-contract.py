@@ -223,6 +223,13 @@ def compact_code(source: str) -> str:
 
 
 def canonical_code(source: str) -> str:
+    # Fold only adjacent, escape-free wide identifier literals emitted by the formatter.
+    # Spelling, encoding, operators and counter indices remain part of the contract.
+    pattern = r'\bL"([A-Za-z0-9_]*)"\s+L"([A-Za-z0-9_]*)"'
+    while True:
+        source, replacements = re.subn(pattern, r'L"\1\2"', source)
+        if replacements == 0:
+            break
     code = compact_code(source)
     code = re.sub(r"\bnullptr\b", "NULL", code)
     code = re.sub(r"\bfalse\b", "FALSE", code)
@@ -934,6 +941,8 @@ def check_arm64_workflow_contract() -> None:
             fail(f"{label} workflow must verify both Native Context PEs as ARM64")
         if source.count("$expectedExports = @('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')") != 1:
             fail(f"{label} workflow must verify the exact legacy D3D UMD exports")
+        if source.count("$expectedExports += @('VioGpuVideoOpen', 'VioGpuVideoControl', 'VioGpuVideoAllocate', 'VioGpuVideoQueue', 'VioGpuVideoDequeue', 'VioGpuVideoCopy', 'VioGpuVideoStream', 'VioGpuVideoClose')") != 1:
+            fail(f"{label} workflow must verify exactly eight explicit video bridge exports")
 
         for fragment in (
             "$exportNames = @(",
@@ -13246,7 +13255,7 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     need("AcquireFlipApply();(VOID)TakePendingFlip();constautoresult=Set2DScanout(0,0,0,0,&previousResource);ReleaseFlipApply();",
          body("VioGpuDod::CommitVidPn", dod), "target power-off must supersede an unbound flip")
     flip_policy = canonical_code(code["mmio_flip.h"])
-    need("if(!target.StandardPrimary)returnVioGpuFlipTargetNotPrimary;if(target.HighPrecision)returnVioGpuFlipTargetHighPrecision;",
+    need("if(!target.StandardPrimary){returnVioGpuFlipTargetNotPrimary;}if(target.HighPrecision){returnVioGpuFlipTargetHighPrecision;}",
          flip_policy, "the flip policy must refuse ten-bit primaries after ownership and type")
     relations = body("VioGpuDod::QueryChildRelations", dod)
     for fragment in ("ChildCapabilities.HpdAwareness=static_cast<DXGK_CHILD_DEVICE_HPD_AWARENESS>(descriptor.HpdAwareness);",

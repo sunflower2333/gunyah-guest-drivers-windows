@@ -687,6 +687,8 @@ jobs:
             }
           )
           $expectedExports = @('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')
+          $expectedExports += @('VioGpuVideoOpen', 'VioGpuVideoControl', 'VioGpuVideoAllocate', 'VioGpuVideoQueue', 'VioGpuVideoDequeue', 'VioGpuVideoCopy', 'VioGpuVideoStream', 'VioGpuVideoClose')
+          if ($exportNames.Count -eq 0) { throw "UMD export table mismatch: no parsed exports" }
           $exportDelta = Compare-Object -ReferenceObject $expectedExports -DifferenceObject $exportNames
           if ($exportDelta -or $exportNames.Count -ne $expectedExports.Count) {
             Write-Host $exports

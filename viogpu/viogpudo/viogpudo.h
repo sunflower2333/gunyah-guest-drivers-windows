@@ -727,8 +727,7 @@ class VioGpuAdapter : IVioGpuPCI
     static void ReleaseNativeContextSnapshot(_Inout_ VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     // snapshot retains the lifecycle mutex and adapter reference for this call.
-    NTSTATUS QueryNativeGpuTimestamp(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
-                                     _Out_ PULONGLONG timestamp);
+    NTSTATUS QueryNativeGpuTimestamp(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot, _Out_ PULONGLONG timestamp);
 #endif
     /* Every lifecycle-mutex wait in this driver used a ten-second timeout and
      * answered STATUS_TIMEOUT with FailNativeContextAtAnyIrql, which bumps the
@@ -1027,7 +1026,7 @@ class VioGpuDod
     volatile LONG m_NativeFenceEpoch;
     volatile LONG m_NativeFenceResetFloor;
     volatile LONG m_NativeFenceNotificationClosed;
-    ULONG m_NativePendingPreemptionEpoch; // protected by m_NativeFenceLock
+    ULONG m_NativePendingPreemptionEpoch;            // protected by m_NativeFenceLock
     VioGpuFencePublication m_NativeFencePublication; // scheduler DIRQL only
     UINT m_NativeFenceHead;
     UINT m_NativeFenceCount;
@@ -1585,8 +1584,7 @@ class VioGpuDod
         {
             InterlockedExchange(&m_NativeContextLifecycleHolderRva, static_cast<LONG>(callerRva));
         }
-        InterlockedExchange64(&m_NativeContextLifecycleAcquireTime,
-                              static_cast<LONG64>(KeQueryInterruptTime()));
+        InterlockedExchange64(&m_NativeContextLifecycleAcquireTime, static_cast<LONG64>(KeQueryInterruptTime()));
     }
     /* How long the present holder has held the mutex when a waiter gives up on
      * an attempt.  The holder RVA alone cannot say whether one hold is long or
@@ -1600,7 +1598,7 @@ class VioGpuDod
         }
         ULONGLONG now = KeQueryInterruptTime();
         ULONGLONG heldMs = now > static_cast<ULONGLONG>(acquired) ? (now - static_cast<ULONGLONG>(acquired)) / 10000
-                                                                 : 0;
+                                                                  : 0;
         LONG previous = InterlockedCompareExchange(&m_NativeContextLifecycleHeldMs, 0, 0);
         if (heldMs <= MAXLONG && static_cast<LONG>(heldMs) > previous)
         {
@@ -1691,9 +1689,10 @@ class VioGpuDod
     }
     DWORD ReadDisplayCounter(_In_ ULONG index)
     {
-        return index < ARRAYSIZE(m_DisplayCounters)
-                   ? static_cast<DWORD>(InterlockedCompareExchange(&m_DisplayCounters[index], 0, 0))
-                   : 0;
+        return index < ARRAYSIZE(m_DisplayCounters) ? static_cast<DWORD>(InterlockedCompareExchange(&m_DisplayCounters[index],
+                                                                                                    0,
+                                                                                                    0))
+                                                    : 0;
     }
     /* Every path into the reset latch runs through NotifyNativeSubmissionFault,
      * which already records the return address of whichever of its callers ran
@@ -1756,11 +1755,10 @@ class VioGpuDod
                                            _In_ BOOLEAN queueDpc,
                                            _In_ ULONG fenceEpoch = 0);
     BOOLEAN PrepareNativeSchedulerNotificationAtDirql(_Inout_ DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
-                                                       _In_ ULONG fenceEpoch);
+                                                      _In_ ULONG fenceEpoch);
     ULONG QueryNativeFenceEpoch(void) const
     {
-        return static_cast<ULONG>(InterlockedCompareExchange(
-            const_cast<volatile LONG *>(&m_NativeFenceEpoch), 0, 0));
+        return static_cast<ULONG>(InterlockedCompareExchange(const_cast<volatile LONG *>(&m_NativeFenceEpoch), 0, 0));
     }
     BOOLEAN RecordNativeSubmissionFence(_In_ UINT fenceId);
     BOOLEAN RetireNativeSubmissionFence(_In_ UINT fenceId, _Out_ UINT *completedFence);
@@ -1938,8 +1936,12 @@ class VioGpuDod
     VOID RecordNativeActivationPhase(_In_ VioGpuActivationPhase phase);
     VOID RecordNativeActivationQuery(_In_ CONST DXGKARG_QUERYADAPTERINFO *query, _In_ NTSTATUS status);
     VOID LoadChildDescriptorMode(void);
-    VOID RecordNativeActivationChild(_In_ UINT ddi, _In_ NTSTATUS status, _In_ UINT value0, _In_ UINT value1,
-                                     _In_ UINT value2, _In_ UINT value3);
+    VOID RecordNativeActivationChild(_In_ UINT ddi,
+                                     _In_ NTSTATUS status,
+                                     _In_ UINT value0,
+                                     _In_ UINT value1,
+                                     _In_ UINT value2,
+                                     _In_ UINT value3);
     VOID RecordNativeContextCreateDiagnostic(_In_ VIOGPU_NATIVE_CONTEXT_CREATE_STAGE stage,
                                              _In_ NTSTATUS status,
                                              _In_ DWORD detail);
@@ -1991,9 +1993,11 @@ class VioGpuDod
                                                 _In_ ULONGLONG regionOffset,
                                                 _In_ BOOLEAN attempted,
                                                 _In_ BOOLEAN mapped);
-    VOID RecordNativeSynchronousPoisonDiagnostic(
-        _In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva,
-        _In_opt_ const VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *timeoutDiagnostic);
+    VOID
+    RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state,
+                                            _In_ ULONG generation,
+                                            _In_ ULONG callerRva,
+                                            _In_opt_ const VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *timeoutDiagnostic);
     VOID RecordAdapterInfoTypeMap(void);
     VOID RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId,
                                                 _In_ LONG hostResult,

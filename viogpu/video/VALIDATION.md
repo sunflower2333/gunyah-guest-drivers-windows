@@ -1,6 +1,6 @@
 # Video candidate validation record — 2026-09-15
 
-Candidate: `work/vpu-video-umd-perf-20260915`, draft PR #3, based on perf
+Candidate: `work/vpu-video-umd-perf-20260915`, independent branch, based on perf
 `5ab27d4055887f14e97195079ef51716b7b707fb`.
 This is the explicit VioGPU video backend described in README.md, not a
 DXVA/D3D Video DDI or registered Media Foundation implementation.
@@ -29,14 +29,14 @@ DXVA/D3D Video DDI or registered Media Foundation implementation.
    `ca9d38d097ab484b43c0aff46bc68b6ccab925bc`.
 5. The production checker keeps its retired-pool scan unchanged. Only its
    exact export list (three legacy plus eight explicit video functions) and
-   exact source list (activation source plus video_client.cpp) were extended.
-   Source comments use generic ordinary-RAM wording because the production
-   scan intentionally also rejects comment mentions; the explanatory details
-   remain in README.md and dependency tests.
+   exact source list (activation source plus video_client.cpp) were extended
+   in that initial delivery. Source comments use generic ordinary-RAM wording
+   because the production scan intentionally also rejects comment mentions;
+   the explanatory details remain in README.md and dependency tests.
 
-The temporary candidate-only, non-force-pushing review workflow and helper
-were removed after their successful run. Normal build/test workflows retain
-read-only repository permissions.
+The temporary review workflows and helpers are removed from the final tree.
+The independent branch's build/test workflows retain read-only repository
+permissions.
 
 ## Not yet validated
 
@@ -47,7 +47,31 @@ results. The hardware acceptance program and its input restrictions are in
 README.md. The current host still requires its media_host allocation; no
 Windows restricted-pool service is introduced.
 
-Existing repository signoff/Jira checks were failing and no fake signoff was
-added. Consult the latest PR checks for the final cleanup revision; an earlier
-passing build must not be mistaken for a later-revision binary. Keep this PR
-a draft until standard API integration and hardware acceptance are addressed.
+Existing repository signoff/Jira checks were failing at the initial PR
+revision and no fake signoff was added. PR #3 was closed without merging at
+the owner's request. No open PR is required. Standard API integration and
+hardware acceptance remain separate from branch CI.
+
+## Independent branch CI follow-up
+
+PR #3 is closed and the perf branch is not updated by this work. Direct pushes
+to `work/vpu-video-umd-perf-20260915` now trigger the dedicated media build,
+full Native Context WDDM build, performance regressions and the existing
+repository-wide format checks. PR-only signoff/Jira checks were not disabled
+or fabricated; they are not part of the branch-push verification.
+
+Both production binary-export gates retain the three legacy entry points
+and require exactly eight explicit video functions, rejecting missing, extra
+and duplicate exports. The new PowerShell tests execute those actual gates,
+including against the built UMD. Existing INF, ARM64 PE, map and ownership
+checks remain in place.
+
+Formatting changes use the existing repository clang-format 16 settings.
+Source-contract normalization accounts for split wide identifier strings
+without discarding identifier spelling, operators or counter indices. The
+Advanced Color mutation tests use unique whitespace-insensitive anchors and
+retain all 33 negative controls. No tests were deleted to obtain a green run.
+
+Consult the exact final commit's Actions checks for its build results; earlier
+artifacts above are historical and must not be mistaken for new binaries.
+Build success remains distinct from driver loading or actual codec operation.

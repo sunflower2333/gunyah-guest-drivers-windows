@@ -200,12 +200,10 @@ inline VIOGPU_COLOR_CONNECTION_ACTION VioGpuColorConnectionAction(bool initializ
     {
         return VioGpuColorConnectionNone;
     }
-    return notified->generation != current->generation || notified->usable_hdr_types != current->usable_hdr_types ||
-                   notified->max_luminance != current->max_luminance ||
-                   notified->max_average_luminance != current->max_average_luminance ||
-                   notified->min_luminance != current->min_luminance
-               ? VioGpuColorConnectionReenumerate
-               : VioGpuColorConnectionNone;
+    return notified->generation != current->generation || notified->usable_hdr_types != current->usable_hdr_types || notified->max_luminance != current->max_luminance || notified->max_average_luminance != current->max_average_luminance ||
+                                                                                                                                                                                                                   notified->min_luminance != current->min_luminance
+                                                                                                               ? VioGpuColorConnectionReenumerate
+                                                                                                               : VioGpuColorConnectionNone;
 }
 
 /* DXGK_MONITORLINKINFO_CAPABILITIES (d3dkmdt.h, WDDM 2.1+), reported by
@@ -221,9 +219,9 @@ inline VIOGPU_COLOR_CONNECTION_ACTION VioGpuColorConnectionAction(bool initializ
 
 inline unsigned VioGpuMonitorLinkCapabilities(const VIOGPU_DISPLAY_COLOR_RESPONSE *caps, bool canonicalFp16Scanout)
 {
-    return canonicalFp16Scanout && VioGpuDisplayColorPqAdmitted(caps)
-               ? (VIOGPU_LINK_CAP_WIDE_COLOR_SPACE | VIOGPU_LINK_CAP_HIGH_COLOR_SPACE)
-               : 0U;
+    return canonicalFp16Scanout && VioGpuDisplayColorPqAdmitted(caps) ? (VIOGPU_LINK_CAP_WIDE_COLOR_SPACE |
+                                                                         VIOGPU_LINK_CAP_HIGH_COLOR_SPACE)
+                                                                      : 0U;
 }
 
 /* DXGK_DISPLAYDETECTCONTROLTYPE (d3dkmddi.h, WDDM 2.2+). */

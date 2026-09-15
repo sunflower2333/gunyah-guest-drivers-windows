@@ -226,9 +226,8 @@ BOOLEAN ValidatePresentDmaPacket(_In_ const VIOGPU_WDDM_KMD_DMA_PRIVATE *private
         privateData->Signature != VIOGPU_WDDM_DMA_SIGNATURE || privateData->Version != VioGpuWddmDmaPrivateVersion ||
         privateData->Kind != VioGpuWddmDmaKindPresent || privateData->DmaBuffer == NULL ||
         privateData->DmaBufferSize < sizeof(*packet) || privateData->CommandLength != sizeof(*packet) ||
-        privateData->Flags != (transaction->CopyOnly ? 2U : 1U) ||
-        privateData->Packet != privateData->DmaBuffer || privateData->Packet != packet ||
-        privateData->PacketLength != sizeof(*packet) || privateData->Reserved != 0 ||
+        privateData->Flags != (transaction->CopyOnly ? 2U : 1U) || privateData->Packet != privateData->DmaBuffer ||
+        privateData->Packet != packet || privateData->PacketLength != sizeof(*packet) || privateData->Reserved != 0 ||
         privateData->Submission != transaction || transaction->Signature != VIOGPU_WDDM_PRESENT_TRANSACTION_SIGNATURE ||
         transaction->ReferenceCount <= 0 || transaction->Context == NULL || transaction->Adapter == NULL ||
         transaction->Source == NULL || transaction->Destination == NULL ||
@@ -2954,10 +2953,8 @@ VOID CopyPresentRow(_Out_writes_bytes_(rowBytes) VOID *destination,
     // The caller validates both 32-bit formats, rectangles, pitches and backing
     // spans while holding both allocation lifecycles. Preserve encoded color
     // values: Present must not decode sRGB into a non-sRGB destination.
-    BOOLEAN swapRedBlue = (sourceFormat == D3DDDIFMT_A8B8G8R8) !=
-                          (destinationFormat == D3DDDIFMT_A8B8G8R8);
-    BOOLEAN opaqueAlpha = sourceFormat == D3DDDIFMT_X8R8G8B8 &&
-                          destinationFormat != D3DDDIFMT_X8R8G8B8;
+    BOOLEAN swapRedBlue = (sourceFormat == D3DDDIFMT_A8B8G8R8) != (destinationFormat == D3DDDIFMT_A8B8G8R8);
+    BOOLEAN opaqueAlpha = sourceFormat == D3DDDIFMT_X8R8G8B8 && destinationFormat != D3DDDIFMT_X8R8G8B8;
     if (!swapRedBlue && !opaqueAlpha)
     {
         RtlCopyMemory(destination, source, rowBytes);
@@ -2973,8 +2970,7 @@ VOID CopyPresentRow(_Out_writes_bytes_(rowBytes) VOID *destination,
         RtlCopyMemory(&pixel, sourceBytes + offset, sizeof(pixel));
         if (swapRedBlue)
         {
-            pixel = (pixel & 0xFF00FF00U) | ((pixel & 0x000000FFU) << 16) |
-                    ((pixel & 0x00FF0000U) >> 16);
+            pixel = (pixel & 0xFF00FF00U) | ((pixel & 0x000000FFU) << 16) | ((pixel & 0x00FF0000U) >> 16);
         }
         if (opaqueAlpha)
         {
@@ -3525,7 +3521,10 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                 BOOLEAN classifyNative = IsNativeAllocation(source);
                 LONG nonZero = 0;
                 SIZE_T span = static_cast<SIZE_T>(source->Pitch) * transaction->SourceRect.bottom;
-                if (span > 0x100000) span = 0x100000;
+                if (span > 0x100000)
+                {
+                    span = 0x100000;
+                }
                 for (SIZE_T offset = 0; offset < span; offset += 4096)
                 {
                     if (sourceBase[offset] != 0 || sourceBase[offset + 1] != 0 || sourceBase[offset + 2] != 0)
@@ -3556,8 +3555,11 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                     SIZE_T sourceOffset = (sourceTop + row) * source->Pitch + sourceLeft * 4;
                     SIZE_T destinationOffset = static_cast<SIZE_T>(destinationRect->top + row) * destination->Pitch +
                                                static_cast<SIZE_T>(destinationRect->left) * 4;
-                    CopyPresentRow(destinationBase + destinationOffset, sourceBase + sourceOffset,
-                                   rowBytes, source->Format, destination->Format);
+                    CopyPresentRow(destinationBase + destinationOffset,
+                                   sourceBase + sourceOffset,
+                                   rowBytes,
+                                   source->Format,
+                                   destination->Format);
                 }
             }
             KeMemoryBarrier();
@@ -4187,8 +4189,7 @@ NTSTATUS QueryGpuTimestampInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
     {
         return STATUS_INVALID_USER_BUFFER;
     }
-    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
-        request.Opcode != VIOGPU_WDDM_ESCAPE_GET_GPU_TIMESTAMP)
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) || request.Opcode != VIOGPU_WDDM_ESCAPE_GET_GPU_TIMESTAMP)
     {
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
@@ -5069,8 +5070,7 @@ static BOOLEAN IsPresentBlitRequest(CONST DXGKARG_ESCAPE *escape)
 {
     PAGED_CODE();
 
-    if (escape->pPrivateDriverData == NULL ||
-        escape->PrivateDriverDataSize <= sizeof(VIOGPU_WDDM_PRESENT_BLIT))
+    if (escape->pPrivateDriverData == NULL || escape->PrivateDriverDataSize <= sizeof(VIOGPU_WDDM_PRESENT_BLIT))
     {
         return FALSE;
     }
@@ -5085,8 +5085,7 @@ static BOOLEAN IsPresentBlitRequest(CONST DXGKARG_ESCAPE *escape)
         return FALSE;
     }
 
-    return IsCurrentAbiHeader(&probe.Header, sizeof(probe)) &&
-           probe.Opcode == VIOGPU_WDDM_ESCAPE_PRESENT_BLIT;
+    return IsCurrentAbiHeader(&probe.Header, sizeof(probe)) && probe.Opcode == VIOGPU_WDDM_ESCAPE_PRESENT_BLIT;
 }
 
 static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
@@ -5097,8 +5096,7 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
      * so a user-mode driver may send it through pfnEscapeCb without holding a
      * D3DKMT device of its own. */
     if (adapter == NULL || escape == NULL || escape->hContext != NULL || escape->Flags.Value != 0 ||
-        escape->pPrivateDriverData == NULL ||
-        escape->PrivateDriverDataSize <= sizeof(VIOGPU_WDDM_PRESENT_BLIT))
+        escape->pPrivateDriverData == NULL || escape->PrivateDriverDataSize <= sizeof(VIOGPU_WDDM_PRESENT_BLIT))
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -5115,16 +5113,14 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
         return STATUS_INVALID_USER_BUFFER;
     }
 
-    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
-        request.Opcode != VIOGPU_WDDM_ESCAPE_PRESENT_BLIT)
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) || request.Opcode != VIOGPU_WDDM_ESCAPE_PRESENT_BLIT)
     {
         adapter->RecordDisplayValue(34, 1);
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
 
     if (request.Flags != VIOGPU_WDDM_ESCAPE_FLAGS_NONE || request.Format != VIOGPU_WDDM_FORMAT_B8G8R8A8_UNORM ||
-        request.Width == 0 || request.Height == 0 || request.SourcePitch == 0 ||
-        request.PayloadSize == 0 ||
+        request.Width == 0 || request.Height == 0 || request.SourcePitch == 0 || request.PayloadSize == 0 ||
         request.PayloadSize != escape->PrivateDriverDataSize - sizeof(VIOGPU_WDDM_PRESENT_BLIT))
     {
         adapter->RecordDisplayValue(34, 2);
@@ -5158,8 +5154,7 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
     /* The caller measures how long it waited for the host to hand the finished
      * frame back; without it the kernel timer alone cannot say which side of
      * the escape the frame interval is spent on. */
-    adapter->RecordDisplayValue(46,
-                                static_cast<LONG>(request.ReadbackUsec > MAXLONG ? MAXLONG : request.ReadbackUsec));
+    adapter->RecordDisplayValue(46, static_cast<LONG>(request.ReadbackUsec > MAXLONG ? MAXLONG : request.ReadbackUsec));
     adapter->RecordDisplayValue(39, static_cast<LONG>(status));
     return status;
 }
@@ -5891,8 +5886,9 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
          * here. The WDDM 2.0 form pins dxgkrnl's object until the matching
          * release; the open reference taken below outlives that pin. */
         DXGKARG_RELEASE_HANDLE releaseHandle = NULL;
-        VIOGPU_WDDM_ALLOCATION *allocation = static_cast<VIOGPU_WDDM_ALLOCATION *>(
-            dxgkInterface->DxgkCbAcquireHandleData(&getHandleData, &releaseHandle));
+        VIOGPU_WDDM_ALLOCATION *allocation = static_cast<VIOGPU_WDDM_ALLOCATION *>(dxgkInterface->DxgkCbAcquireHandleData(
+                                                                                                            &getHandleData,
+                                                                                                            &releaseHandle));
         VIOGPU_WDDM_OPEN_ALLOCATION *deviceAllocation = NULL;
         if (!IsOwnedAllocation(allocation, device->Adapter))
         {
@@ -7199,16 +7195,16 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
                 }
                 BOOLEAN ownershipRetained = FALSE;
                 VIOGPU_HOST_CONTEXT_RESULT result = nativeIdentity.Adapter->CreateNativeGuestAllocation(&nativeIdentity,
-                                                                                                          allocation->ResourceId,
-                                                                                                          allocation->BlobId,
-                                                                                                          allocation->PrivateData.Size,
-                                                                                                          allocation->BackingSize,
-                                                                                                          allocation->PrivateData.RequestedIova,
-                                                                                                          entries,
-                                                                                                          entryCount,
-                                                                                                          msmFlags,
-                                                                                                          blobFlags,
-                                                                                                          &ownershipRetained);
+                                                                                                        allocation->ResourceId,
+                                                                                                        allocation->BlobId,
+                                                                                                        allocation->PrivateData.Size,
+                                                                                                        allocation->BackingSize,
+                                                                                                        allocation->PrivateData.RequestedIova,
+                                                                                                        entries,
+                                                                                                        entryCount,
+                                                                                                        msmFlags,
+                                                                                                        blobFlags,
+                                                                                                        &ownershipRetained);
                 if (ownershipRetained)
                 {
                     PublishNativePlacement(allocation,
@@ -7418,8 +7414,8 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
                 snapshotAcquired = FALSE;
 
                 VIOGPU_HOST_CONTEXT_RESULT result = nativeIdentity.Adapter->DestroyNativeGuestAllocation(&nativeIdentity,
-                                                                                                           allocation->ResourceId,
-                                                                                                           &released);
+                                                                                                         allocation->ResourceId,
+                                                                                                         &released);
                 status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
                 if (!NT_SUCCESS(status))
                 {
@@ -8208,10 +8204,9 @@ static NTSTATUS TryBuildAllocationCopy(CONST HANDLE hContext, DXGKARG_RENDER *re
         if (copy.Opcode == VIOGPU_WDDM_RENDER_ALLOCATION_COPY)
         {
             *handled = TRUE;
-            if (!IsCurrentAbiHeader(&copy.Header, sizeof(copy)) || copy.Flags != 0 ||
-                copy.Width == 0 || copy.Width > MAXLONG || copy.Height == 0 || copy.Height > MAXLONG ||
-                render->AllocationListSize != 2 || render->pAllocationList == NULL ||
-                render->PatchLocationListInSize != 0 || render->MultipassOffset != 0)
+            if (!IsCurrentAbiHeader(&copy.Header, sizeof(copy)) || copy.Flags != 0 || copy.Width == 0 ||
+                copy.Width > MAXLONG || copy.Height == 0 || copy.Height > MAXLONG || render->AllocationListSize != 2 ||
+                render->pAllocationList == NULL || render->PatchLocationListInSize != 0 || render->MultipassOffset != 0)
             {
                 return STATUS_INVALID_PARAMETER;
             }
@@ -8378,9 +8373,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
         }
     }
 
-    if (NT_SUCCESS(status) &&
-        !nativeContext.Adapter->IsNativeContextGenerationCurrent(nativeContext.Generation,
-                                                                  nativeContext.ResetGeneration))
+    if (NT_SUCCESS(status) && !nativeContext.Adapter->IsNativeContextGenerationCurrent(nativeContext.Generation,
+                                                                                       nativeContext.ResetGeneration))
     {
         renderFailureStage = 4;
         status = STATUS_DEVICE_NOT_READY;
@@ -9079,9 +9073,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
             {
                 reference->PatchedResourceId = allocation->ResourceId;
                 reference->PatchedReserved = 0;
-                reference->PatchedIova =
-                    allocation->PrivateData.RequestedIova +
-                    reference->AllocationOffset;
+                reference->PatchedIova = allocation->PrivateData.RequestedIova + reference->AllocationOffset;
             }
             KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
             if (!valid)
@@ -9101,12 +9093,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                                                                                                 sizeof(MSM_CCMD_GEM_SUBMIT_REQ) +
                                                                                                 (SIZE_T)index * sizeof(VIOGPU_WDDM_MSM_SUBMIT_BO));
             PVOID patchAddress = static_cast<BYTE *>(submission->CommandStream) + reference->PatchOffset;
-            RtlCopyMemory(&submitBo->Handle,
-                          &reference->PatchedResourceId,
-                          sizeof(reference->PatchedResourceId));
-            RtlCopyMemory(patchAddress,
-                          &reference->PatchedIova,
-                          sizeof(reference->PatchedIova));
+            RtlCopyMemory(&submitBo->Handle, &reference->PatchedResourceId, sizeof(reference->PatchedResourceId));
+            RtlCopyMemory(patchAddress, &reference->PatchedIova, sizeof(reference->PatchedIova));
         }
         if (!adapter->RefreshNativeSubmit(submission->VirtioBuffer,
                                           submission->CommandStream,
@@ -9225,8 +9213,8 @@ static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *pres
     if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Device == NULL ||
         context->Device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || context->Device->Adapter == NULL ||
         (context->Type != VioGpuWddmContextNative && context->Type != VioGpuWddmContextGdi) ||
-        (copyOnly && context->Type != VioGpuWddmContextGdi) ||
-        context->NodeOrdinal != 0 || context->EngineAffinity != 1)
+        (copyOnly && context->Type != VioGpuWddmContextGdi) || context->NodeOrdinal != 0 ||
+        context->EngineAffinity != 1)
     {
         status = STATUS_INVALID_HANDLE;
     }
@@ -9645,10 +9633,8 @@ static NTSTATUS ValidateMmioFlipPresent(CONST HANDLE hContext, DXGKARG_PRESENT *
     {
         VioGpuDod *adapter = context->Device->Adapter;
         adapter->CountDisplayEvent(VioGpuDisplayFlipPresentCalls);
-        const VIOGPU_WDDM_OPEN_ALLOCATION *sourceOpen =
-            present->pAllocationList == NULL
-                ? NULL
-                : reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX].hDeviceSpecificAllocation);
+        const VIOGPU_WDDM_OPEN_ALLOCATION *sourceOpen = present->pAllocationList == NULL ? NULL
+                                                                                         : reinterpret_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX].hDeviceSpecificAllocation);
         if (sourceOpen != NULL && sourceOpen->Signature == VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE &&
             sourceOpen->Device == context->Device && sourceOpen->Allocation != NULL &&
             IsOwnedAllocation(sourceOpen->Allocation, adapter) && IsStandardPrimaryAllocation(sourceOpen->Allocation) &&
@@ -10646,7 +10632,8 @@ static NTSTATUS QueueMmioFlip(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_SETVID
     target.HasAllocation = allocation != NULL;
     if (allocation != NULL)
     {
-        target.OwnedByAdapter = allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE && allocation->Adapter == adapter;
+        target.OwnedByAdapter = allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
+                                allocation->Adapter == adapter;
         target.StandardPrimary = target.OwnedByAdapter && IsStandardPrimaryAllocation(allocation);
         target.PlacementValid = target.OwnedByAdapter && allocation->PlacementValid;
         target.PlacementOffset = allocation->PlacementOffset;
@@ -10710,14 +10697,16 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
         !IsStandardPrimaryAllocation(allocation) || allocation->ResourceId == 0 ||
         allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || allocation->BlobId != 0 ||
         !EnsureStandard2DAllocationBacking(allocation) || !VioGpuResourceBackingAttached(allocation->Resource2DState) ||
-        !allocation->PlacementValid ||
-        static_cast<ULONGLONG>(primaryAddress) != allocation->PlacementOffset)
+        !allocation->PlacementValid || static_cast<ULONGLONG>(primaryAddress) != allocation->PlacementOffset)
     {
 #if defined(VIOGPU_NATIVE_CONTEXT)
         /* A primary that is not a standard 2D resource -- i.e. a native,
          * GPU-rendered allocation -- cannot be bound by this path. */
         adapter->CountDisplayEvent(25);
-        adapter->RecordDisplayValue(27, static_cast<LONG>(allocation->BlobId != 0 ? 2 : (allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START ? 1 : 3)));
+        adapter->RecordDisplayValue(27,
+                                    static_cast<LONG>(allocation->BlobId != 0 ? 2
+                                                                              : (allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START ? 1
+                                                                                                                                           : 3)));
 #endif
         status = STATUS_INVALID_PARAMETER;
     }
@@ -10779,13 +10768,12 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
              * bind was the only thing the host ever saw -- HostPresentCount
              * stuck at 1 against a scanout that stayed black.  Publish the
              * newly bound primary. */
-            VIOGPU_HOST_CONTEXT_RESULT flush =
-                keepPublishedFrame ? VioGpuHostContextConfirmed
-                                   : adapter->Flush2DResource(allocation->ResourceId,
-                                                              allocation->Width,
-                                                              allocation->Height,
-                                                              &allocation->Resource2DState,
-                                                              &allocation->Resource2DResetGeneration);
+            VIOGPU_HOST_CONTEXT_RESULT flush = keepPublishedFrame ? VioGpuHostContextConfirmed
+                                                                  : adapter->Flush2DResource(allocation->ResourceId,
+                                                                                             allocation->Width,
+                                                                                             allocation->Height,
+                                                                                             &allocation->Resource2DState,
+                                                                                             &allocation->Resource2DResetGeneration);
 #if defined(VIOGPU_NATIVE_CONTEXT)
             adapter->CountDisplayEvent(18);
             adapter->RecordDisplayValue(19, static_cast<LONG>(flush));
@@ -10796,9 +10784,8 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
             {
                 const BYTE *pixels = static_cast<const BYTE *>(allocation->ApertureAddress);
                 adapter->RecordDisplayValue(20, primaryNonZero);
-                adapter->RecordDisplayValue(21, static_cast<LONG>(pixels[0]) |
-                                                    (static_cast<LONG>(pixels[1]) << 8) |
-                                                    (static_cast<LONG>(pixels[2]) << 16));
+                adapter->RecordDisplayValue(21,
+                                            static_cast<LONG>(pixels[0]) | (static_cast<LONG>(pixels[1]) << 8) | (static_cast<LONG>(pixels[2]) << 16));
             }
 #else
             UNREFERENCED_PARAMETER(flush);
@@ -10821,8 +10808,8 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
     }
 #endif
     if (adapter != NULL && setVidPnSourceAddress != NULL &&
-        VioGpuClassifySourceAddress(setVidPnSourceAddress->Flags.Value, setVidPnSourceAddress->ContextCount) ==
-            VioGpuSourceAddressFlip)
+        VioGpuClassifySourceAddress(setVidPnSourceAddress->Flags.Value,
+                                    setVidPnSourceAddress->ContextCount) == VioGpuSourceAddressFlip)
     {
         return QueueMmioFlip(adapter, setVidPnSourceAddress);
     }

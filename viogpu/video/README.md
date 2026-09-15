@@ -2,7 +2,11 @@
 
 Base: `perf/droidvm-gpu-20260914`, commit
 `5ab27d4055887f14e97195079ef51716b7b707fb`.
-Development branch: `work/vpu-video-umd-perf-20260915` (draft PR #3).
+Development branch: `work/vpu-video-umd-perf-20260915`.
+PR #3 was closed without merging at the owner's request. Development and
+verification continue directly on this independent branch; no open PR is
+required. Branch pushes run video, full-WDDM, performance and repository
+format checks. CI success is not a hardware acceptance result.
 
 The initially-created `work/vpu-video-perf-20260915` received concurrent
 commits containing a different transport ABI. Those commits were not

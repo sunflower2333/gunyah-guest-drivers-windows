@@ -24,6 +24,8 @@ on:
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
+      - "viogpu/video/**"
+      - "viogpu/tests/video/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
       - "NetKVM/Common/**"
@@ -33,7 +35,7 @@ on:
       - "vioscsi/**"
       - ".github/workflows/viogpuwddm-arm64-ci.yml"
   push:
-    branches: [ master, viogpu-wddm3.1 ]
+    branches: [ master, viogpu-wddm3.1, work/vpu-video-umd-perf-20260915 ]
     paths:
       - ".install_scripts/test-viogpu-native-context-destroy-diagnostics.ps1"
       - ".install_scripts/viogpu-native-context-destroy-diagnostics.ps1"
@@ -52,6 +54,8 @@ on:
       - "viogpu/tests/wddm-private-abi/**"
       - "viogpu/viogpudo/**"
       - "viogpu/viogpud3d/**"
+      - "viogpu/video/**"
+      - "viogpu/tests/video/**"
       - "viogpu/viogpuwddm/**"
       - "VirtIO/**"
       - "NetKVM/Common/**"
@@ -60,6 +64,9 @@ on:
       - "viostor/**"
       - "vioscsi/**"
       - ".github/workflows/viogpuwddm-arm64-ci.yml"
+
+permissions:
+  contents: read
 
 jobs:
   contract-check:
@@ -471,6 +478,10 @@ jobs:
           $initializeLines
           $helperLines
 
+      - name: Prove both production export gates reject missing and unknown functions
+        shell: pwsh
+        run: ./viogpu/tests/video/binary-export-contract.ps1 -Umd viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.dll
+
       - name: Validate ARM64 full-miniport INF and PE
         shell: pwsh
         run: |
@@ -541,6 +552,8 @@ jobs:
             }
           )
           $expectedExports = @('OpenAdapter', 'OpenAdapter10', 'OpenAdapter10_2')
+          $expectedExports += @('VioGpuVideoOpen', 'VioGpuVideoControl', 'VioGpuVideoAllocate', 'VioGpuVideoQueue', 'VioGpuVideoDequeue', 'VioGpuVideoCopy', 'VioGpuVideoStream', 'VioGpuVideoClose')
+          if ($exportNames.Count -eq 0) { throw "UMD export table mismatch: no parsed exports" }
           $exportDelta = Compare-Object -ReferenceObject $expectedExports -DifferenceObject $exportNames
           if ($exportDelta -or $exportNames.Count -ne $expectedExports.Count) {
             Write-Host $exports

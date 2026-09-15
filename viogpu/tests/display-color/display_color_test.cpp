@@ -75,7 +75,9 @@ int main()
     hdr = sdr;
     hdr.usable_hdr_types = VIOGPU_DISPLAY_COLOR_PQ;
     hdr.max_luminance = 10000000;
-    auto act = [](bool initialized, bool discovered, const VIOGPU_DISPLAY_COLOR_RESPONSE &n,
+    auto act = [](bool initialized,
+                  bool discovered,
+                  const VIOGPU_DISPLAY_COLOR_RESPONSE &n,
                   const VIOGPU_DISPLAY_COLOR_RESPONSE &c) {
         return VioGpuColorConnectionAction(initialized, true, discovered, &n, &c);
     };

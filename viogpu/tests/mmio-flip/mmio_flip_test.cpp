@@ -13,7 +13,7 @@ static unsigned failures;
         if (!(c))                                                                                                      \
         {                                                                                                              \
             ++failures;                                                                                                \
-            std::fprintf(stderr, "mmio flip check %u line %d: %s\n", checks, __LINE__, #c);                          \
+            std::fprintf(stderr, "mmio flip check %u line %d: %s\n", checks, __LINE__, #c);                            \
         }                                                                                                              \
     } while (0)
 
@@ -36,8 +36,7 @@ int main()
 {
     // Public WDK bit positions; the WDK contract test asserts them against the
     // real bit-field unions.
-    static_assert(VioGpuSourceAddressFlagModeChange == 1U && VioGpuSourceAddressFlagFlipImmediate == 2U &&
-                      VioGpuSourceAddressFlagFlipOnNextVSync == 4U,
+    static_assert(VioGpuSourceAddressFlagModeChange == 1U && VioGpuSourceAddressFlagFlipImmediate == 2U && VioGpuSourceAddressFlagFlipOnNextVSync == 4U,
                   "DXGK_SETVIDPNSOURCEADDRESS_FLAGS");
     static_assert(VioGpuPresentFlagBlt == 1U && VioGpuPresentFlagColorFill == 2U && VioGpuPresentFlagFlip == 4U,
                   "DXGK_PRESENTFLAGS");

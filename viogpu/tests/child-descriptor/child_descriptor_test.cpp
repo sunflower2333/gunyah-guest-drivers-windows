@@ -13,7 +13,7 @@ static unsigned failures;
         if (!(c))                                                                                                      \
         {                                                                                                              \
             ++failures;                                                                                                \
-            std::fprintf(stderr, "child descriptor check %u line %d: %s\n", checks, __LINE__, #c);                   \
+            std::fprintf(stderr, "child descriptor check %u line %d: %s\n", checks, __LINE__, #c);                     \
         }                                                                                                              \
     } while (0)
 
@@ -66,12 +66,13 @@ int main()
           VioGpuHpdAlwaysConnected);
 
     // Child DDI trace entries can never collide with DXGKQAITYPE values.
-    static_assert((VioGpuActivationChildRelations & VioGpuActivationChildDdiFlag) != 0 &&
-                      (VioGpuActivationChildStatus & VioGpuActivationChildDdiFlag) != 0 &&
-                      (VioGpuActivationChildDescriptor & VioGpuActivationChildDdiFlag) != 0,
+    static_assert((VioGpuActivationChildRelations &
+                   VioGpuActivationChildDdiFlag) != 0 && (VioGpuActivationChildStatus & VioGpuActivationChildDdiFlag) != 0 &&
+                                                                                                                      (VioGpuActivationChildDescriptor &
+                                                                                                                       VioGpuActivationChildDdiFlag) != 0,
                   "child DDI trace type flag");
     static_assert(VioGpuActivationChildRelations > 0xFFFFU && VioGpuActivationChildRelations != VioGpuActivationChildStatus &&
-                      VioGpuActivationChildStatus != VioGpuActivationChildDescriptor,
+                                                                                                                      VioGpuActivationChildStatus != VioGpuActivationChildDescriptor,
                   "distinct child DDI trace types");
 
     std::printf("child descriptor: %u checks, %u failures\n", checks, failures);

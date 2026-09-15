@@ -306,7 +306,7 @@ int main()
     InitializeAllocationInfo(&allocInfo, &allocation, 16384);
     check(!allocInfo.FlagsWddm2.CpuVisible && !allocInfo.FlagsWddm2.Cached && allocInfo.FlagsWddm2.AccessedPhysically,
           "GPU-only allocation still participates in physical residency");
-        {
+    {
         DXGK_QUERYPHYSICALADAPTERCAPSIN physicalIn{};
         std::array<unsigned char, sizeof(DXGK_PHYSICALADAPTERCAPS) + 8> caps;
         const UINT prefix = static_cast<UINT>(offsetof(DXGK_PHYSICALADAPTERCAPS, Flags) + sizeof(UINT));
@@ -315,8 +315,8 @@ int main()
         check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_SUCCESS, "OS WDDM2.0 20-byte extent accepted");
         DXGK_PHYSICALADAPTERCAPS decoded{};
         std::memcpy(&decoded, caps.data(), prefix);
-        check(decoded.NumExecutionNodes == 1 && decoded.PagingNodeIndex == 0 &&
-                  decoded.DxgkPhysicalAdapterHandle == adapter.Interface.DeviceHandle && decoded.Flags.Value == 0,
+        check(decoded.NumExecutionNodes == 1 && decoded.PagingNodeIndex == 0 && decoded.DxgkPhysicalAdapterHandle == adapter.Interface.DeviceHandle &&
+                                                                                                                  decoded.Flags.Value == 0,
               "one physical node pages itself with the actual DXGK handle and no MMU flags");
         for (size_t i = prefix; i < caps.size(); ++i)
         {
@@ -371,13 +371,15 @@ int main()
         DXGKARG_CALIBRATEGPUCLOCK clock{0xdeadbeef, 0xfeedface};
         performanceSamples = 0;
         check(VioGpuWddmCalibrateGpuClock(&adapter, 0, 0, &clock) == STATUS_SUCCESS, "clock calibration answered");
-        check(performanceSamples == 1 && clock.GpuClockCounter == clock.CpuClockCounter &&
-                  clock.CpuClockCounter == 0x100000000ULL + 7919,
+        check(performanceSamples == 1 && clock.GpuClockCounter == clock.CpuClockCounter && clock.CpuClockCounter == 0x100000000ULL + 7919,
               "GPU and CPU counters come from one performance counter sample");
         check(VioGpuWddmCalibrateGpuClock(&adapter, 1, 0, &clock) == STATUS_INVALID_PARAMETER, "unknown node rejected");
-        check(VioGpuWddmCalibrateGpuClock(&adapter, 0, 1, &clock) == STATUS_INVALID_PARAMETER, "unknown engine rejected");
-        check(VioGpuWddmCalibrateGpuClock(nullptr, 0, 0, &clock) == STATUS_INVALID_PARAMETER, "missing adapter rejected");
-        check(VioGpuWddmCalibrateGpuClock(&adapter, 0, 0, nullptr) == STATUS_INVALID_PARAMETER, "missing output rejected");
+        check(VioGpuWddmCalibrateGpuClock(&adapter, 0, 1, &clock) == STATUS_INVALID_PARAMETER,
+              "unknown engine rejected");
+        check(VioGpuWddmCalibrateGpuClock(nullptr, 0, 0, &clock) == STATUS_INVALID_PARAMETER,
+              "missing adapter rejected");
+        check(VioGpuWddmCalibrateGpuClock(&adapter, 0, 0, nullptr) == STATUS_INVALID_PARAMETER,
+              "missing output rejected");
         check(performanceSamples == 1, "refused calibrations take no sample");
 
         std::array<unsigned char, 8> extension;

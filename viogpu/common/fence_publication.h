@@ -16,15 +16,20 @@ struct VioGpuFencePublication
 
     static bool After(unsigned candidate, unsigned previous)
     {
-        return candidate != 0 &&
-               (previous == 0 || (candidate != previous && candidate - previous < 0x80000000U));
+        return candidate != 0 && (previous == 0 || (candidate != previous && candidate - previous < 0x80000000U));
     }
 
-    bool Prepare(unsigned notificationEpoch, unsigned activeEpoch, unsigned resetFloor,
-                 unsigned completed, bool preemption, unsigned &reported)
+    bool Prepare(unsigned notificationEpoch,
+                 unsigned activeEpoch,
+                 unsigned resetFloor,
+                 unsigned completed,
+                 bool preemption,
+                 unsigned &reported)
     {
         if (notificationEpoch != activeEpoch)
+        {
             return false;
+        }
         if (Epoch != activeEpoch)
         {
             Epoch = activeEpoch;
@@ -32,7 +37,9 @@ struct VioGpuFencePublication
         }
         const bool advanced = After(completed, Fence);
         if (advanced)
+        {
             Fence = completed;
+        }
         reported = Fence;
         // Preemption must still be acknowledged with the latest known fence,
         // including an idle engine's zero. Duplicate completion needs no IRQ.

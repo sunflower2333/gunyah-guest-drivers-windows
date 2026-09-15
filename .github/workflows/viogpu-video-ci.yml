@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
   push:
     branches: [work/vpu-video-umd-perf-20260915]
-    paths: ['viogpu/video/**', 'viogpu/viogpuvideo/**', 'viogpu/viogpud3d/**', 'viogpu/tests/video/**', 'viogpu/viogpuwddm/check-contract.py', '.github/workflows/viogpu-video-ci.yml']
+    paths: ['viogpu/video/**', 'viogpu/viogpuvideo/**', 'viogpu/viogpud3d/**', 'viogpu/tests/video/**', 'viogpu/viogpuwddm/check-contract.py', '.github/workflows/viogpuwddm-arm64-ci.yml', '.github/workflows/build-arm64-drivers.yml', '.github/workflows/viogpu-video-ci.yml']
   pull_request:
-    paths: ['viogpu/video/**', 'viogpu/viogpuvideo/**', 'viogpu/viogpud3d/**', 'viogpu/tests/video/**', 'viogpu/viogpuwddm/check-contract.py', '.github/workflows/viogpu-video-ci.yml']
+    paths: ['viogpu/video/**', 'viogpu/viogpuvideo/**', 'viogpu/viogpud3d/**', 'viogpu/tests/video/**', 'viogpu/viogpuwddm/check-contract.py', '.github/workflows/viogpuwddm-arm64-ci.yml', '.github/workflows/build-arm64-drivers.yml', '.github/workflows/viogpu-video-ci.yml']
 permissions:
   contents: read
 concurrency:
@@ -27,6 +27,8 @@ jobs:
         run: python3 viogpu/tests/video/no_pool_dependency_test.py
       - name: Exercise the WDDM contract and reject missing or unknown exports
         run: python3 viogpu/tests/video/export_contract_test.py
+      - name: Check diagnostic string normalization without weakening names
+        run: python3 viogpu/tests/video/canonical_string_contract_test.py
   arm64-build:
     runs-on: windows-11-arm
     steps:
@@ -48,6 +50,10 @@ jobs:
         run: |
           cl /nologo /std:c++17 /EHsc /W4 /WX viogpu\tests\video\codec_probe.cpp viogpu\viogpuwddm\objfre_win11_arm64\arm64\viogpud3d.lib /Fe:video-codec-test.exe
           if errorlevel 1 exit /b 1
+      - name: Prove both production export gates reject missing and unknown functions
+        shell: pwsh
+        run: ./viogpu/tests/video/binary-export-contract.ps1 -Umd viogpu/viogpuwddm/objfre_win11_arm64/arm64/viogpud3d.dll
+
       - name: Upload unsigned review build and test client
         uses: actions/upload-artifact@v4
         with:

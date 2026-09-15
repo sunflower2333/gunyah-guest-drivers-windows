@@ -19,7 +19,7 @@ int main()
     assert(state.Prepare(1, 1, 0, 0x41dec, true, reported) && reported == 0x41ded);
 
     // Every delivery order preserves an increasing, nonduplicated stream.
-    unsigned order[] = { 0, 1, 2, 3 };
+    unsigned order[] = {0, 1, 2, 3};
     unsigned permutations = 0;
     do
     {
@@ -53,14 +53,18 @@ int main()
         std::lock_guard<std::mutex> interrupt(interruptLock);
         uint32_t fence;
         if (state.Prepare(1, 1, 0, 100, false, fence))
+        {
             delivered.push_back(fence);
+        }
     });
     std::thread newer([&] {
         {
             std::lock_guard<std::mutex> interrupt(interruptLock);
             uint32_t fence;
             if (state.Prepare(1, 1, 0, 101, false, fence))
+            {
                 delivered.push_back(fence);
+            }
         }
         {
             std::lock_guard<std::mutex> lock(gateLock);

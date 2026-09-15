@@ -278,7 +278,7 @@ inline BOOLEAN VioGpuResourceBackingAttached(VIOGPU_2D_RESOURCE_STATE state)
     return state == VioGpu2DResourceBackingAttached || state == VioGpu2DResourceGuestBlobBackingAttached;
 }
 
-#define MAX_INLINE_CMD_SIZE             96
+#define MAX_INLINE_CMD_SIZE               96
 #define MAX_INLINE_RESP_SIZE              24
 #define VBUFFER_SIZE                      (sizeof(GPU_VBUFFER) + MAX_INLINE_CMD_SIZE + MAX_INLINE_RESP_SIZE)
 #define VIOGPU_NATIVE_CONTROL_BLOB_SIZE   0x4000U
@@ -570,8 +570,9 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN BeginSynchronousRequest(void);
     void EndSynchronousRequest(void);
     BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer);
-    __declspec(noinline) BOOLEAN
-    SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted);
+    __declspec(noinline) BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER buf,
+                                                         _Out_ PBOOLEAN release_buffer,
+                                                         _Out_ PBOOLEAN submitted);
     void RecordFirstSynchronousTimeout(PGPU_VBUFFER buf, NTSTATUS status, LONG64 epochState, ULONG_PTR caller);
     VIOGPU_HOST_CONTEXT_RESULT SubmitSynchronousNoDataLocked(PGPU_VBUFFER buf);
     KMUTEX m_SynchronousMutex;

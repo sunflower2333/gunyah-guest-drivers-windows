@@ -437,7 +437,7 @@ ULONG CtrlQueue::SynchronousEpochGenerationValue(void)
 }
 
 static void VioGpuDecodeSynchronousTimeoutCommand(const GPU_VBUFFER *buf,
-                                                 VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *diagnostic)
+                                                  VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *diagnostic)
 {
     if (buf == NULL || buf->buf == NULL || buf->size < static_cast<int>(sizeof(GPU_CTRL_HDR)))
     {
@@ -453,10 +453,10 @@ static void VioGpuDecodeSynchronousTimeoutCommand(const GPU_VBUFFER *buf,
      * SUBMIT_3D byte counts and response bytes are never resource identities. */
     SIZE_T requiredSize = 0;
     SIZE_T resourceOffset = 0;
-#define VIOGPU_TIMEOUT_RESOURCE(command, wire) \
-    case command: \
-        requiredSize = sizeof(wire); \
-        resourceOffset = FIELD_OFFSET(wire, resource_id); \
+#define VIOGPU_TIMEOUT_RESOURCE(command, wire)                                                                         \
+    case command:                                                                                                      \
+        requiredSize = sizeof(wire);                                                                                   \
+        resourceOffset = FIELD_OFFSET(wire, resource_id);                                                              \
         break
     switch (header.type)
     {
@@ -896,8 +896,9 @@ BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN rele
     return SubmitSynchronousLocked(buf, release_buffer, &submitted);
 }
 
-__declspec(noinline) BOOLEAN
-CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted)
+__declspec(noinline) BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf,
+                                                                _Out_ PBOOLEAN release_buffer,
+                                                                _Out_ PBOOLEAN submitted)
 {
     if (buf == NULL || release_buffer == NULL || submitted == NULL)
     {

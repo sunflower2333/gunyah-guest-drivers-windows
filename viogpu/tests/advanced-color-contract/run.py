@@ -40,18 +40,35 @@ else:
 GATE = "#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)\n"
 
 
-def ungate(text, marker):
+def ungate(text, marker, scope=None):
     """Delete the WDDM2.3 #if/#endif pair that encloses the first marker."""
-    at = text.index(marker)
+    matches = anchor_matches(text, marker)
+    if scope is not None:
+        start = text.index(scope)
+        matches = [m for m in matches if m.start() >= start]
+    if len(matches) != 1:
+        raise SystemExit(f"gate marker not unique: {marker!r}")
+    at = matches[0].start()
     start = text.rindex(GATE, 0, at)
     end = text.index("#endif\n", at)
     return text[:start] + text[start + len(GATE):end] + text[end + len("#endif\n"):]
 
 
+def anchor_matches(text, anchor):
+    """Match the same non-whitespace source characters across formatter wrapping."""
+    pattern = r"\s*".join(re.escape(ch) for ch in anchor if not ch.isspace())
+    if not pattern:
+        raise ValueError("empty mutation anchor")
+    return list(re.finditer(pattern, text))
+
+
 def replace_once(text, old, new):
-    if text.count(old) != 1:
-        raise SystemExit(f"mutation anchor not unique ({text.count(old)}): {old[:70]!r}")
-    return text.replace(old, new)
+    """Replace one unique production anchor; a changed name/operator still fails."""
+    matches = anchor_matches(text, old)
+    if len(matches) != 1:
+        raise SystemExit(f"mutation anchor not unique ({len(matches)}): {old[:70]!r}")
+    match = matches[0]
+    return text[:match.start()] + new + text[match.end():]
 
 
 mutations = [
@@ -89,7 +106,7 @@ mutations = [
                          "        initialData->DxgkDdiUpdateMonitorLinkInfo = VioGpuWddmUpdateMonitorLinkInfo;\n#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)\n        initialData->DxgkDdiSetTargetAdjustedColorimetry"),
      "default WDDM2.0 driver_entry.cpp exposes VioGpuWddmUpdateMonitorLinkInfo"),
     ("default build refreshes color connection", "viogpudo.cpp",
-     lambda t: ungate(t, "    if (m_pHWDevice != NULL && !IsRenderOnly()) m_pHWDevice->RequestColorConnectionRefresh();"),
+     lambda t: ungate(t, "m_pHWDevice->RequestColorConnectionRefresh();", "NTSTATUS VioGpuDod::QueryChildRelations("),
      "default WDDM2.0 viogpudo.cpp exposes RequestColorConnectionRefresh"),
     ("display event drops SDR connected report", "viogpudo.cpp",
      lambda t: replace_once(t, "        if (InterlockedCompareExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 0, 0) != 0)\n        {\n            UpdateChildStatus(TRUE);\n        }\n", ""),
@@ -113,7 +130,7 @@ mutations = [
                             "        const auto result = Set2DScanout(0, 0, 0, 0, &previousResource);"),
      "target power-off must supersede an unbound flip"),
     ("flip policy ignores ten-bit primaries", "mmio_flip.h",
-     lambda t: replace_once(t, "    if (target.HighPrecision)\n        return VioGpuFlipTargetHighPrecision;\n", ""),
+     lambda t: replace_once(t, "    if (target.HighPrecision)\n    {\n        return VioGpuFlipTargetHighPrecision;\n    }\n", ""),
      "the flip policy must refuse ten-bit primaries after ownership and type"),
     ("default Advanced Color registration", "driver_entry.cpp",
      lambda t: ungate(t, "initialData->DxgkDdiSetTargetGamma = VioGpuWddmSetTargetGamma;"),

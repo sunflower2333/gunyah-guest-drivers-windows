@@ -140,8 +140,7 @@ static BOOLEAN VioGpuNotifyNativeSchedulerAtDirql(_In_opt_ PVOID context)
     // Software DPCs and passive GPU completions may reach DIRQL in the
     // opposite order to retirement. Select/deduplicate the contiguous fence
     // here, under the same interrupt lock as the actual scheduler callback.
-    if (!notification->Owner->PrepareNativeSchedulerNotificationAtDirql(&notification->Data,
-                                                                         notification->FenceEpoch))
+    if (!notification->Owner->PrepareNativeSchedulerNotificationAtDirql(&notification->Data, notification->FenceEpoch))
     {
         return TRUE; // obsolete notification is already satisfied or reset
     }
@@ -236,8 +235,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     KeInitializeMutex(&m_NativeContextDestroyDiagnosticMutex, 0);
     KeInitializeMutex(&m_NativeActivationTraceMutex, 0);
     RtlZeroMemory(&m_NativeActivationTrace, sizeof(m_NativeActivationTrace));
-    m_ChildDescriptorMode =
-        VioGpuDefaultChildDescriptorMode(DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_0);
+    m_ChildDescriptorMode = VioGpuDefaultChildDescriptorMode(DXGKDDI_INTERFACE_VERSION >=
+                                                             DXGKDDI_INTERFACE_VERSION_WDDM2_0);
     m_PendingFlipAllocation = NULL;
     KeInitializeMutex(&m_FlipApplyMutex, 0);
     m_NativeFenceHead = 0;
@@ -1349,8 +1348,8 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
     }
 }
 
-BOOLEAN VioGpuDod::PrepareNativeSchedulerNotificationAtDirql(
-    _Inout_ DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification, _In_ ULONG fenceEpoch)
+BOOLEAN VioGpuDod::PrepareNativeSchedulerNotificationAtDirql(_Inout_ DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
+                                                             _In_ ULONG fenceEpoch)
 {
     const bool completion = notification->InterruptType == DXGK_INTERRUPT_DMA_COMPLETED;
     const bool preemption = notification->InterruptType == DXGK_INTERRUPT_DMA_PREEMPTED;
@@ -1369,9 +1368,13 @@ BOOLEAN VioGpuDod::PrepareNativeSchedulerNotificationAtDirql(
     }
 #endif
     if (!completion && !preemption)
+    {
         return TRUE;
+    }
     if (IsHardwareResetRequested() || InterlockedCompareExchange(&m_NativeFenceNotificationClosed, 0, 0))
+    {
         return FALSE;
+    }
 
     const ULONG activeEpoch = QueryNativeFenceEpoch();
     const UINT resetFloor = static_cast<UINT>(InterlockedCompareExchange(&m_NativeFenceResetFloor, 0, 0));
@@ -1379,16 +1382,24 @@ BOOLEAN VioGpuDod::PrepareNativeSchedulerNotificationAtDirql(
     // Never spin on a seqlock at DIRQL: its DPC writer might be interrupted
     // on this CPU. Reset owns abandoned notifications, so reject a changing
     // or gated snapshot and let the new epoch's work notify normally.
-    if (activeEpoch != QueryNativeFenceEpoch() ||
-        InterlockedCompareExchange(&m_NativeFenceNotificationClosed, 0, 0) || IsHardwareResetRequested())
+    if (activeEpoch != QueryNativeFenceEpoch() || InterlockedCompareExchange(&m_NativeFenceNotificationClosed, 0, 0) ||
+        IsHardwareResetRequested())
+    {
         return FALSE;
+    }
     UINT reported = 0;
     if (!m_NativeFencePublication.Prepare(fenceEpoch, activeEpoch, resetFloor, completed, preemption, reported))
+    {
         return FALSE;
+    }
     if (completion)
+    {
         notification->DmaCompleted.SubmissionFenceId = reported;
+    }
     else
+    {
         notification->DmaPreempted.LastCompletedFenceId = reported;
+    }
     return TRUE;
 }
 
@@ -1747,17 +1758,18 @@ BOOLEAN VioGpuDod::NativePassiveDispatchReadyLocked(VIOGPU_NATIVE_PASSIVE_WORK *
     {
         return FALSE;
     }
-    VIOGPU_NATIVE_PASSIVE_WORK *next = IsListEmpty(&m_NativePassiveQueue)
-        ? incoming : CONTAINING_RECORD(m_NativePassiveQueue.Flink, VIOGPU_NATIVE_PASSIVE_WORK, Link);
+    VIOGPU_NATIVE_PASSIVE_WORK *next = IsListEmpty(&m_NativePassiveQueue) ? incoming
+                                                                          : CONTAINING_RECORD(m_NativePassiveQueue.Flink,
+                                                                                              VIOGPU_NATIVE_PASSIVE_WORK,
+                                                                                              Link);
     return next != NULL && (next->PipelineEligible || m_NativePassiveHostPendingCount == 0);
 }
 
 // Include host-owned work and a running dispatcher in reset/close drain checks.
 BOOLEAN VioGpuDod::NativePassiveIdleLocked(void)
 {
-    return m_NativePassiveActiveWork == NULL && !m_NativePassiveWorkerQueued &&
-           !m_NativePassiveWorkerRunning && IsListEmpty(&m_NativePassiveQueue) &&
-           IsListEmpty(&m_NativePassiveHostPending);
+    return m_NativePassiveActiveWork == NULL && !m_NativePassiveWorkerQueued && !m_NativePassiveWorkerRunning &&
+           IsListEmpty(&m_NativePassiveQueue) && IsListEmpty(&m_NativePassiveHostPending);
 }
 
 // Handoff is idempotent if a fast terminal callback already retired this work.
@@ -1827,8 +1839,7 @@ VOID VioGpuDod::CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *wo
                 m_NativeSubmitPerf.RetireDurationMax100ns = elapsed;
             }
         }
-        if (!m_NativePassiveWorkerQueued && !m_NativePassiveWorkerRunning &&
-            NativePassiveDispatchReadyLocked())
+        if (!m_NativePassiveWorkerQueued && !m_NativePassiveWorkerRunning && NativePassiveDispatchReadyLocked())
         {
             if (ExAcquireRundownProtection(&m_HardwareOperations))
             {
@@ -1887,8 +1898,8 @@ VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP VioGpuDod::CancelNativePassiveWork(_Inout_ 
     {
         ownership = VioGpuNativePassiveOwnershipWorkerOwned;
     }
-    if (!m_NativePassiveWorkerQueued && !m_NativePassiveWorkerRunning &&
-        NativePassiveDispatchReadyLocked() && ExAcquireRundownProtection(&m_HardwareOperations))
+    if (!m_NativePassiveWorkerQueued && !m_NativePassiveWorkerRunning && NativePassiveDispatchReadyLocked() &&
+        ExAcquireRundownProtection(&m_HardwareOperations))
     {
         m_NativePassiveWorkerQueued = TRUE;
         queueWorker = TRUE;
@@ -1927,8 +1938,8 @@ VOID VioGpuDod::CloseNativePassiveQueue(void)
             InterlockedExchange(active->CancelRequested, 1);
         }
     }
-    for (PLIST_ENTRY entry = m_NativePassiveHostPending.Flink;
-         entry != &m_NativePassiveHostPending; entry = entry->Flink)
+    for (PLIST_ENTRY entry = m_NativePassiveHostPending.Flink; entry != &m_NativePassiveHostPending;
+         entry = entry->Flink)
     {
         VIOGPU_NATIVE_PASSIVE_WORK *work = CONTAINING_RECORD(entry, VIOGPU_NATIVE_PASSIVE_WORK, Link);
         InterlockedExchange(&work->Retired, 1);
@@ -2012,16 +2023,26 @@ VOID VioGpuDod::ReportNativeSubmitPerf(void)
     KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
     if (report)
     {
-        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+        DbgPrintEx(DPFLTR_DEFAULT_ID,
+                   DPFLTR_INFO_LEVEL,
                    "viogpu perf: window=%u accepted=%llu dispatched=%llu retired=%llu cancelled_queued=%llu\n"
                    "  render=%llu bytes=%llu refs=%llu refs_max=%u pending_peak=%u host_pending_peak=%u\n"
                    "  render_retired=%llu retire_100ns_total=%llu retire_100ns_max=%llu handoffs=%llu\n",
                    static_cast<UINT>(VIOGPU_NATIVE_PIPELINE_WINDOW),
-                   snapshot.Accepted, snapshot.Dispatched, snapshot.Retired, snapshot.CancelledQueued,
-                   snapshot.RenderDispatched, snapshot.RenderBytes, snapshot.RenderReferences,
-                   snapshot.ReferencesMax, snapshot.PendingPeak, snapshot.HostPendingPeak,
-                   snapshot.RenderRetired, snapshot.RetireDuration100ns,
-                   snapshot.RetireDurationMax100ns, snapshot.PipelineHandoffs);
+                   snapshot.Accepted,
+                   snapshot.Dispatched,
+                   snapshot.Retired,
+                   snapshot.CancelledQueued,
+                   snapshot.RenderDispatched,
+                   snapshot.RenderBytes,
+                   snapshot.RenderReferences,
+                   snapshot.ReferencesMax,
+                   snapshot.PendingPeak,
+                   snapshot.HostPendingPeak,
+                   snapshot.RenderRetired,
+                   snapshot.RetireDuration100ns,
+                   snapshot.RetireDurationMax100ns,
+                   snapshot.PipelineHandoffs);
     }
 }
 
@@ -2451,9 +2472,8 @@ NTSTATUS VioGpuDod::PublishPresentBlit(_In_ UINT width,
     }
 
     VioGpuAdapter *adapter = m_pHWDevice;
-    NTSTATUS status = adapter != NULL
-                          ? adapter->PublishPresentBlit(width, height, sourcePitch, payload, payloadSize)
-                          : STATUS_DEVICE_NOT_READY;
+    NTSTATUS status = adapter != NULL ? adapter->PublishPresentBlit(width, height, sourcePitch, payload, payloadSize)
+                                      : STATUS_DEVICE_NOT_READY;
     ReleaseNativeSubmissionOperation();
     if (NT_SUCCESS(status))
     {
@@ -3053,7 +3073,8 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
 
     static_assert(VioGpuVotInternal == D3DKMDT_VOT_INTERNAL, "child descriptor output technology");
     static_assert(VioGpuVotHdmi == D3DKMDT_VOT_HDMI, "child descriptor output technology");
-    static_assert(VioGpuVotDisplayPortExternal == D3DKMDT_VOT_DISPLAYPORT_EXTERNAL, "child descriptor output technology");
+    static_assert(VioGpuVotDisplayPortExternal == D3DKMDT_VOT_DISPLAYPORT_EXTERNAL,
+                  "child descriptor output technology");
     static_assert(VioGpuHpdAlwaysConnected == HpdAwarenessAlwaysConnected, "child descriptor HPD awareness");
     static_assert(VioGpuHpdInterruptible == HpdAwarenessInterruptible, "child descriptor HPD awareness");
     const VioGpuChildDescriptor descriptor = VioGpuChildDescriptorFor(m_ChildDescriptorMode);
@@ -3072,10 +3093,10 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
          * called, which is a black scanout with no presents. */
         /* Interruptible modes answer the port driver's enumeration-time
          * QueryChildStatus as connected instead (see child_descriptor.h). */
-        pChildRelations[ChildIndex].ChildCapabilities.HpdAwareness =
-            static_cast<DXGK_CHILD_DEVICE_HPD_AWARENESS>(descriptor.HpdAwareness);
-        pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.InterfaceTechnology =
-            static_cast<D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY>(descriptor.InterfaceTechnology);
+        pChildRelations[ChildIndex].ChildCapabilities.HpdAwareness = static_cast<DXGK_CHILD_DEVICE_HPD_AWARENESS>(
+                                                                                                            descriptor.HpdAwareness);
+        pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.InterfaceTechnology = static_cast<D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY>(
+                                                                                                            descriptor.InterfaceTechnology);
         pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.MonitorOrientationAwareness = D3DKMDT_MOA_NONE;
         pChildRelations[ChildIndex].ChildCapabilities.Type.VideoOutput.SupportsSdtvModes = FALSE;
         pChildRelations[ChildIndex].AcpiUid = 0;
@@ -3091,7 +3112,10 @@ NTSTATUS VioGpuDod::QueryChildRelations(_Out_writes_bytes_(ChildRelationsSize) D
                                 descriptor.HpdAwareness);
 #endif
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
-    if (m_pHWDevice != NULL && !IsRenderOnly()) m_pHWDevice->RequestColorConnectionRefresh();
+    if (m_pHWDevice != NULL && !IsRenderOnly())
+    {
+        m_pHWDevice->RequestColorConnectionRefresh();
+    }
 #endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return STATUS_SUCCESS;
@@ -3174,8 +3198,7 @@ NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVI
     }
     else if (pDeviceDescriptor->DescriptorOffset < edidSize)
     {
-        ULONG len = min(pDeviceDescriptor->DescriptorLength,
-                        (edidSize - pDeviceDescriptor->DescriptorOffset));
+        ULONG len = min(pDeviceDescriptor->DescriptorLength, (edidSize - pDeviceDescriptor->DescriptorOffset));
         RtlCopyMemory(pDeviceDescriptor->DescriptorBuffer, (edid + pDeviceDescriptor->DescriptorOffset), len);
         pDeviceDescriptor->DescriptorLength = len;
         status = STATUS_SUCCESS;
@@ -3185,7 +3208,12 @@ NTSTATUS VioGpuDod::QueryDeviceDescriptor(_In_ ULONG ChildUid, _Inout_ DXGK_DEVI
         status = STATUS_MONITOR_NO_MORE_DESCRIPTOR_DATA;
     }
 #if defined(VIOGPU_NATIVE_CONTEXT)
-    RecordNativeActivationChild(VioGpuActivationChildDescriptor, status, ChildUid, requestedOffset, requestedLength, edidSize);
+    RecordNativeActivationChild(VioGpuActivationChildDescriptor,
+                                status,
+                                ChildUid,
+                                requestedOffset,
+                                requestedLength,
+                                edidSize);
 #endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
     return status;
@@ -3196,7 +3224,9 @@ NTSTATUS VioGpuDod::GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine)
     PAGED_CODE();
     if (pGetScanLine == NULL || pGetScanLine->VidPnTargetId != 0 || !IsDriverActive() || !IsHardwareInit() ||
         !m_CurrentMode.Flags.FrameBufferIsActive || m_CurrentMode.Flags.SourceNotVisible)
+    {
         return STATUS_DEVICE_NOT_READY;
+    }
 
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
@@ -3206,7 +3236,9 @@ NTSTATUS VioGpuDod::GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine)
     const LONGLONG now = KeQueryPerformanceCounter(NULL).QuadPart;
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     if (period <= 0 || now < epoch)
+    {
         return STATUS_DEVICE_NOT_READY;
+    }
     // The callback reports the START of blanking. Scanline uses that same
     // software epoch, with active scan beginning after the blanking lines.
     const ULONGLONG position = static_cast<ULONGLONG>(now - epoch) % period;
@@ -3230,7 +3262,9 @@ NTSTATUS VioGpuDod::SetCrtcTiming(const VIOGPU_DISPLAY_TIMING &timing)
     m_CrtcEpoch = now.QuadPart;
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0))
+    {
         return ArmCrtcVsyncTimer();
+    }
     return STATUS_SUCCESS;
 }
 
@@ -3256,7 +3290,7 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
     KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
     const LONGLONG period = static_cast<LONGLONG>(VioGpuTimingPeriod100ns(m_CrtcTiming));
     m_CrtcPeriodTicks = (frequency.QuadPart * m_CrtcTiming.TotalWidth * m_CrtcTiming.TotalHeight) /
-                       m_CrtcTiming.PixelClock;
+                        m_CrtcTiming.PixelClock;
     m_CrtcEpoch = now.QuadPart;
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     ExSetTimer(m_CrtcVsyncTimer, -period, period, NULL);
@@ -3471,7 +3505,9 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                         caps.max_average_luminance == MAXULONG || caps.max_luminance == 0 ||
                         caps.max_average_luminance == 0 || caps.min_luminance >= caps.max_luminance ||
                         caps.max_average_luminance > caps.max_luminance)
+                    {
                         return STATUS_SUCCESS;
+                    }
                     output->FormatBitDepths.Rgb = D3DKMDT_BITS_PER_COMPONENT_08 | D3DKMDT_BITS_PER_COMPONENT_10;
                     output->StandardColorimetryFlags.BT2020RGB = 1;
                     output->StandardColorimetryFlags.ST2084 = 1;
@@ -4007,10 +4043,11 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
     {
         D3DKMDT_VIDPN_SOURCE_MODE *pVidPnSourceModeInfo = NULL;
         PVIDEO_MODE_INFORMATION pModeInfo = m_pHWDevice->GetModeInfo(idx);
-        if (pPinnedTarget != NULL &&
-            (pModeInfo->VisScreenWidth != pPinnedTarget->VideoSignalInfo.ActiveSize.cx ||
-             pModeInfo->VisScreenHeight != pPinnedTarget->VideoSignalInfo.ActiveSize.cy))
+        if (pPinnedTarget != NULL && (pModeInfo->VisScreenWidth != pPinnedTarget->VideoSignalInfo.ActiveSize.cx ||
+                                      pModeInfo->VisScreenHeight != pPinnedTarget->VideoSignalInfo.ActiveSize.cy))
+        {
             continue;
+        }
         for (UINT formatIndex = 0; formatIndex < formatCount; ++formatIndex)
         {
             NTSTATUS Status = pVidPnSourceModeSetInterface->pfnCreateNewModeInfo(hVidPnSourceModeSet,
@@ -4080,8 +4117,9 @@ VOID VioGpuDod::BuildVideoSignalInfo(D3DKMDT_VIDEO_SIGNAL_INFO *pVideoSignalInfo
     // PixelRate is64bit; D3DDDI_RATIONAL components are only32bit.
     unsigned numerator = 0, denominator = 0;
     VioGpuTimingRational(timing.PixelClock,
-                        static_cast<unsigned long long>(timing.TotalWidth) * timing.TotalHeight,
-                        numerator, denominator);
+                         static_cast<unsigned long long>(timing.TotalWidth) * timing.TotalHeight,
+                         numerator,
+                         denominator);
     pVideoSignalInfo->VSyncFreq.Numerator = numerator;
     pVideoSignalInfo->VSyncFreq.Denominator = denominator;
     VioGpuTimingRational(timing.PixelClock, timing.TotalWidth, numerator, denominator);
@@ -4099,7 +4137,9 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
     PAGED_CODE();
     UNREFERENCED_PARAMETER(SourceId);
     if (pVidPnPinnedSourceModeInfo != NULL && pVidPnPinnedSourceModeInfo->Type != D3DKMDT_RMT_GRAPHICS)
+    {
         return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+    }
 
     bool found = false;
     for (UINT ModeIndex = 0; ModeIndex < m_pHWDevice->GetModeCount(); ++ModeIndex)
@@ -4108,14 +4148,19 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
         if (pVidPnPinnedSourceModeInfo != NULL &&
             (candidate->VisScreenWidth != pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cx ||
              candidate->VisScreenHeight != pVidPnPinnedSourceModeInfo->Format.Graphics.VisibleRegionSize.cy))
+        {
             continue;
+        }
         D3DKMDT_VIDPN_TARGET_MODE *pVidPnTargetModeInfo = NULL;
-        NTSTATUS Status = pVidPnTargetModeSetInterface->pfnCreateNewModeInfo(hVidPnTargetModeSet, &pVidPnTargetModeInfo);
+        NTSTATUS Status = pVidPnTargetModeSetInterface->pfnCreateNewModeInfo(hVidPnTargetModeSet,
+                                                                             &pVidPnTargetModeInfo);
         if (!NT_SUCCESS(Status))
+        {
             return Status;
+        }
         BuildVideoSignalInfo(&pVidPnTargetModeInfo->VideoSignalInfo, candidate);
-        pVidPnTargetModeInfo->Preference = ModeIndex == m_pHWDevice->GetCurrentModeIndex()
-            ? D3DKMDT_MP_PREFERRED : D3DKMDT_MP_NOTPREFERRED;
+        pVidPnTargetModeInfo->Preference = ModeIndex == m_pHWDevice->GetCurrentModeIndex() ? D3DKMDT_MP_PREFERRED
+                                                                                           : D3DKMDT_MP_NOTPREFERRED;
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
         pVidPnTargetModeInfo->WireFormatAndPreference.Rgb = D3DKMDT_BITS_PER_COMPONENT_08;
         if (IsNativeHdrModeAvailable())
@@ -4126,11 +4171,14 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
         Status = pVidPnTargetModeSetInterface->pfnAddMode(hVidPnTargetModeSet, pVidPnTargetModeInfo);
         if (!NT_SUCCESS(Status))
         {
-            NTSTATUS releaseStatus = pVidPnTargetModeSetInterface->pfnReleaseModeInfo(hVidPnTargetModeSet, pVidPnTargetModeInfo);
+            NTSTATUS releaseStatus = pVidPnTargetModeSetInterface->pfnReleaseModeInfo(hVidPnTargetModeSet,
+                                                                                      pVidPnTargetModeInfo);
             NT_ASSERT(NT_SUCCESS(releaseStatus));
             UNREFERENCED_PARAMETER(releaseStatus);
             if (Status != STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET)
+            {
                 return Status;
+            }
         }
         found = true;
     }
@@ -4380,15 +4428,23 @@ NTSTATUS VioGpuDod::EnumVidPnCofuncModality(_In_ CONST DXGKARG_ENUMVIDPNCOFUNCMO
                     CONST DXGK_VIDPNTARGETMODESET_INTERFACE *targetInterface = NULL;
                     CONST D3DKMDT_VIDPN_TARGET_MODE *target = NULL;
                     Status = pVidPnInterface->pfnAcquireTargetModeSet(pEnumCofuncModality->hConstrainingVidPn,
-                        pVidPnPresentPath->VidPnTargetId, &targetSet, &targetInterface);
+                                                                      pVidPnPresentPath->VidPnTargetId,
+                                                                      &targetSet,
+                                                                      &targetInterface);
                     if (NT_SUCCESS(Status))
                     {
                         Status = targetInterface->pfnAcquirePinnedModeInfo(targetSet, &target);
                         if (NT_SUCCESS(Status))
-                            Status = AddSingleSourceMode(pVidPnSourceModeSetInterface, hVidPnSourceModeSet,
-                                                        pVidPnPresentPath->VidPnSourceId, target);
+                        {
+                            Status = AddSingleSourceMode(pVidPnSourceModeSetInterface,
+                                                         hVidPnSourceModeSet,
+                                                         pVidPnPresentPath->VidPnSourceId,
+                                                         target);
+                        }
                         if (target != NULL)
+                        {
                             targetInterface->pfnReleaseModeInfo(targetSet, target);
+                        }
                         pVidPnInterface->pfnReleaseTargetModeSet(pEnumCofuncModality->hConstrainingVidPn, targetSet);
                     }
                 }
@@ -4759,8 +4815,8 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
     // by the per-source mode/topology callbacks. This adapter has one source
     // and one target, so the complete transaction resolves to source zero.
     static_assert(MAX_VIEWS == 1 && MAX_CHILDREN == 1, "CommitVidPn requires one-source transaction semantics");
-    const D3DDDI_VIDEO_PRESENT_SOURCE_ID sourceId = pCommitVidPn->AffectedVidPnSourceId == D3DDDI_ID_ALL
-        ? 0 : pCommitVidPn->AffectedVidPnSourceId;
+    const D3DDDI_VIDEO_PRESENT_SOURCE_ID sourceId = pCommitVidPn->AffectedVidPnSourceId == D3DDDI_ID_ALL ? 0
+                                                                                                         : pCommitVidPn->AffectedVidPnSourceId;
     if (sourceId >= MAX_VIEWS)
     {
 #if defined(VIOGPU_NATIVE_CONTEXT)
@@ -4904,9 +4960,7 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
         goto CommitVidPnExit;
     }
 
-    Status = pVidPnTopologyInterface->pfnGetNumPathsFromSource(hVidPnTopology,
-                                                               sourceId,
-                                                               &NumPathsFromSource);
+    Status = pVidPnTopologyInterface->pfnGetNumPathsFromSource(hVidPnTopology, sourceId, &NumPathsFromSource);
     if (!NT_SUCCESS(Status))
     {
         DbgPrint(TRACE_LEVEL_ERROR,
@@ -4919,10 +4973,7 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
     for (SIZE_T PathIndex = 0; PathIndex < NumPathsFromSource; ++PathIndex)
     {
         D3DDDI_VIDEO_PRESENT_TARGET_ID TargetId = D3DDDI_ID_UNINITIALIZED;
-        Status = pVidPnTopologyInterface->pfnEnumPathTargetsFromSource(hVidPnTopology,
-                                                                       sourceId,
-                                                                       PathIndex,
-                                                                       &TargetId);
+        Status = pVidPnTopologyInterface->pfnEnumPathTargetsFromSource(hVidPnTopology, sourceId, PathIndex, &TargetId);
         if (!NT_SUCCESS(Status))
         {
             DbgPrint(TRACE_LEVEL_ERROR,
@@ -4935,10 +4986,7 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
             goto CommitVidPnExit;
         }
 
-        Status = pVidPnTopologyInterface->pfnAcquirePathInfo(hVidPnTopology,
-                                                             sourceId,
-                                                             TargetId,
-                                                             &pVidPnPresentPath);
+        Status = pVidPnTopologyInterface->pfnAcquirePathInfo(hVidPnTopology, sourceId, TargetId, &pVidPnPresentPath);
         if (!NT_SUCCESS(Status))
         {
             DbgPrint(TRACE_LEVEL_ERROR,
@@ -4958,19 +5006,24 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
         }
 
         Status = pVidPnInterface->pfnAcquireTargetModeSet(pCommitVidPn->hFunctionalVidPn,
-                                                          TargetId, &hTargetModeSet, &pTargetInterface);
+                                                          TargetId,
+                                                          &hTargetModeSet,
+                                                          &pTargetInterface);
         if (!NT_SUCCESS(Status))
+        {
             goto CommitVidPnExit;
+        }
         Status = pTargetInterface->pfnAcquirePinnedModeInfo(hTargetModeSet, &pPinnedTarget);
         if (!NT_SUCCESS(Status))
+        {
             goto CommitVidPnExit;
+        }
         if (pPinnedTarget == NULL)
         {
             Status = STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
             goto CommitVidPnExit;
         }
-        Status = SetSourceModeAndPath(pPinnedVidPnSourceModeInfo, pVidPnPresentPath,
-                                      &pPinnedTarget->VideoSignalInfo);
+        Status = SetSourceModeAndPath(pPinnedVidPnSourceModeInfo, pVidPnPresentPath, &pPinnedTarget->VideoSignalInfo);
         if (!NT_SUCCESS(Status))
         {
             goto CommitVidPnExit;
@@ -4999,9 +5052,13 @@ CommitVidPnExit:
     NTSTATUS TempStatus = STATUS_SUCCESS;
 
     if (pPinnedTarget != NULL)
+    {
         pTargetInterface->pfnReleaseModeInfo(hTargetModeSet, pPinnedTarget);
+    }
     if (hTargetModeSet != 0)
+    {
         pVidPnInterface->pfnReleaseTargetModeSet(pCommitVidPn->hFunctionalVidPn, hTargetModeSet);
+    }
 
     if ((pVidPnSourceModeSetInterface != NULL) && (hVidPnSourceModeSet != 0) && (pPinnedVidPnSourceModeInfo != NULL))
     {
@@ -5046,17 +5103,17 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
             signal.ActiveSize.cy == pSourceMode->Format.Graphics.PrimSurfSize.cy &&
             signal.ActiveSize.cx == pTargetSignal->ActiveSize.cx &&
             signal.ActiveSize.cy == pTargetSignal->ActiveSize.cy &&
-            signal.TotalSize.cx == pTargetSignal->TotalSize.cx &&
-            signal.TotalSize.cy == pTargetSignal->TotalSize.cy &&
-            signal.PixelRate == pTargetSignal->PixelRate &&
-            pTargetSignal->ScanLineOrdering == D3DDDI_VSSLO_PROGRESSIVE)
+            signal.TotalSize.cx == pTargetSignal->TotalSize.cx && signal.TotalSize.cy == pTargetSignal->TotalSize.cy &&
+            signal.PixelRate == pTargetSignal->PixelRate && pTargetSignal->ScanLineOrdering == D3DDDI_VSSLO_PROGRESSIVE)
         {
             selected = index;
             break;
         }
     }
     if (selected == MAXUSHORT)
+    {
         return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+    }
 
     NTSTATUS Status = STATUS_SUCCESS;
     CURRENT_MODE *pCurrentMode = &m_CurrentMode;
@@ -5064,9 +5121,8 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
     // A ten-bit source mode owns real RGB10A2 storage. Every eight-bit source
     // mode keeps the X8R8G8B8 driver framebuffer of the SDR baseline, so an
     // unchanged SDR mode never recreates or re-formats the host resource.
-    const D3DDDIFORMAT storageFormat = pSourceMode->Format.Graphics.PixelFormat == D3DDDIFMT_A2B10G10R10
-                                           ? D3DDDIFMT_A2B10G10R10
-                                           : D3DDDIFMT_X8R8G8B8;
+    const D3DDDIFORMAT storageFormat = pSourceMode->Format.Graphics.PixelFormat == D3DDDIFMT_A2B10G10R10 ? D3DDDIFMT_A2B10G10R10
+                                                                                                         : D3DDDIFMT_X8R8G8B8;
 #else
     // The default WDDM 2.0 build offers only the eight-bit source mode and
     // preserves the framebuffer storage format exactly as before.
@@ -5095,10 +5151,14 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
     pCurrentMode->Flags.FullscreenPresent = TRUE;
     DisarmCrtcVsyncTimer();
     if (resize)
+    {
         Status = m_pHWDevice->SetCurrentMode(m_pHWDevice->GetModeNumber(selected), pCurrentMode);
+    }
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     else if (m_ColorTargetPoweredOff)
+    {
         Status = m_pHWDevice->ResumeFrameBuffer(pCurrentMode);
+    }
 #endif
     if (NT_SUCCESS(Status))
     {
@@ -5109,7 +5169,9 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
         Status = SetCrtcTiming(m_pHWDevice->GetModeTiming(selected));
     }
     else if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0))
+    {
         ArmCrtcVsyncTimer();
+    }
 
     return Status;
 }
@@ -6712,23 +6774,28 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"raceIndex",
                                                                                                          &fenceTraceIndex},
                                                                                                         {L"NativeFenceT"
-                                                                                                         L"raceLastEvent",
+                                                                                                         L"raceLastEven"
+                                                                                                         L"t",
                                                                                                          &fenceTraceLastEvent},
                                                                                                         {L"NativeFenceT"
-                                                                                                         L"raceLastFence",
+                                                                                                         L"raceLastFenc"
+                                                                                                         L"e",
                                                                                                          &fenceTraceLastFenceId},
                                                                                                         {L"NativeFenceT"
-                                                                                                         L"raceLastSubmi"
+                                                                                                         L"raceLastSubm"
+                                                                                                         L"i"
                                                                                                          L"tted",
                                                                                                          &fenceTraceLastSubmitted},
                                                                                                         {L"NativeApertu"
                                                                                                          L"reFailStage",
                                                                                                          &apertureFailureStage},
                                                                                                         {L"NativeApertu"
-                                                                                                         L"reFailStatus",
+                                                                                                         L"reFailStatu"
+                                                                                                         L"s",
                                                                                                          &apertureFailureStatus},
                                                                                                         {L"NativeApertu"
-                                                                                                         L"reFailDetail",
+                                                                                                         L"reFailDetai"
+                                                                                                         L"l",
                                                                                                          &apertureFailureDetail},
                                                                                                         {L"NativeApertu"
                                                                                                          L"reFailCount",
@@ -6737,249 +6804,443 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"ResetCount",
                                                                                                          &pagingResetCount},
                                                                                                         {L"NativeApertu"
-                                                                                                         L"reRetireCount",
+                                                                                                         L"reRetireCoun"
+                                                                                                         L"t",
                                                                                                          &apertureRetireCount},
                                                                                                         {L"NativeApertu"
                                                                                                          L"reIdleCount",
                                                                                                          &apertureIdleCount},
                                                                                                         {L"NativeApertu"
-                                                                                                         L"reMapSkipCoun"
+                                                                                                         L"reMapSkipCou"
+                                                                                                         L"n"
                                                                                                          L"t",
                                                                                                          &apertureMapSkipCount},
                                                                                                         {L"NativeHardwa"
-                                                                                                         L"reResetState",
+                                                                                                         L"reResetStat"
+                                                                                                         L"e",
                                                                                                          &hardwareResetState},
                                                                                                         {L"NativeHardwa"
-                                                                                                         L"reResetCaller"
+                                                                                                         L"reResetCalle"
+                                                                                                         L"r"
                                                                                                          L"Rva",
                                                                                                          &hardwareResetCallerRva},
                                                                                                         {L"NativeContex"
-                                                                                                         L"tFailCallerRv"
+                                                                                                         L"tFailCallerR"
+                                                                                                         L"v"
                                                                                                          L"a",
                                                                                                          &nativeContextFailCallerRva},
                                                                                                         {L"NativeFenceR"
-                                                                                                         L"etireMissCoun"
+                                                                                                         L"etireMissCou"
+                                                                                                         L"n"
                                                                                                          L"t",
                                                                                                          &fenceRetireMissCount},
                                                                                                         {L"NativeFenceR"
-                                                                                                         L"enderRejectCo"
+                                                                                                         L"enderRejectC"
+                                                                                                         L"o"
                                                                                                          L"unt",
                                                                                                          &fenceRenderRejectCount},
                                                                                                         {L"NativeFenceP"
-                                                                                                         L"agingDropCoun"
+                                                                                                         L"agingDropCou"
+                                                                                                         L"n"
                                                                                                          L"t",
                                                                                                          &fencePagingDropCount},
                                                                                                         {L"NativeSubmis"
-                                                                                                         L"sionFaultCall"
+                                                                                                         L"sionFaultCal"
+                                                                                                         L"l"
                                                                                                          L"erRva",
                                                                                                          &submissionFaultCallerRva},
                                                                                                         {L"NativeHardwa"
-                                                                                                         L"reResetFirstC"
+                                                                                                         L"reResetFirst"
+                                                                                                         L"C"
                                                                                                          L"allerRva",
                                                                                                          &hardwareResetFirstCallerRva},
                                                                                                         {L"NativeContex"
-                                                                                                         L"tFailFirstCal"
+                                                                                                         L"tFailFirstCa"
+                                                                                                         L"l"
                                                                                                          L"lerRva",
                                                                                                          &nativeContextFailFirstCallerRva},
                                                                                                         {L"NativeContex"
                                                                                                          L"tFailCount",
                                                                                                          &nativeContextFailCount},
                                                                                                         {L"NativeContex"
-                                                                                                         L"tLifecycleTim"
+                                                                                                         L"tLifecycleTi"
+                                                                                                         L"m"
                                                                                                          L"eoutCount",
                                                                                                          &lifecycleTimeoutCount},
                                                                                                         {L"NativeContex"
-                                                                                                         L"tLifecycleGav"
+                                                                                                         L"tLifecycleGa"
+                                                                                                         L"v"
                                                                                                          L"eUpCount",
                                                                                                          &lifecycleGaveUpCount},
                                                                                                         {L"NativeContex"
-                                                                                                         L"tLifecycleHol"
+                                                                                                         L"tLifecycleHo"
+                                                                                                         L"l"
                                                                                                          L"derRva",
                                                                                                          &lifecycleHolderRva},
                                                                                                         {L"NativeContex"
-                                                                                                         L"tLifecycleTim"
+                                                                                                         L"tLifecycleTi"
+                                                                                                         L"m"
                                                                                                          L"eoutStage",
                                                                                                          &lifecycleTimeoutStage},
                                                                                                         {L"NativeContex"
-                                                                                                         L"tLifecycleHel"
+                                                                                                         L"tLifecycleHe"
+                                                                                                         L"l"
                                                                                                          L"dMs",
                                                                                                          &lifecycleHeldMs},
                                                                                                         {L"NativeScanou"
-                                                                                                         L"tWaitTimeoutC"
+                                                                                                         L"tWaitTimeout"
+                                                                                                         L"C"
                                                                                                          L"ount",
                                                                                                          &scanoutTimeoutCount},
                                                                                                         {L"NativeScanou"
-                                                                                                         L"tWaitGaveUpCo"
+                                                                                                         L"tWaitGaveUpC"
+                                                                                                         L"o"
                                                                                                          L"unt",
                                                                                                          &scanoutGaveUpCount},
                                                                                                         {L"NativeScanou"
-                                                                                                         L"tWaitHolderRv"
+                                                                                                         L"tWaitHolderR"
+                                                                                                         L"v"
                                                                                                          L"a",
                                                                                                          &scanoutHolderRva},
-                                                                                                        {L"NativeDisplayStartViews",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yStartViews",
                                                                                                          &displayStartViews},
-                                                                                                        {L"NativeDisplayStartChildren",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yStartChildr"
+                                                                                                         L"en",
                                                                                                          &displayStartChildren},
-                                                                                                        {L"NativeDisplayIsSupportedCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yIsSupported"
+                                                                                                         L"Calls",
                                                                                                          &displayIsSupportedCalls},
-                                                                                                        {L"NativeDisplayIsSupportedRejects",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yIsSupported"
+                                                                                                         L"Rejects",
                                                                                                          &displayIsSupportedRejects},
-                                                                                                        {L"NativeDisplayEnumCofuncCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yEnumCofuncC"
+                                                                                                         L"alls",
                                                                                                          &displayEnumCofuncCalls},
-                                                                                                        {L"NativeDisplayCommitCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yCommitCall"
+                                                                                                         L"s",
                                                                                                          &displayCommitCalls},
-                                                                                                        {L"NativeDisplayCommitStatus",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yCommitStatu"
+                                                                                                         L"s",
                                                                                                          &displayCommitStatus},
-                                                                                                        {L"NativeDisplaySetSourceAddrCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"ySetSourceAd"
+                                                                                                         L"drCalls",
                                                                                                          &displaySetSourceAddrCalls},
-                                                                                                        {L"NativeDisplayChildStatusCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yChildStatus"
+                                                                                                         L"Calls",
                                                                                                          &displayChildStatusCalls},
-                                                                                                        {L"NativeDisplayChildConnected",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yChildConnec"
+                                                                                                         L"ted",
                                                                                                          &displayChildConnected},
-                                                                                                        {L"NativeDisplayDescriptorCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yDescriptorC"
+                                                                                                         L"alls",
                                                                                                          &displayDescriptorCalls},
-                                                                                                        {L"NativeDisplayDescriptorHasEdid",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yDescriptorH"
+                                                                                                         L"asEdid",
                                                                                                          &displayDescriptorHasEdid},
-                                                                                                        {L"NativeDisplayMonitorModesCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yMonitorMode"
+                                                                                                         L"sCalls",
                                                                                                          &displayMonitorModesCalls},
-                                                                                                        {L"NativeDisplayRecommendVidPnCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yRecommendVi"
+                                                                                                         L"dPnCalls",
                                                                                                          &displayRecommendVidPnCalls},
-                                                                                                        {L"NativeDisplayCommitNumPaths",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yCommitNumPa"
+                                                                                                         L"ths",
                                                                                                          &displayCommitNumPaths},
-                                                                                                        {L"NativeDisplayCommitPinnedMode",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yCommitPinne"
+                                                                                                         L"dMode",
                                                                                                          &displayCommitPinnedMode},
-                                                                                                        {L"NativeDisplayCommitPoweredOff",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yCommitPower"
+                                                                                                         L"edOff",
                                                                                                          &displayCommitPoweredOff},
-                                                                                                        {L"NativeDisplaySetSourceVisCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"ySetSourceVi"
+                                                                                                         L"sCalls",
                                                                                                          &displaySetSourceVisCalls},
-                                                                                                        {L"NativeDisplayFlipFlushCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yFlipFlushCa"
+                                                                                                         L"lls",
                                                                                                          &displayFlipFlushCalls},
-                                                                                                        {L"NativeDisplayFlipFlushResult",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yFlipFlushRe"
+                                                                                                         L"sult",
                                                                                                          &displayFlipFlushResult},
-                                                                                                        {L"NativeDisplayPrimaryNonZeroPages",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPrimaryNonZ"
+                                                                                                         L"eroPages",
                                                                                                          &displayPrimaryNonZeroPages},
-                                                                                                        {L"NativeDisplayPrimaryFirstPixel",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPrimaryFirs"
+                                                                                                         L"tPixel",
                                                                                                          &displayPrimaryFirstPixel},
-                                                                                                        {L"NativeDisplayPresentCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentCall"
+                                                                                                         L"s",
                                                                                                          &displayPresentCalls},
-                                                                                                        {L"NativeDisplayPresentRejectFlags",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentReje"
+                                                                                                         L"ctFlags",
                                                                                                          &displayPresentRejectFlags},
-                                                                                                        {L"NativeDisplayPresentRejectOther",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentReje"
+                                                                                                         L"ctOther",
                                                                                                          &displayPresentRejectOther},
-                                                                                                        {L"NativeDisplayFlipRejectNative",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yFlipRejectN"
+                                                                                                         L"ative",
                                                                                                          &displayFlipRejectNative},
-                                                                                                        {L"NativeDisplayPresentLastRejectFlags",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentLast"
+                                                                                                         L"RejectFlags",
                                                                                                          &displayPresentLastRejectFlags},
-                                                                                                        {L"NativeDisplayFlipRejectKind",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yFlipRejectK"
+                                                                                                         L"ind",
                                                                                                          &displayFlipRejectKind},
-                                                                                                        {L"NativeDisplayPresentSrcStandard",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentSrcS"
+                                                                                                         L"tandard",
                                                                                                          &displayPresentSrcStandard},
-                                                                                                        {L"NativeDisplayPresentSrcNative",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentSrcN"
+                                                                                                         L"ative",
                                                                                                          &displayPresentSrcNative},
-                                                                                                        {L"NativeDisplayPresentSrcNativeMaxNonZero",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentSrcN"
+                                                                                                         L"ativeMaxNonZ"
+                                                                                                         L"ero",
                                                                                                          &displayPresentSrcNativeMaxNonZero},
-                                                                                                        {L"NativeDisplayPresentSrcStandardMaxNonZero",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentSrcS"
+                                                                                                         L"tandardMaxNo"
+                                                                                                         L"nZero",
                                                                                                          &displayPresentSrcStandardMaxNonZero},
-                                                                                                        {L"NativeDisplayEscapeCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yEscapeCall"
+                                                                                                         L"s",
                                                                                                          &displayEscapeCalls},
-                                                                                                        {L"NativeDisplayPresentBlitCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentBlit"
+                                                                                                         L"Calls",
                                                                                                          &displayPresentBlitCalls},
-                                                                                                        {L"NativeDisplayPresentBlitReject",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentBlit"
+                                                                                                         L"Reject",
                                                                                                          &displayPresentBlitReject},
-                                                                                                        {L"NativeDisplayPresentBlitStatus",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentBlit"
+                                                                                                         L"Status",
                                                                                                          &displayPresentBlitStatus},
-                                                                                                        {L"NativeDisplayPresentBlitWidth",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentBlit"
+                                                                                                         L"Width",
                                                                                                          &displayPresentBlitWidth},
-                                                                                                        {L"NativeDisplayPresentBlitHeight",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentBlit"
+                                                                                                         L"Height",
                                                                                                          &displayPresentBlitHeight},
-                                                                                                        {L"NativeDisplayPublishCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPublishCall"
+                                                                                                         L"s",
                                                                                                          &displayPublishCalls},
-                                                                                                        {L"NativeDisplayPublishStatus",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPublishStat"
+                                                                                                         L"us",
                                                                                                          &displayPublishStatus},
-                                                                                                        {L"NativeDisplayTeardownDegraded",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yTeardownDeg"
+                                                                                                         L"raded",
                                                                                                          &displayTeardownDegraded},
-                                                                                                        {L"NativeDisplayTeardownDestroyFail",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yTeardownDes"
+                                                                                                         L"troyFail",
                                                                                                          &displayTeardownDestroyFail},
-                                                                                                        {L"NativeDisplayStandardAllocCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yStandardAll"
+                                                                                                         L"ocCalls",
                                                                                                          &displayStandardAllocCalls},
-                                                                                                        {L"NativeDisplayStandardAllocRejects",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yStandardAll"
+                                                                                                         L"ocRejects",
                                                                                                          &displayStandardAllocRejects},
-                                                                                                        {L"NativeDisplayStandardAllocStatus",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yStandardAll"
+                                                                                                         L"ocStatus",
                                                                                                          &displayStandardAllocStatus},
-                                                                                                        {L"NativeDisplayBlitKernelUsec",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yBlitKernelU"
+                                                                                                         L"sec",
                                                                                                          &displayBlitKernelUsec},
-                                                                                                        {L"NativeDisplayBlitReadbackUsec",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yBlitReadbac"
+                                                                                                         L"kUsec",
                                                                                                          &displayBlitReadbackUsec},
-                                                                                                        {L"NativeDisplayBlitPayloadNonBlack",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yBlitPayload"
+                                                                                                         L"NonBlack",
                                                                                                          &displayBlitPayloadNonBlack},
-                                                                                                        {L"NativeDisplayScanoutRefreshes",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yScanoutRefr"
+                                                                                                         L"eshes",
                                                                                                          &displayScanoutRefreshes},
-                                                                                                        {L"NativeDisplayPresentGeometryRejects",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresentGeom"
+                                                                                                         L"etryRejects",
                                                                                                          &displayPresentGeometryRejects},
-                                                                                                        {L"NativeDisplayExpectedScanoutWidth",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yExpectedSca"
+                                                                                                         L"noutWidth",
                                                                                                          &displayExpectedScanoutWidth},
-                                                                                                        {L"NativeDisplayExpectedScanoutHeight",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yExpectedSca"
+                                                                                                         L"noutHeight",
                                                                                                          &displayExpectedScanoutHeight},
-                                                                                                        {L"NativeDisplayPresent2DStage",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DSt"
+                                                                                                         L"age",
                                                                                                          &displayPresent2DStage},
-                                                                                                        {L"NativeDisplayPresent2DTransferStarts",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DTr"
+                                                                                                         L"ansferStart"
+                                                                                                         L"s",
                                                                                                          &displayPresent2DTransferStarts},
-                                                                                                        {L"NativeDisplayPresent2DTransferCompletions",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DTr"
+                                                                                                         L"ansferComple"
+                                                                                                         L"tions",
                                                                                                          &displayPresent2DTransferCompletions},
-                                                                                                        {L"NativeDisplayPresent2DTransferLastUsec",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DTr"
+                                                                                                         L"ansferLastUs"
+                                                                                                         L"ec",
                                                                                                          &displayPresent2DTransferLastUsec},
-                                                                                                        {L"NativeDisplayPresent2DTransferMaxUsec",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DTr"
+                                                                                                         L"ansferMaxUse"
+                                                                                                         L"c",
                                                                                                          &displayPresent2DTransferMaxUsec},
-                                                                                                        {L"NativeDisplayPresent2DTransferResult",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DTr"
+                                                                                                         L"ansferResul"
+                                                                                                         L"t",
                                                                                                          &displayPresent2DTransferResult},
-                                                                                                        {L"NativeDisplayPresent2DFlushStarts",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DFl"
+                                                                                                         L"ushStarts",
                                                                                                          &displayPresent2DFlushStarts},
-                                                                                                        {L"NativeDisplayPresent2DFlushCompletions",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DFl"
+                                                                                                         L"ushCompletio"
+                                                                                                         L"ns",
                                                                                                          &displayPresent2DFlushCompletions},
-                                                                                                        {L"NativeDisplayPresent2DFlushLastUsec",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DFl"
+                                                                                                         L"ushLastUsec",
                                                                                                          &displayPresent2DFlushLastUsec},
-                                                                                                        {L"NativeDisplayPresent2DFlushMaxUsec",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DFl"
+                                                                                                         L"ushMaxUsec",
                                                                                                          &displayPresent2DFlushMaxUsec},
-                                                                                                        {L"NativeDisplayPresent2DFlushResult",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DFl"
+                                                                                                         L"ushResult",
                                                                                                          &displayPresent2DFlushResult},
-                                                                                                        {L"NativeDisplayPresent2DResourceId",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yPresent2DRe"
+                                                                                                         L"sourceId",
                                                                                                          &displayPresent2DResourceId},
-                                                                                                        {L"NativeDisplayMmioFlipCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yMmioFlipCal"
+                                                                                                         L"ls",
                                                                                                          &displayMmioFlipCalls},
-                                                                                                        {L"NativeDisplayMmioFlipRejects",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yMmioFlipRej"
+                                                                                                         L"ects",
                                                                                                          &displayMmioFlipRejects},
-                                                                                                        {L"NativeDisplayMmioFlipRejectKind",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yMmioFlipRej"
+                                                                                                         L"ectKind",
                                                                                                          &displayMmioFlipRejectKind},
-                                                                                                        {L"NativeDisplayMmioFlipLastFlags",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yMmioFlipLas"
+                                                                                                         L"tFlags",
                                                                                                          &displayMmioFlipLastFlags},
-                                                                                                        {L"NativeDisplayMmioFlipApplied",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yMmioFlipApp"
+                                                                                                         L"lied",
                                                                                                          &displayMmioFlipApplied},
-                                                                                                        {L"NativeDisplayMmioFlipApplyFailures",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yMmioFlipApp"
+                                                                                                         L"lyFailures",
                                                                                                          &displayMmioFlipApplyFailures},
-                                                                                                        {L"NativeDisplayMmioFlipLastApplyStatus",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yMmioFlipLas"
+                                                                                                         L"tApplyStatu"
+                                                                                                         L"s",
                                                                                                          &displayMmioFlipLastApplyStatus},
-                                                                                                        {L"NativeDisplayFlipPresentCalls",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yFlipPresent"
+                                                                                                         L"Calls",
                                                                                                          &displayFlipPresentCalls},
-                                                                                                        {L"NativeDisplayFlipPresentRejects",
+                                                                                                        {L"NativeDispla"
+                                                                                                         L"yFlipPresent"
+                                                                                                         L"Rejects",
                                                                                                          &displayFlipPresentRejects},
                                                                                                         {L"NativeSubmis"
-                                                                                                         L"sionFaultPres"
+                                                                                                         L"sionFaultPre"
+                                                                                                         L"s"
                                                                                                          L"entStage",
                                                                                                          &submissionFaultPresentStage},
                                                                                                         {L"NativeSubmis"
-                                                                                                         L"sionFaultPres"
+                                                                                                         L"sionFaultPre"
+                                                                                                         L"s"
                                                                                                          L"entStatus",
                                                                                                          &submissionFaultPresentStatus},
                                                                                                         {L"NativeSubmis"
-                                                                                                         L"sionFaultPres"
+                                                                                                         L"sionFaultPre"
+                                                                                                         L"s"
                                                                                                          L"entDetail",
                                                                                                          &submissionFaultPresentDetail},
-        {L"NativeRenderFailureStatus", &renderFailure[1]},
-        {L"NativeRenderFailureDetail", &renderFailure[2]},
-        {L"NativeRenderFailureIndex", &renderFailure[3]},
-        {L"NativeRenderFailureContextId", &renderFailure[4]},
-        {L"NativeRenderFailureResourceId", &renderFailure[5]},
-        {L"NativeRenderFailureStage", &renderFailure[0]},
+                                                                                                        {L"NativeRender"
+                                                                                                         L"FailureStatu"
+                                                                                                         L"s",
+                                                                                                         &renderFailure[1]},
+                                                                                                        {L"NativeRender"
+                                                                                                         L"FailureDetai"
+                                                                                                         L"l",
+                                                                                                         &renderFailure[2]},
+                                                                                                        {L"NativeRender"
+                                                                                                         L"FailureInde"
+                                                                                                         L"x",
+                                                                                                         &renderFailure[3]},
+                                                                                                        {L"NativeRender"
+                                                                                                         L"FailureConte"
+                                                                                                         L"xtId",
+                                                                                                         &renderFailure[4]},
+                                                                                                        {L"NativeRender"
+                                                                                                         L"FailureResou"
+                                                                                                         L"rceId",
+                                                                                                         &renderFailure[5]},
+                                                                                                        {L"NativeRender"
+                                                                                                         L"FailureStag"
+                                                                                                         L"e",
+                                                                                                         &renderFailure[0]},
     };
     NTSTATUS writeStatus = STATUS_SUCCESS;
     for (UINT index = 0; index < ARRAYSIZE(writes); ++index)
@@ -7582,9 +7843,10 @@ VOID VioGpuDod::RecordAdapterInfoTypeMap(void)
     ZwClose(deviceKey);
 }
 
-VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(
-    _In_ ULONG state, _In_ ULONG generation, _In_ ULONG callerRva,
-    _In_opt_ const VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *timeoutDiagnostic)
+VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(_In_ ULONG state,
+                                                        _In_ ULONG generation,
+                                                        _In_ ULONG callerRva,
+                                                        _In_opt_ const VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *timeoutDiagnostic)
 {
     PAGED_CODE();
 
@@ -7616,14 +7878,52 @@ VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(
             PCWSTR Name;
             DWORD Value;
         } fields[] = {
-            {L"NativeSynchronousTimeoutFlags", timeoutDiagnostic->Flags},
-            {L"NativeSynchronousTimeoutType", timeoutDiagnostic->Type},
-            {L"NativeSynchronousTimeoutContextId", timeoutDiagnostic->ContextId},
-            {L"NativeSynchronousTimeoutResourceId", timeoutDiagnostic->ResourceId},
-            {L"NativeSynchronousTimeoutWaitStatus", timeoutDiagnostic->WaitStatus},
-            {L"NativeSynchronousTimeoutCallerRva", timeoutDiagnostic->CallerRva},
-            {L"NativeSynchronousTimeoutCommandBytes", timeoutDiagnostic->CommandBytes},
-            {L"NativeSynchronousTimeoutEpochGeneration", timeoutDiagnostic->EpochGeneration},
+                                                                                                            {L"NativeSy"
+                                                                                                             L"nchronou"
+                                                                                                             L"sTimeout"
+                                                                                                             L"Flags",
+                                                                                                             timeoutDiagnostic->Flags},
+                                                                                                            {L"NativeSy"
+                                                                                                             L"nchronou"
+                                                                                                             L"sTimeout"
+                                                                                                             L"Type",
+                                                                                                             timeoutDiagnostic->Type},
+                                                                                                            {L"NativeSy"
+                                                                                                             L"nchronou"
+                                                                                                             L"sTimeout"
+                                                                                                             L"ContextI"
+                                                                                                             L"d",
+                                                                                                             timeoutDiagnostic->ContextId},
+                                                                                                            {L"NativeSy"
+                                                                                                             L"nchronou"
+                                                                                                             L"sTimeout"
+                                                                                                             L"Resource"
+                                                                                                             L"Id",
+                                                                                                             timeoutDiagnostic->ResourceId},
+                                                                                                            {L"NativeSy"
+                                                                                                             L"nchronou"
+                                                                                                             L"sTimeout"
+                                                                                                             L"WaitStat"
+                                                                                                             L"us",
+                                                                                                             timeoutDiagnostic->WaitStatus},
+                                                                                                            {L"NativeSy"
+                                                                                                             L"nchronou"
+                                                                                                             L"sTimeout"
+                                                                                                             L"CallerRv"
+                                                                                                             L"a",
+                                                                                                             timeoutDiagnostic->CallerRva},
+                                                                                                            {L"NativeSy"
+                                                                                                             L"nchronou"
+                                                                                                             L"sTimeout"
+                                                                                                             L"CommandB"
+                                                                                                             L"ytes",
+                                                                                                             timeoutDiagnostic->CommandBytes},
+                                                                                                            {L"NativeSy"
+                                                                                                             L"nchronou"
+                                                                                                             L"sTimeout"
+                                                                                                             L"EpochGen"
+                                                                                                             L"eration",
+                                                                                                             timeoutDiagnostic->EpochGeneration},
         };
         for (ULONG index = 0; index < ARRAYSIZE(fields) && NT_SUCCESS(timeoutWrite); ++index)
         {
@@ -7640,7 +7940,8 @@ VOID VioGpuDod::RecordNativeSynchronousPoisonDiagnostic(
     NTSTATUS callerWrite = WriteRegistryDWORD(deviceKey, L"NativeSynchronousPoisonCallerRva", &callerValue);
     ZwClose(deviceKey);
 
-    if (!NT_SUCCESS(stateWrite) || !NT_SUCCESS(generationWrite) || !NT_SUCCESS(callerWrite) || !NT_SUCCESS(timeoutWrite))
+    if (!NT_SUCCESS(stateWrite) || !NT_SUCCESS(generationWrite) || !NT_SUCCESS(callerWrite) ||
+        !NT_SUCCESS(timeoutWrite))
     {
         DbgPrintEx(DPFLTR_DEFAULT_ID,
                    DPFLTR_ERROR_LEVEL,
@@ -8899,14 +9200,18 @@ NTSTATUS VioGpuAdapter::ResumeFrameBuffer(CURRENT_MODE *pCurrentMode)
     // primary after a target power-up even when the VidPn is unmodified.
     if (m_pFrameBuf == NULL || !pCurrentMode->Flags.FrameBufferIsActive ||
         m_FrameBufWidth != pCurrentMode->DispInfo.Width || m_FrameBufHeight != pCurrentMode->DispInfo.Height)
+    {
         return STATUS_DEVICE_NOT_READY;
+    }
     const UINT resource = m_pFrameBuf->GetId();
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextConfirmed;
     if (pCurrentMode->DispInfo.ColorFormat == D3DDDIFMT_A2B10G10R10)
     {
         VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
         if (!m_pVioGpuDod->QueryDisplayColor(&caps) || !(caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ))
+        {
             return STATUS_DEVICE_NOT_READY;
+        }
         VIOGPU_SET_RESOURCE_COLOR color = {};
         color.resource_id = resource;
         color.format = VIOGPU_DISPLAY_FORMAT_AB30;
@@ -8916,13 +9221,21 @@ NTSTATUS VioGpuAdapter::ResumeFrameBuffer(CURRENT_MODE *pCurrentMode)
     }
     UINT previousResource = 0;
     if (result == VioGpuHostContextConfirmed)
+    {
         result = Set2DScanout(0, resource, m_FrameBufWidth, m_FrameBufHeight, &previousResource);
+    }
     if (result == VioGpuHostContextConfirmed)
+    {
         result = m_CtrlQueue.TransferToHost2DSynchronous(resource, 0, m_FrameBufWidth, m_FrameBufHeight, 0, 0);
+    }
     if (result == VioGpuHostContextConfirmed)
+    {
         result = m_CtrlQueue.FlushResourceSynchronous(resource, m_FrameBufWidth, m_FrameBufHeight, 0, 0);
+    }
     if (result == VioGpuHostContextUnknown)
+    {
         m_pVioGpuDod->RequestHardwareResetAtAnyIrql();
+    }
     return result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
 }
 #endif
@@ -9771,9 +10084,8 @@ NTSTATUS VioGpuAdapter::PublishPresentBlit(_In_ UINT width,
     const LONGLONG endTicks = KeQueryPerformanceCounter(NULL).QuadPart;
     if (frequency.QuadPart > 0 && endTicks > startTicks)
     {
-        m_pVioGpuDod->RecordDisplayValue(
-            45,
-            static_cast<LONG>(((endTicks - startTicks) * 1000000LL) / frequency.QuadPart));
+        m_pVioGpuDod->RecordDisplayValue(45,
+                                         static_cast<LONG>(((endTicks - startTicks) * 1000000LL) / frequency.QuadPart));
     }
 
     return STATUS_SUCCESS;
@@ -10634,8 +10946,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::QueryNativeContextParameterLocked(_Ino
     }
 
     if (owner == NULL || value == NULL || owner->ContextId == 0 || !owner->ControlResourceCreated ||
-        !owner->ControlMapped || (parameter != MSM_PARAM_VA_START && parameter != MSM_PARAM_VA_SIZE &&
-                                 parameter != MSM_PARAM_TIMESTAMP) ||
+        !owner->ControlMapped ||
+        (parameter != MSM_PARAM_VA_START && parameter != MSM_PARAM_VA_SIZE && parameter != MSM_PARAM_TIMESTAMP) ||
         owner->LastControlSeqno == MAXULONG)
     {
         diagnostic.Result = VioGpuHostContextNotSubmitted;
@@ -10762,8 +11074,10 @@ NTSTATUS VioGpuAdapter::QueryNativeGpuTimestamp(_In_ const VIOGPU_NATIVE_CONTEXT
     {
         LONG hostError = 0;
         ULONGLONG ticks = 0;
-        VIOGPU_HOST_CONTEXT_RESULT result = QueryNativeContextParameterLocked(owner, MSM_PARAM_TIMESTAMP,
-                                                                               &ticks, &hostError);
+        VIOGPU_HOST_CONTEXT_RESULT result = QueryNativeContextParameterLocked(owner,
+                                                                              MSM_PARAM_TIMESTAMP,
+                                                                              &ticks,
+                                                                              &hostError);
         if (result == VioGpuHostContextRejected && (hostError == -25 || hostError == -95 || hostError == -38))
         {
             status = STATUS_NOT_SUPPORTED; // ENOTTY, EOPNOTSUPP, ENOSYS
@@ -11849,11 +12163,7 @@ __declspec(code_seg(".text")) __declspec(noinline) NTSTATUS VioGpuAdapter::WaitS
     {
         LARGE_INTEGER scanoutTimeout;
         scanoutTimeout.QuadPart = -5LL * 10 * 1000 * 1000;
-        NTSTATUS waitStatus = KeWaitForSingleObject(&m_2DScanoutMutex,
-                                                    Executive,
-                                                    KernelMode,
-                                                    FALSE,
-                                                    &scanoutTimeout);
+        NTSTATUS waitStatus = KeWaitForSingleObject(&m_2DScanoutMutex, Executive, KernelMode, FALSE, &scanoutTimeout);
         if (waitStatus == STATUS_SUCCESS)
         {
             if (m_pVioGpuDod != NULL)
@@ -13630,7 +13940,7 @@ NTSTATUS VioGpuAdapter::BuildModeList(DXGK_DISPLAY_INFORMATION *pDispInfo)
     {
 
         VIOGPU_DISP_MODE geometry = {static_cast<USHORT>(m_ModeTimings[indx].Width),
-                                    static_cast<USHORT>(m_ModeTimings[indx].Height)};
+                                     static_cast<USHORT>(m_ModeTimings[indx].Height)};
         PVIOGPU_DISP_MODE pModeInfo = &geometry;
 
         DbgPrint(TRACE_LEVEL_INFORMATION,
@@ -13708,7 +14018,7 @@ void VioGpuAdapter::DestroyFrameBufferObj(BOOLEAN bReset, BOOLEAN bKeepBuffer)
             {
                 m_CtrlQueue.SetScanout(0, 0, 0, 0, 0, 0);
                 m_PublishedScanoutResourceId = 0;
-                        }
+            }
         }
 
         if (bKeepBuffer)
@@ -14112,8 +14422,7 @@ VOID VioGpuAdapter::RequestScanoutRefresh(void)
 #else
     const BOOLEAN flipPending = FALSE;
 #endif
-    if (!flipPending && resourceId != 0 &&
-        InterlockedCompareExchange(&m_ExplicitPresentResourceId, 0, 0) == resourceId)
+    if (!flipPending && resourceId != 0 && InterlockedCompareExchange(&m_ExplicitPresentResourceId, 0, 0) == resourceId)
     {
         return;
     }
@@ -14231,7 +14540,10 @@ void VioGpuAdapter::RequestColorConnectionRefresh()
 
 void VioGpuAdapter::RefreshColorConnection()
 {
-    if (InterlockedExchange(&m_ColorConnectionRefreshRequested, 0) == 0 || m_pVioGpuDod->IsRenderOnly()) return;
+    if (InterlockedExchange(&m_ColorConnectionRefreshRequested, 0) == 0 || m_pVioGpuDod->IsRenderOnly())
+    {
+        return;
+    }
     VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
     BOOLEAN discovered = FALSE;
     {
@@ -14251,9 +14563,11 @@ void VioGpuAdapter::RefreshColorConnection()
     // is the registry-selected one QueryChildRelations reported.
     const bool interruptible = m_pVioGpuDod->ChildDescriptor().HpdAwareness == VioGpuHpdInterruptible &&
                                InterlockedCompareExchange(&m_pVioGpuDod->m_ColorHpdEnabled, 0, 0) != 0;
-    const auto action =
-        VioGpuColorConnectionAction(m_ColorConnectionInitialized != FALSE, interruptible, discovered != FALSE,
-                                    &m_ColorNotifiedCapabilities, discovered ? &caps : nullptr);
+    const auto action = VioGpuColorConnectionAction(m_ColorConnectionInitialized != FALSE,
+                                                    interruptible,
+                                                    discovered != FALSE,
+                                                    &m_ColorNotifiedCapabilities,
+                                                    discovered ? &caps : nullptr);
     // Callbacks run outside ColorStateOperation: an OS callback may
     // immediately query the driver again.
     if (action == VioGpuColorConnectionReenumerate)

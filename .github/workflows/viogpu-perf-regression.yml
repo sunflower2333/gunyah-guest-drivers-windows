@@ -3,7 +3,7 @@ name: VIOGPU performance regression
 on:
   workflow_dispatch:
   push:
-    branches: [perf/droidvm-gpu-20260914]
+    branches: [perf/droidvm-gpu-20260914, work/vpu-video-umd-perf-20260915]
     paths:
       - 'external/mesa'
       - '.gitmodules'

@@ -2,7 +2,7 @@
 #include <ntddk.h>
 #include <windef.h>
 #include <d3dkmddi.h>
-#include <dispmprt.h> // DXGKRNL_INTERFACE
+#include <dispmprt.h>  // DXGKRNL_INTERFACE
 #include "mmio_flip.h" // run.py adds viogpu/common; the unit is compiled from a temp copy
 #include <cstdio>
 #include <cstdlib>
@@ -44,7 +44,7 @@ DXGKDDI_GETNODEMETADATA VioGpuWddmGetNodeMetadata;
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
 // After the production units: the private ABI header defines macros such as
 // VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE that the fixture above declares itself.
-#include "viogpu_display_color.h" // run.py adds viogpu/shared for the Advanced Color interface
+#include "viogpu_display_color.h"         // run.py adds viogpu/shared for the Advanced Color interface
 #undef VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE // keep the fixture's own constant for main()
 #endif
 
@@ -146,7 +146,7 @@ int main()
     check(info.FlagsWddm2.Value == (0x8000U | 1U |
                                     4U) && info.PhysicalAdapterIndex == 0 && info.hAllocation == &allocation,
           "actual allocation flag union has AccessedPhysically and no reserved legacy paging bit");
-        {
+    {
         adapter.Ready = true;
         adapter.Interface.DeviceHandle = reinterpret_cast<HANDLE>(0x5678);
         DXGK_QUERYPHYSICALADAPTERCAPSIN physicalIn = {};
@@ -164,8 +164,8 @@ int main()
         check(QueryPhysicalAdapterCaps(&adapter, &physical) == STATUS_SUCCESS, "WDK physical adapter caps accepted");
         DXGK_PHYSICALADAPTERCAPS decoded = {};
         std::memcpy(&decoded, caps.data(), prefix);
-        check(decoded.NumExecutionNodes == 1 && decoded.PagingNodeIndex == 0 &&
-                  decoded.DxgkPhysicalAdapterHandle == adapter.Interface.DeviceHandle && decoded.Flags.Value == 0,
+        check(decoded.NumExecutionNodes == 1 && decoded.PagingNodeIndex == 0 && decoded.DxgkPhysicalAdapterHandle == adapter.Interface.DeviceHandle &&
+                                                                                                                  decoded.Flags.Value == 0,
               "actual WDK caps: one self-paging node, real handle, no MMU/move-paging flags");
         for (size_t i = prefix; i < caps.size(); ++i)
         {
@@ -190,8 +190,8 @@ int main()
         display.Type = DXGKQAITYPE_DISPLAY_DRIVERCAPS_EXTENSION;
         display.pOutputData = &extension;
         display.OutputDataSize = sizeof(extension);
-        check(QueryDisplayDriverCapsExtension(&display) == STATUS_SUCCESS && extension.Value == 0 &&
-                  !extension.SecureDisplaySupport && !extension.VirtualModeSupport,
+        check(QueryDisplayDriverCapsExtension(&display) == STATUS_SUCCESS && extension.Value == 0 && !extension.SecureDisplaySupport &&
+                                                                                                                  !extension.VirtualModeSupport,
               "WDK display caps extension claims nothing");
     }
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
@@ -205,8 +205,8 @@ int main()
         link.Value = 0;
         link.HighColorSpace = 1;
         check(link.Value == VIOGPU_LINK_CAP_HIGH_COLOR_SPACE, "WDK HighColorSpace bit");
-        check(DXGK_DDCT_POLLONE == VioGpuDetectPollOne && DXGK_DDCT_POLLALL == VioGpuDetectPollAll &&
-                  DXGK_DDCT_ENABLEHPD == VioGpuDetectEnableHpd && DXGK_DDCT_DISABLEHPD == VioGpuDetectDisableHpd,
+        check(DXGK_DDCT_POLLONE == VioGpuDetectPollOne && DXGK_DDCT_POLLALL == VioGpuDetectPollAll && DXGK_DDCT_ENABLEHPD == VioGpuDetectEnableHpd &&
+                                                                                                                  DXGK_DDCT_DISABLEHPD == VioGpuDetectDisableHpd,
               "WDK display detect control types");
         DXGK_COLORTRANSFORMCAPS transform = {};
         transform.Transform_3x4Matrix_HighColor = 1;
