@@ -10,9 +10,9 @@ CatalogFile=viogpuvideo.cat
 PnpLockdown=1
 
 [Manufacturer]
-%Provider%=Models,NTarm64.10.0
+%Provider%=Models,NTarm64.10.0...16299
 
-[Models.NTarm64.10.0]
+[Models.NTarm64.10.0...16299]
 %Device%=VideoInstall,PCI\VEN_1AF4&DEV_1070
 
 [DestinationDirs]

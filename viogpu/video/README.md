@@ -2,7 +2,13 @@
 
 Base: `perf/droidvm-gpu-20260914`, commit
 `5ab27d4055887f14e97195079ef51716b7b707fb`.
-Development branch: `work/vpu-video-perf-20260915`.
+Development branch: `work/vpu-video-umd-perf-20260915` (draft PR #3).
+
+The initially-created `work/vpu-video-perf-20260915` received concurrent
+commits containing a different transport ABI. Those commits were not
+force-overwritten. This UMD-integrated candidate stays on its own branch
+with the same perf base. Do not blindly merge or install the two same-service
+implementations together.
 
 ## What this change implements
 
@@ -42,7 +48,7 @@ buffer-sharing implementation. The guest currently cannot independently prove
 that the host has made every ordinary GPA accessible; loopback/host access
 validation is an acceptance gate before codec testing.
 
-Compatible reviewed host source pair (keep the three revisions together):
+Compatible reviewed host revisions (keep the three revisions together):
 
 - `Droid-VM/crosvm`: `bfccd3d5a7abc7a8d2c0fd1b2ab5bee119321b75`
 - `Droid-VM/virtio-media`: `6b6d2b3307ce75ed35b0ab5b4703d9d1bb830cf8`
@@ -80,15 +86,18 @@ is not a hardware capability declaration.
 
 ## Build and package
 
-From a WDK-enabled ARM64 developer shell, at the repository root:
+From a WDK-enabled ARM64 developer shell, at the repository root, pass the
+installed SDK/WDK version (10.0.26100.0 is the version used in the first CI run):
 
 ```powershell
-./.github/scripts/locate-windows-kit.ps1
-./viogpu/video/build-video.ps1
+./viogpu/video/build-video.ps1 -KitVersion 10.0.26100.0
 cl /nologo /std:c++17 /EHsc /W4 /WX viogpu\tests\video\codec_probe.cpp `
     viogpu\viogpuwddm\objfre_win11_arm64\arm64\viogpud3d.lib `
     /Fe:video-codec-test.exe
 ```
+
+The repository's `locate-windows-kit.ps1` writes to `GITHUB_ENV` and is an
+Actions-only helper; do not invoke it directly in an ordinary local shell.
 
 The dedicated GitHub workflow runs production wire/state tests and a real
 ARM64 WDK build. Its artifact is an **unsigned review candidate**, not a signed
@@ -132,8 +141,12 @@ this development environment ran them.
 
 Local portable tests compile the **same** helpers used by the driver under
 ASan/UBSan, and compare layouts to Linux V4L2 headers. A C11 inclusion check and
-MSBuild XML parse were also run. These do not prove the WDK code builds or the
-hardware pipeline works; check the branch CI and device results separately.
+MSBuild XML parse were also run. Initial PR CI passed the portable tests and
+compiled the modified ARM64 UMD with zero warnings/errors. The initial media
+driver build stopped at INF OS-version validation (1199); the model decoration
+has been corrected to 10.0.16299 or newer, matching DIRID 13 requirements.
+Consult the current CI results for the driver build; no hardware execution
+has been validated by these tests.
 
 Remaining for transparent Windows application support: real D3D11 Video DDI /
 DXVA decode integration, an asynchronous encoder/decoder MFT frontend,
