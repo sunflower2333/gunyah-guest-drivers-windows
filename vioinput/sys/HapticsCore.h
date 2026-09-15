@@ -8,7 +8,39 @@
 #define VIOINPUT_HAPTICS_CORE_H
 
 #include <stddef.h>
+#if defined(_KERNEL_MODE)
+/* Use the WDK's integer definitions, not the incompatible user-mode vcruntime.
+ * The fixed-width names remain shared with the freestanding test harness.
+ */
+#include <ntddk.h>
+typedef unsigned char uint8_t;
+typedef signed char int8_t;
+typedef unsigned short uint16_t;
+typedef unsigned int uint32_t;
+typedef signed int int32_t;
+typedef unsigned long long uint64_t;
+typedef signed long long int64_t;
+#ifndef UINT32_C
+#define UINT32_C(value) value##U
+#endif
+#ifndef UINT32_MAX
+#define UINT32_MAX 0xffffffffU
+#endif
+#ifndef UINT64_MAX
+#define UINT64_MAX 0xffffffffffffffffULL
+#endif
+#ifndef INT32_MAX
+#define INT32_MAX 2147483647
+#endif
+#ifndef INT32_MIN
+#define INT32_MIN (-2147483647 - 1)
+#endif
+C_ASSERT(sizeof(uint8_t) == 1 && sizeof(uint16_t) == 2);
+C_ASSERT(sizeof(uint32_t) == 4 && sizeof(uint64_t) == 8);
+C_ASSERT(sizeof(int8_t) == 1 && sizeof(int32_t) == 4 && sizeof(int64_t) == 8);
+#else
 #include <stdint.h>
+#endif
 
 #define DVH_VERSION 1u
 #define DVH_RECORD_BYTES 8u

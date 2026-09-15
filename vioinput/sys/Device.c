@@ -598,7 +598,10 @@ static VOID VIOInputResetQueues(PINPUT_DEVICE pContext, WDFDEVICE Device)
     WdfSpinLockAcquire(pContext->StatusQLock);
     InterlockedExchange(&pContext->QueuesRunning, FALSE);
     WdfSpinLockRelease(pContext->StatusQLock);
-    WdfInterruptFlushQueuedDpcs(pContext->QueuesInterrupt);
+    // Producers are closed before this PASSIVE_LEVEL-only slow-path join.
+    // DPCs queued after QueuesRunning was cleared return without touching queues.
+    // KeFlushQueuedDpcs also joins the DPC that observed the old running state.
+    KeFlushQueuedDpcs();
     virtio_device_reset(&pContext->VDevice.VIODevice);
 
     WdfSpinLockAcquire(pContext->EventQLock);
