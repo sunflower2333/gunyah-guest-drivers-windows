@@ -137,9 +137,46 @@ jobs:
       - name: Create unattached reviewed Git objects without changing any branch
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/prepare-video-branch-ci.py --publish-objects
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import zipfile
+          p = Path('.github/scripts/prepare-video-branch-ci.py')
+          source = p.read_text()
+          old = 'check=True, timeout=120)\n        return json.loads(result.stdout)'
+          new = ('check=False, timeout=120)\n'
+                 '        if result.returncode:\n'
+                 '            print(result.stderr, file=sys.stderr)\n'
+                 '            print(result.stdout, file=sys.stderr)\n'
+                 '            raise RuntimeError("Git object API failed: " + endpoint)\n'
+                 '        return json.loads(result.stdout)')
+          assert source.count(old) == 1
+          source = source.replace(old, new)
+          old = '            element["content"] = path.read_text(encoding="utf-8")'
+          new = '            element["sha"] = api("git/blobs", {"content": path.read_text(encoding="utf-8"), "encoding": "utf-8"})["sha"]'
+          assert source.count(old) == 1
+          source = source.replace(old, new)
+          old = '    tree = api("git/trees", {"base_tree": base, "tree": elements})["sha"]'
+          new = ('    payload = {"base_tree": base, "tree": elements}\n'
+                 '    (ROOT / "video-ci-tree.json").write_text(json.dumps(payload, indent=2) + "\\n")\n'
+                 '    tree = api("git/trees", payload)["sha"]')
+          assert source.count(old) == 1
+          p.write_text(source.replace(old, new))
+          # Preserve the verified inputs even if GitHub's object API refuses a write.
+          paths = subprocess.check_output(['git', 'diff', '--name-only', 'HEAD'], text=True).splitlines()
+          with zipfile.ZipFile('video-ci-source.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for name in paths:
+                  archive.write(name, name)
+              archive.writestr('BASE_COMMIT', subprocess.check_output(['git','rev-parse','HEAD'], text=True))
+          PY
+          python3 .github/scripts/prepare-video-branch-ci.py --publish-objects
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: video-ci-candidate
-          path: video-ci-candidate.json
+          path: |
+            video-ci-candidate.json
+            video-ci-tree.json
+            video-ci-source.zip
           if-no-files-found: error
