@@ -1,0 +1,28 @@
+name: vioinput Windows integration
+on:
+  push:
+    branches: ['work/vioinput-*']
+    paths: ['vioinput/**', '.github/workflows/vioinput-windows-ci.yml']
+  pull_request:
+    paths: ['vioinput/**', '.github/workflows/vioinput-windows-ci.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source-snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive exact tracked source for reproducibility
+        run: |
+          git rev-parse HEAD > source-revision.txt
+          git archive --format=zip HEAD -o source.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vioinput-source-${{ github.run_id }}
+          path: |
+            source.zip
+            source-revision.txt
+          retention-days: 7
