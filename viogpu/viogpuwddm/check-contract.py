@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58494",
+        "$minor = 58495",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58494",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58495",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -13414,12 +13414,16 @@ def check_advanced_color_admission_contract() -> None:
     }
     violations = advanced_color_violations(sources)
     product = PRODUCT_WORKFLOW_PATH.read_text(encoding="utf-8")
+    # 58495 is the canonical scRGB FP16 scanout trial, so the package builds the
+    # Advanced Color candidate plus that one flag -- and still none of the
+    # reported-2.3, MPO3 or connection-DDI experiments.
     if (product.count("@{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64' ; hdr=$true },") != 1 or
             product.count("hdr=$true") != 1 or product.count("$projectFlags += '/p:VIOGPU_ADVANCED_COLOR=1'") != 1 or
+            product.count("$projectFlags += '/p:VIOGPU_CANONICAL_FP16_SCANOUT=1'") != 1 or
             "VIOGPU_REPORT_WDDM2_3" in product or "VIOGPU_ADVANCED_COLOR_MPO3" in product or
-            "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product or "VIOGPU_CANONICAL_FP16_SCANOUT" in product):
-        violations.append("the signed 58493 package must build exactly the KMD as the Advanced Color candidate "
-                          "without the reported-2.3 experiment")
+            "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product):
+        violations.append("the signed 58495 package must build the Advanced Color candidate with the canonical "
+                          "FP16 scanout trial and no other experiment")
     if violations:
         fail("Advanced Color default-build/admission contract: " + "; ".join(violations))
 
