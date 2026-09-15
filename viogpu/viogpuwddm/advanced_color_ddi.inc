@@ -391,6 +391,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmUpdateMonitorLinkInfo(CONST H
     {
         return STATUS_INVALID_PARAMETER;
     }
+    adapter->CountDisplayEvent(VioGpuMonitorLinkQueries);
 #if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
     VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
     const bool admitted = adapter->QueryDisplayColor(&caps) && adapter->IsNativeHdrModeAvailable();
@@ -398,6 +399,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmUpdateMonitorLinkInfo(CONST H
 #else
     args->MonitorLinkInfo.Capabilities.Value = VioGpuMonitorLinkCapabilities(nullptr, false);
 #endif
+    /* A capability we never claimed and a query dxgkrnl never made look the
+     * same from outside, so record both the answer and the fact of asking. */
+    adapter->RecordDisplayValue(VioGpuMonitorLinkLastValue,
+                                static_cast<LONG>(args->MonitorLinkInfo.Capabilities.Value));
+    if (args->MonitorLinkInfo.Capabilities.Value != 0)
+    {
+        adapter->CountDisplayEvent(VioGpuMonitorLinkClaims);
+    }
     return STATUS_SUCCESS;
 }
 

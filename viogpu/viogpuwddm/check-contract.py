@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58496",
+        "$minor = 58497",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58496",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58497",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -13429,7 +13429,7 @@ def check_advanced_color_admission_contract() -> None:
             product.count("$projectFlags += '/p:VIOGPU_CANONICAL_FP16_SCANOUT=1'") != 1 or
             "VIOGPU_REPORT_WDDM2_3" in product or "VIOGPU_ADVANCED_COLOR_MPO3" in product or
             "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product):
-        violations.append("the signed 58496 package must build the Advanced Color candidate with the canonical "
+        violations.append("the signed 58497 package must build the Advanced Color candidate with the canonical "
                           "FP16 scanout trial and no other experiment")
     if violations:
         fail("Advanced Color default-build/admission contract: " + "; ".join(violations))

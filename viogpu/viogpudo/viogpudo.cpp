@@ -6619,6 +6619,9 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayPresent2DFlushMaxUsec = ReadDisplayCounter(61);
     DWORD displayPresent2DFlushResult = ReadDisplayCounter(62);
     DWORD displayPresent2DResourceId = ReadDisplayCounter(63);
+    DWORD monitorLinkQueries = ReadDisplayCounter(VioGpuMonitorLinkQueries);
+    DWORD monitorLinkLastValue = ReadDisplayCounter(VioGpuMonitorLinkLastValue);
+    DWORD monitorLinkClaims = ReadDisplayCounter(VioGpuMonitorLinkClaims);
     DWORD guestAllocSubmitResult = ReadDisplayCounter(VioGpuGuestAllocSubmitResult);
     DWORD guestAllocSubmitted = ReadDisplayCounter(VioGpuGuestAllocSubmitted);
     DWORD guestAllocCompleted = ReadDisplayCounter(VioGpuGuestAllocCompleted);
@@ -7188,6 +7191,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"yPresent2DRe"
                                                                                                          L"sourceId",
                                                                                                          &displayPresent2DResourceId},
+                                                                                                        {L"NativeMonitorLinkQueries",
+                                                                                                         &monitorLinkQueries},
+                                                                                                        {L"NativeMonitorLinkLastValue",
+                                                                                                         &monitorLinkLastValue},
+                                                                                                        {L"NativeMonitorLinkClaims",
+                                                                                                         &monitorLinkClaims},
                                                                                                         {L"NativeGuestAllocSubmitResult",
                                                                                                          &guestAllocSubmitResult},
                                                                                                         {L"NativeGuestAllocSubmitted",

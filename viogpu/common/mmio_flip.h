@@ -151,5 +151,12 @@ enum : unsigned
     VioGpuGuestAllocSubmitted = 74,
     VioGpuGuestAllocCompleted = 75,
     VioGpuGuestAllocUnanswered = 76,
-    VioGpuDisplayCounterCount = 77,
+    /* What we answered when dxgkrnl asked how the monitor link is wired. With
+     * the EDID and the source mode both in place this is the last unmeasured
+     * link in the Advanced Color chain: a zero claim and a never-asked query
+     * look identical from outside. */
+    VioGpuMonitorLinkQueries = 77,
+    VioGpuMonitorLinkLastValue = 78,
+    VioGpuMonitorLinkClaims = 79,
+    VioGpuDisplayCounterCount = 80,
 };
