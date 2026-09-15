@@ -26,3 +26,41 @@ jobs:
             source.zip
             source-revision.txt
           retention-days: 7
+  kernel-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Locate preinstalled SDK and WDK
+        shell: pwsh
+        run: ./.github/scripts/locate-windows-kit.ps1
+      - uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: arm64
+      - name: Compile and link actual kernel drivers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build-logs | Out-Null
+          $common = @('/m', '/p:Configuration=Win11 Release', '/p:Platform=ARM64',
+            '/p:ApiValidator_Enable=false', '/p:SpectreMitigation=false', '/p:SignMode=Off',
+            '/p:TreatWarningAsError=true', "/p:WindowsTargetPlatformVersion=$env:DROIDVM_KIT_VERSION")
+          foreach ($project in @('VirtIO/VirtioLib.vcxproj', 'VirtIO/WDF/VirtioLib-WDF.vcxproj',
+            'vioinput/sys/vioinput.vcxproj', 'vioinput/hidpassthrough/hidpassthrough.vcxproj')) {
+            $name = [IO.Path]::GetFileNameWithoutExtension($project)
+            & msbuild $project @common "/bl:build-logs/$name.binlog"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          git rev-parse HEAD | Set-Content build-logs/source-revision.txt
+          $drivers = @(Get-ChildItem vioinput -Recurse -Filter *.sys)
+          if ($drivers.Count -lt 2) { throw 'Missing kernel driver binaries' }
+          $drivers | Get-FileHash | Format-List | Out-File build-logs/driver-hashes.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vioinput-arm64-unsigned-${{ github.run_id }}
+          path: |
+            build-logs/
+            vioinput/**/*.sys
+            vioinput/**/*.pdb
+          retention-days: 7
