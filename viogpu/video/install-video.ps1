@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Install only the media PCI function. Does not replace display drivers, modify
-# OpenGL/Vulkan settings, install rdmapool, or turn off signature enforcement.
+# OpenGL/Vulkan settings, install pool services, or turn off signature enforcement.
 [CmdletBinding(SupportsShouldProcess)]
 param([Parameter(Mandatory)][string]$PackageDirectory)
 $ErrorActionPreference='Stop'

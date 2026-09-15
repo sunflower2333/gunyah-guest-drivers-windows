@@ -1,5 +1,5 @@
 ; SPDX-License-Identifier: BSD-3-Clause
-; VioGPU's virtio-media function, NOT the display adapter. No rdmapool service.
+; VioGPU's virtio-media function, NOT the display adapter. No external pool service.
 [Version]
 Signature="$WINDOWS NT$"
 Class=Media

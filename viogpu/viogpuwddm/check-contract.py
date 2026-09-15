@@ -1717,8 +1717,16 @@ def check_d3d_umd_shim_contract() -> None:
         "OpenAdapter",
         "OpenAdapter10",
         "OpenAdapter10_2",
+        "VioGpuVideoOpen",
+        "VioGpuVideoControl",
+        "VioGpuVideoAllocate",
+        "VioGpuVideoQueue",
+        "VioGpuVideoDequeue",
+        "VioGpuVideoCopy",
+        "VioGpuVideoStream",
+        "VioGpuVideoClose",
     ]:
-        fail("D3D UMD module definition must export exactly the three legacy entry points")
+        fail("D3D UMD module definition must export exactly the three legacy entry points and eight explicit video bridge functions")
 
     root = ET.parse(UMD_PROJECT).getroot()
     configurations = [
@@ -1767,8 +1775,8 @@ def check_d3d_umd_shim_contract() -> None:
         element.attrib.get("Include", "").replace("\\", "/")
         for element in root.findall(".//msbuild:ClCompile[@Include]", NAMESPACE)
     ]
-    if compile_inputs != ["viogpud3d.cpp"]:
-        fail(f"D3D UMD project must compile only its activation source: {compile_inputs}")
+    if compile_inputs != ["viogpud3d.cpp", "../video/video_client.cpp"]:
+        fail(f"D3D UMD project must compile exactly its activation source and explicit video bridge: {compile_inputs}")
 
 
 def check_retired_pool_absence() -> None:
