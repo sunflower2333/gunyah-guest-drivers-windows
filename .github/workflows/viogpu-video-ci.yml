@@ -1,0 +1,59 @@
+name: VioGPU Video bring-up
+on:
+  workflow_dispatch:
+  push:
+    branches: [work/vpu-video-perf-20260915]
+    paths: [viogpu/video/**, .github/workflows/viogpu-video-ci.yml]
+  pull_request:
+    paths: [viogpu/video/**, .github/workflows/viogpu-video-ci.yml]
+permissions:
+  contents: read
+jobs:
+  portable-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux UAPI and ASan/UBSan regression
+        run: python3 viogpu/video/tests/run.py
+  arm64-build:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Locate preinstalled kit
+        shell: pwsh
+        run: ./.github/scripts/locate-windows-kit.ps1
+      - uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: arm64
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Native ARM64 wire and ownership tests
+        shell: pwsh
+        run: |
+          python viogpu/video/tests/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build ordinary-RAM VirtIO dependencies and video driver
+        shell: pwsh
+        run: |
+          $projects = @('VirtIO/VirtioLib.vcxproj', 'VirtIO/WDF/VirtioLib-WDF.vcxproj', 'viogpu/video/kmd/viogpuvideo.vcxproj')
+          foreach ($project in $projects) {
+            msbuild $project /m /p:Configuration="Win11 Release" /p:Platform=ARM64 `
+              /p:WindowsTargetPlatformVersion="$env:DROIDVM_KIT_VERSION" `
+              /p:ApiValidator_Enable=false /p:SpectreMitigation=false /p:SignMode=Off
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+      - name: Compile hardware probe, without running or installing the driver
+        shell: cmd
+        run: |
+          cl /nologo /std:c++17 /EHsc /W4 /WX viogpu\video\tools\video_probe.cpp /Fe:video_probe.exe
+          if errorlevel 1 exit /b 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-video-arm64-unsigned-bringup
+          if-no-files-found: error
+          path: |
+            viogpu/video/kmd/bin/ARM64/*.sys
+            viogpu/video/kmd/bin/ARM64/*.inf
+            viogpu/video/kmd/bin/ARM64/*.cat
+            video_probe.exe
