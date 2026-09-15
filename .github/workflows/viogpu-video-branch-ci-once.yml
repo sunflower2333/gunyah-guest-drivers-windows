@@ -30,11 +30,20 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import subprocess
+          import re
           root = Path.cwd()
           files = [str(p) for p in Path('viogpu').rglob('*')
                    if p.suffix.lower() in ('.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx')
                    and not p.name.endswith('trace.h')]
           files += ['.install_scripts/viogpud3d-interpose.c']
+          # Function-generating macro invocations need blank separators to avoid
+          # clang-format 16 joining them differently on every successive run.
+          interposer = Path('.install_scripts/viogpud3d-interpose.c')
+          original = interposer.read_text()
+          separated, count = re.subn(r'\b(DEFINE_(?:DXGI_)?STUB\(\d+\))', r'\1\n\n', original)
+          assert count == 40, 'Unexpected generated macro blocks'
+          assert re.sub(r'\s+', '', original) == re.sub(r'\s+', '', separated)
+          interposer.write_text(separated)
           for attempt in range(3):
               before = [Path(p).read_bytes() for p in files]
               subprocess.run(['clang-format-16', '--style=file:' + str(root / '.clang-format'), '-i', *files], check=True)
@@ -42,8 +51,8 @@ jobs:
                   break
           PY
           git diff --check
-          bash Tools/clang-format-helper.sh check . '' './VirtIO|./.*/.*trace.h|./NetKVM/Common/virtio_net.h|./NetKVM/linux/if_ether.h|./viofs/shared/fuse.h|./viofs/svc/scope_exit.h' > /tmp/video-format.log 2>&1 || { tail -160 /tmp/video-format.log; exit 1; }
-          bash Tools/clang-format-helper.sh check VirtIO '' '' >> /tmp/video-format.log 2>&1 || { tail -160 /tmp/video-format.log; exit 1; }
+          bash Tools/clang-format-helper.sh check . '' './VirtIO|./.*/.*trace.h|./NetKVM/Common/virtio_net.h|./NetKVM/linux/if_ether.h|./viofs/shared/fuse.h|./viofs/svc/scope_exit.h' > /tmp/video-format.log 2>&1 || { grep 'not formatted correctly' /tmp/video-format.log; tail -160 /tmp/video-format.log; exit 1; }
+          bash Tools/clang-format-helper.sh check VirtIO '' '' >> /tmp/video-format.log 2>&1 || { grep 'not formatted correctly' /tmp/video-format.log; tail -160 /tmp/video-format.log; exit 1; }
       - name: Execute both actual workflow export gates and negative fixtures
         shell: pwsh
         run: ./viogpu/tests/video/binary-export-contract.ps1
