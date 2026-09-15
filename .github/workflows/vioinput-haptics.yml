@@ -1,0 +1,53 @@
+name: vioinput haptics foundations
+
+on:
+  pull_request:
+    paths:
+      - 'vioinput/**'
+      - '.github/workflows/vioinput-haptics.yml'
+  push:
+    branches:
+      - 'work/vioinput-xinput-haptics-*'
+    paths:
+      - 'vioinput/**'
+      - '.github/workflows/vioinput-haptics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable-regression:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Core, production ISR/DPC with mocked WDF, and negative control
+        run: python3 vioinput/tests/haptics/run.py --cc ${{ matrix.cc }} --sanitize --negative-control
+
+  xinput-probe-build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            label: x64
+          - arch: amd64_arm64
+            label: ARM64
+          - arch: amd64_x86
+            label: x86
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+      - name: Build system XInput probe (not a kernel driver build)
+        shell: cmd
+        run: cl /nologo /W4 /WX /TC /D_WIN32_WINNT=0x0602 vioinput\tools\xinput_probe.c /Fe:xinput_probe.exe /link Xinput.lib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xinput-probe-${{ matrix.label }}
+          path: xinput_probe.exe
+          if-no-files-found: error

@@ -34,6 +34,7 @@
 #include "IsrDpc.tmh"
 #endif
 
+// Enable callbacks for the two existing queues; do not change the IRQ mode.
 static VOID VIOInputEnableInterrupt(PINPUT_DEVICE pContext)
 {
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INTERRUPT, "--> %s enable\n", __FUNCTION__);
@@ -57,6 +58,7 @@ static VOID VIOInputEnableInterrupt(PINPUT_DEVICE pContext)
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INTERRUPT, "<-- %s enable\n", __FUNCTION__);
 }
 
+// Disable callbacks without accessing a queue that has not been created.
 static VOID VIOInputDisableInterrupt(PINPUT_DEVICE pContext)
 {
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INTERRUPT, "--> %s disable\n", __FUNCTION__);
@@ -78,8 +80,10 @@ static VOID VIOInputDisableInterrupt(PINPUT_DEVICE pContext)
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INTERRUPT, "<-- %s disable\n", __FUNCTION__);
 }
 
-NTSTATUS
-VIOInputInterruptEnable(IN WDFINTERRUPT Interrupt, IN WDFDEVICE AssociatedDevice)
+// Enable device queue notifications through the existing WDF interrupt.
+NTSTATUS VIOInputInterruptEnable(
+    IN WDFINTERRUPT Interrupt,
+    IN WDFDEVICE AssociatedDevice)
 {
     UNREFERENCED_PARAMETER(AssociatedDevice);
 
@@ -89,8 +93,10 @@ VIOInputInterruptEnable(IN WDFINTERRUPT Interrupt, IN WDFDEVICE AssociatedDevice
     return STATUS_SUCCESS;
 }
 
-NTSTATUS
-VIOInputInterruptDisable(IN WDFINTERRUPT Interrupt, IN WDFDEVICE AssociatedDevice)
+// Disable device queue notifications through the existing WDF interrupt.
+NTSTATUS VIOInputInterruptDisable(
+    IN WDFINTERRUPT Interrupt,
+    IN WDFDEVICE AssociatedDevice)
 {
     UNREFERENCED_PARAMETER(AssociatedDevice);
 
@@ -100,20 +106,20 @@ VIOInputInterruptDisable(IN WDFINTERRUPT Interrupt, IN WDFDEVICE AssociatedDevic
     return STATUS_SUCCESS;
 }
 
-BOOLEAN
-VIOInputInterruptIsr(IN WDFINTERRUPT Interrupt, IN ULONG MessageID)
+// Only identify our interrupt and schedule deferred queue work in the ISR.
+BOOLEAN VIOInputInterruptIsr(
+    IN WDFINTERRUPT Interrupt,
+    IN ULONG MessageID)
 {
     PINPUT_DEVICE pContext = GetDeviceContext(WdfInterruptGetDevice(Interrupt));
     WDF_INTERRUPT_INFO info;
     BOOLEAN serviced;
 
-    TraceEvents(TRACE_LEVEL_VERBOSE, DBG_INTERRUPT, "--> %s\n", __FUNCTION__);
-
+    UNREFERENCED_PARAMETER(MessageID);
     WDF_INTERRUPT_INFO_INIT(&info);
     WdfInterruptGetInfo(Interrupt, &info);
 
-    // Schedule a DPC if the device is using message-signaled interrupts, or
-    // if the device ISR status is enabled.
+    // A shared legacy interrupt must actually belong to this device.
     if (info.MessageSignaled || VirtIOWdfGetISRStatus(&pContext->VDevice))
     {
         WdfInterruptQueueDpcForIsr(Interrupt);
@@ -124,46 +130,85 @@ VIOInputInterruptIsr(IN WDFINTERRUPT Interrupt, IN ULONG MessageID)
         serviced = FALSE;
     }
 
-    TraceEvents(TRACE_LEVEL_VERBOSE, DBG_INTERRUPT, "<-- %s\n", __FUNCTION__);
     return serviced;
 }
 
-VOID VIOInputQueuesInterruptDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT AssociatedObject)
+// Drain input and output completions; never complete a request under StatusQLock.
+VOID VIOInputQueuesInterruptDpc(
+    IN WDFINTERRUPT Interrupt,
+    IN WDFOBJECT AssociatedObject)
 {
     WDFDEVICE Device = WdfInterruptGetDevice(Interrupt);
     PINPUT_DEVICE pContext = GetDeviceContext(Device);
     PVIRTIO_INPUT_EVENT pEvent;
     PVIRTIO_INPUT_EVENT_WITH_REQUEST pEventReq;
+    WDFREQUEST request;
     UINT len;
+    ULONG invalidEvents = 0;
+    ULONG repostFailures = 0;
+    NTSTATUS status;
 
-    TraceEvents(TRACE_LEVEL_VERBOSE, DBG_DPC, "--> %s\n", __FUNCTION__);
+    UNREFERENCED_PARAMETER(AssociatedObject);
 
     WdfSpinLockAcquire(pContext->EventQLock);
-    while ((pEvent = virtqueue_get_buf(pContext->EventQ, &len)) != NULL)
+    while (pContext->EventQ &&
+           (pEvent = virtqueue_get_buf(pContext->EventQ, &len)) != NULL)
     {
-        // translate event to a HID report and complete a pending HID request
-        ProcessInputEvent(pContext, pEvent);
+        // We posted exactly one 8-byte event. A short completion must not
+        // replay stale bytes from the previous use of the DMA buffer.
+        if (len == sizeof(*pEvent))
+        {
+            ProcessInputEvent(pContext, pEvent);
+        }
+        else
+        {
+            ++invalidEvents;
+        }
 
-        // add the buffer back to the queue
-        VIOInputAddInBuf(pContext->EventQ,
-                         pEvent,
-                         VirtIOWdfDeviceGetPhysicalAddress(&pContext->VDevice.VIODevice, pEvent));
+        status = VIOInputAddInBuf(
+            pContext->EventQ,
+            pEvent,
+            VirtIOWdfDeviceGetPhysicalAddress(&pContext->VDevice.VIODevice, pEvent));
+        if (!NT_SUCCESS(status))
+        {
+            // The failed add never transferred ownership back to the host.
+            pContext->EventQMemBlock->return_slice(pContext->EventQMemBlock, pEvent);
+            ++repostFailures;
+        }
     }
     WdfSpinLockRelease(pContext->EventQLock);
 
-    WdfSpinLockAcquire(pContext->StatusQLock);
-    while ((pEventReq = virtqueue_get_buf(pContext->StatusQ, &len)) != NULL)
+    if (invalidEvents || repostFailures)
     {
-        // complete the pending request
-        if (pEventReq->Request != NULL)
+        TraceEvents(TRACE_LEVEL_WARNING,
+                    DBG_DPC,
+                    "Input completion errors\ninvalid_events=%lu\nrepost_failures=%lu\n",
+                    invalidEvents,
+                    repostFailures);
+    }
+
+    for (;;)
+    {
+        WdfSpinLockAcquire(pContext->StatusQLock);
+        pEventReq = pContext->StatusQ ? virtqueue_get_buf(pContext->StatusQ, &len) : NULL;
+        if (!pEventReq)
         {
-            WdfRequestComplete(pEventReq->Request, STATUS_SUCCESS);
+            WdfSpinLockRelease(pContext->StatusQLock);
+            break;
         }
 
-        // free the buffer
+        // used length is NOT an Android playback result. The status buffer is
+        // device-readable, so a zero used length is also a valid completion.
+        request = pEventReq->Request;
+        pEventReq->Request = NULL;
         pContext->StatusQMemBlock->return_slice(pContext->StatusQMemBlock, pEventReq);
-    }
-    WdfSpinLockRelease(pContext->StatusQLock);
+        WdfSpinLockRelease(pContext->StatusQLock);
 
-    TraceEvents(TRACE_LEVEL_VERBOSE, DBG_DPC, "<-- %s\n", __FUNCTION__);
+        // Completion can invoke upper layers and cause another output request.
+        // The buffer is already reclaimed; nothing below touches its old cookie.
+        if (request != NULL)
+        {
+            WdfRequestComplete(request, STATUS_SUCCESS);
+        }
+    }
 }
