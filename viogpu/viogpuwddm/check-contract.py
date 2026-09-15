@@ -13420,9 +13420,15 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     link = body("VioGpuWddmUpdateMonitorLinkInfo", interface_view(code["advanced_color_ddi.inc"], advanced=True))
     need("args->MonitorLinkInfo.Capabilities.Value=VioGpuMonitorLinkCapabilities(NULL,FALSE);", link,
          "without canonical FP16 scanout no monitor link color capability may be claimed")
-    need("returnVioGpuScRgbScanoutAdmitted(caps,canonicalFp16Scanout)?(VIOGPU_LINK_CAP_WIDE_COLOR_SPACE|VIOGPU_LINK_CAP_HIGH_COLOR_SPACE):0;",
-         canonical_code(code["viogpu_display_color.h"]),
+    colour_header = canonical_code(code["viogpu_display_color.h"])
+    need("if(!VioGpuScRgbScanoutAdmitted(caps,canonicalFp16Scanout)){return0U;}", colour_header,
          "Wide/HighColorSpace require canonical FP16 scanout and admitted PQ")
+    # Wide is the floor of any claim and High is the only part the trial bit may
+    # drop, so a mask can narrow the claim and never invent one.
+    need("returnVIOGPU_LINK_CAP_WIDE_COLOR_SPACE|(claimHighColor?VIOGPU_LINK_CAP_HIGH_COLOR_SPACE:0);",
+         colour_header, "the high-colour claim must be the only part the trial bit drops")
+    need("adapter->HdrTrialHighColor()", body("VioGpuWddmUpdateMonitorLinkInfo", code["advanced_color_ddi.inc"]),
+         "the monitor link claim must pass the high-colour trial bit")
     detect = body("VioGpuWddmDisplayDetectControl", code["advanced_color_ddi.inc"])
     need("VioGpuDisplayDetectControl(&hpdEnabled,", detect, "detect control must use the tested HPD policy")
     need("if(result==VioGpuDetectInvalid){returnSTATUS_INVALID_PARAMETER;}", detect, "invalid detect control must fail")

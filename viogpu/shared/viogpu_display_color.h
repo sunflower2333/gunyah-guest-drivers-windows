@@ -182,8 +182,16 @@ inline bool VioGpuDisplayColorPqAdmitted(const VIOGPU_DISPLAY_COLOR_RESPONSE *ca
 #define VIOGPU_HDR_TRIAL_SOURCE_MODES 0x1U
 #define VIOGPU_HDR_TRIAL_LINK_CAPS 0x2U
 #define VIOGPU_HDR_TRIAL_MONITOR_EDID 0x4U
-#define VIOGPU_HDR_TRIAL_ALL \
-    (VIOGPU_HDR_TRIAL_SOURCE_MODES | VIOGPU_HDR_TRIAL_LINK_CAPS | VIOGPU_HDR_TRIAL_MONITOR_EDID)
+/* Splits the link claim itself. The two capabilities are not a pair:
+ * WideColorSpace is a matrix to the panel primaries over 8888, 10:10:10:2 and
+ * FP16 in [-2, 2], and HighColorSpace adds canonical FP16 in [-128, 256] and
+ * the display's transfer curve -- strictly more of this driver's transform.
+ * Clearing this bit claims Wide alone, which is the next question after the
+ * claim as a whole was measured as what empties the topology. */
+#define VIOGPU_HDR_TRIAL_HIGH_COLOR 0x8U
+#define VIOGPU_HDR_TRIAL_ALL                                                                   \
+    (VIOGPU_HDR_TRIAL_SOURCE_MODES | VIOGPU_HDR_TRIAL_LINK_CAPS | VIOGPU_HDR_TRIAL_MONITOR_EDID | \
+     VIOGPU_HDR_TRIAL_HIGH_COLOR)
 
 inline unsigned VioGpuSelectHdrTrialMask(bool found, unsigned value)
 {
@@ -253,14 +261,19 @@ inline VIOGPU_COLOR_CONNECTION_ACTION VioGpuColorConnectionAction(bool initializ
 #define VIOGPU_LINK_CAP_WIDE_COLOR_SPACE 0x2U
 #define VIOGPU_LINK_CAP_HIGH_COLOR_SPACE 0x4U
 
-inline unsigned VioGpuMonitorLinkCapabilities(const VIOGPU_DISPLAY_COLOR_RESPONSE *caps, bool canonicalFp16Scanout)
+inline unsigned VioGpuMonitorLinkCapabilities(const VIOGPU_DISPLAY_COLOR_RESPONSE *caps,
+                                              bool canonicalFp16Scanout,
+                                              bool claimHighColor = true)
 {
     /* Exactly the condition that offers the scRGB source mode: the link is only
      * described as wide/high color while the mode that carries canonical FP16
-     * data actually exists. */
-    return VioGpuScRgbScanoutAdmitted(caps, canonicalFp16Scanout) ? (VIOGPU_LINK_CAP_WIDE_COLOR_SPACE |
-                                                                     VIOGPU_LINK_CAP_HIGH_COLOR_SPACE)
-                                                                  : 0U;
+     * data actually exists. claimHighColor drops the stronger half for the
+     * trial mask; it can only narrow what is claimed. */
+    if (!VioGpuScRgbScanoutAdmitted(caps, canonicalFp16Scanout))
+    {
+        return 0U;
+    }
+    return VIOGPU_LINK_CAP_WIDE_COLOR_SPACE | (claimHighColor ? VIOGPU_LINK_CAP_HIGH_COLOR_SPACE : 0U);
 }
 
 /* DXGK_DISPLAYDETECTCONTROLTYPE (d3dkmddi.h, WDDM 2.2+). */

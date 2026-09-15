@@ -172,11 +172,24 @@ int main()
     assert(VioGpuSelectHdrTrialMask(true, VIOGPU_HDR_TRIAL_MONITOR_EDID) == VIOGPU_HDR_TRIAL_MONITOR_EDID);
     // Undefined bits are dropped rather than carried, so a typo cannot widen it.
     assert(VioGpuSelectHdrTrialMask(true, 0xFFFFFFFFU) == VIOGPU_HDR_TRIAL_ALL);
-    assert(VioGpuSelectHdrTrialMask(true, 0x8U) == 0);
+    assert(VioGpuSelectHdrTrialMask(true, 0x10U) == 0); // still undefined
     // The three bits are distinct and together are the whole mask.
     assert((VIOGPU_HDR_TRIAL_SOURCE_MODES & VIOGPU_HDR_TRIAL_LINK_CAPS) == 0);
     assert((VIOGPU_HDR_TRIAL_SOURCE_MODES & VIOGPU_HDR_TRIAL_MONITOR_EDID) == 0);
     assert((VIOGPU_HDR_TRIAL_LINK_CAPS & VIOGPU_HDR_TRIAL_MONITOR_EDID) == 0);
+    // The high-colour split: Wide is the floor, High is what the bit drops.
+    {
+        VIOGPU_DISPLAY_COLOR_RESPONSE pq = hdr;
+        pq.usable_hdr_types = VIOGPU_DISPLAY_COLOR_PQ;
+        assert(VioGpuMonitorLinkCapabilities(&pq, true, true) ==
+               (VIOGPU_LINK_CAP_WIDE_COLOR_SPACE | VIOGPU_LINK_CAP_HIGH_COLOR_SPACE));
+        assert(VioGpuMonitorLinkCapabilities(&pq, true, false) == VIOGPU_LINK_CAP_WIDE_COLOR_SPACE);
+        // Dropping High never turns an unadmitted link into a claim.
+        assert(VioGpuMonitorLinkCapabilities(&pq, false, false) == 0U);
+        assert(VioGpuMonitorLinkCapabilities(nullptr, true, false) == 0U);
+        assert(VioGpuSelectHdrTrialMask(true, VIOGPU_HDR_TRIAL_HIGH_COLOR) == VIOGPU_HDR_TRIAL_HIGH_COLOR);
+        assert((VIOGPU_HDR_TRIAL_ALL & VIOGPU_HDR_TRIAL_HIGH_COLOR) != 0);
+    }
     std::puts("HDR trial mask subtracts only: PASS");
     std::puts("DVCL wire, HDR10 metadata and float-bit transform validation: PASS");
     std::puts("Advanced Color monitor connection policy: PASS");

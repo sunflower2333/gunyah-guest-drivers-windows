@@ -1475,6 +1475,10 @@ class VioGpuDod
     {
         return (m_HdrTrialMask & VIOGPU_HDR_TRIAL_MONITOR_EDID) != 0;
     }
+    BOOLEAN HdrTrialHighColor() const
+    {
+        return (m_HdrTrialMask & VIOGPU_HDR_TRIAL_HIGH_COLOR) != 0;
+    }
     BOOLEAN IsNativeHdrModeAvailable() const
     {
         return !IsHardwareResetRequested() &&

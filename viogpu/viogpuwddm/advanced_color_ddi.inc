@@ -418,7 +418,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmUpdateMonitorLinkInfo(CONST H
     VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
     const bool admitted = adapter->QueryDisplayColor(&caps) && adapter->IsNativeHdrModeAvailable() &&
                           adapter->HdrTrialLinkCaps();
-    args->MonitorLinkInfo.Capabilities.Value = VioGpuMonitorLinkCapabilities(admitted ? &caps : nullptr, true);
+    args->MonitorLinkInfo.Capabilities.Value =
+        VioGpuMonitorLinkCapabilities(admitted ? &caps : nullptr, true, adapter->HdrTrialHighColor());
 #else
     args->MonitorLinkInfo.Capabilities.Value = VioGpuMonitorLinkCapabilities(nullptr, false);
 #endif
