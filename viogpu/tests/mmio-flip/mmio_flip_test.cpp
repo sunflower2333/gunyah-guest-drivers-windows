@@ -43,7 +43,8 @@ int main()
     static_assert(VioGpuFlipCapsOnVSyncMmIo == 2U, "DXGK_FLIPCAPS.FlipOnVSyncMmIo");
     static_assert(VioGpuDisplayMmioFlipCalls == 64U &&
                       VioGpuGuestAllocSubmitResult == VioGpuDisplayFlipPresentRejects + 1U &&
-                      VioGpuDisplayCounterCount == VioGpuMonitorLinkClaims + 1U,
+                      VioGpuTimingPathCalls == VioGpuMonitorLinkClaims + 1U &&
+                      VioGpuDisplayCounterCount == VioGpuTimingPathRejects + 1U,
                   "new display counters follow the 64 historical slots");
     // Every slot is distinct and inside the published array.
     {
@@ -54,7 +55,10 @@ int main()
                             VioGpuDisplayFlipPresentRejects,  VioGpuGuestAllocSubmitResult,
                             VioGpuGuestAllocSubmitted,        VioGpuGuestAllocCompleted,
                             VioGpuGuestAllocUnanswered,       VioGpuMonitorLinkQueries,
-                            VioGpuMonitorLinkLastValue,       VioGpuMonitorLinkClaims};
+                            VioGpuMonitorLinkLastValue,       VioGpuMonitorLinkClaims,
+                            VioGpuTimingPathCalls,            VioGpuTimingPathLastStatus,
+                            VioGpuTimingPathWireFormat,       VioGpuTimingPathColorSpace,
+                            VioGpuTimingPathRejects};
         for (unsigned i = 0; i < sizeof(slots) / sizeof(slots[0]); ++i)
         {
             CHECK(slots[i] < VioGpuDisplayCounterCount);

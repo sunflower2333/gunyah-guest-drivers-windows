@@ -158,5 +158,17 @@ enum : unsigned
     VioGpuMonitorLinkQueries = 77,
     VioGpuMonitorLinkLastValue = 78,
     VioGpuMonitorLinkClaims = 79,
-    VioGpuDisplayCounterCount = 80,
+    /* SetTimingsFromVidPn is where dxgkrnl states the wire format and colour
+     * space it actually chose, and it is the only DDI on the Advanced Color
+     * enable path that reported nothing at all. It refuses anything that is
+     * not exactly eight-bit sRGB or ten-bit PQ, and a refusal there leaves the
+     * OS with no path to commit -- indistinguishable, from every other counter,
+     * from dxgkrnl never having tried. Record the call, what it was asked for
+     * and what it answered. */
+    VioGpuTimingPathCalls = 80,
+    VioGpuTimingPathLastStatus = 81,
+    VioGpuTimingPathWireFormat = 82,
+    VioGpuTimingPathColorSpace = 83,
+    VioGpuTimingPathRejects = 84,
+    VioGpuDisplayCounterCount = 85,
 };

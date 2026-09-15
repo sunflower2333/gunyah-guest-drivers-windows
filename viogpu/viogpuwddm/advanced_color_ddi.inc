@@ -14,6 +14,18 @@ static BOOLEAN VioGpuSupportedHdrPlane(VioGpuDod *adapter,
            RtlCompareMemory(&attr.SrcRect, &attr.ClipRect, sizeof(RECT)) == sizeof(RECT);
 }
 
+/* One exit point for the timing path's status, so no refusal can be added
+ * without being recorded. Returns its argument so it reads as the return. */
+static NTSTATUS VioGpuTimingPathResult(VioGpuDod *adapter, NTSTATUS status)
+{
+    adapter->RecordDisplayValue(VioGpuTimingPathLastStatus, static_cast<LONG>(status));
+    if (!NT_SUCCESS(status))
+    {
+        adapter->CountDisplayEvent(VioGpuTimingPathRejects);
+    }
+    return status;
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HANDLE hAdapter,
                                                                        DXGKARG_SETTIMINGSFROMVIDPN *args)
 {
@@ -27,15 +39,25 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
     auto &path = args->pSetTimingPathInfo[0];
     path.OutputFlags = 0;
     path.DiagnosticInfo = 0;
+    /* Record what dxgkrnl asked for before any of the checks below can refuse
+     * it: a refusal here and a call that never happened are otherwise the same
+     * from outside, and this is the DDI that states the chosen wire format. */
+    adapter->CountDisplayEvent(VioGpuTimingPathCalls);
+    adapter->RecordDisplayValue(VioGpuTimingPathWireFormat,
+                                static_cast<LONG>(path.SelectedWireFormat.Value));
+    adapter->RecordDisplayValue(VioGpuTimingPathColorSpace,
+                                static_cast<LONG>(path.Input.Active
+                                                      ? (0x80000000U | static_cast<UINT>(path.OutputWireColorSpace))
+                                                      : static_cast<UINT>(path.OutputWireColorSpace)));
     const bool connected = InterlockedCompareExchange(&adapter->m_ColorMonitorConnected, 0, 0) != 0;
     if (path.Input.Active && !connected)
     {
-        return STATUS_DEVICE_NOT_READY;
+        return VioGpuTimingPathResult(adapter, STATUS_DEVICE_NOT_READY);
     }
     if (path.VidPnTargetId != 0 || path.Input.Reserved != 0 || path.Input.IgnoreConnectivity ||
         (path.Input.Active && path.Input.VidPnPathUpdates == DXGK_PATH_UPDATE_REMOVED))
     {
-        return STATUS_INVALID_PARAMETER;
+        return VioGpuTimingPathResult(adapter, STATUS_INVALID_PARAMETER);
     }
     const auto wire = path.SelectedWireFormat;
     // This backend cannot preserve a firmware-owned scanout across the virtio
@@ -48,14 +70,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
          wire.Rgb != static_cast<UINT>(hdr ? D3DKMDT_BITS_PER_COMPONENT_10 : D3DKMDT_BITS_PER_COMPONENT_08) ||
          (!hdr && path.OutputWireColorSpace != D3DDDI_OUTPUT_WIRE_COLOR_SPACE_G22_P709)))
     {
-        return STATUS_INVALID_PARAMETER;
+        return VioGpuTimingPathResult(adapter, STATUS_INVALID_PARAMETER);
     }
     if (path.Input.Active && hdr)
     {
         VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
         if (!adapter->QueryDisplayColor(&caps) || !(caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ))
         {
-            return STATUS_NOT_SUPPORTED;
+            return VioGpuTimingPathResult(adapter, STATUS_NOT_SUPPORTED);
         }
     }
     DXGKARG_COMMITVIDPN commit = {};
@@ -84,7 +106,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSetTimingsFromVidPn(CONST HAN
         path.GlitchEffect = DXGK_GLITCH_EFFECT_BLACK_CONTENT;
         path.GlitchDuration = DXGK_GLITCH_DURATION_INDEFINITE;
     }
-    return status;
+    return VioGpuTimingPathResult(adapter, status);
 }
 
 _Use_decl_annotations_ NTSTATUS APIENTRY

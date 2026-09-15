@@ -4232,22 +4232,14 @@ NTSTATUS VioGpuDod::AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODE
      * resolution appears twice, described two different ways, and dxgkrnl
      * composes no VidPn at all from that -- it commits an empty topology while
      * the last frame stays on screen, which reads as a live desktop. */
-    UINT monitorColorRange = 8;
-#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
-#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
-    /* An Advanced Color path cannot be composed against a monitor mode whose
-     * dynamic range cannot carry it. The basis stays D3DKMDT_CB_SRGB: this is an
-     * RGB monitor, and D3DKMDT_CB_SCRGB describes a half-float source encoding,
-     * not a ten-bit panel -- the wide gamut and the PQ transfer are carried by
-     * the EDID colorimetry block, the monitor link capabilities and the target
-     * wire format, which is where Windows looks for them. */
-    VIOGPU_DISPLAY_COLOR_RESPONSE monitorCaps = {};
-    if (QueryDisplayColor(&monitorCaps) && VioGpuScRgbScanoutAdmitted(&monitorCaps, true))
-    {
-        monitorColorRange = 10;
-    }
-#endif
-#endif
+    /* Eight bits, whatever the Host admits. Widening this to ten under the scRGB
+     * gate was measured on target as the thing that empties the topology: 58498
+     * committed a path with eight-bit modes and failed only when Advanced Color
+     * was enabled, while 58500 -- identical but for this value -- reaches the
+     * desktop with no committed path at all. Whatever an Advanced Color VidPn
+     * needs, dxgkrnl will not compose one against a monitor source mode
+     * declaring a ten-bit dynamic range here. */
+    const UINT monitorColorRange = 8;
 
     pMonitorSourceMode->Origin = D3DKMDT_MCO_DRIVER;
     pMonitorSourceMode->Preference = D3DKMDT_MP_PREFERRED;

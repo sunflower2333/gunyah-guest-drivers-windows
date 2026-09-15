@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58500",
+        "$minor = 58501",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58500",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58501",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -13262,15 +13262,17 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     # an 8-bit sRGB monitor mode makes an Advanced Color path uncomposable, and
     # dxgkrnl then commits an empty topology instead of asking for one.
     monitor_mode = body("VioGpuDod::AddSingleMonitorMode", dod)
-    need("VioGpuScRgbScanoutAdmitted(&monitorCaps,TRUE)", monitor_mode,
-         "the HDR monitor mode must require an admitted scRGB scanout")
-    need("monitorColorRange=10;", monitor_mode,
-         "an admitted HDR monitor mode must widen the dynamic range")
-    # Every channel of every mode in the set must carry the same description. The
-    # preferred mode alone leaves the current resolution published twice, two
-    # different ways, and dxgkrnl composes nothing from a set like that.
+    # Eight bits, and not conditional on colour admission: a ten-bit dynamic
+    # range here was measured as the thing that leaves dxgkrnl with nothing to
+    # commit. Every channel of every mode in the set must carry the same value,
+    # from one symbol -- describing the preferred mode alone publishes the
+    # current resolution twice, two different ways, which is its own failure.
+    need("constUINTmonitorColorRange=8;", monitor_mode,
+         "the monitor source mode dynamic range must stay eight bits")
     if monitor_mode.count("=monitorColorRange;") != 8:
         violations.append("every monitor source mode must carry the same dynamic range")
+    if "VioGpuScRgbScanoutAdmitted(&monitorCaps" in monitor_mode:
+        violations.append("the monitor source mode must not vary with colour admission")
     need("pMonitorSourceMode->ColorCoeffDynamicRanges.FirstChannel=monitorColorRange;", monitor_mode,
          "an admitted HDR monitor mode must carry ten-bit dynamic range")
     need("VioGpuBuildHdrEdid(base,baseSize,m_HdrEdid,sizeof(m_HdrEdid))==VioGpuHdrEdidSize",
@@ -13297,8 +13299,23 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     need("pCurrentMode->DispInfo.ColorFormat=storageFormat;", storage, "mode storage must use the selected format")
     need("args->Supported=adapter->QueryDisplayColor(&caps)&&(caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ)!=0&&",
          acdi, "CheckMPO3 must require usable PQ")
-    need("if(!adapter->QueryDisplayColor(&caps)||!(caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ)){returnSTATUS_NOT_SUPPORTED;}",
+    need("if(!adapter->QueryDisplayColor(&caps)||!(caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ)){"
+         "returnVioGpuTimingPathResult(adapter,STATUS_NOT_SUPPORTED);}",
          acdi, "an HDR timing must require usable PQ")
+    # The timing path is where dxgkrnl states the wire format it chose, and it
+    # refuses several ways. Every refusal must leave a record, or a refusal and
+    # a call that never happened read the same from outside.
+    timing = body("VioGpuWddmSetTimingsFromVidPn", code["advanced_color_ddi.inc"])
+    need("adapter->CountDisplayEvent(VioGpuTimingPathCalls);", timing,
+         "the timing path must record that it was called")
+    need("adapter->RecordDisplayValue(VioGpuTimingPathWireFormat,", timing,
+         "the timing path must record the wire format it was asked for")
+    # The argument guard runs before the adapter pointer is known good, so it
+    # cannot record anything; every exit after the call is recorded must.
+    marker = "adapter->CountDisplayEvent(VioGpuTimingPathCalls);"
+    if marker in timing and "returnSTATUS_" in timing.split(marker, 1)[1]:
+        violations.append("every timing path exit after the call is recorded must go through "
+                          "VioGpuTimingPathResult")
     need("if(caps.generation==0||!(caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ)){returnSTATUS_NOT_SUPPORTED;}",
          acdi, "an MPO3 PQ plane must require usable PQ")
     if "PreserveInherited" in acdi and "STATUS_NOT_SUPPORTED" in acdi[acdi.find("PreserveInherited") - 40:acdi.find("PreserveInherited") + 80]:
@@ -13445,7 +13462,7 @@ def check_advanced_color_admission_contract() -> None:
             product.count("$projectFlags += '/p:VIOGPU_REPORT_WDDM2_3=1'") != 1 or
             "VIOGPU_ADVANCED_COLOR_MPO3" in product or
             "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product):
-        violations.append("the signed 58500 package must build the Advanced Color candidate with the canonical "
+        violations.append("the signed 58501 package must build the Advanced Color candidate with the canonical "
                           "FP16 scanout and reported-2.3 trials and no other experiment")
     if violations:
         fail("Advanced Color default-build/admission contract: " + "; ".join(violations))
