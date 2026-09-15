@@ -5,6 +5,7 @@
 #include <wdf.h>
 #include "osdep.h"
 #include "VirtIOWdf.h"
+#include "VirtIO.h"
 #include "../include/video_ioctl.h"
 #define VV_TAG 'dVGV'
 #define VV_EVENT_SLOTS 64u

@@ -80,7 +80,8 @@ NTSTATUS VvClose(VV_DEVICE *d)
     if (!d->have_session) return STATUS_SUCCESS;
     close.header.command=VV_CMD_CLOSE; close.session=d->session;
     status=VvTransact(d,&close,sizeof(close),&response,sizeof(response),&used);
-    if (!NT_SUCCESS(status) || response.error) {
+    /* Upstream returns the descriptor with used=0 only after close_session. */
+    if (!NT_SUCCESS(status) || used!=0 || response.error) {
         InterlockedExchange(&d->faulted,1);
         return NT_SUCCESS(status)?STATUS_DEVICE_PROTOCOL_ERROR:status;
     }

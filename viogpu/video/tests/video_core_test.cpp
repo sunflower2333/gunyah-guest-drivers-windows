@@ -118,10 +118,26 @@ static void test_admission()
     CHECK(!vv_format_size(&f,&a));
 }
 
+// Check the upstream CLOSE exception without weakening ordinary response validation.
+static void test_reply_lengths()
+{
+    CHECK(vv_reply_length_valid(VV_CMD_CLOSE,0,8));
+    CHECK(vv_reply_length_valid(VV_CMD_CLOSE,8,8)); // Error header is inspected by CLOSE.
+    CHECK(!vv_reply_length_valid(VV_CMD_CLOSE,4,8));
+    CHECK(!vv_reply_length_valid(VV_CMD_CLOSE,16,16));
+    CHECK(!vv_reply_length_valid(VV_CMD_OPEN,0,16));
+    CHECK(!vv_reply_length_valid(VV_CMD_IOCTL,7,208));
+    CHECK(!vv_reply_length_valid(VV_CMD_IOCTL,209,208));
+    CHECK(vv_reply_length_valid(VV_CMD_IOCTL,8,208));
+    CHECK(vv_reply_length_valid(VV_CMD_OPEN,16,16));
+    VV_BUFFER_STATE bad={4096,99};
+    CHECK(!vv_buffer_submit(&bad));
+}
+
 // Execute the production core without a device or any synthesized success path.
 int main()
 {
-    test_wire(); test_events(); test_admission();
+    test_wire(); test_events(); test_admission(); test_reply_lengths();
     std::puts("PASS: wire ABI, Linux byte comparison, ownership, events, admission");
     return 0;
 }

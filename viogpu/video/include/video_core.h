@@ -16,6 +16,8 @@ typedef struct {
 } VV_EVENT;
 typedef struct { uint32_t capacity, state; } VV_BUFFER_STATE;
 enum { VV_OWNED=0, VV_HOST=1, VV_RETURNED=2 };
+/* CLOSE succeeds with zero used bytes; other replies require a response header. */
+int vv_reply_length_valid(uint32_t command, size_t used, size_t capacity);
 /* Validate one of the two video queue directions, including its planar form. */
 int vv_queue_valid(uint32_t queue);
 /* Return whether this queue uses the multiplanar wire representation. */

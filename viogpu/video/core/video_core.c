@@ -3,7 +3,17 @@
  */
 #include "../include/video_core.h"
 #include <string.h>
+#if !defined(VV_KERNEL)
 #include <limits.h>
+#endif
+
+/* Accept empty completion only for CLOSE, as the pinned upstream runner writes no reply. */
+int vv_reply_length_valid(uint32_t command, size_t used, size_t capacity)
+{
+    if (capacity<sizeof(VV_RESPONSE) || capacity>VV_COMMAND_BYTES || used>capacity) return 0;
+    if (command==VV_CMD_CLOSE) return used==0 || used==sizeof(VV_RESPONSE);
+    return used>=sizeof(VV_RESPONSE);
+}
 
 /* Accept only codec video queues, never overlay or pointer-bearing window types. */
 int vv_queue_valid(uint32_t queue)
@@ -151,7 +161,8 @@ int vv_parse_event(const void *source, size_t length, VV_EVENT *event)
 /* Ownership moves to the device before the descriptor can be observed. */
 int vv_buffer_submit(VV_BUFFER_STATE *buffer)
 {
-    if (!buffer || !buffer->capacity || buffer->state==VV_HOST) return 0;
+    if (!buffer || !buffer->capacity ||
+        (buffer->state!=VV_OWNED && buffer->state!=VV_RETURNED)) return 0;
     buffer->state=VV_HOST;
     return 1;
 }

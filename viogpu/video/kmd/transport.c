@@ -143,7 +143,8 @@ NTSTATUS VvD0Exit(WDFDEVICE device, WDF_POWER_DEVICE_STATE target)
     WdfSpinLockAcquire(d->lock);
     InterlockedExchange(&d->online,0);
     WdfSpinLockRelease(d->lock);
-    WdfInterruptFlushQueuedDpcs(d->interrupt);
+    /* Teardown only: offline DPCs no longer touch queues or backing. */
+    KeFlushQueuedDpcs();
     if (d->queues_created) {
         status=VirtIOWdfDestroyQueues(&d->virtio);
         if (NT_SUCCESS(status)) d->queues_created=FALSE;
@@ -248,9 +249,12 @@ NTSTATUS VvTransact(VV_DEVICE *d, const void *command, ULONG command_size,
 {
     struct scatterlist sg[2];
     LARGE_INTEGER timeout;
+    VV_COMMAND header;
     NTSTATUS status;
-    if (!command || !reply || !reply_size || command_size>VV_COMMAND_BYTES ||
+    if (!command || !reply || !reply_size || command_size<sizeof(header) ||
+        command_size>VV_COMMAND_BYTES ||
         reply_capacity>VV_COMMAND_BYTES || reply_capacity<sizeof(VV_RESPONSE)) return STATUS_INVALID_PARAMETER;
+    RtlCopyMemory(&header,command,sizeof(header));
     WdfSpinLockAcquire(d->lock);
     if (!d->online || d->faulted || d->pending) {
         WdfSpinLockRelease(d->lock); return STATUS_DEVICE_NOT_READY;
@@ -269,8 +273,7 @@ NTSTATUS VvTransact(VV_DEVICE *d, const void *command, ULONG command_size,
     timeout.QuadPart=-15ll*1000*1000*10; /* Longer than the host's 10-second start bound. */
     status=KeWaitForSingleObject(&d->command_done,Executive,KernelMode,FALSE,&timeout);
     WdfSpinLockAcquire(d->lock);
-    if (status!=STATUS_SUCCESS || d->faulted || d->command_used<sizeof(VV_RESPONSE) ||
-        d->command_used>reply_capacity) {
+    if (status!=STATUS_SUCCESS || d->faulted || !vv_reply_length_valid(header.command,d->command_used,reply_capacity)) {
         InterlockedExchange(&d->faulted,1);
         status=(status==STATUS_TIMEOUT)?STATUS_IO_TIMEOUT:STATUS_DEVICE_PROTOCOL_ERROR;
     } else {

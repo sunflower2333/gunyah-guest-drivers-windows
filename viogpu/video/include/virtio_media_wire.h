@@ -5,8 +5,22 @@
  */
 #ifndef VIOGPU_VIDEO_WIRE_H
 #define VIOGPU_VIDEO_WIRE_H
+#if defined(VV_KERNEL)
+/* Do not mix the user-mode MSVC CRT stdint.h into WDK km/crt headers. */
+#include <ntddk.h>
+typedef UINT8 uint8_t;
+typedef UINT16 uint16_t;
+typedef UINT32 uint32_t;
+typedef UINT64 uint64_t;
+typedef INT32 int32_t;
+typedef INT64 int64_t;
+#define UINT64_MAX ((uint64_t)~0ull)
+#define INT64_MAX ((int64_t)0x7fffffffffffffffll)
+#define INT64_MIN (-INT64_MAX-1ll)
+#else
 #include <stddef.h>
 #include <stdint.h>
+#endif
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error The current video transport requires a little-endian target
 #endif
