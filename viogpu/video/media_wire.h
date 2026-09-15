@@ -6,9 +6,28 @@
  */
 #ifndef VIOGPU_MEDIA_WIRE_H
 #define VIOGPU_MEDIA_WIRE_H
+#ifdef _KERNEL_MODE
+/* /kernel defines _KERNEL_MODE. WDK provides size_t, offsetof and memory
+ * intrinsics; user-mode stdint.h must not mix vcruntime.h with km/crt. */
+#include <ntddk.h>
+typedef unsigned char uint8_t;
+typedef unsigned int uint32_t;
+typedef unsigned __int64 uint64_t;
+typedef __int64 int64_t;
+#ifndef INT64_MAX
+#define INT64_MAX 9223372036854775807i64
+#endif
+#ifndef INT64_MIN
+#define INT64_MIN (-INT64_MAX - 1)
+#endif
+#ifndef UINT64_MAX
+#define UINT64_MAX 0xffffffffffffffffui64
+#endif
+#else
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#endif
 
 #define VMEDIA_DEVICE_ID       48u
 #define VMEDIA_COMMAND_QUEUE   0u
