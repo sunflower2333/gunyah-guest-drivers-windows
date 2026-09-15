@@ -36,6 +36,7 @@
 #include "child_descriptor.h"
 #include "mmio_flip.h"
 #include "viogpu_queue.h"
+#include "edid_hdr.h"
 
 /* Source-mode pixel formats that carry more than eight bits per component, so
  * the framebuffer keeps the mode's own storage instead of the SDR baseline's
@@ -866,6 +867,11 @@ class VioGpuAdapter : IVioGpuPCI
     {
         return m_Id;
     }
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    BOOLEAN RefreshHdrEdid(void);
+#endif
+#endif
     PBYTE GetEdidData(void);
     ULONG GetEdidDataSize(void);
     PBYTE GetCTA861Data(void);
@@ -940,6 +946,17 @@ class VioGpuAdapter : IVioGpuPCI
     ULONG m_Id;
     BYTE m_EDIDs[EDID_RAW_BLOCK_SIZE];
     BOOLEAN m_bEDID;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    /* The synthesized base EDID plus a CTA-861 extension that declares BT.2020
+     * colorimetry and the ST2084 EOTF, built only while the whole canonical
+     * scRGB path is admitted. Windows reads the monitor's own claim, so an
+     * SDR-only descriptor keeps Advanced Color unsupported however the link is
+     * described. Rebuilt whenever the admitted state changes. */
+    BYTE m_HdrEdid[VioGpuHdrEdidSize];
+    BOOLEAN m_HdrEdidValid;
+#endif
+#endif
 
     VirtIODevice m_VioDev;
     CPciResources m_PciResources;

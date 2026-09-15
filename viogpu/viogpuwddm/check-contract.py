@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58495",
+        "$minor = 58496",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58495",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58496",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -13254,6 +13254,13 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
          "high-precision source validation must require native HDR")
     # The canonical FP16 mode and the monitor link claim share one gate, so the
     # mode can never be offered on a link that does not advertise it.
+    # The monitor's own claim is what Windows reads, so the CTA-861 HDR
+    # descriptor exists exactly while the same scanout gate holds.
+    need("VioGpuScRgbScanoutAdmitted(&caps,TRUE)", body("VioGpuAdapter::RefreshHdrEdid", dod),
+         "the HDR monitor descriptor must require an admitted scRGB scanout")
+    need("VioGpuBuildHdrEdid(base,baseSize,m_HdrEdid,sizeof(m_HdrEdid))==VioGpuHdrEdidSize",
+         body("VioGpuAdapter::RefreshHdrEdid", dod),
+         "the HDR descriptor must come from the tested builder, not hand-written bytes")
     need("if(VioGpuScRgbScanoutAdmitted(&colorCaps,TRUE)){formatCount=3;}",
          body("VioGpuDod::AddSingleSourceMode", dod),
          "the canonical FP16 source mode must require an admitted scRGB scanout")
@@ -13422,7 +13429,7 @@ def check_advanced_color_admission_contract() -> None:
             product.count("$projectFlags += '/p:VIOGPU_CANONICAL_FP16_SCANOUT=1'") != 1 or
             "VIOGPU_REPORT_WDDM2_3" in product or "VIOGPU_ADVANCED_COLOR_MPO3" in product or
             "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product):
-        violations.append("the signed 58495 package must build the Advanced Color candidate with the canonical "
+        violations.append("the signed 58496 package must build the Advanced Color candidate with the canonical "
                           "FP16 scanout trial and no other experiment")
     if violations:
         fail("Advanced Color default-build/admission contract: " + "; ".join(violations))

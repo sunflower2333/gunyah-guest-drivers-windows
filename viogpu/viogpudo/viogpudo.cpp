@@ -9120,6 +9120,12 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_CustomModeIndex = 0;
     RtlZeroMemory(m_EDIDs, sizeof(m_EDIDs));
     m_bEDID = FALSE;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    RtlZeroMemory(m_HdrEdid, sizeof(m_HdrEdid));
+    m_HdrEdidValid = FALSE;
+#endif
+#endif
     m_ModeInfo = NULL;
     m_ModeCount = 0;
     m_Id = g_InstanceId++;
@@ -13094,16 +13100,61 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
     return STATUS_SUCCESS;
 }
 
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+/* Rebuild the HDR descriptor for the current admitted state. Windows decides a
+ * target's Advanced Color support from what the monitor claims, so the CTA-861
+ * extension exists exactly while the canonical scRGB scanout is admitted: an
+ * unadmitting Host must keep the SDR-only descriptor it has today. */
+BOOLEAN VioGpuAdapter::RefreshHdrEdid(void)
+{
+    PAGED_CODE();
+
+    m_HdrEdidValid = FALSE;
+    if (m_pVioGpuDod == NULL || m_pVioGpuDod->IsRenderOnly())
+    {
+        return FALSE;
+    }
+    VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+    if (!m_pVioGpuDod->QueryDisplayColor(&caps) || !VioGpuScRgbScanoutAdmitted(&caps, true))
+    {
+        return FALSE;
+    }
+    const PBYTE base = m_bEDID ? m_EDIDs : (PBYTE)(g_gpu_edid);
+    const ULONG baseSize = m_bEDID ? (1U + m_EDIDs[126]) * EDID_V1_BLOCK_SIZE : EDID_V1_BLOCK_SIZE;
+    m_HdrEdidValid = VioGpuBuildHdrEdid(base, baseSize, m_HdrEdid, sizeof(m_HdrEdid)) == VioGpuHdrEdidSize;
+    return m_HdrEdidValid;
+}
+#endif
+#endif
+
 PBYTE VioGpuAdapter::GetEdidData()
 {
     PAGED_CODE();
 
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    if (RefreshHdrEdid())
+    {
+        return m_HdrEdid;
+    }
+#endif
+#endif
     return m_bEDID ? m_EDIDs : (PBYTE)(g_gpu_edid);
 }
 
 ULONG VioGpuAdapter::GetEdidDataSize()
 {
     PAGED_CODE();
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    // GetEdidData refreshed the flag for this descriptor read.
+    if (m_HdrEdidValid)
+    {
+        return VioGpuHdrEdidSize;
+    }
+#endif
+#endif
     // QueryEdidInfo verifies all declared blocks arrived. The fallback is
     // exactly128bytes; never let a descriptor read walk past that array.
     return m_bEDID ? (1U + m_EDIDs[126]) * EDID_V1_BLOCK_SIZE : EDID_V1_BLOCK_SIZE;

@@ -171,6 +171,10 @@ mutations = [
      lambda t: replace_once(t, "    if (QueryDisplayColor(&colorCaps) && IsNativeHdrModeAvailable())\n    {\n        formatCount = 2;",
                             "    if (QueryDisplayColor(&colorCaps))\n    {\n        formatCount = 2;"),
      "ten-bit source modes must require native HDR"),
+    ("HDR monitor descriptor without admission", "viogpudo.cpp",
+     lambda t: replace_once(t, "if (!m_pVioGpuDod->QueryDisplayColor(&caps) || !VioGpuScRgbScanoutAdmitted(&caps, true))",
+                            "if (!m_pVioGpuDod->QueryDisplayColor(&caps))"),
+     "the HDR monitor descriptor must require an admitted scRGB scanout"),
     ("FP16 source mode without admission", "viogpudo.cpp",
      lambda t: replace_once(t, "        if (VioGpuScRgbScanoutAdmitted(&colorCaps, true))\n        {\n"
                                "            formatCount = 3;\n        }",
