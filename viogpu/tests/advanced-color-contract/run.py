@@ -176,9 +176,17 @@ mutations = [
                             "if (QueryDisplayColor(&monitorCaps))"),
      "the HDR monitor mode must require an admitted scRGB scanout"),
     ("HDR monitor mode keeps eight-bit range", "viogpudo.cpp",
-     lambda t: replace_once(t, "        pMonitorSourceMode->ColorCoeffDynamicRanges.FirstChannel = 10;",
-                            "        pMonitorSourceMode->ColorCoeffDynamicRanges.FirstChannel = 8;"),
-     "an admitted HDR monitor mode must carry ten-bit dynamic range"),
+     lambda t: replace_once(t, "        monitorColorRange = 10;",
+                            "        monitorColorRange = 8;"),
+     "an admitted HDR monitor mode must widen the dynamic range"),
+    ("HDR monitor mode describes only the preferred mode", "viogpudo.cpp",
+     lambda t: replace_once(
+         t,
+         "        pMonitorSourceMode->ColorCoeffDynamicRanges.FourthChannel = monitorColorRange;\n"
+         "        if (Idx == m_pHWDevice->GetCurrentModeIndex())",
+         "        pMonitorSourceMode->ColorCoeffDynamicRanges.FourthChannel = 8;\n"
+         "        if (Idx == m_pHWDevice->GetCurrentModeIndex())"),
+     "every monitor source mode must carry the same dynamic range"),
     ("HDR monitor descriptor without admission", "viogpudo.cpp",
      lambda t: replace_once(t, "if (!m_pVioGpuDod->QueryDisplayColor(&caps) || !VioGpuScRgbScanoutAdmitted(&caps, true))",
                             "if (!m_pVioGpuDod->QueryDisplayColor(&caps))"),

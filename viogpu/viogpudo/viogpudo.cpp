@@ -4226,33 +4226,36 @@ NTSTATUS VioGpuDod::AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODE
 
     BuildVideoSignalInfo(&pMonitorSourceMode->VideoSignalInfo, pVbeModeInfo);
 
-    pMonitorSourceMode->Origin = D3DKMDT_MCO_DRIVER;
-    pMonitorSourceMode->Preference = D3DKMDT_MP_PREFERRED;
-    pMonitorSourceMode->ColorBasis = D3DKMDT_CB_SRGB;
-    pMonitorSourceMode->ColorCoeffDynamicRanges.FirstChannel = 8;
-    pMonitorSourceMode->ColorCoeffDynamicRanges.SecondChannel = 8;
-    pMonitorSourceMode->ColorCoeffDynamicRanges.ThirdChannel = 8;
-    pMonitorSourceMode->ColorCoeffDynamicRanges.FourthChannel = 8;
+    /* One colour description for the whole mode set, decided once. Applying it to
+     * the preferred mode alone leaves the set self-contradictory: the loop below
+     * publishes the same timing again with the default range, so the current
+     * resolution appears twice, described two different ways, and dxgkrnl
+     * composes no VidPn at all from that -- it commits an empty topology while
+     * the last frame stays on screen, which reads as a live desktop. */
+    UINT monitorColorRange = 8;
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
 #if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
-    /* The monitor mode is the last thing that has to admit HDR. With Advanced
-     * Color enabled, dxgkrnl needs a monitor mode whose dynamic range and color
-     * basis can carry it; an 8-bit sRGB mode satisfies nothing, so the whole
-     * VidPn fails to compose and an empty topology is committed instead -- the
-     * display then has no active path at all while the last frame stays on
-     * screen. Ten bits and the scRGB basis match the source modes and the
-     * ten-bit wire format offered under this same gate. */
+    /* An Advanced Color path cannot be composed against a monitor mode whose
+     * dynamic range cannot carry it. The basis stays D3DKMDT_CB_SRGB: this is an
+     * RGB monitor, and D3DKMDT_CB_SCRGB describes a half-float source encoding,
+     * not a ten-bit panel -- the wide gamut and the PQ transfer are carried by
+     * the EDID colorimetry block, the monitor link capabilities and the target
+     * wire format, which is where Windows looks for them. */
     VIOGPU_DISPLAY_COLOR_RESPONSE monitorCaps = {};
     if (QueryDisplayColor(&monitorCaps) && VioGpuScRgbScanoutAdmitted(&monitorCaps, true))
     {
-        pMonitorSourceMode->ColorBasis = D3DKMDT_CB_SCRGB;
-        pMonitorSourceMode->ColorCoeffDynamicRanges.FirstChannel = 10;
-        pMonitorSourceMode->ColorCoeffDynamicRanges.SecondChannel = 10;
-        pMonitorSourceMode->ColorCoeffDynamicRanges.ThirdChannel = 10;
-        pMonitorSourceMode->ColorCoeffDynamicRanges.FourthChannel = 10;
+        monitorColorRange = 10;
     }
 #endif
 #endif
+
+    pMonitorSourceMode->Origin = D3DKMDT_MCO_DRIVER;
+    pMonitorSourceMode->Preference = D3DKMDT_MP_PREFERRED;
+    pMonitorSourceMode->ColorBasis = D3DKMDT_CB_SRGB;
+    pMonitorSourceMode->ColorCoeffDynamicRanges.FirstChannel = monitorColorRange;
+    pMonitorSourceMode->ColorCoeffDynamicRanges.SecondChannel = monitorColorRange;
+    pMonitorSourceMode->ColorCoeffDynamicRanges.ThirdChannel = monitorColorRange;
+    pMonitorSourceMode->ColorCoeffDynamicRanges.FourthChannel = monitorColorRange;
 
     Status = pRecommendMonitorModes->pMonitorSourceModeSetInterface->pfnAddMode(pRecommendMonitorModes->hMonitorSourceModeSet,
                                                                                 pMonitorSourceMode);
@@ -4304,10 +4307,10 @@ NTSTATUS VioGpuDod::AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODE
 
         pMonitorSourceMode->Origin = D3DKMDT_MCO_DRIVER;
         pMonitorSourceMode->ColorBasis = D3DKMDT_CB_SRGB;
-        pMonitorSourceMode->ColorCoeffDynamicRanges.FirstChannel = 8;
-        pMonitorSourceMode->ColorCoeffDynamicRanges.SecondChannel = 8;
-        pMonitorSourceMode->ColorCoeffDynamicRanges.ThirdChannel = 8;
-        pMonitorSourceMode->ColorCoeffDynamicRanges.FourthChannel = 8;
+        pMonitorSourceMode->ColorCoeffDynamicRanges.FirstChannel = monitorColorRange;
+        pMonitorSourceMode->ColorCoeffDynamicRanges.SecondChannel = monitorColorRange;
+        pMonitorSourceMode->ColorCoeffDynamicRanges.ThirdChannel = monitorColorRange;
+        pMonitorSourceMode->ColorCoeffDynamicRanges.FourthChannel = monitorColorRange;
         if (Idx == m_pHWDevice->GetCurrentModeIndex())
         {
             pMonitorSourceMode->Preference = D3DKMDT_MP_PREFERRED;
