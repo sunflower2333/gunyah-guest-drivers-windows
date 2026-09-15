@@ -225,9 +225,12 @@ inline VIOGPU_COLOR_CONNECTION_ACTION VioGpuColorConnectionAction(bool initializ
  * WideColorSpace: a 3x3 matrix from sRGB/709 to panel primaries on 8888,
  * 10:10:10:2 and FP16 inputs in [-2, 2], plus display signaling.
  * HighColorSpace: all of that plus canonical FP16 data in [-128, 256] and
- * the display's transfer curve. Both describe canonical (scRGB) scanout that
- * this driver and the paired host do not implement, so neither is claimed,
- * even with PQ admitted: a ten-bit PQ primary alone is not HighColorSpace. */
+ * the display's transfer curve. Both describe canonical (scRGB) scanout, so
+ * both are claimed exactly when this build implements that scanout and the
+ * Host admits the PQ output it becomes -- and neither otherwise: a ten-bit PQ
+ * primary alone is not HighColorSpace. The paired host must carry the scRGB
+ * transport too; a host that refuses encoding 3 leaves Windows with a mode it
+ * chose and a primary nothing can present. */
 #define VIOGPU_LINK_CAP_WIDE_COLOR_SPACE 0x2U
 #define VIOGPU_LINK_CAP_HIGH_COLOR_SPACE 0x4U
 
