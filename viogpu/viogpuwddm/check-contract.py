@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58502",
+        "$minor = 58503",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58502",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58503",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -13278,9 +13278,18 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     need("VioGpuBuildHdrEdid(base,baseSize,m_HdrEdid,sizeof(m_HdrEdid))==VioGpuHdrEdidSize",
          body("VioGpuAdapter::RefreshHdrEdid", dod),
          "the HDR descriptor must come from the tested builder, not hand-written bytes")
-    need("if(VioGpuScRgbScanoutAdmitted(&colorCaps,TRUE)){formatCount=3;}",
+    need("if(VioGpuScRgbScanoutAdmitted(&colorCaps,TRUE)&&HdrTrialSourceModes()){formatCount=3;}",
          body("VioGpuDod::AddSingleSourceMode", dod),
          "the canonical FP16 source mode must require an admitted scRGB scanout")
+    # The trial mask may only subtract from what the build would claim, so each
+    # of the three claims has to consult it in addition to its own gate, never
+    # instead of it. A mask bit that could turn a claim *on* would make every
+    # bisection with it meaningless.
+    link_body = body("VioGpuWddmUpdateMonitorLinkInfo", code["advanced_color_ddi.inc"])
+    need("adapter->HdrTrialLinkCaps()", link_body,
+         "the monitor link claim must consult the HDR trial mask")
+    need("m_pVioGpuDod->HdrTrialMonitorEdid()", body("VioGpuAdapter::RefreshHdrEdid", dod),
+         "the HDR monitor descriptor must consult the HDR trial mask")
     need("VioGpuScRgbScanoutAdmitted(caps,canonicalFp16Scanout)", canonical_code(code["viogpu_display_color.h"]),
          "the link claim must use the same scRGB scanout gate as the source mode")
     need("if(IsNativeHdrModeAvailable()){pVidPnTargetModeInfo->WireFormatAndPreference.Rgb|=D3DKMDT_BITS_PER_COMPONENT_10;}",
@@ -13469,7 +13478,7 @@ def check_advanced_color_admission_contract() -> None:
             product.count("$projectFlags += '/p:VIOGPU_REPORT_WDDM2_3=1'") != 1 or
             "VIOGPU_ADVANCED_COLOR_MPO3" in product or
             "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product):
-        violations.append("the signed 58502 package must build the Advanced Color candidate with the canonical "
+        violations.append("the signed 58503 package must build the Advanced Color candidate with the canonical "
                           "FP16 scanout and reported-2.3 trials and no other experiment")
     if violations:
         fail("Advanced Color default-build/admission contract: " + "; ".join(violations))

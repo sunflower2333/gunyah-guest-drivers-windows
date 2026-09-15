@@ -173,6 +173,25 @@ inline bool VioGpuDisplayColorPqAdmitted(const VIOGPU_DISPLAY_COLOR_RESPONSE *ca
     return caps != nullptr && caps->generation != 0 && (caps->usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ) != 0;
 }
 
+/* Which halves of the HDR claim this boot makes, so the chain can be bisected
+ * without a driver build. Each ~25-minute package turnaround buys one bit of
+ * information otherwise, and two inputs move together under the scanout gate --
+ * the source mode set and the monitor link claim -- so neither can be blamed
+ * from a single measurement. Set VioGpuHdrTrialMask (REG_DWORD) on the driver
+ * key and restart; absent means every bit, which is the shipped behaviour. */
+#define VIOGPU_HDR_TRIAL_SOURCE_MODES 0x1U
+#define VIOGPU_HDR_TRIAL_LINK_CAPS 0x2U
+#define VIOGPU_HDR_TRIAL_MONITOR_EDID 0x4U
+#define VIOGPU_HDR_TRIAL_ALL \
+    (VIOGPU_HDR_TRIAL_SOURCE_MODES | VIOGPU_HDR_TRIAL_LINK_CAPS | VIOGPU_HDR_TRIAL_MONITOR_EDID)
+
+inline unsigned VioGpuSelectHdrTrialMask(bool found, unsigned value)
+{
+    /* Only the defined bits, and only when the value was actually read: a
+     * missing or wider value is the shipped behaviour, never a narrower one. */
+    return found ? (value & VIOGPU_HDR_TRIAL_ALL) : VIOGPU_HDR_TRIAL_ALL;
+}
+
 /* Canonical scRGB scanout is offered only when this build implements it AND
  * the Host admits the PQ output it becomes. Claiming the mode without the
  * transform would hand the compositor half floats nothing converts. */

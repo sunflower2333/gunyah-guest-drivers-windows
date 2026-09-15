@@ -161,6 +161,23 @@ int main()
     assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectUninitialized, 0, 0) == VioGpuDetectInvalid);
     assert(VioGpuDisplayDetectControl(&hpd, 5U, 0, 0) == VioGpuDetectInvalid);
     assert(VioGpuDisplayDetectControl(nullptr, VioGpuDetectEnableHpd, 0, 0) == VioGpuDetectInvalid);
+    // HDR trial mask: a bisection knob is only sound if it can subtract from
+    // what the build claims and never add to it.
+    assert(VioGpuSelectHdrTrialMask(false, 0) == VIOGPU_HDR_TRIAL_ALL);       // absent = shipped
+    assert(VioGpuSelectHdrTrialMask(false, VIOGPU_HDR_TRIAL_LINK_CAPS) == VIOGPU_HDR_TRIAL_ALL);
+    assert(VioGpuSelectHdrTrialMask(true, 0) == 0);                           // nothing claimed
+    assert(VioGpuSelectHdrTrialMask(true, VIOGPU_HDR_TRIAL_ALL) == VIOGPU_HDR_TRIAL_ALL);
+    assert(VioGpuSelectHdrTrialMask(true, VIOGPU_HDR_TRIAL_SOURCE_MODES) == VIOGPU_HDR_TRIAL_SOURCE_MODES);
+    assert(VioGpuSelectHdrTrialMask(true, VIOGPU_HDR_TRIAL_LINK_CAPS) == VIOGPU_HDR_TRIAL_LINK_CAPS);
+    assert(VioGpuSelectHdrTrialMask(true, VIOGPU_HDR_TRIAL_MONITOR_EDID) == VIOGPU_HDR_TRIAL_MONITOR_EDID);
+    // Undefined bits are dropped rather than carried, so a typo cannot widen it.
+    assert(VioGpuSelectHdrTrialMask(true, 0xFFFFFFFFU) == VIOGPU_HDR_TRIAL_ALL);
+    assert(VioGpuSelectHdrTrialMask(true, 0x8U) == 0);
+    // The three bits are distinct and together are the whole mask.
+    assert((VIOGPU_HDR_TRIAL_SOURCE_MODES & VIOGPU_HDR_TRIAL_LINK_CAPS) == 0);
+    assert((VIOGPU_HDR_TRIAL_SOURCE_MODES & VIOGPU_HDR_TRIAL_MONITOR_EDID) == 0);
+    assert((VIOGPU_HDR_TRIAL_LINK_CAPS & VIOGPU_HDR_TRIAL_MONITOR_EDID) == 0);
+    std::puts("HDR trial mask subtracts only: PASS");
     std::puts("DVCL wire, HDR10 metadata and float-bit transform validation: PASS");
     std::puts("Advanced Color monitor connection policy: PASS");
 }

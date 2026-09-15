@@ -411,6 +411,11 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
 #if defined(VIOGPU_NATIVE_CONTEXT)
     LoadChildDescriptorMode();
 #endif
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    LoadHdrTrialMask();
+#endif
+#endif
 
     if (IsDriverActive())
     {
@@ -4041,7 +4046,7 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
          * only exists where this build implements the transform and the Host
          * admits the PQ output it becomes. The same gate claims the link's
          * Wide/HighColorSpace, so a mode is never offered unadvertised. */
-        if (VioGpuScRgbScanoutAdmitted(&colorCaps, true))
+        if (VioGpuScRgbScanoutAdmitted(&colorCaps, true) && HdrTrialSourceModes())
         {
             formatCount = 3;
         }
@@ -8214,6 +8219,26 @@ VOID VioGpuDod::LoadChildDescriptorMode(void)
                DPFLTR_INFO_LEVEL,
                "viogpu child descriptor mode=%u registry=%u found=%u\n",
                static_cast<UINT>(m_ChildDescriptorMode),
+               value,
+               found ? 1U : 0U);
+}
+
+VOID VioGpuDod::LoadHdrTrialMask(void)
+{
+    PAGED_CODE();
+    DWORD value = 0;
+    bool found = false;
+    HANDLE key = NULL;
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_QUERY_VALUE, &key)))
+    {
+        found = NT_SUCCESS(ReadRegistryDWORD(key, L"VioGpuHdrTrialMask", &value));
+        ZwClose(key);
+    }
+    m_HdrTrialMask = VioGpuSelectHdrTrialMask(found, value);
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu HDR trial mask=0x%X registry=0x%X found=%u\n",
+               static_cast<UINT>(m_HdrTrialMask),
                value,
                found ? 1U : 0U);
 }
@@ -13155,7 +13180,8 @@ BOOLEAN VioGpuAdapter::RefreshHdrEdid(void)
         return FALSE;
     }
     VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
-    if (!m_pVioGpuDod->QueryDisplayColor(&caps) || !VioGpuScRgbScanoutAdmitted(&caps, true))
+    if (!m_pVioGpuDod->QueryDisplayColor(&caps) || !VioGpuScRgbScanoutAdmitted(&caps, true) ||
+        !m_pVioGpuDod->HdrTrialMonitorEdid())
     {
         return FALSE;
     }

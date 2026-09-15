@@ -1097,6 +1097,7 @@ class VioGpuDod
     KMUTEX m_NativeActivationTraceMutex;
     VioGpuActivationTrace m_NativeActivationTrace;
     VioGpuChildDescriptorMode m_ChildDescriptorMode;
+    ULONG m_HdrTrialMask = VIOGPU_HDR_TRIAL_ALL;
     /* One-slot MMIO flip mailbox. DxgkDdiSetVidPnSourceAddress publishes the
      * flipped primary at DIRQL; the display worker binds it at PASSIVE_LEVEL
      * under m_FlipApplyMutex, and primary destroy drains the slot under the
@@ -1458,6 +1459,21 @@ class VioGpuDod
     VioGpuChildDescriptor ChildDescriptor() const
     {
         return VioGpuChildDescriptorFor(m_ChildDescriptorMode);
+    }
+    /* Which halves of the HDR claim this boot makes. Diagnostic only: the mask
+     * can subtract from what the build would offer, never add to it, so every
+     * other gate still has to pass. */
+    BOOLEAN HdrTrialSourceModes() const
+    {
+        return (m_HdrTrialMask & VIOGPU_HDR_TRIAL_SOURCE_MODES) != 0;
+    }
+    BOOLEAN HdrTrialLinkCaps() const
+    {
+        return (m_HdrTrialMask & VIOGPU_HDR_TRIAL_LINK_CAPS) != 0;
+    }
+    BOOLEAN HdrTrialMonitorEdid() const
+    {
+        return (m_HdrTrialMask & VIOGPU_HDR_TRIAL_MONITOR_EDID) != 0;
     }
     BOOLEAN IsNativeHdrModeAvailable() const
     {
@@ -2017,6 +2033,7 @@ class VioGpuDod
     VOID RecordNativeActivationPhase(_In_ VioGpuActivationPhase phase);
     VOID RecordNativeActivationQuery(_In_ CONST DXGKARG_QUERYADAPTERINFO *query, _In_ NTSTATUS status);
     VOID LoadChildDescriptorMode(void);
+    VOID LoadHdrTrialMask(void);
     VOID RecordNativeActivationChild(_In_ UINT ddi,
                                      _In_ NTSTATUS status,
                                      _In_ UINT value0,
