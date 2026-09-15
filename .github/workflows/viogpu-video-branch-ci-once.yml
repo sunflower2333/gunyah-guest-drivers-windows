@@ -46,6 +46,41 @@ jobs:
                    '        run: python3 viogpu/tests/video/canonical_string_contract_test.py\n')
           assert source.count(target) == 1
           p.write_text(source.replace(target, added + target))
+          root=Path.cwd()
+          p=root/'viogpu/viogpuwddm/check-contract.py'
+          s=p.read_text();old='if(!target.StandardPrimary)returnVioGpuFlipTargetNotPrimary;if(target.HighPrecision)returnVioGpuFlipTargetHighPrecision;'
+          new='if(!target.StandardPrimary){returnVioGpuFlipTargetNotPrimary;}if(target.HighPrecision){returnVioGpuFlipTargetHighPrecision;}'
+          assert s.count(old)==1;p.write_text(s.replace(old,new))
+          p=root/'viogpu/tests/advanced-color-contract/run.py';s=p.read_text()
+          old='''def replace_once(text, old, new):
+              if text.count(old) != 1:
+                  raise SystemExit(f"mutation anchor not unique ({text.count(old)}): {old[:70]!r}")
+              return text.replace(old, new)
+          '''
+          new='''def anchor_matches(text, anchor):
+              """Match the same non-whitespace source characters across formatter wrapping."""
+              pattern = r"\\s*".join(re.escape(ch) for ch in anchor if not ch.isspace())
+              if not pattern:
+                  raise ValueError("empty mutation anchor")
+              return list(re.finditer(pattern, text))
+
+
+          def replace_once(text, old, new):
+              """Replace one unique production anchor; a changed name/operator still fails."""
+              matches = anchor_matches(text, old)
+              if len(matches) != 1:
+                  raise SystemExit(f"mutation anchor not unique ({len(matches)}): {old[:70]!r}")
+              match = matches[0]
+              return text[:match.start()] + new + text[match.end():]
+          '''
+          assert s.count(old)==1;s=s.replace(old,new)
+          s=s.replace('    at = text.index(marker)','    matches = anchor_matches(text, marker)\n    if len(matches) != 1:\n        raise SystemExit(f"gate marker not unique: {marker!r}")\n    at = matches[0].start()')
+          s=s.replace('    if (m_pHWDevice != NULL && !IsRenderOnly()) m_pHWDevice->RequestColorConnectionRefresh();','m_pHWDevice->RequestColorConnectionRefresh();')
+          s=s.replace('"    if (target.HighPrecision)\\n        return VioGpuFlipTargetHighPrecision;\\n"','"    if (target.HighPrecision)\\n    {\\n        return VioGpuFlipTargetHighPrecision;\\n    }\\n"')
+          s=s.replace('def ungate(text, marker):','def ungate(text, marker, scope=None):')
+          s=s.replace('    matches = anchor_matches(text, marker)\n','    matches = anchor_matches(text, marker)\n    if scope is not None:\n        start = text.index(scope)\n        matches = [m for m in matches if m.start() >= start]\n')
+          s=s.replace('ungate(t, "m_pHWDevice->RequestColorConnectionRefresh();")','ungate(t, "m_pHWDevice->RequestColorConnectionRefresh();", "NTSTATUS VioGpuDod::QueryChildRelations(")')
+          p.write_text(s)
           PYCODE
       - name: Normalize existing VioGPU code with the repository formatter
         shell: bash
@@ -92,6 +127,7 @@ jobs:
           done
           python3 viogpu/tests/video/canonical_string_contract_test.py
           python3 viogpu/tests/video/no_pool_dependency_test.py
+          python3 viogpu/tests/advanced-color-contract/run.py
           python3 viogpu/tests/video/export_contract_test.py
           python3 viogpu/tests/submit-perf/run.py
           python3 viogpu/tests/present-formats/run.py
