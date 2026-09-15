@@ -116,8 +116,9 @@ int main()
     t.Address = 0;
     t.PlacementOffset = 0;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetAccepted);
-    // A ten-bit primary cannot be scanned out through a legacy MMIO flip: it is
-    // refused before segment/placement, but never before ownership or type.
+    // A ten-bit primary is scanned out through an MMIO flip only while Advanced
+    // Color is usable; otherwise it is refused before segment/placement, but
+    // never before ownership or type.
     t = AcceptedTarget();
     t.HighPrecision = true;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetHighPrecision);
@@ -130,6 +131,35 @@ int main()
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetNotPrimary);
     t.OwnedByAdapter = false;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetForeign);
+    // Admitted Advanced Color makes exactly the ten-bit refusal go away, and
+    // nothing else: every other gate still answers first.
+    t = AcceptedTarget();
+    t.HighPrecision = true;
+    t.HighPrecisionAdmitted = true;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetAccepted);
+    t.Segment = 2;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetBadSegment);
+    t = AcceptedTarget();
+    t.HighPrecision = true;
+    t.HighPrecisionAdmitted = true;
+    t.PlacementValid = false;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetNotPlaced);
+    t = AcceptedTarget();
+    t.HighPrecision = true;
+    t.HighPrecisionAdmitted = true;
+    t.Address = 0x3000;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetAddressMismatch);
+    t = AcceptedTarget();
+    t.HighPrecision = true;
+    t.HighPrecisionAdmitted = true;
+    t.StandardPrimary = false;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetNotPrimary);
+    // Admission alone never relaxes an eight-bit flip's gates.
+    t = AcceptedTarget();
+    t.HighPrecisionAdmitted = true;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetAccepted);
+    t.SourceId = 1;
+    CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetBadSource);
     // A foreign allocation is refused before its unrelated fields are trusted.
     t = AcceptedTarget();
     t.OwnedByAdapter = false;

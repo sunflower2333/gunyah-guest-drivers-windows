@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58491",
+        "$minor = 58493",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58491",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58493",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -5086,15 +5086,48 @@ def check_wddm_standard_primary_scanout() -> None:
     ):
         if fragment not in bind_primary:
             fail(f"the shared primary bind must retain the exact standard primary contract: {fragment}")
-    # The shared bind (mode change and MMIO flip worker) refuses a ten-bit
-    # primary only in the Advanced Color build: neither path carries color.
+    # The shared bind (mode change and MMIO flip worker) scans out a ten-bit
+    # primary only while Advanced Color is usable, and only after tagging the
+    # Host resource with the negotiated color. dxgkrnl never calls MPO3 without
+    # overlay caps, so this is the compositor's only high-precision path.
+    # STATUS_NOT_SUPPORTED is not a legal status for these DDIs.
     hdr_legacy_guard = (
-        "#if(DXGKDDI_INTERFACE_VERSION>=DXGKDDI_INTERFACE_VERSION_WDDM2_3)"
-        "if(allocation->Format==D3DDDIFMT_A2B10G10R10||allocation->Format==D3DDDIFMT_A2R10G10B10)"
-        "{returnSTATUS_NOT_SUPPORTED;}#endif"
+        "constBOOLEANhighPrecision=allocation->Format==D3DDDIFMT_A2B10G10R10||"
+        "allocation->Format==D3DDDIFMT_A2R10G10B10;"
+        "if(highPrecision&&!adapter->IsNativeHdrModeAvailable()){returnSTATUS_INVALID_PARAMETER;}"
     )
     if bind_primary.count(hdr_legacy_guard) != 1:
-        fail("only MPO3 may bind high-precision primaries with explicit source color metadata")
+        fail("a ten-bit primary must be refused with a legal status unless Advanced Color is usable")
+    if "STATUS_NOT_SUPPORTED" in bind_primary:
+        fail("the shared primary bind must not return STATUS_NOT_SUPPORTED")
+    tag_order = [bind_primary.find(fragment) for fragment in (
+        "constBOOLEANcolorTagged=!highPrecision||TagHighPrecisionPrimaryColor(adapter,allocation);",
+        "if(!colorTagged){KeReleaseMutex(&allocation->LifecycleMutex,FALSE);returnSTATUS_INVALID_PARAMETER;}",
+        "adapter->Set2DScanout(0,allocation->ResourceId,",
+    )]
+    if min(tag_order) < 0 or tag_order != sorted(tag_order):
+        fail("a ten-bit primary must be tagged with its Host color before the scanout binds it")
+    tagger = canonical_code(function_body("TagHighPrecisionPrimaryColor", WDDM_DDI_CODE))
+    for fragment in (
+        "adapter->MatchesNativeHdrMode(allocation->Width,allocation->Height)",
+        "caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ",
+        "allocation->ColorTaggedGeneration==caps.generation",
+        "color.format=VIOGPU_DISPLAY_FORMAT_AB30;",
+        "color.encoding=VIOGPU_DISPLAY_COLOR_PQ;",
+        "color.generation=caps.generation;",
+        "allocation->ColorTaggedGeneration=caps.generation;",
+    ):
+        if fragment not in tagger:
+            fail(f"the high-precision color tag must stay bound to the negotiated mode: {fragment}")
+    if "ColorStateOperation" in tagger:
+        fail("the color tag runs inside the caller's color state operation; the slot is not recursive")
+    apply_flip = canonical_code(function_body("VioGpuWddmApplyPendingFlip", WDDM_DDI_CODE))
+    flip_order = [apply_flip.find(fragment) for fragment in (
+        "VioGpuDod::ColorStateOperationcolorOperation(adapter);",
+        "adapter->AcquireFlipApply();",
+    )]
+    if min(flip_order) < 0 or flip_order != sorted(flip_order):
+        fail("the flip worker must take the color slot before the flip-apply mutex")
     if "STATUS_NOT_SUPPORTED" in set_ddi or "STATUS_NOT_SUPPORTED" in bind_primary.replace(hdr_legacy_guard, ""):
         fail("SetVidPnSourceAddress must no longer reject the completed standard primary mode-change path")
 
@@ -13250,13 +13283,48 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
         "adapter->AcquireFlipApply();")]
     if min(offsets) < 0 or offsets != sorted(offsets):
         violations.append("a mode change must take the color slot before the flip-apply mutex")
-    need("IsStandardPrimaryAllocation(sourceOpen->Allocation)&&!IsHighPrecisionSurfaceFormat(sourceOpen->Allocation->Format)",
-         body("ValidateMmioFlipPresent", code["wddmddi.cpp"]), "a flip present must refuse a ten-bit source")
+    flip_present_body = body("ValidateMmioFlipPresent", code["wddmddi.cpp"])
+    need("constBOOLEANsourceColorAcceptable=sourceOpen!=NULL&&sourceOpen->Allocation!=NULL&&"
+         "FlipSourceColorAcceptable(adapter,sourceOpen->Allocation);", flip_present_body,
+         "a flip present must decide its source color before validating")
+    need("IsStandardPrimaryAllocation(sourceOpen->Allocation)&&sourceColorAcceptable", flip_present_body,
+         "a flip present must refuse a ten-bit source unless Advanced Color is usable")
+    need("!IsHighPrecisionSurfaceFormat(allocation->Format)||adapter->IsNativeHdrModeAvailable()",
+         body("FlipSourceColorAcceptable", code["wddmddi.cpp"]),
+         "the flip source color gate must consult Advanced Color availability")
     need("AcquireFlipApply();(VOID)TakePendingFlip();constautoresult=Set2DScanout(0,0,0,0,&previousResource);ReleaseFlipApply();",
          body("VioGpuDod::CommitVidPn", dod), "target power-off must supersede an unbound flip")
+    # The compositor's ten-bit primary reaches the shared bind, not MPO3. It may
+    # only be scanned out while Advanced Color is usable, and only after the Host
+    # resource carries the negotiated color.
+    bind = body("BindStandardPrimaryScanout", code["wddmddi.cpp"])
+    need("if(highPrecision&&!adapter->IsNativeHdrModeAvailable()){returnSTATUS_INVALID_PARAMETER;}", bind,
+         "a ten-bit primary must be refused with a legal status unless Advanced Color is usable")
+    if "STATUS_NOT_SUPPORTED" in bind:
+        violations.append("the shared primary bind must not return STATUS_NOT_SUPPORTED")
+    offsets = [bind.find(fragment) for fragment in (
+        "constBOOLEANcolorTagged=!highPrecision||TagHighPrecisionPrimaryColor(adapter,allocation);",
+        "if(!colorTagged){KeReleaseMutex(&allocation->LifecycleMutex,FALSE);returnSTATUS_INVALID_PARAMETER;}",
+        "adapter->Set2DScanout(0,allocation->ResourceId,")]
+    if min(offsets) < 0 or offsets != sorted(offsets):
+        violations.append("a ten-bit primary must be tagged with its Host color before the scanout binds it")
+    tagger = body("TagHighPrecisionPrimaryColor", code["wddmddi.cpp"])
+    for fragment in ("adapter->MatchesNativeHdrMode(allocation->Width,allocation->Height)",
+                     "caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ",
+                     "color.format=VIOGPU_DISPLAY_FORMAT_AB30;", "color.encoding=VIOGPU_DISPLAY_COLOR_PQ;",
+                     "color.generation=caps.generation;", "allocation->ColorTaggedGeneration=caps.generation;"):
+        need(fragment, tagger, "the high-precision color tag must stay bound to the negotiated mode")
+    if "ColorStateOperation" in tagger:
+        violations.append("the color tag runs inside the caller's color state operation; the slot is not recursive")
+    offsets = [body("VioGpuWddmApplyPendingFlip", code["wddmddi.cpp"]).find(fragment) for fragment in (
+        "VioGpuDod::ColorStateOperationcolorOperation(adapter);", "adapter->AcquireFlipApply();")]
+    if min(offsets) < 0 or offsets != sorted(offsets):
+        violations.append("the flip worker must take the color slot before the flip-apply mutex")
     flip_policy = canonical_code(code["mmio_flip.h"])
-    need("if(!target.StandardPrimary){returnVioGpuFlipTargetNotPrimary;}if(target.HighPrecision){returnVioGpuFlipTargetHighPrecision;}",
-         flip_policy, "the flip policy must refuse ten-bit primaries after ownership and type")
+    need("if(!target.StandardPrimary){returnVioGpuFlipTargetNotPrimary;}"
+         "if(target.HighPrecision&&!target.HighPrecisionAdmitted){returnVioGpuFlipTargetHighPrecision;}",
+         flip_policy,
+         "the flip policy must refuse unadmitted ten-bit primaries after ownership and type")
     relations = body("VioGpuDod::QueryChildRelations", dod)
     for fragment in ("ChildCapabilities.HpdAwareness=static_cast<DXGK_CHILD_DEVICE_HPD_AWARENESS>(descriptor.HpdAwareness);",
                      "InterfaceTechnology=static_cast<D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY>(descriptor.InterfaceTechnology);"):
@@ -13331,7 +13399,7 @@ def check_advanced_color_admission_contract() -> None:
             product.count("hdr=$true") != 1 or product.count("$projectFlags += '/p:VIOGPU_ADVANCED_COLOR=1'") != 1 or
             "VIOGPU_REPORT_WDDM2_3" in product or "VIOGPU_ADVANCED_COLOR_MPO3" in product or
             "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product or "VIOGPU_CANONICAL_FP16_SCANOUT" in product):
-        violations.append("the signed 58491 package must build exactly the KMD as the Advanced Color candidate "
+        violations.append("the signed 58493 package must build exactly the KMD as the Advanced Color candidate "
                           "without the reported-2.3 experiment")
     if violations:
         fail("Advanced Color default-build/admission contract: " + "; ".join(violations))

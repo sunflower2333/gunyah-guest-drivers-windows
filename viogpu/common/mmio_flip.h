@@ -66,8 +66,14 @@ struct VioGpuFlipTarget
     bool StandardPrimary;
     bool PlacementValid;
     /* Ten-bit primary. Set only by the Advanced Color build, where such
-     * allocations exist; a legacy flip carries no color space to scan it out. */
+     * allocations exist. A flip carries no color space of its own, so one is
+     * only scanned out when the adapter has a negotiated PQ mode to interpret
+     * it with; the PASSIVE bind tags the resource before the Host sees it. */
     bool HighPrecision;
+    /* The adapter's Advanced Color mode is usable right now: host PQ admitted,
+     * monitor connected, no reset requested and the current fence epoch. Read
+     * at DIRQL from interlocked state only. */
+    bool HighPrecisionAdmitted;
 };
 
 /* Values are published as NativeDisplayMmioFlipRejectKind. */
@@ -102,7 +108,9 @@ inline VioGpuFlipTargetStatus VioGpuValidateFlipTarget(const VioGpuFlipTarget &t
     {
         return VioGpuFlipTargetNotPrimary;
     }
-    if (target.HighPrecision)
+    /* An untagged ten-bit primary would be scanned out as if it were eight-bit
+     * data; refuse it unless Advanced Color is usable for this very flip. */
+    if (target.HighPrecision && !target.HighPrecisionAdmitted)
     {
         return VioGpuFlipTargetHighPrecision;
     }
