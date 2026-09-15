@@ -1,0 +1,59 @@
+; SPDX-License-Identifier: BSD-3-Clause
+; VioGPU's virtio-media function, NOT the display adapter. No rdmapool service.
+[Version]
+Signature="$WINDOWS NT$"
+Class=Media
+ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider=%Provider%
+DriverVer=09/15/2026,0.1.0.0
+CatalogFile=viogpuvideo.cat
+PnpLockdown=1
+
+[Manufacturer]
+%Provider%=Models,NTarm64.10.0
+
+[Models.NTarm64.10.0]
+%Device%=VideoInstall,PCI\VEN_1AF4&DEV_1070
+
+[DestinationDirs]
+VideoFiles=13
+
+[SourceDisksNames]
+1=%Disk%,,,
+
+[SourceDisksFiles]
+viogpuvideo.sys=1
+
+[VideoInstall.NT]
+CopyFiles=VideoFiles
+
+[VideoFiles]
+viogpuvideo.sys
+
+[VideoInstall.NT.HW]
+AddReg=VideoSecurity
+
+[VideoSecurity]
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
+
+[VideoInstall.NT.Services]
+AddService=viogpuvideo,0x00000002,VideoService
+
+[VideoService]
+DisplayName=%Service%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\viogpuvideo.sys
+
+[VideoInstall.NT.Wdf]
+KmdfService=viogpuvideo,VideoWdf
+
+[VideoWdf]
+KmdfLibraryVersion=1.15
+
+[Strings]
+Provider="DroidVM"
+Device="DroidVM VioGPU Video Codec Transport"
+Service="DroidVM VioGPU Video"
+Disk="DroidVM VioGPU Video Driver"

@@ -36,6 +36,7 @@
       <PrecompiledHeader />
       <WarningLevel>Level4</WarningLevel>
       <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -46,6 +47,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ModuleDefinitionFile>viogpud3d.def</ModuleDefinitionFile>
+      <AdditionalDependencies>setupapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
@@ -57,12 +59,16 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="viogpud3d.cpp" />
+    <ClCompile Include="..\video\video_client.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="viogpud3d.rc" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="d3dumddi_compat.h" />
+    <ClInclude Include="..\video\video_api.h" />
+    <ClInclude Include="..\video\video_ioctl.h" />
+    <ClInclude Include="..\video\media_wire.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="viogpud3d.def" />

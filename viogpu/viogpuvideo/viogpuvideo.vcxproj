@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Win11 Release|ARM64"><Configuration>Win11 Release</Configuration><Platform>ARM64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{98D5BCF2-0268-4930-9663-EA1FEAFC6157}</ProjectGuid>
+    <RootNamespace>viogpuvideo</RootNamespace>
+    <WindowsTargetPlatformVersion>$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Driver</ConfigurationType><DriverType>KMDF</DriverType>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset><TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries><DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <KMDF_VERSION_MAJOR>1</KMDF_VERSION_MAJOR><KMDF_VERSION_MINOR>15</KMDF_VERSION_MINOR>
+  </PropertyGroup>
+  <Import Project="$(MSBuildProjectDirectory)\..\..\build\Driver.Common.props" />
+  <PropertyGroup>
+    <TargetName>viogpuvideo</TargetName><TargetExt>.sys</TargetExt>
+    <OutDir>objfre_win11_arm64\arm64\</OutDir><IntDir>objfre_win11_arm64\arm64\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader /><WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError>
+      <AdditionalIncludeDirectories>..\..\VirtIO;..\..\VirtIO\WDF;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>POOL_NX_OPTIN=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>virtiolib.lib;virtiolib_wdf.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\..\VirtIO\objfre_win11_arm64\arm64;..\..\VirtIO\WDF\objfre_win11_arm64\arm64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="driver.c" /></ItemGroup>
+  <ItemGroup><Inf Include="viogpuvideo.inf" /></ItemGroup>
+  <ItemGroup><ClInclude Include="..\video\media_wire.h" /><ClInclude Include="..\video\media_state.h" /><ClInclude Include="..\video\video_ioctl.h" /></ItemGroup>
+  <ItemGroup><FilesToPackage Include="$(TargetPath)" /><FilesToPackage Include="@(Inf->'%(CopyOutput)')" Condition="'@(Inf)'!=''" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="$(MSBuildProjectDirectory)\..\..\build\Driver.Common.targets" />
+</Project>
