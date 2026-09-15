@@ -6641,6 +6641,11 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD guestAllocSubmitted = ReadDisplayCounter(VioGpuGuestAllocSubmitted);
     DWORD guestAllocCompleted = ReadDisplayCounter(VioGpuGuestAllocCompleted);
     DWORD guestAllocUnanswered = ReadDisplayCounter(VioGpuGuestAllocUnanswered);
+    DWORD timingPathCalls = ReadDisplayCounter(VioGpuTimingPathCalls);
+    DWORD timingPathLastStatus = ReadDisplayCounter(VioGpuTimingPathLastStatus);
+    DWORD timingPathWireFormat = ReadDisplayCounter(VioGpuTimingPathWireFormat);
+    DWORD timingPathColorSpace = ReadDisplayCounter(VioGpuTimingPathColorSpace);
+    DWORD timingPathRejects = ReadDisplayCounter(VioGpuTimingPathRejects);
     DWORD displayMmioFlipCalls = ReadDisplayCounter(VioGpuDisplayMmioFlipCalls);
     DWORD displayMmioFlipRejects = ReadDisplayCounter(VioGpuDisplayMmioFlipRejects);
     DWORD displayMmioFlipRejectKind = ReadDisplayCounter(VioGpuDisplayMmioFlipRejectKind);
@@ -7220,6 +7225,16 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &guestAllocCompleted},
                                                                                                         {L"NativeGuestAllocUnanswered",
                                                                                                          &guestAllocUnanswered},
+                                                                                                        {L"NativeTimingPathCalls",
+                                                                                                         &timingPathCalls},
+                                                                                                        {L"NativeTimingPathLastStatus",
+                                                                                                         &timingPathLastStatus},
+                                                                                                        {L"NativeTimingPathWireFormat",
+                                                                                                         &timingPathWireFormat},
+                                                                                                        {L"NativeTimingPathColorSpace",
+                                                                                                         &timingPathColorSpace},
+                                                                                                        {L"NativeTimingPathRejects",
+                                                                                                         &timingPathRejects},
                                                                                                         {L"NativeDispla"
                                                                                                          L"yMmioFlipCal"
                                                                                                          L"ls",

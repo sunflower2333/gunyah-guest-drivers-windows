@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58501",
+        "$minor = 58502",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58501",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58502",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -13310,6 +13310,13 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
          "the timing path must record that it was called")
     need("adapter->RecordDisplayValue(VioGpuTimingPathWireFormat,", timing,
          "the timing path must record the wire format it was asked for")
+    # A counter that is incremented but never published is not a measurement.
+    # Every timing slot needs a name in the registry publish table as well.
+    publish = re.sub(r"\s+", "", sources["viogpudo.cpp"])
+    for name in ("NativeTimingPathCalls", "NativeTimingPathLastStatus", "NativeTimingPathWireFormat",
+                 "NativeTimingPathColorSpace", "NativeTimingPathRejects"):
+        if f'L"{name}"' not in publish:
+            violations.append(f"the timing path counter {name} must be published to the driver key")
     # The argument guard runs before the adapter pointer is known good, so it
     # cannot record anything; every exit after the call is recorded must.
     marker = "adapter->CountDisplayEvent(VioGpuTimingPathCalls);"
@@ -13462,7 +13469,7 @@ def check_advanced_color_admission_contract() -> None:
             product.count("$projectFlags += '/p:VIOGPU_REPORT_WDDM2_3=1'") != 1 or
             "VIOGPU_ADVANCED_COLOR_MPO3" in product or
             "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product):
-        violations.append("the signed 58501 package must build the Advanced Color candidate with the canonical "
+        violations.append("the signed 58502 package must build the Advanced Color candidate with the canonical "
                           "FP16 scanout and reported-2.3 trials and no other experiment")
     if violations:
         fail("Advanced Color default-build/admission contract: " + "; ".join(violations))
