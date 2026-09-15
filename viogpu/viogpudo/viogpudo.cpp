@@ -6619,6 +6619,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayPresent2DFlushMaxUsec = ReadDisplayCounter(61);
     DWORD displayPresent2DFlushResult = ReadDisplayCounter(62);
     DWORD displayPresent2DResourceId = ReadDisplayCounter(63);
+    DWORD guestAllocSubmitResult = ReadDisplayCounter(VioGpuGuestAllocSubmitResult);
+    DWORD guestAllocSubmitted = ReadDisplayCounter(VioGpuGuestAllocSubmitted);
+    DWORD guestAllocCompleted = ReadDisplayCounter(VioGpuGuestAllocCompleted);
+    DWORD guestAllocUnanswered = ReadDisplayCounter(VioGpuGuestAllocUnanswered);
     DWORD displayMmioFlipCalls = ReadDisplayCounter(VioGpuDisplayMmioFlipCalls);
     DWORD displayMmioFlipRejects = ReadDisplayCounter(VioGpuDisplayMmioFlipRejects);
     DWORD displayMmioFlipRejectKind = ReadDisplayCounter(VioGpuDisplayMmioFlipRejectKind);
@@ -7184,6 +7188,14 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"yPresent2DRe"
                                                                                                          L"sourceId",
                                                                                                          &displayPresent2DResourceId},
+                                                                                                        {L"NativeGuestAllocSubmitResult",
+                                                                                                         &guestAllocSubmitResult},
+                                                                                                        {L"NativeGuestAllocSubmitted",
+                                                                                                         &guestAllocSubmitted},
+                                                                                                        {L"NativeGuestAllocCompleted",
+                                                                                                         &guestAllocCompleted},
+                                                                                                        {L"NativeGuestAllocUnanswered",
+                                                                                                         &guestAllocUnanswered},
                                                                                                         {L"NativeDispla"
                                                                                                          L"yMmioFlipCal"
                                                                                                          L"ls",
@@ -10832,7 +10844,25 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         return VioGpuHostContextNotSubmitted;
     }
 
-    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SubmitNativeControl(snapshot->ContextId, &request, sizeof(request));
+    /* Record how the Host answered before the latch hides it. A control that
+     * was submitted but never completed (Unknown) and one the Host refused
+     * (Rejected) both end the native context for this boot, so the counters are
+     * the only way to tell a Host stall from a Host refusal afterwards. */
+    VIOGPU_NATIVE_CONTEXT_PARAMETER_DIAGNOSTIC submitDiagnostic = {};
+    VIOGPU_HOST_CONTEXT_RESULT result =
+        m_CtrlQueue.SubmitNativeControl(snapshot->ContextId, &request, sizeof(request), &submitDiagnostic);
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordDisplayValue(VioGpuGuestAllocSubmitResult, static_cast<LONG>(result));
+        m_pVioGpuDod->RecordDisplayValue(VioGpuGuestAllocSubmitted,
+                                         static_cast<LONG>(submitDiagnostic.OuterSubmitted));
+        m_pVioGpuDod->RecordDisplayValue(VioGpuGuestAllocCompleted,
+                                         static_cast<LONG>(submitDiagnostic.OuterCompleted));
+        if (result == VioGpuHostContextUnknown)
+        {
+            m_pVioGpuDod->CountDisplayEvent(VioGpuGuestAllocUnanswered);
+        }
+    }
     if (result == VioGpuHostContextUnknown)
     {
         *ownershipRetained = TRUE;

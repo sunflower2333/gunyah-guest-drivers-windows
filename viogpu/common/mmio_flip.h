@@ -141,5 +141,15 @@ enum : unsigned
     VioGpuDisplayMmioFlipLastApplyStatus = 70,
     VioGpuDisplayFlipPresentCalls = 71,
     VioGpuDisplayFlipPresentRejects = 72,
-    VioGpuDisplayCounterCount = 73,
+    /* Why the native context was failed by a guest allocation. A control the
+     * Host never answered (Unknown) and a control the Host refused (Rejected)
+     * have the same visible consequence -- every later paging operation returns
+     * STATUS_DEVICE_NOT_READY and the runtime drops the adapter -- but entirely
+     * different causes, and telling them apart required disassembling the
+     * recorded return address. These record it directly. */
+    VioGpuGuestAllocSubmitResult = 73,
+    VioGpuGuestAllocSubmitted = 74,
+    VioGpuGuestAllocCompleted = 75,
+    VioGpuGuestAllocUnanswered = 76,
+    VioGpuDisplayCounterCount = 77,
 };

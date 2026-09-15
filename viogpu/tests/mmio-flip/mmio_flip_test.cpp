@@ -41,8 +41,26 @@ int main()
     static_assert(VioGpuPresentFlagBlt == 1U && VioGpuPresentFlagColorFill == 2U && VioGpuPresentFlagFlip == 4U,
                   "DXGK_PRESENTFLAGS");
     static_assert(VioGpuFlipCapsOnVSyncMmIo == 2U, "DXGK_FLIPCAPS.FlipOnVSyncMmIo");
-    static_assert(VioGpuDisplayMmioFlipCalls == 64U && VioGpuDisplayCounterCount == VioGpuDisplayFlipPresentRejects + 1U,
+    static_assert(VioGpuDisplayMmioFlipCalls == 64U &&
+                      VioGpuGuestAllocSubmitResult == VioGpuDisplayFlipPresentRejects + 1U &&
+                      VioGpuDisplayCounterCount == VioGpuGuestAllocUnanswered + 1U,
                   "new display counters follow the 64 historical slots");
+    // Every slot is distinct and inside the published array.
+    {
+        unsigned slots[] = {VioGpuDisplayMmioFlipCalls,       VioGpuDisplayMmioFlipRejects,
+                            VioGpuDisplayMmioFlipRejectKind,  VioGpuDisplayMmioFlipLastFlags,
+                            VioGpuDisplayMmioFlipApplied,     VioGpuDisplayMmioFlipApplyFailures,
+                            VioGpuDisplayMmioFlipLastApplyStatus, VioGpuDisplayFlipPresentCalls,
+                            VioGpuDisplayFlipPresentRejects,  VioGpuGuestAllocSubmitResult,
+                            VioGpuGuestAllocSubmitted,        VioGpuGuestAllocCompleted,
+                            VioGpuGuestAllocUnanswered};
+        for (unsigned i = 0; i < sizeof(slots) / sizeof(slots[0]); ++i)
+        {
+            CHECK(slots[i] < VioGpuDisplayCounterCount);
+            for (unsigned j = i + 1; j < sizeof(slots) / sizeof(slots[0]); ++j)
+                CHECK(slots[i] != slots[j]);
+        }
+    }
 
     // The historical mode-change gate is unchanged: exactly ModeChange, no contexts.
     CHECK(VioGpuClassifySourceAddress(1U, 0U) == VioGpuSourceAddressModeChange);

@@ -9331,7 +9331,9 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         create_host.find("entries==NULL||entryCount==0"),
         create_host.find("request.flags=msmFlags|MSM_BO_GUEST_ALLOC;"),
         create_host.find("TryReferenceNativeAllocationCount(snapshot->Owner)"),
-        create_host.find("m_CtrlQueue.SubmitNativeControl(snapshot->ContextId,&request,sizeof(request))"),
+        # The submit now carries a diagnostic so a Host stall can be told from a
+        # Host refusal after the latch; the ordering it anchors is unchanged.
+        create_host.find("m_CtrlQueue.SubmitNativeControl(snapshot->ContextId,&request,sizeof(request),&submitDiagnostic)"),
         create_host.find("m_CtrlQueue.CreateNativeGuestBlob("),
     )
     if min(host_sequence) < 0 or list(host_sequence) != sorted(host_sequence):
