@@ -1,5 +1,11 @@
 name: Signoff and Red Hat Jira check
-on: [pull_request]
+# Manual only. This gate asks every commit for a Signed-off-by line and a Red
+# Hat Jira reference. That is upstream virtio-win's contribution process; this
+# fork does not file against that Jira, so the check can only ever fail here.
+#
+# Kept rather than deleted so it still runs on demand (Actions -> Run workflow)
+# and so a future merge from upstream sees a file, not a hole.
+on: workflow_dispatch
 
 jobs:
   check-signoff:

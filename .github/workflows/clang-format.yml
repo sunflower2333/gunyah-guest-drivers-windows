@@ -1,5 +1,13 @@
 name: clang-format check
-on: [push, pull_request]
+# Manual only. This is the upstream virtio-win style gate, and it is red across
+# the whole repository independently of anything this fork changes -- so on
+# every push it reported a failure that no commit here could clear and that no
+# commit here caused, which is worse than no signal: a red mark that never goes
+# green stops being read, including on the runs that matter.
+#
+# Kept rather than deleted so it still runs on demand (Actions -> Run workflow)
+# and so a future merge from upstream sees a file, not a hole.
+on: workflow_dispatch
 
 jobs:
   clang-format:
