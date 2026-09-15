@@ -4,8 +4,8 @@
 #pragma once
 #include "GamepadCore.h"
 
-#define VIOINPUT_HAPTICS_SLOTS 16
-#define VIOINPUT_HAPTICS_CONTROL_SLOTS 2
+#define VIOINPUT_HAPTICS_SLOTS 16u
+#define VIOINPUT_HAPTICS_CONTROL_SLOTS 2u
 
 typedef struct VIOINPUT_HAPTICS_SLOT
 {
