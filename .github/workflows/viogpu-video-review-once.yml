@@ -1,0 +1,93 @@
+name: VioGPU video one-time review preparation
+# Temporary, branch-restricted maintenance for PR #3; removed after its result
+# is reviewed. Never runs on a PR, fork payload, or arbitrary branch/input.
+on:
+  push:
+    branches: [work/vpu-video-umd-perf-20260915]
+    paths: ['.github/workflows/viogpu-video-review-once.yml']
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.repository == 'sunflower2333/gunyah-guest-drivers-windows' && github.ref == 'refs/heads/work/vpu-video-umd-perf-20260915'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Apply exact export/source contract migration
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib
+          p = Path('viogpu/viogpuwddm/check-contract.py')
+          raw = p.read_bytes()
+          assert hashlib.sha256(raw).hexdigest() == 'f628f1840e8e81dbdaa3f8bea46377e9d49d7825e9c012650e8343af1d960287', 'Unexpected checker revision; refusing to edit'
+          source = raw.decode('utf-8')
+          old = '''        "OpenAdapter10_2",
+              ]:
+                  fail("D3D UMD module definition must export exactly the three legacy entry points")'''
+          new = '''        "OpenAdapter10_2",
+                  "VioGpuVideoOpen",
+                  "VioGpuVideoControl",
+                  "VioGpuVideoAllocate",
+                  "VioGpuVideoQueue",
+                  "VioGpuVideoDequeue",
+                  "VioGpuVideoCopy",
+                  "VioGpuVideoStream",
+                  "VioGpuVideoClose",
+              ]:
+                  fail("D3D UMD module definition must export exactly the three legacy entry points and eight explicit video bridge functions")'''
+          assert source.count(old) == 1, 'Export contract changed'
+          source = source.replace(old, new)
+          old = '''    if compile_inputs != ["viogpud3d.cpp"]:
+                  fail(f"D3D UMD project must compile only its activation source: {compile_inputs}")'''
+          new = '''    if compile_inputs != ["viogpud3d.cpp", "../video/video_client.cpp"]:
+                  fail(f"D3D UMD project must compile exactly its activation source and explicit video bridge: {compile_inputs}")'''
+          assert source.count(old) == 1, 'Source contract changed'
+          p.write_text(source.replace(old, new), encoding='utf-8')
+      - name: Apply repository clang-format 16 to the added video files only
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clang-format-16
+          clang-format-16 -i \
+            viogpu/video/media_wire.h viogpu/video/media_state.h \
+            viogpu/video/video_ioctl.h viogpu/video/video_api.h \
+            viogpu/video/video_client.cpp viogpu/viogpuvideo/driver.c \
+            viogpu/tests/video/wire_test.cpp viogpu/tests/video/state_test.cpp \
+            viogpu/tests/video/codec_probe.cpp
+          git diff --check
+      - name: Verify production helpers and reject missing/unknown exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in wire state; do
+            g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined viogpu/tests/video/${t}_test.cpp -o /tmp/video_${t}
+            /tmp/video_${t}
+          done
+          python3 viogpu/tests/video/export_contract_test.py
+      - name: Publish only a fast-forward to the reviewed candidate
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          branch=work/vpu-video-umd-perf-20260915
+          git fetch --no-tags origin "refs/heads/$branch"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- viogpu/viogpuwddm/check-contract.py viogpu/video/media_wire.h \
+            viogpu/video/media_state.h viogpu/video/video_ioctl.h viogpu/video/video_api.h \
+            viogpu/video/video_client.cpp viogpu/viogpuvideo/driver.c \
+            viogpu/tests/video/wire_test.cpp viogpu/tests/video/state_test.cpp \
+            viogpu/tests/video/codec_probe.cpp
+          git commit -m 'viogpu/video: format implementation and extend exact UMD contract for explicit bridge'
+          git push origin "HEAD:refs/heads/$branch"
+          git rev-parse HEAD
