@@ -20,7 +20,33 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Apply hash-guarded export and branch trigger migration
-        run: python3 .github/scripts/prepare-video-branch-ci.py
+        run: |
+          python3 .github/scripts/prepare-video-branch-ci.py
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          p = Path('viogpu/viogpuwddm/check-contract.py')
+          source = p.read_text()
+          old = 'def canonical_code(source: str) -> str:\n    code = compact_code(source)\n'
+          new = """def canonical_code(source: str) -> str:
+              # Fold only adjacent, escape-free wide identifier literals emitted by the formatter.
+              # Spelling, encoding, operators and counter indices remain part of the contract.
+              pattern = r'\\bL"([A-Za-z0-9_]*)"\\s+L"([A-Za-z0-9_]*)"'
+              while True:
+                  source, replacements = re.subn(pattern, r'L"\\1\\2"', source)
+                  if replacements == 0:
+                      break
+              code = compact_code(source)
+          """
+          assert source.count(old) == 1, 'Canonical helper changed'
+          p.write_text(source.replace(old, new))
+          p = Path('.github/workflows/viogpu-video-ci.yml')
+          source = p.read_text()
+          target = '  arm64-build:\n'
+          added = ('      - name: Check diagnostic string normalization without weakening names\n'
+                   '        run: python3 viogpu/tests/video/canonical_string_contract_test.py\n')
+          assert source.count(target) == 1
+          p.write_text(source.replace(target, added + target))
+          PYCODE
       - name: Normalize existing VioGPU code with the repository formatter
         shell: bash
         run: |
@@ -64,6 +90,7 @@ jobs:
             g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined viogpu/tests/video/${t}_test.cpp -o /tmp/video_${t}
             /tmp/video_${t}
           done
+          python3 viogpu/tests/video/canonical_string_contract_test.py
           python3 viogpu/tests/video/no_pool_dependency_test.py
           python3 viogpu/tests/video/export_contract_test.py
           python3 viogpu/tests/submit-perf/run.py
