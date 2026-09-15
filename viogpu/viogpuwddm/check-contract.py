@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58498",
+        "$minor = 58499",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58498",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58499",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -13258,6 +13258,16 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     # descriptor exists exactly while the same scanout gate holds.
     need("VioGpuScRgbScanoutAdmitted(&caps,TRUE)", body("VioGpuAdapter::RefreshHdrEdid", dod),
          "the HDR monitor descriptor must require an admitted scRGB scanout")
+    # The monitor mode is the last gate dxgkrnl checks before composing a VidPn:
+    # an 8-bit sRGB monitor mode makes an Advanced Color path uncomposable, and
+    # dxgkrnl then commits an empty topology instead of asking for one.
+    monitor_mode = body("VioGpuDod::AddSingleMonitorMode", dod)
+    need("VioGpuScRgbScanoutAdmitted(&monitorCaps,TRUE)", monitor_mode,
+         "the HDR monitor mode must require an admitted scRGB scanout")
+    need("pMonitorSourceMode->ColorBasis=D3DKMDT_CB_SCRGB;", monitor_mode,
+         "an admitted HDR monitor mode must carry the scRGB color basis")
+    need("pMonitorSourceMode->ColorCoeffDynamicRanges.FirstChannel=10;", monitor_mode,
+         "an admitted HDR monitor mode must carry ten-bit dynamic range")
     need("VioGpuBuildHdrEdid(base,baseSize,m_HdrEdid,sizeof(m_HdrEdid))==VioGpuHdrEdidSize",
          body("VioGpuAdapter::RefreshHdrEdid", dod),
          "the HDR descriptor must come from the tested builder, not hand-written bytes")
@@ -13430,7 +13440,7 @@ def check_advanced_color_admission_contract() -> None:
             product.count("$projectFlags += '/p:VIOGPU_REPORT_WDDM2_3=1'") != 1 or
             "VIOGPU_ADVANCED_COLOR_MPO3" in product or
             "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product):
-        violations.append("the signed 58498 package must build the Advanced Color candidate with the canonical "
+        violations.append("the signed 58499 package must build the Advanced Color candidate with the canonical "
                           "FP16 scanout and reported-2.3 trials and no other experiment")
     if violations:
         fail("Advanced Color default-build/admission contract: " + "; ".join(violations))

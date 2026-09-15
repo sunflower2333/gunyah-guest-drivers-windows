@@ -4233,6 +4233,26 @@ NTSTATUS VioGpuDod::AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODE
     pMonitorSourceMode->ColorCoeffDynamicRanges.SecondChannel = 8;
     pMonitorSourceMode->ColorCoeffDynamicRanges.ThirdChannel = 8;
     pMonitorSourceMode->ColorCoeffDynamicRanges.FourthChannel = 8;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+#if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
+    /* The monitor mode is the last thing that has to admit HDR. With Advanced
+     * Color enabled, dxgkrnl needs a monitor mode whose dynamic range and color
+     * basis can carry it; an 8-bit sRGB mode satisfies nothing, so the whole
+     * VidPn fails to compose and an empty topology is committed instead -- the
+     * display then has no active path at all while the last frame stays on
+     * screen. Ten bits and the scRGB basis match the source modes and the
+     * ten-bit wire format offered under this same gate. */
+    VIOGPU_DISPLAY_COLOR_RESPONSE monitorCaps = {};
+    if (QueryDisplayColor(&monitorCaps) && VioGpuScRgbScanoutAdmitted(&monitorCaps, true))
+    {
+        pMonitorSourceMode->ColorBasis = D3DKMDT_CB_SCRGB;
+        pMonitorSourceMode->ColorCoeffDynamicRanges.FirstChannel = 10;
+        pMonitorSourceMode->ColorCoeffDynamicRanges.SecondChannel = 10;
+        pMonitorSourceMode->ColorCoeffDynamicRanges.ThirdChannel = 10;
+        pMonitorSourceMode->ColorCoeffDynamicRanges.FourthChannel = 10;
+    }
+#endif
+#endif
 
     Status = pRecommendMonitorModes->pMonitorSourceModeSetInterface->pfnAddMode(pRecommendMonitorModes->hMonitorSourceModeSet,
                                                                                 pMonitorSourceMode);
