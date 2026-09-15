@@ -28,7 +28,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Retain pinned formatter for reproducible offline checks
-        run: python3 -m pip download --only-binary=:all: --no-deps clang-format==16.0.6 -d formatter
+        run: |
+          python3 -m pip download --only-binary=:all: --no-deps clang-format==16.0.6 -d formatter
       - uses: actions/upload-artifact@v4
         with:
           name: vioinput-clang-format-16
