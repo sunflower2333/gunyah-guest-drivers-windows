@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Win11 Release|ARM64">
+      <Configuration>Win11 Release</Configuration><Platform>ARM64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{DA4410F5-7F82-4C38-B552-50397DC7FD64}</ProjectGuid>
+    <RootNamespace>viogpuvideo</RootNamespace>
+    <Configuration Condition="'$(Configuration)'==''">Win11 Release</Configuration>
+    <Platform Condition="'$(Platform)'==''">ARM64</Platform>
+    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)'==''">$(LatestTargetPlatformVersion)</WindowsTargetPlatformVersion>
+    <SignMode>Off</SignMode>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Driver</ConfigurationType><DriverType>KMDF</DriverType>
+    <TargetVersion>Windows10</TargetVersion><PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform><UseDebugLibraries>false</UseDebugLibraries>
+    <KMDF_VERSION_MINOR>15</KMDF_VERSION_MINOR>
+  </PropertyGroup>
+  <Import Project="..\..\..\build\Driver.Common.props" />
+  <PropertyGroup>
+    <TargetName>viogpuvideo</TargetName><TargetExt>.sys</TargetExt>
+    <OutDir>$(ProjectDir)bin\ARM64\</OutDir><IntDir>$(ProjectDir)obj\ARM64\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError>
+      <WppEnabled>false</WppEnabled>
+      <AdditionalIncludeDirectories>..\..\..\VirtIO;..\..\..\VirtIO\WDF;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>POOL_NX_OPTIN=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>virtiolib.lib;virtiolib_wdf.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>..\..\..\VirtIO\objfre_win11_arm64\arm64;..\..\..\VirtIO\WDF\objfre_win11_arm64\arm64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="transport.c" /><ClCompile Include="session.c" />
+    <ClCompile Include="virtio_debug.c" /><ClCompile Include="..\core\video_core.c" />
+    <ClInclude Include="video.h" /><ClInclude Include="..\include\video_ioctl.h" />
+    <ClInclude Include="..\include\video_core.h" /><ClInclude Include="..\include\virtio_media_wire.h" />
+    <Inf Include="viogpuvideo.inf" />
+    <FilesToPackage Include="$(TargetPath)" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

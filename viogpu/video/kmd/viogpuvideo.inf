@@ -1,0 +1,58 @@
+; SPDX-License-Identifier: BSD-3-Clause
+; Experimental ARM64 media companion. Does not replace the display driver.
+[Version]
+Signature="$WINDOWS NT$"
+Class=MEDIA
+ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider=%Provider%
+DriverVer=09/15/2026,0.1.0.0
+CatalogFile=viogpuvideo.cat
+PnpLockdown=1
+
+[Manufacturer]
+%Provider%=Models,NTarm64.10.0...22000
+
+[Models.NTarm64.10.0...22000]
+%Device%=Install,PCI\VEN_1AF4&DEV_1070
+
+[Install.NT]
+CopyFiles=DriverCopy
+
+[DestinationDirs]
+DriverCopy=13
+
+[DriverCopy]
+viogpuvideo.sys
+
+[SourceDisksNames]
+1=%Disk%,,,
+
+[SourceDisksFiles]
+viogpuvideo.sys=1
+
+[Install.NT.Services]
+AddService=viogpuvideo,0x00000002,Service
+
+[Service]
+DisplayName=%Device%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\viogpuvideo.sys
+
+[Install.NT.Wdf]
+KmdfService=viogpuvideo,Wdf
+
+[Wdf]
+KmdfLibraryVersion=1.15
+
+[Install.NT.HW]
+AddReg=Security
+
+[Security]
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+[Strings]
+Provider="DroidVM"
+Device="VioGPU Video (experimental virtio-media transport)"
+Disk="VioGPU Video Driver"
