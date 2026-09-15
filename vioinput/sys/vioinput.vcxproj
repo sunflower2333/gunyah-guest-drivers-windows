@@ -128,6 +128,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Hid.h" />
+    <ClInclude Include="Haptics.h" />
+    <ClInclude Include="HapticsCore.h" />
+    <ClInclude Include="GamepadCore.h" />
     <ClInclude Include="precomp.h" />
     <ClInclude Include="public.h" />
     <ClInclude Include="trace.h" />
@@ -141,6 +144,8 @@
     <ClCompile Include="Device.c" />
     <ClCompile Include="Driver.c" />
     <ClCompile Include="Hid.c" />
+    <ClCompile Include="Haptics.c" />
+    <ClCompile Include="HidGamepad.c" />
     <ClCompile Include="HidConsumer.c" />
     <ClCompile Include="HidJoystick.c" />
     <ClCompile Include="HidKeyboard.c" />

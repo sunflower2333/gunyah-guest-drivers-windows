@@ -273,7 +273,8 @@ static NTSTATUS HIDKeyboardSendStatus(PINPUT_DEVICE pContext,
         pEvent->Request = Request;
 
         WdfSpinLockAcquire(pContext->StatusQLock);
-        status = VIOInputAddOutBuf(pContext->StatusQ, &pEvent->Event, pa);
+        status = pContext->QueuesRunning ? VIOInputAddOutBuf(pContext->StatusQ, &pEvent->Event, pa) :
+                                          STATUS_DEVICE_NOT_READY;
         WdfSpinLockRelease(pContext->StatusQLock);
         if (!NT_SUCCESS(status))
         {

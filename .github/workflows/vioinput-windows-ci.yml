@@ -24,6 +24,16 @@ jobs:
             source.zip
             source-revision.txt
           retention-days: 7
+  formatter-tool:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Retain pinned formatter for reproducible offline checks
+        run: python3 -m pip download --only-binary=:all: --no-deps clang-format==16.0.6 -d formatter
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vioinput-clang-format-16
+          path: formatter/
+          retention-days: 1
   kernel-arm64:
     runs-on: windows-11-arm
     steps:
@@ -52,7 +62,8 @@ jobs:
             '/p:ApiValidator_Enable=false', '/p:SpectreMitigation=false', '/p:SignMode=Off',
             '/p:TreatWarningAsError=true', "/p:WindowsTargetPlatformVersion=$env:DROIDVM_KIT_VERSION")
           foreach ($project in @('VirtIO/VirtioLib.vcxproj', 'VirtIO/WDF/VirtioLib-WDF.vcxproj',
-            'vioinput/sys/vioinput.vcxproj', 'vioinput/hidpassthrough/hidpassthrough.vcxproj')) {
+            'vioinput/sys/vioinput.vcxproj', 'vioinput/hidpassthrough/hidpassthrough.vcxproj',
+            'vioinput/package/package.vcxproj')) {
             $name = [IO.Path]::GetFileNameWithoutExtension($project)
             & msbuild $project @common "/bl:build-logs/$name.binlog" '/fl' "/flp:logfile=build-logs/$name.log;verbosity=normal"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -69,4 +80,6 @@ jobs:
             build-logs/
             vioinput/**/*.sys
             vioinput/**/*.pdb
+            vioinput/**/*.inf
+            vioinput/**/*.cat
           retention-days: 7

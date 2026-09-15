@@ -17,6 +17,8 @@
 #define STATUS_SUCCESS 0
 #define NT_SUCCESS(s) ((s) >= 0)
 #define ULONG unsigned long
+#define LONG int
+#define PVOID void *
 #define UINT unsigned int
 #define WDFOBJECT void *
 #define TraceEvents(...) ((void)0)
@@ -31,6 +33,8 @@ typedef struct Device
 {
     struct { int VIODevice; int irq; } VDevice;
     struct virtqueue *EventQ, *StatusQ;
+    struct Device *QueuesInterrupt;
+    volatile LONG QueuesRunning;
     int *EventQLock, *StatusQLock;
     Pool *EventQMemBlock, *StatusQMemBlock;
 } INPUT_DEVICE, *PINPUT_DEVICE, *WDFDEVICE, *WDFINTERRUPT;
@@ -59,7 +63,7 @@ static void *virtqueue_get_buf(struct virtqueue *q, unsigned int *len)
     *len = q->len[q->pos];
     return q->buf[q->pos++];
 }
-static void virtqueue_enable_cb(struct virtqueue *q) { q->enabled = 1; }
+static int virtqueue_enable_cb(struct virtqueue *q) { q->enabled = 1; return q->pos == q->count; }
 static void virtqueue_disable_cb(struct virtqueue *q) { q->enabled = 0; }
 static void virtqueue_kick(struct virtqueue *q) { ++q->kicks; }
 static void WdfSpinLockAcquire(int *p) { assert(!*p); *p = 1; }
@@ -106,6 +110,18 @@ static NTSTATUS VIOInputAddInBuf(struct virtqueue *q, PVIRTIO_INPUT_EVENT e, uin
     return failPost ? -1 : 0;
 }
 
+// Only the haptic-cookie discriminator is mocked here; test_transport.c covers its implementation.
+static BOOLEAN VIOInputHapticsCompleteLocked(PINPUT_DEVICE p, PVOID cookie, WDFREQUEST *r)
+{
+    (void)p; (void)cookie; (void)r;
+    return FALSE;
+}
+static LONG InterlockedCompareExchange(volatile LONG *p, LONG value, LONG expected)
+{
+    LONG old = *p;
+    if (old == expected) *p = value;
+    return old;
+}
 #include "IsrDpc.c"
 
 // Reset every mock so the test cases cannot depend on execution order.
@@ -116,6 +132,7 @@ static void setup(void)
     ep.return_slice = sp.return_slice = release_slice;
     ep.returned = sp.returned = 0;
     dev.EventQ = &eq; dev.StatusQ = &sq;
+    dev.QueuesRunning = 1; dev.QueuesInterrupt = &dev;
     dev.EventQLock = &eventLock; dev.StatusQLock = &statusLock;
     dev.EventQMemBlock = &ep; dev.StatusQMemBlock = &sp;
     eventLock = statusLock = messageSignaled = dpcs = 0;

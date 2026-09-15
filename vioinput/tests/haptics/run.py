@@ -28,10 +28,13 @@ def main() -> None:
         work = Path(temp)
         # Only the Windows API surface is mocked; IsrDpc.c is copied unchanged.
         shutil.copy2(source / "IsrDpc.c", work / "IsrDpc.c")
+        shutil.copy2(source / "Haptics.c", work / "Haptics.c")
+        shutil.copy2(here / "test_transport.c", work / "test_transport.c")
         (work / "precomp.h").write_text("/* Host-test precompiled-header shim. */\n")
         (work / "vioinput.h").write_text("/* Mock declarations live in test_isrdpc.c. */\n")
         shutil.copy2(here / "test_isrdpc.c", work / "test_isrdpc.c")
-        for name, path in (("core", here / "test_core.c"), ("isrdpc", work / "test_isrdpc.c")):
+        for name, path in (("core", here / "test_core.c"), ("gamepad", here / "test_gamepad.c"),
+                           ("transport", work / "test_transport.c"), ("isrdpc", work / "test_isrdpc.c")):
             exe = work / name
             subprocess.run([compiler, *flags, "-I", str(source), str(path), "-o", str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=30)

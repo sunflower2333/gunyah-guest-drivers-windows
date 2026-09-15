@@ -41,6 +41,8 @@ EVT_WDF_DEVICE_PREPARE_HARDWARE VIOInputEvtDevicePrepareHardware;
 EVT_WDF_DEVICE_RELEASE_HARDWARE VIOInputEvtDeviceReleaseHardware;
 EVT_WDF_DEVICE_D0_ENTRY VIOInputEvtDeviceD0Entry;
 EVT_WDF_DEVICE_D0_EXIT VIOInputEvtDeviceD0Exit;
+static EVT_WDF_IO_QUEUE_IO_STOP VIOInputEvtIoStop;
+static VOID VIOInputResetQueues(PINPUT_DEVICE pContext, WDFDEVICE Device);
 
 static NTSTATUS VIOInputInitInterruptHandling(IN WDFDEVICE hDevice);
 static NTSTATUS VIOInputInitAllQueues(IN WDFOBJECT hDevice);
@@ -109,6 +111,9 @@ VIOInputEvtDeviceAdd(IN WDFDRIVER Driver, IN PWDFDEVICE_INIT DeviceInit)
     PnpPowerCallbacks.EvtDeviceD0Exit = VIOInputEvtDeviceD0Exit;
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &PnpPowerCallbacks);
 
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&Attributes, VIOINPUT_HAPTICS_REQUEST);
+    WdfDeviceInitSetRequestAttributes(DeviceInit, &Attributes);
+
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&Attributes, INPUT_DEVICE);
     Attributes.SynchronizationScope = WdfSynchronizationScopeDevice;
     status = WdfDeviceCreate(&DeviceInit, &Attributes, &hDevice);
@@ -122,6 +127,7 @@ VIOInputEvtDeviceAdd(IN WDFDRIVER Driver, IN PWDFDEVICE_INIT DeviceInit)
     if (!NT_SUCCESS(status))
     {
         TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP, "VIOInputInitInterruptHandling failed - 0x%x\n", status);
+        return status;
     }
 
     status = WdfDeviceCreateDeviceInterface(hDevice, &GUID_VIOINPUT_CONTROLLER, NULL);
@@ -138,6 +144,7 @@ VIOInputEvtDeviceAdd(IN WDFDRIVER Driver, IN PWDFDEVICE_INIT DeviceInit)
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig, WdfIoQueueDispatchParallel);
 
     queueConfig.EvtIoInternalDeviceControl = EvtIoDeviceControl;
+    queueConfig.EvtIoStop = VIOInputEvtIoStop;
 
     status = WdfIoQueueCreate(hDevice, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &pContext->IoctlQueue);
     if (!NT_SUCCESS(status))
@@ -170,6 +177,12 @@ VIOInputEvtDeviceAdd(IN WDFDRIVER Driver, IN PWDFDEVICE_INIT DeviceInit)
         return status;
     }
 
+    status = VIOInputHapticsInitialize(hDevice);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+
     RtlZeroMemory(&pContext->HidDeviceAttributes, sizeof(HID_DEVICE_ATTRIBUTES));
     pContext->HidDeviceAttributes.Size = sizeof(HID_DEVICE_ATTRIBUTES);
     pContext->HidDeviceAttributes.VendorID = HIDMINI_VID;
@@ -180,8 +193,31 @@ VIOInputEvtDeviceAdd(IN WDFDRIVER Driver, IN PWDFDEVICE_INIT DeviceInit)
     return status;
 }
 
+// Free allocations only after all published descriptors have been detached.
+// Release partially built class state as well as successfully prepared descriptors.
+static VOID VIOInputFreeClasses(PINPUT_DEVICE pContext)
+{
+    ULONG i;
+    for (i = 0; i < pContext->uNumOfClasses; i++)
+    {
+        PINPUT_CLASS_COMMON pClass = pContext->InputClasses[i];
+        if (pClass->CleanupFunc)
+        {
+            pClass->CleanupFunc(pClass);
+        }
+        VIOInputFree(&pClass->pHidReport);
+        VIOInputFree(&pClass);
+    }
+    pContext->uNumOfClasses = 0;
+
+    VIOInputFree(&pContext->HidReportDescriptor);
+    pContext->Haptics.Enabled = FALSE;
+}
+
+// Free only DMA storage for which the queues have already relinquished ownership.
 static void VIOInputFreeMemBlocks(PINPUT_DEVICE pContext)
 {
+    VIOInputHapticsFree(pContext);
     if (pContext->EventQMemBlock)
     {
         pContext->EventQMemBlock->destroy(pContext->EventQMemBlock);
@@ -228,6 +264,15 @@ VIOInputEvtDevicePrepareHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesR
     // Figure out what kind of input device this is and build a
     // corresponding HID report descriptor.
     status = VIOInputBuildReportDescriptor(pContext);
+    if (NT_SUCCESS(status) && pContext->bChildPdoCreated &&
+        pContext->ChildIsGamepad != pContext->Haptics.Enabled)
+    {
+        status = STATUS_DEVICE_CONFIGURATION_ERROR;
+    }
+    if (NT_SUCCESS(status))
+    {
+        status = VIOInputHapticsAllocate(pContext);
+    }
 
     if (NT_SUCCESS(status) && !pContext->bChildPdoCreated)
     {
@@ -241,12 +286,14 @@ VIOInputEvtDevicePrepareHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesR
         if (NT_SUCCESS(status))
         {
             pContext->bChildPdoCreated = TRUE;
+            pContext->ChildIsGamepad = pContext->Haptics.Enabled;
         }
     }
 
     if (!NT_SUCCESS(status))
     {
         VIOInputFreeMemBlocks(pContext);
+        VIOInputFreeClasses(pContext);
     }
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "<-- %s\n", __FUNCTION__);
@@ -264,7 +311,9 @@ static NTSTATUS VIOInputCreateChildPdo(IN WDFDEVICE hDevice)
     NTSTATUS status = STATUS_SUCCESS;
 
     DECLARE_CONST_UNICODE_STRING(deviceLocation, L"VIOINPUT");
-    DECLARE_CONST_UNICODE_STRING(deviceId, L"VIOINPUT\\REV_01");
+    DECLARE_CONST_UNICODE_STRING(legacyId, L"VIOINPUT\\REV_01");
+    DECLARE_CONST_UNICODE_STRING(gamepadId, L"VIOINPUT\\XINPUTHID_01");
+    PCUNICODE_STRING deviceId = pContext->Haptics.Enabled ? &gamepadId : &legacyId;
     DECLARE_UNICODE_STRING_SIZE(buffer, 32);
 
     PAGED_CODE();
@@ -278,17 +327,17 @@ static NTSTATUS VIOInputCreateChildPdo(IN WDFDEVICE hDevice)
         goto Exit;
     }
 
-    status = WdfPdoInitAssignDeviceID(pDeviceInit, &deviceId);
+    status = WdfPdoInitAssignDeviceID(pDeviceInit, deviceId);
     if (!NT_SUCCESS(status))
     {
         goto Exit;
     }
-    status = WdfPdoInitAddHardwareID(pDeviceInit, &deviceId);
+    status = WdfPdoInitAddHardwareID(pDeviceInit, deviceId);
     if (!NT_SUCCESS(status))
     {
         goto Exit;
     }
-    status = WdfPdoInitAddCompatibleID(pDeviceInit, &deviceId);
+    status = WdfPdoInitAddCompatibleID(pDeviceInit, deviceId);
     if (!NT_SUCCESS(status))
     {
         goto Exit;
@@ -346,8 +395,6 @@ NTSTATUS
 VIOInputEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTranslated)
 {
     PINPUT_DEVICE pContext = GetDeviceContext(Device);
-    PSINGLE_LIST_ENTRY entry;
-    ULONG i;
     NTSTATUS status;
 
     UNREFERENCED_PARAMETER(ResourcesTranslated);
@@ -355,23 +402,15 @@ VIOInputEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesT
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "--> %s\n", __FUNCTION__);
 
+    VIOInputHapticsQuiesce(pContext);
+    if (pContext->EventQ || pContext->StatusQ)
+    {
+        VIOInputResetQueues(pContext, Device);
+    }
+    VIOInputFreeMemBlocks(pContext);
     status = VirtIOWdfShutdown(&pContext->VDevice);
 
-    for (i = 0; i < pContext->uNumOfClasses; i++)
-    {
-        PINPUT_CLASS_COMMON pClass = pContext->InputClasses[i];
-        if (pClass->CleanupFunc)
-        {
-            pClass->CleanupFunc(pClass);
-        }
-        VIOInputFree(&pClass->pHidReport);
-        VIOInputFree(&pClass);
-    }
-    pContext->uNumOfClasses = 0;
-
-    VIOInputFree(&pContext->HidReportDescriptor);
-
-    VIOInputFreeMemBlocks(pContext);
+    VIOInputFreeClasses(pContext);
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_HW_ACCESS, "<-- %s\n", __FUNCTION__);
     return status;
@@ -415,27 +454,26 @@ VOID VIOInputShutDownAllQueues(IN WDFOBJECT WdfDevice)
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "--> %s\n", __FUNCTION__);
 
     VirtIOWdfDestroyQueues(&pContext->VDevice);
+    pContext->EventQ = NULL;
+    pContext->StatusQ = NULL;
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "<-- %s\n", __FUNCTION__);
 }
 
-NTSTATUS
-VIOInputFillEventQueue(PINPUT_DEVICE pContext)
+// Prime a bounded number of EventQ buffers; pool exhaustion after progress is not failure.
+NTSTATUS VIOInputFillEventQueue(PINPUT_DEVICE pContext)
 {
-    NTSTATUS status = STATUS_SUCCESS;
-    PVIRTIO_INPUT_EVENT buf = NULL;
-    TraceEvents(TRACE_LEVEL_VERBOSE, DBG_INIT, "--> %s\n", __FUNCTION__);
-
-    for (;;)
+    ULONG posted = 0;
+    ULONG target = min(virtio_get_queue_size(pContext->EventQ), PAGE_SIZE / sizeof(VIRTIO_INPUT_EVENT));
+    NTSTATUS status;
+    while (posted < target)
     {
         PHYSICAL_ADDRESS pa;
-        buf = pContext->EventQMemBlock->get_slice(pContext->EventQMemBlock, &pa);
-        if (buf == NULL)
+        PVIRTIO_INPUT_EVENT buf = pContext->EventQMemBlock->get_slice(pContext->EventQMemBlock, &pa);
+        if (!buf)
         {
-            TraceEvents(TRACE_LEVEL_ERROR, DBG_INIT, "VIRTIO_INPUT_EVENT alloc failed\n");
-            return STATUS_INSUFFICIENT_RESOURCES;
+            break;
         }
-
         WdfSpinLockAcquire(pContext->EventQLock);
         status = VIOInputAddInBuf(pContext->EventQ, buf, pa);
         WdfSpinLockRelease(pContext->EventQLock);
@@ -444,9 +482,9 @@ VIOInputFillEventQueue(PINPUT_DEVICE pContext)
             pContext->EventQMemBlock->return_slice(pContext->EventQMemBlock, buf);
             break;
         }
+        ++posted;
     }
-    TraceEvents(TRACE_LEVEL_VERBOSE, DBG_INIT, "<-- %s\n", __FUNCTION__);
-    return STATUS_SUCCESS;
+    return posted ? STATUS_SUCCESS : STATUS_INSUFFICIENT_RESOURCES;
 }
 
 static NTSTATUS VIOInputAddBuf(IN struct virtqueue *vq,
@@ -509,8 +547,21 @@ VIOInputEvtDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE Previous
     status = VIOInputInitAllQueues(Device);
     if (NT_SUCCESS(status))
     {
+        WdfSpinLockAcquire(pContext->StatusQLock);
+        InterlockedExchange(&pContext->QueuesRunning, TRUE);
+        WdfSpinLockRelease(pContext->StatusQLock);
+        HIDGamepadReset(pContext);
         VirtIOWdfSetDriverOK(&pContext->VDevice);
-        VIOInputFillEventQueue(pContext);
+        status = VIOInputFillEventQueue(pContext);
+        if (NT_SUCCESS(status))
+        {
+            status = VIOInputHapticsStart(pContext);
+        }
+        if (!NT_SUCCESS(status))
+        {
+            VIOInputResetQueues(pContext, Device);
+            VirtIOWdfSetDriverFailed(&pContext->VDevice);
+        }
     }
     else
     {
@@ -522,30 +573,77 @@ VIOInputEvtDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE Previous
     return status;
 }
 
-NTSTATUS
-VIOInputEvtDeviceD0Exit(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE TargetState)
+// Haptics stops detach requests immediately; legacy LED requests are drained by D0Exit.
+static VOID VIOInputEvtIoStop(WDFQUEUE Queue, WDFREQUEST Request, ULONG ActionFlags)
 {
-    PINPUT_DEVICE pContext = GetDeviceContext(Device);
-    PVIRTIO_INPUT_EVENT buf;
+    PINPUT_DEVICE pContext = GetDeviceContext(WdfIoQueueGetDevice(Queue));
+    UNREFERENCED_PARAMETER(ActionFlags);
+    if (pContext->Haptics.Enabled)
+    {
+        VIOInputHapticsStopRequest(pContext, Request);
+        return;
+    }
+    WdfSpinLockAcquire(pContext->StatusQLock);
+    InterlockedExchange(&pContext->QueuesRunning, FALSE);
+    WdfRequestStopAcknowledge(Request, FALSE);
+    WdfSpinLockRelease(pContext->StatusQLock);
+}
 
-    TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "--> %s TargetState: %d\n", __FUNCTION__, TargetState);
-
-    PAGED_CODE();
-
-    // reset the device to make sure it's not processing the event queue anymore
+// Reset establishes DMA quiescence; only then detach and reclaim BOTH existing queues.
+static VOID VIOInputResetQueues(PINPUT_DEVICE pContext, WDFDEVICE Device)
+{
+    PVOID cookie;
+    WDFREQUEST request;
+    VIOInputHapticsQuiesce(pContext);
+    WdfSpinLockAcquire(pContext->StatusQLock);
+    InterlockedExchange(&pContext->QueuesRunning, FALSE);
+    WdfSpinLockRelease(pContext->StatusQLock);
+    WdfInterruptFlushQueuedDpcs(pContext->QueuesInterrupt);
     virtio_device_reset(&pContext->VDevice.VIODevice);
 
-    // now with the queue stopped, free the buffers we've pushed to it
+    WdfSpinLockAcquire(pContext->EventQLock);
     if (pContext->EventQ)
     {
-        while (buf = (PVIRTIO_INPUT_EVENT)virtqueue_detach_unused_buf(pContext->EventQ))
+        while ((cookie = virtqueue_detach_unused_buf(pContext->EventQ)) != NULL)
         {
-            pContext->EventQMemBlock->return_slice(pContext->EventQMemBlock, buf);
+            pContext->EventQMemBlock->return_slice(pContext->EventQMemBlock, cookie);
+        }
+    }
+    HIDGamepadReset(pContext);
+    WdfSpinLockRelease(pContext->EventQLock);
+
+    for (;;)
+    {
+        WdfSpinLockAcquire(pContext->StatusQLock);
+        cookie = pContext->StatusQ ? virtqueue_detach_unused_buf(pContext->StatusQ) : NULL;
+        if (!cookie)
+        {
+            WdfSpinLockRelease(pContext->StatusQLock);
+            break;
+        }
+        request = NULL;
+        if (!VIOInputHapticsCompleteLocked(pContext, cookie, &request))
+        {
+            PVIRTIO_INPUT_EVENT_WITH_REQUEST legacy = cookie;
+            request = legacy->Request;
+            legacy->Request = NULL;
+            pContext->StatusQMemBlock->return_slice(pContext->StatusQMemBlock, cookie);
+        }
+        WdfSpinLockRelease(pContext->StatusQLock);
+        if (request)
+        {
+            WdfRequestCompleteWithInformation(request, STATUS_DEVICE_NOT_READY, 0);
         }
     }
     VIOInputShutDownAllQueues(Device);
+}
 
-    TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "<-- %s\n", __FUNCTION__);
-
+// No unbounded wait for the host; mandatory host lease/reset handling stops its actuator.
+NTSTATUS VIOInputEvtDeviceD0Exit(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE TargetState)
+{
+    PINPUT_DEVICE pContext = GetDeviceContext(Device);
+    UNREFERENCED_PARAMETER(TargetState);
+    PAGED_CODE();
+    VIOInputResetQueues(pContext, Device);
     return STATUS_SUCCESS;
 }

@@ -67,7 +67,6 @@ VOID EvtIoDeviceControl(WDFQUEUE Queue,
     BOOLEAN completeRequest = TRUE;
     WDFDEVICE device = WdfIoQueueGetDevice(Queue);
     PINPUT_DEVICE pContext = GetDeviceContext(device);
-    ULONG uReportSize;
     HID_XFER_PACKET Packet;
     WDF_REQUEST_PARAMETERS params;
     UNREFERENCED_PARAMETER(OutputBufferLength);
@@ -122,6 +121,7 @@ VOID EvtIoDeviceControl(WDFQUEUE Queue,
             }
             break;
 
+        case IOCTL_HID_SET_OUTPUT_REPORT:
         case IOCTL_HID_WRITE_REPORT:
             TraceEvents(TRACE_LEVEL_VERBOSE, DBG_IOCTLS, "IOCTL_HID_WRITE_REPORT\n");
             //
@@ -133,7 +133,8 @@ VOID EvtIoDeviceControl(WDFQUEUE Queue,
             WDF_REQUEST_PARAMETERS_INIT(&params);
             WdfRequestGetParameters(Request, &params);
 
-            if (params.Parameters.DeviceIoControl.InputBufferLength < sizeof(HID_XFER_PACKET))
+            if (params.Parameters.DeviceIoControl.InputBufferLength < sizeof(HID_XFER_PACKET) ||
+                WdfRequestWdmGetIrp(Request)->UserBuffer == NULL)
             {
                 status = STATUS_BUFFER_TOO_SMALL;
             }
@@ -142,10 +143,40 @@ VOID EvtIoDeviceControl(WDFQUEUE Queue,
                 RtlCopyMemory(&Packet, WdfRequestWdmGetIrp(Request)->UserBuffer, sizeof(HID_XFER_PACKET));
                 WdfRequestSetInformation(Request, Packet.reportBufferLen);
 
-                status = ProcessOutputReport(pContext, Request, &Packet);
+                if (!Packet.reportBuffer || !Packet.reportBufferLen)
+                {
+                    status = STATUS_INVALID_PARAMETER;
+                }
+                else
+                {
+                    status = ProcessOutputReport(pContext, Request, &Packet);
+                }
                 if (NT_SUCCESS(status))
                 {
                     completeRequest = FALSE;
+                }
+            }
+            break;
+
+        case IOCTL_HID_GET_INPUT_REPORT:
+            WDF_REQUEST_PARAMETERS_INIT(&params);
+            WdfRequestGetParameters(Request, &params);
+            if (!pContext->Haptics.Enabled)
+            {
+                status = STATUS_NOT_SUPPORTED;
+            }
+            else if (params.Parameters.DeviceIoControl.OutputBufferLength < sizeof(HID_XFER_PACKET) ||
+                     WdfRequestWdmGetIrp(Request)->UserBuffer == NULL)
+            {
+                status = STATUS_BUFFER_TOO_SMALL;
+            }
+            else
+            {
+                RtlCopyMemory(&Packet, WdfRequestWdmGetIrp(Request)->UserBuffer, sizeof(Packet));
+                status = HIDGamepadGetInput(pContext, &Packet);
+                if (NT_SUCCESS(status))
+                {
+                    WdfRequestSetInformation(Request, DVH_PAD_INPUT_BYTES);
                 }
             }
             break;
@@ -196,6 +227,10 @@ VOID EvtIoDeviceControl(WDFQUEUE Queue,
 
     if (completeRequest)
     {
+        if (!NT_SUCCESS(status))
+        {
+            WdfRequestSetInformation(Request, 0);
+        }
         WdfRequestComplete(Request, status);
     }
 
@@ -237,7 +272,12 @@ VOID ProcessInputEvent(PINPUT_DEVICE pContext, PVIRTIO_INPUT_EVENT pEvent)
                 pEvent->code,
                 pEvent->value);
 
-    if (pEvent->type == EV_SYN)
+    if (VIOInputHapticsReceive(pContext, pEvent))
+    {
+        return;
+    }
+
+    if (pEvent->type == EV_SYN && pEvent->code == SYN_REPORT)
     {
         // send report(s) up
         for (i = 0; i < pContext->uNumOfClasses; i++)
@@ -265,6 +305,11 @@ ProcessOutputReport(PINPUT_DEVICE pContext, WDFREQUEST Request, PHID_XFER_PACKET
 {
     NTSTATUS status = STATUS_NONE_MAPPED;
     ULONG i;
+
+    if (pContext->Haptics.Enabled)
+    {
+        return VIOInputHapticsOutput(pContext, Request, pPacket);
+    }
 
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_WRITE, "--> %s\n", __FUNCTION__);
 
@@ -435,13 +480,20 @@ VIOInputBuildReportDescriptor(PINPUT_DEVICE pContext)
     NTSTATUS status = STATUS_SUCCESS;
     VIRTIO_INPUT_CFG_DATA KeyData, RelData, AbsData, LedData, MscData;
     SIZE_T cbReportDescriptor;
-    UCHAR i, uReportID = 0;
+    UCHAR i;
+    DvhCaps hapticsCaps;
+    pContext->Haptics.Enabled = FALSE;
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "--> %s\n", __FUNCTION__);
 
     // key/button config
     KeyData.size = SelectInputConfig(pContext, VIRTIO_INPUT_CFG_EV_BITS, EV_KEY);
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "Got EV_KEY bits size %d\n", KeyData.size);
+    if (KeyData.size > sizeof(KeyData.u.bitmap))
+    {
+        status = STATUS_DEVICE_CONFIGURATION_ERROR;
+        goto Exit;
+    }
     for (i = 0; i < KeyData.size; i++)
     {
         VirtIOWdfDeviceGet(&pContext->VDevice,
@@ -453,6 +505,11 @@ VIOInputBuildReportDescriptor(PINPUT_DEVICE pContext)
     // relative axis config
     RelData.size = SelectInputConfig(pContext, VIRTIO_INPUT_CFG_EV_BITS, EV_REL);
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "Got EV_REL bits size %d\n", RelData.size);
+    if (RelData.size > sizeof(RelData.u.bitmap))
+    {
+        status = STATUS_DEVICE_CONFIGURATION_ERROR;
+        goto Exit;
+    }
     for (i = 0; i < RelData.size; i++)
     {
         VirtIOWdfDeviceGet(&pContext->VDevice,
@@ -464,6 +521,11 @@ VIOInputBuildReportDescriptor(PINPUT_DEVICE pContext)
     // absolute axis config
     AbsData.size = SelectInputConfig(pContext, VIRTIO_INPUT_CFG_EV_BITS, EV_ABS);
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "Got EV_ABS bits size %d\n", AbsData.size);
+    if (AbsData.size > sizeof(AbsData.u.bitmap))
+    {
+        status = STATUS_DEVICE_CONFIGURATION_ERROR;
+        goto Exit;
+    }
     for (i = 0; i < AbsData.size; i++)
     {
         VirtIOWdfDeviceGet(&pContext->VDevice,
@@ -475,12 +537,27 @@ VIOInputBuildReportDescriptor(PINPUT_DEVICE pContext)
     // Misc config
     MscData.size = SelectInputConfig(pContext, VIRTIO_INPUT_CFG_EV_BITS, EV_MSC);
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "Got EV_MSC bits size %d\n", MscData.size);
+    if (MscData.size > sizeof(MscData.u.bitmap))
+    {
+        status = STATUS_DEVICE_CONFIGURATION_ERROR;
+        goto Exit;
+    }
     for (i = 0; i < MscData.size; i++)
     {
         VirtIOWdfDeviceGet(&pContext->VDevice,
                            offsetof(struct virtio_input_config, u.bitmap[i]),
                            &MscData.u.bitmap[i],
                            1);
+    }
+
+    if (VIOInputHapticsReadCaps(pContext, &hapticsCaps))
+    {
+        status = HIDGamepadProbe(pContext, &ReportDescriptor, &AbsData, &KeyData);
+        if (!NT_SUCCESS(status))
+        {
+            goto Exit;
+        }
+        goto FinalizeDescriptor;
     }
 
     // if we have any relative axes, we'll expose a mouse device
@@ -520,6 +597,11 @@ VIOInputBuildReportDescriptor(PINPUT_DEVICE pContext)
         // LED config
         LedData.size = SelectInputConfig(pContext, VIRTIO_INPUT_CFG_EV_BITS, EV_LED);
         TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "Got EV_LED bits size %d\n", LedData.size);
+        if (LedData.size > sizeof(LedData.u.bitmap))
+        {
+            status = STATUS_DEVICE_CONFIGURATION_ERROR;
+            goto Exit;
+        }
         for (i = 0; i < LedData.size; i++)
         {
             VirtIOWdfDeviceGet(&pContext->VDevice,
@@ -545,6 +627,7 @@ VIOInputBuildReportDescriptor(PINPUT_DEVICE pContext)
         }
     }
 
+FinalizeDescriptor:
     if (DynamicArrayIsEmpty(&ReportDescriptor))
     {
         // we are not exposing any device
@@ -570,6 +653,7 @@ VIOInputBuildReportDescriptor(PINPUT_DEVICE pContext)
     }
 
 Exit:
+    DynamicArrayDestroy(&ReportDescriptor);
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "<-- %s (%08x)\n", __FUNCTION__, status);
     return status;
 }

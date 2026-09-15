@@ -67,6 +67,7 @@ typedef struct virtio_input_event
 } VIRTIO_INPUT_EVENT, *PVIRTIO_INPUT_EVENT;
 
 struct _tagInputDevice;
+#include "Haptics.h"
 
 typedef struct _tagInputClassCommon
 {
@@ -113,6 +114,10 @@ typedef struct _tagInputDevice
 
     PVIRTIO_DMA_MEMORY_SLICED EventQMemBlock;
     PVIRTIO_DMA_MEMORY_SLICED StatusQMemBlock;
+
+    volatile LONG QueuesRunning;
+    BOOLEAN ChildIsGamepad;
+    VIOINPUT_HAPTICS Haptics;
 
     WDFQUEUE IoctlQueue;
     WDFQUEUE HidQueue;
@@ -392,3 +397,41 @@ static inline VOID VIOInputFree(PVOID *pPtr)
         *pPtr = NULL;
     }
 }
+
+// Read negotiated capability metadata; old backends leave the new profile disabled.
+BOOLEAN VIOInputHapticsReadCaps(PINPUT_DEVICE pContext, DvhCaps *Caps);
+// Create a bounded watchdog timer for this device instance.
+NTSTATUS VIOInputHapticsInitialize(WDFDEVICE Device);
+// Allocate fixed wire storage at PASSIVE_LEVEL.
+NTSTATUS VIOInputHapticsAllocate(PINPUT_DEVICE pContext);
+// Begin a fresh, initially silent host epoch.
+NTSTATUS VIOInputHapticsStart(PINPUT_DEVICE pContext);
+// Decode only negotiated host control records.
+BOOLEAN VIOInputHapticsReceive(PINPUT_DEVICE pContext, PVIRTIO_INPUT_EVENT Event);
+// Send a validated XInputHID output report through StatusQ.
+NTSTATUS VIOInputHapticsOutput(
+    PINPUT_DEVICE pContext,
+    WDFREQUEST Request,
+    PHID_XFER_PACKET Packet);
+// Reclaim a haptic cookie only after used completion or device reset.
+BOOLEAN VIOInputHapticsCompleteLocked(
+    PINPUT_DEVICE pContext,
+    PVOID Cookie,
+    WDFREQUEST *Request);
+// Stop one framework request without freeing its in-flight DMA slot.
+VOID VIOInputHapticsStopRequest(PINPUT_DEVICE pContext, WDFREQUEST Request);
+
+// Stop all producers and synchronously join the watchdog.
+VOID VIOInputHapticsQuiesce(PINPUT_DEVICE pContext);
+// Free wire storage after the device is quiescent.
+VOID VIOInputHapticsFree(PINPUT_DEVICE pContext);
+// Build the dedicated standard XInputHID descriptor and input translator.
+NTSTATUS HIDGamepadProbe(
+    PINPUT_DEVICE pContext,
+    PDYNAMIC_ARRAY Descriptor,
+    PVIRTIO_INPUT_CFG_DATA Axes,
+    PVIRTIO_INPUT_CFG_DATA Buttons);
+// Release all held gamepad input controls.
+VOID HIDGamepadReset(PINPUT_DEVICE pContext);
+// Return a validated standard input snapshot.
+NTSTATUS HIDGamepadGetInput(PINPUT_DEVICE pContext, PHID_XFER_PACKET Packet);

@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (c) 2026 DroidVM contributors
  *
- * Allocation-free building blocks for PLAN.md v2. No HID report format,
- * feature bit, config selector or event-type allocation is implied here.
- * This core is not yet attached to a Windows XInputHID device frontend.
+ * Allocation-free wire/state core. Haptics.c integrates this with the opt-in
+ * XInputHID profile. See docs/HAPTICS-ABI.md for the private transport contract.
  */
 #ifndef VIOINPUT_HAPTICS_CORE_H
 #define VIOINPUT_HAPTICS_CORE_H
@@ -27,7 +26,9 @@ enum DvhOpcode
     DVH_STOP = 6,
     DVH_HOST_STATUS = 7,
     DVH_HOST_REVOKE = 8,
-    DVH_CLOSE = 9
+    DVH_CLOSE = 9,
+    DVH_SET_XINPUT_REPORT = 10,
+    DVH_KEEPALIVE_XINPUT_REPORT = 11
 };
 
 typedef struct DvhMessage
@@ -87,6 +88,30 @@ static inline uint32_t DvhCrc32c(const uint8_t *p, size_t n)
     return crc ^ UINT32_MAX;
 }
 
+// Check the four percentage magnitudes and the actuator mask in a raw XInputHID report.
+static inline int DvhXinputReportActive(uint32_t magnitudes, uint32_t timing)
+{
+    unsigned int i;
+    int active = 0;
+    if ((timing & 0xf0u) || !(timing & 0x0fu))
+    {
+        return 0;
+    }
+    for (i = 0; i < 4; ++i)
+    {
+        uint32_t magnitude = (magnitudes >> (i * 8)) & 0xffu;
+        if (magnitude > 100u)
+        {
+            return 0;
+        }
+        if ((timing & (8u >> i)) && magnitude)
+        {
+            active = 1;
+        }
+    }
+    return active && ((timing >> 8) & 0xffu);
+}
+
 // Validate V1 fields before serialization or any state transition.
 static inline int DvhMessageValid(const DvhMessage *m)
 {
@@ -104,6 +129,10 @@ static inline int DvhMessageValid(const DvhMessage *m)
         case DVH_KEEPALIVE:
             return m->revision && m->motors && m->lease_ms &&
                    m->lease_ms <= DVH_MAX_LEASE_MS && !m->detail;
+        case DVH_SET_XINPUT_REPORT:
+        case DVH_KEEPALIVE_XINPUT_REPORT:
+            return m->revision && m->lease_ms && m->lease_ms <= DVH_MAX_LEASE_MS &&
+                   DvhXinputReportActive(m->motors, m->detail);
         case DVH_STOP:
             return m->revision && !m->motors && !m->lease_ms && !m->detail;
         case DVH_CLOSE:
@@ -279,6 +308,7 @@ typedef struct DvhGuestState
     uint64_t revision;
     uint32_t motors;
     uint32_t lease_ms;
+    uint32_t detail;
 } DvhGuestState;
 
 // Disable the guest core; the driver must quiesce DMA separately before freeing it.
@@ -290,6 +320,7 @@ static inline void DvhGuestReset(DvhGuestState *s)
     s->revision = 0;
     s->motors = 0;
     s->lease_ms = 0;
+    s->detail = 0;
 }
 
 // Called only by a trusted, negotiated lifecycle adapter, never for arbitrary input.
@@ -322,6 +353,7 @@ static inline void DvhGuestRevoke(DvhGuestState *s)
     s->phase = DVH_REVOKED;
     s->motors = 0;
     s->lease_ms = 0;
+    s->detail = 0;
 }
 
 // Prepare, but do not commit, an actual output report; zero maps to STOP.
@@ -353,6 +385,31 @@ static inline int DvhGuestPrepareOutput(
     return 1;
 }
 
+// Preserve all eight output payload bytes; the broker interprets timing, not the lease.
+static inline int DvhGuestPrepareXinputReport(
+    const DvhGuestState *s,
+    uint32_t magnitudes,
+    uint32_t timing,
+    uint32_t lease_ms,
+    DvhMessage *out)
+{
+    DvhMessage m;
+    if (!out || !DvhGuestPrepareOutput(s, 0, 0, 0, &m))
+    {
+        return 0;
+    }
+    m.opcode = DVH_SET_XINPUT_REPORT;
+    m.motors = magnitudes;
+    m.detail = timing;
+    m.lease_ms = lease_ms;
+    if (!DvhMessageValid(&m))
+    {
+        return 0;
+    }
+    *out = m;
+    return 1;
+}
+
 // A keepalive only renews the exact last committed nonzero state.
 static inline int DvhGuestPrepareKeepalive(const DvhGuestState *s, DvhMessage *out)
 {
@@ -360,13 +417,13 @@ static inline int DvhGuestPrepareKeepalive(const DvhGuestState *s, DvhMessage *o
     {
         return 0;
     }
-    out->opcode = DVH_KEEPALIVE;
+    out->opcode = s->detail ? DVH_KEEPALIVE_XINPUT_REPORT : DVH_KEEPALIVE;
     out->epoch = s->epoch;
     out->sequence = s->sequence + 1;
     out->revision = s->revision;
     out->motors = s->motors;
     out->lease_ms = s->lease_ms;
-    out->detail = 0;
+    out->detail = s->detail;
     return DvhMessageValid(out);
 }
 
@@ -378,15 +435,15 @@ static inline int DvhGuestCommit(DvhGuestState *s, const DvhMessage *m)
     {
         return 0;
     }
-    if (m->opcode == DVH_KEEPALIVE)
+    if (m->opcode == DVH_KEEPALIVE || m->opcode == DVH_KEEPALIVE_XINPUT_REPORT)
     {
         if (s->phase != DVH_PLAYING || m->revision != s->revision ||
-            m->motors != s->motors || m->lease_ms != s->lease_ms)
+            m->motors != s->motors || m->lease_ms != s->lease_ms || m->detail != s->detail)
         {
             return 0;
         }
     }
-    else if (m->opcode == DVH_SET_RUMBLE || m->opcode == DVH_STOP)
+    else if (m->opcode == DVH_SET_RUMBLE || m->opcode == DVH_STOP || m->opcode == DVH_SET_XINPUT_REPORT)
     {
         if (s->revision == UINT64_MAX || m->revision != s->revision + 1)
         {
@@ -395,6 +452,7 @@ static inline int DvhGuestCommit(DvhGuestState *s, const DvhMessage *m)
         s->revision = m->revision;
         s->motors = m->motors;
         s->lease_ms = m->lease_ms;
+        s->detail = m->detail;
         s->phase = m->opcode == DVH_STOP ? DVH_IDLE : DVH_PLAYING;
     }
     else

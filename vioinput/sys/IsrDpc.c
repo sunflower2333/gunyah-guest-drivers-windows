@@ -46,12 +46,18 @@ static VOID VIOInputEnableInterrupt(PINPUT_DEVICE pContext)
 
     if (pContext->EventQ)
     {
-        virtqueue_enable_cb(pContext->EventQ);
+        if (!virtqueue_enable_cb(pContext->EventQ))
+        {
+            WdfInterruptQueueDpcForIsr(pContext->QueuesInterrupt);
+        }
         virtqueue_kick(pContext->EventQ);
     }
     if (pContext->StatusQ)
     {
-        virtqueue_enable_cb(pContext->StatusQ);
+        if (!virtqueue_enable_cb(pContext->StatusQ))
+        {
+            WdfInterruptQueueDpcForIsr(pContext->QueuesInterrupt);
+        }
         virtqueue_kick(pContext->StatusQ);
     }
 
@@ -133,82 +139,104 @@ BOOLEAN VIOInputInterruptIsr(
     return serviced;
 }
 
-// Drain input and output completions; never complete a request under StatusQLock.
-VOID VIOInputQueuesInterruptDpc(
-    IN WDFINTERRUPT Interrupt,
-    IN WDFOBJECT AssociatedObject)
+// Drain bounded batches and close notification races; complete output requests outside all locks.
+VOID VIOInputQueuesInterruptDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT AssociatedObject)
 {
-    WDFDEVICE Device = WdfInterruptGetDevice(Interrupt);
-    PINPUT_DEVICE pContext = GetDeviceContext(Device);
+    PINPUT_DEVICE pContext = GetDeviceContext(WdfInterruptGetDevice(Interrupt));
     PVIRTIO_INPUT_EVENT pEvent;
-    PVIRTIO_INPUT_EVENT_WITH_REQUEST pEventReq;
+    PVOID cookie;
     WDFREQUEST request;
     UINT len;
-    ULONG invalidEvents = 0;
-    ULONG repostFailures = 0;
+    ULONG invalidEvents = 0, repostFailures = 0, budget = 256;
+    BOOLEAN reschedule = FALSE, more;
     NTSTATUS status;
-
     UNREFERENCED_PARAMETER(AssociatedObject);
 
-    WdfSpinLockAcquire(pContext->EventQLock);
-    while (pContext->EventQ &&
-           (pEvent = virtqueue_get_buf(pContext->EventQ, &len)) != NULL)
+    if (!InterlockedCompareExchange(&pContext->QueuesRunning, 0, 0))
     {
-        // We posted exactly one 8-byte event. A short completion must not
-        // replay stale bytes from the previous use of the DMA buffer.
-        if (len == sizeof(*pEvent))
+        return;
+    }
+    WdfSpinLockAcquire(pContext->EventQLock);
+    while (pContext->EventQ)
+    {
+        virtqueue_disable_cb(pContext->EventQ);
+        while (budget && (pEvent = virtqueue_get_buf(pContext->EventQ, &len)) != NULL)
         {
-            ProcessInputEvent(pContext, pEvent);
+            --budget;
+            if (len == sizeof(*pEvent))
+            {
+                ProcessInputEvent(pContext, pEvent);
+            }
+            else
+            {
+                ++invalidEvents;
+            }
+            status = VIOInputAddInBuf(pContext->EventQ, pEvent,
+                                     VirtIOWdfDeviceGetPhysicalAddress(&pContext->VDevice.VIODevice, pEvent));
+            if (!NT_SUCCESS(status))
+            {
+                pContext->EventQMemBlock->return_slice(pContext->EventQMemBlock, pEvent);
+                ++repostFailures;
+            }
         }
-        else
+        if (virtqueue_enable_cb(pContext->EventQ))
         {
-            ++invalidEvents;
+            break;
         }
-
-        status = VIOInputAddInBuf(
-            pContext->EventQ,
-            pEvent,
-            VirtIOWdfDeviceGetPhysicalAddress(&pContext->VDevice.VIODevice, pEvent));
-        if (!NT_SUCCESS(status))
+        if (!budget)
         {
-            // The failed add never transferred ownership back to the host.
-            pContext->EventQMemBlock->return_slice(pContext->EventQMemBlock, pEvent);
-            ++repostFailures;
+            reschedule = TRUE;
+            break;
         }
     }
     WdfSpinLockRelease(pContext->EventQLock);
-
     if (invalidEvents || repostFailures)
     {
-        TraceEvents(TRACE_LEVEL_WARNING,
-                    DBG_DPC,
+        TraceEvents(TRACE_LEVEL_WARNING, DBG_DPC,
                     "Input completion errors\ninvalid_events=%lu\nrepost_failures=%lu\n",
-                    invalidEvents,
-                    repostFailures);
+                    invalidEvents, repostFailures);
     }
 
+    budget = 64;
     for (;;)
     {
         WdfSpinLockAcquire(pContext->StatusQLock);
-        pEventReq = pContext->StatusQ ? virtqueue_get_buf(pContext->StatusQ, &len) : NULL;
-        if (!pEventReq)
+        if (!pContext->StatusQ)
         {
             WdfSpinLockRelease(pContext->StatusQLock);
             break;
         }
-
-        // used length is NOT an Android playback result. The status buffer is
-        // device-readable, so a zero used length is also a valid completion.
-        request = pEventReq->Request;
-        pEventReq->Request = NULL;
-        pContext->StatusQMemBlock->return_slice(pContext->StatusQMemBlock, pEventReq);
-        WdfSpinLockRelease(pContext->StatusQLock);
-
-        // Completion can invoke upper layers and cause another output request.
-        // The buffer is already reclaimed; nothing below touches its old cookie.
-        if (request != NULL)
+        virtqueue_disable_cb(pContext->StatusQ);
+        cookie = budget ? virtqueue_get_buf(pContext->StatusQ, &len) : NULL;
+        if (!cookie)
         {
+            more = !virtqueue_enable_cb(pContext->StatusQ);
+            WdfSpinLockRelease(pContext->StatusQLock);
+            if (more && budget)
+            {
+                continue; // a used entry arrived between draining and rearming
+            }
+            reschedule = reschedule || more;
+            break;
+        }
+        --budget;
+        request = NULL;
+        if (!VIOInputHapticsCompleteLocked(pContext, cookie, &request))
+        {
+            PVIRTIO_INPUT_EVENT_WITH_REQUEST legacy = cookie;
+            request = legacy->Request;
+            legacy->Request = NULL;
+            pContext->StatusQMemBlock->return_slice(pContext->StatusQMemBlock, cookie);
+        }
+        WdfSpinLockRelease(pContext->StatusQLock);
+        if (request)
+        {
+            // used completion returns DMA ownership, not proof of Android playback.
             WdfRequestComplete(request, STATUS_SUCCESS);
         }
+    }
+    if (reschedule && InterlockedCompareExchange(&pContext->QueuesRunning, 0, 0))
+    {
+        WdfInterruptQueueDpcForIsr(Interrupt);
     }
 }
