@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include <ntddk.h>
+/* Instantiate the bus interface GUID required by VirtIO/WDF in this TU only. */
+#include <initguid.h>
+#include <wdmguid.h>
 #include <stdarg.h>
 
 /* Supply VirtIO library diagnostics without enabling repeated per-frame traces. */
