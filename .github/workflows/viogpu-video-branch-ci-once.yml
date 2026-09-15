@@ -1,0 +1,73 @@
+name: Prepare independent video branch CI
+# One-shot maintenance of this exact candidate. It creates reviewable Git
+# objects only; the connected reviewer performs the final non-force ref update.
+on:
+  push:
+    branches: [work/vpu-video-umd-perf-20260915]
+    paths: ['.github/workflows/viogpu-video-branch-ci-once.yml']
+permissions:
+  contents: read
+jobs:
+  prepare:
+    if: github.repository == 'sunflower2333/gunyah-guest-drivers-windows' && github.ref == 'refs/heads/work/vpu-video-umd-perf-20260915'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Apply hash-guarded export and branch trigger migration
+        run: python3 .github/scripts/prepare-video-branch-ci.py
+      - name: Normalize existing VioGPU code with the repository formatter
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clang-format-16
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          root = Path.cwd()
+          files = [str(p) for p in Path('viogpu').rglob('*')
+                   if p.suffix.lower() in ('.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx')
+                   and not p.name.endswith('trace.h')]
+          files += ['.install_scripts/viogpud3d-interpose.c']
+          for attempt in range(3):
+              before = [Path(p).read_bytes() for p in files]
+              subprocess.run(['clang-format-16', '--style=file:' + str(root / '.clang-format'), '-i', *files], check=True)
+              if before == [Path(p).read_bytes() for p in files]:
+                  break
+          PY
+          git diff --check
+          bash Tools/clang-format-helper.sh check . '' './VirtIO|./.*/.*trace.h|./NetKVM/Common/virtio_net.h|./NetKVM/linux/if_ether.h|./viofs/shared/fuse.h|./viofs/svc/scope_exit.h' > /tmp/video-format.log 2>&1 || { tail -160 /tmp/video-format.log; exit 1; }
+          bash Tools/clang-format-helper.sh check VirtIO '' '' >> /tmp/video-format.log 2>&1 || { tail -160 /tmp/video-format.log; exit 1; }
+      - name: Execute both actual workflow export gates and negative fixtures
+        shell: pwsh
+        run: ./viogpu/tests/video/binary-export-contract.ps1
+      - name: Validate production contracts and regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in wire state; do
+            g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined viogpu/tests/video/${t}_test.cpp -o /tmp/video_${t}
+            /tmp/video_${t}
+          done
+          python3 viogpu/tests/video/no_pool_dependency_test.py
+          python3 viogpu/tests/video/export_contract_test.py
+          python3 viogpu/tests/submit-perf/run.py
+          python3 viogpu/tests/present-formats/run.py
+          python3 viogpu/tests/vidpn-commit/run.py
+          python3 viogpu/tests/fault-recovery/run.py
+          python3 viogpu/tests/power-recovery/run.py
+      - name: Create unattached reviewed Git objects without changing any branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/prepare-video-branch-ci.py --publish-objects
+      - uses: actions/upload-artifact@v4
+        with:
+          name: video-ci-candidate
+          path: video-ci-candidate.json
+          if-no-files-found: error
