@@ -2,8 +2,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputRoot,
 
-    [string]$DxvkCommit = 'a98c19fbc8020ef7f7b47c79ccffe2fcb3c9ad74',
-    [string]$Vkd3dCommit = 'ac1debbbcba455e2faa10e3a4990711c813b6e63'
+    [string]$DxvkCommit = '48e25ca83b56b713a70b6ae9f57adaf3e6b09f29',
+    [string]$Vkd3dCommit = '376e716e4acdf7a9ded138b0099f2ee8a8863f91'
 )
 
 $ErrorActionPreference = 'Stop'
