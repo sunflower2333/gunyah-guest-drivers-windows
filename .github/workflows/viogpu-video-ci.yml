@@ -3,13 +3,13 @@ on:
   workflow_dispatch:
   push:
     branches: [work/vpu-video-umd-perf-20260915]
-    paths: ['viogpu/video/**', 'viogpu/viogpuvideo/**', 'viogpu/viogpud3d/**', 'viogpu/tests/video/**', '.github/workflows/viogpu-video-ci.yml']
+    paths: ['viogpu/video/**', 'viogpu/viogpuvideo/**', 'viogpu/viogpud3d/**', 'viogpu/tests/video/**', 'viogpu/viogpuwddm/check-contract.py', '.github/workflows/viogpu-video-ci.yml']
   pull_request:
-    paths: ['viogpu/video/**', 'viogpu/viogpuvideo/**', 'viogpu/viogpud3d/**', 'viogpu/tests/video/**', '.github/workflows/viogpu-video-ci.yml']
+    paths: ['viogpu/video/**', 'viogpu/viogpuvideo/**', 'viogpu/viogpud3d/**', 'viogpu/tests/video/**', 'viogpu/viogpuwddm/check-contract.py', '.github/workflows/viogpu-video-ci.yml']
 permissions:
   contents: read
 concurrency:
-  group: video-${{ github.head_ref || github.ref }}
+  group: video-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
   wire-and-state:
@@ -24,8 +24,9 @@ jobs:
             /tmp/video_${t}
           done
       - name: Check video transport has no restricted-pool or GPU commandq dependency
-        run: |
-          ! grep -En 'rdmapool\.h|rdmapool\.lib|IOCTL_RDMAPOOL|RdmaPool|VIRTIO_GPU_CMD_' viogpu/viogpuvideo/driver.c viogpu/viogpuvideo/viogpuvideo.vcxproj viogpu/video/*.h viogpu/video/*.cpp
+        run: python3 viogpu/tests/video/no_pool_dependency_test.py
+      - name: Exercise the WDDM contract and reject missing or unknown exports
+        run: python3 viogpu/tests/video/export_contract_test.py
   arm64-build:
     runs-on: windows-11-arm
     steps:

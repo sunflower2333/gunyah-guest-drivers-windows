@@ -19,37 +19,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
-      - name: Apply exact export/source contract migration
-        shell: python
-        run: |
-          from pathlib import Path
-          import hashlib
-          p = Path('viogpu/viogpuwddm/check-contract.py')
-          raw = p.read_bytes()
-          assert hashlib.sha256(raw).hexdigest() == 'f628f1840e8e81dbdaa3f8bea46377e9d49d7825e9c012650e8343af1d960287', 'Unexpected checker revision; refusing to edit'
-          source = raw.decode('utf-8')
-          old = '''        "OpenAdapter10_2",
-              ]:
-                  fail("D3D UMD module definition must export exactly the three legacy entry points")'''
-          new = '''        "OpenAdapter10_2",
-                  "VioGpuVideoOpen",
-                  "VioGpuVideoControl",
-                  "VioGpuVideoAllocate",
-                  "VioGpuVideoQueue",
-                  "VioGpuVideoDequeue",
-                  "VioGpuVideoCopy",
-                  "VioGpuVideoStream",
-                  "VioGpuVideoClose",
-              ]:
-                  fail("D3D UMD module definition must export exactly the three legacy entry points and eight explicit video bridge functions")'''
-          assert source.count(old) == 1, 'Export contract changed'
-          source = source.replace(old, new)
-          old = '''    if compile_inputs != ["viogpud3d.cpp"]:
-                  fail(f"D3D UMD project must compile only its activation source: {compile_inputs}")'''
-          new = '''    if compile_inputs != ["viogpud3d.cpp", "../video/video_client.cpp"]:
-                  fail(f"D3D UMD project must compile exactly its activation source and explicit video bridge: {compile_inputs}")'''
-          assert source.count(old) == 1, 'Source contract changed'
-          p.write_text(source.replace(old, new), encoding='utf-8')
+      - name: Apply exact export/source contract and comment migration
+        run: python3 .github/scripts/prepare-video-review.py
       - name: Apply repository clang-format 16 to the added video files only
         shell: bash
         run: |
@@ -71,6 +42,7 @@ jobs:
             g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined viogpu/tests/video/${t}_test.cpp -o /tmp/video_${t}
             /tmp/video_${t}
           done
+          python3 viogpu/tests/video/no_pool_dependency_test.py
           python3 viogpu/tests/video/export_contract_test.py
       - name: Publish only a fast-forward to the reviewed candidate
         shell: bash
@@ -86,6 +58,7 @@ jobs:
           git add -- viogpu/viogpuwddm/check-contract.py viogpu/video/media_wire.h \
             viogpu/video/media_state.h viogpu/video/video_ioctl.h viogpu/video/video_api.h \
             viogpu/video/video_client.cpp viogpu/viogpuvideo/driver.c \
+            viogpu/viogpuvideo/viogpuvideo.inf viogpu/video/install-video.ps1 \
             viogpu/tests/video/wire_test.cpp viogpu/tests/video/state_test.cpp \
             viogpu/tests/video/codec_probe.cpp
           git commit -m 'viogpu/video: format implementation and extend exact UMD contract for explicit bridge'
