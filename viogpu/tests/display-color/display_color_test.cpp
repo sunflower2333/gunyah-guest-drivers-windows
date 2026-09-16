@@ -161,6 +161,22 @@ int main()
     assert(VioGpuDisplayDetectControl(&hpd, VioGpuDetectUninitialized, 0, 0) == VioGpuDetectInvalid);
     assert(VioGpuDisplayDetectControl(&hpd, 5U, 0, 0) == VioGpuDetectInvalid);
     assert(VioGpuDisplayDetectControl(nullptr, VioGpuDetectEnableHpd, 0, 0) == VioGpuDetectInvalid);
+    // Colour tuning knobs: absent or out of range must land on the shipped
+    // default, so a missing registry value can never change behaviour.
+    assert(VioGpuSelectMonitorColorRange(false, 10) == VIOGPU_MONITOR_COLOR_RANGE_DEFAULT);
+    assert(VIOGPU_MONITOR_COLOR_RANGE_DEFAULT == 8U);
+    assert(VioGpuSelectMonitorColorRange(true, 10) == 10U);
+    assert(VioGpuSelectMonitorColorRange(true, 8) == 8U);
+    assert(VioGpuSelectMonitorColorRange(true, 16) == 16U);
+    assert(VioGpuSelectMonitorColorRange(true, 5) == VIOGPU_MONITOR_COLOR_RANGE_DEFAULT);
+    assert(VioGpuSelectMonitorColorRange(true, 17) == VIOGPU_MONITOR_COLOR_RANGE_DEFAULT);
+    assert(VioGpuSelectMonitorColorRange(true, 0) == VIOGPU_MONITOR_COLOR_RANGE_DEFAULT);
+    assert(VioGpuSelectSourceColorBasisMode(false, 1) == VIOGPU_SOURCE_COLOR_BASIS_ALL_SCRGB);
+    assert(VioGpuSelectSourceColorBasisMode(true, 0) == VIOGPU_SOURCE_COLOR_BASIS_ALL_SCRGB);
+    assert(VioGpuSelectSourceColorBasisMode(true, 1) == VIOGPU_SOURCE_COLOR_BASIS_PER_FORMAT);
+    assert(VioGpuSelectSourceColorBasisMode(true, 2) == VIOGPU_SOURCE_COLOR_BASIS_ALL_SCRGB);
+    assert(VioGpuSelectSourceColorBasisMode(true, 0xffffffffU) == VIOGPU_SOURCE_COLOR_BASIS_ALL_SCRGB);
+
     // HDR trial mask: a bisection knob is only sound if it can subtract from
     // what the build claims and never add to it.
     assert(VioGpuSelectHdrTrialMask(false, 0) == VIOGPU_HDR_TRIAL_ALL);       // absent = shipped

@@ -1098,6 +1098,8 @@ class VioGpuDod
     VioGpuActivationTrace m_NativeActivationTrace;
     VioGpuChildDescriptorMode m_ChildDescriptorMode;
     ULONG m_HdrTrialMask = VIOGPU_HDR_TRIAL_ALL;
+    ULONG m_MonitorColorRange = VIOGPU_MONITOR_COLOR_RANGE_DEFAULT;
+    ULONG m_SourceColorBasisMode = VIOGPU_SOURCE_COLOR_BASIS_ALL_SCRGB;
     /* One-slot MMIO flip mailbox. DxgkDdiSetVidPnSourceAddress publishes the
      * flipped primary at DIRQL; the display worker binds it at PASSIVE_LEVEL
      * under m_FlipApplyMutex, and primary destroy drains the slot under the
@@ -1478,6 +1480,14 @@ class VioGpuDod
     BOOLEAN HdrTrialHighColor() const
     {
         return (m_HdrTrialMask & VIOGPU_HDR_TRIAL_HIGH_COLOR) != 0;
+    }
+    ULONG MonitorColorRange() const
+    {
+        return m_MonitorColorRange;
+    }
+    BOOLEAN SourceColorBasisPerFormat() const
+    {
+        return m_SourceColorBasisMode == VIOGPU_SOURCE_COLOR_BASIS_PER_FORMAT;
     }
     BOOLEAN IsNativeHdrModeAvailable() const
     {
@@ -2038,6 +2048,7 @@ class VioGpuDod
     VOID RecordNativeActivationQuery(_In_ CONST DXGKARG_QUERYADAPTERINFO *query, _In_ NTSTATUS status);
     VOID LoadChildDescriptorMode(void);
     VOID LoadHdrTrialMask(void);
+    VOID LoadColorTuning(void);
     VOID RecordNativeActivationChild(_In_ UINT ddi,
                                      _In_ NTSTATUS status,
                                      _In_ UINT value0,

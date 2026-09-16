@@ -414,6 +414,7 @@ NTSTATUS VioGpuDod::StartDevice(_In_ DXGK_START_INFO *pDxgkStartInfo,
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
 #if defined(VIOGPU_CANONICAL_FP16_SCANOUT)
     LoadHdrTrialMask();
+    LoadColorTuning();
 #endif
 #endif
 
@@ -4163,7 +4164,15 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
             }
 #endif
 #endif
-            pVidPnSourceModeInfo->Format.Graphics.ColorBasis = D3DKMDT_CB_SCRGB;
+            /* The KMDOD sample publishes scRGB for its single 8-bit primary and
+             * that is what shipped here, but a mode set whose every entry claims
+             * canonical scRGB is a suspect once the link claims HighColorSpace.
+             * Mode 1 publishes the basis each format really carries. */
+            pVidPnSourceModeInfo->Format.Graphics.ColorBasis =
+                SourceColorBasisPerFormat() &&
+                        pVidPnSourceModeInfo->Format.Graphics.PixelFormat != D3DDDIFMT_A16B16G16R16F
+                    ? D3DKMDT_CB_SRGB
+                    : D3DKMDT_CB_SCRGB;
             pVidPnSourceModeInfo->Format.Graphics.PixelValueAccessMode = D3DKMDT_PVAM_DIRECT;
 
             Status = pVidPnSourceModeSetInterface->pfnAddMode(hVidPnSourceModeSet, pVidPnSourceModeInfo);
@@ -4313,7 +4322,10 @@ NTSTATUS VioGpuDod::AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODE
      * desktop with no committed path at all. Whatever an Advanced Color VidPn
      * needs, dxgkrnl will not compose one against a monitor source mode
      * declaring a ten-bit dynamic range here. */
-    const UINT monitorColorRange = 8;
+    /* Registry-selectable so the ten-bit case can be retried against a link that
+     * actually claims HighColorSpace; the two were never testable together
+     * before the Host admitted PQ. Default is unchanged at eight. */
+    const UINT monitorColorRange = MonitorColorRange();
 
     pMonitorSourceMode->Origin = D3DKMDT_MCO_DRIVER;
     pMonitorSourceMode->Preference = D3DKMDT_MP_PREFERRED;
@@ -8310,6 +8322,31 @@ VOID VioGpuDod::LoadHdrTrialMask(void)
                static_cast<UINT>(m_HdrTrialMask),
                value,
                found ? 1U : 0U);
+}
+
+VOID VioGpuDod::LoadColorTuning(void)
+{
+    PAGED_CODE();
+    DWORD rangeValue = 0, basisValue = 0;
+    bool rangeFound = false, basisFound = false;
+    HANDLE key = NULL;
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_QUERY_VALUE, &key)))
+    {
+        rangeFound = NT_SUCCESS(ReadRegistryDWORD(key, L"VioGpuMonitorColorRange", &rangeValue));
+        basisFound = NT_SUCCESS(ReadRegistryDWORD(key, L"VioGpuSourceColorBasis", &basisValue));
+        ZwClose(key);
+    }
+    m_MonitorColorRange = VioGpuSelectMonitorColorRange(rangeFound, rangeValue);
+    m_SourceColorBasisMode = VioGpuSelectSourceColorBasisMode(basisFound, basisValue);
+    DbgPrintEx(DPFLTR_DEFAULT_ID,
+               DPFLTR_INFO_LEVEL,
+               "viogpu colour tuning monitorRange=%u (registry=%u found=%u) sourceBasis=%u (registry=%u found=%u)\n",
+               static_cast<UINT>(m_MonitorColorRange),
+               rangeValue,
+               rangeFound ? 1U : 0U,
+               static_cast<UINT>(m_SourceColorBasisMode),
+               basisValue,
+               basisFound ? 1U : 0U);
 }
 
 VOID VioGpuDod::RecordNativeActivationChild(_In_ UINT ddi,

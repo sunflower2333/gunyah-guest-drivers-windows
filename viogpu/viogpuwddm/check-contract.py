@@ -13262,13 +13262,22 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     # an 8-bit sRGB monitor mode makes an Advanced Color path uncomposable, and
     # dxgkrnl then commits an empty topology instead of asking for one.
     monitor_mode = body("VioGpuDod::AddSingleMonitorMode", dod)
-    # Eight bits, and not conditional on colour admission: a ten-bit dynamic
-    # range here was measured as the thing that leaves dxgkrnl with nothing to
-    # commit. Every channel of every mode in the set must carry the same value,
-    # from one symbol -- describing the preferred mode alone publishes the
-    # current resolution twice, two different ways, which is its own failure.
-    need("constUINTmonitorColorRange=8;", monitor_mode,
-         "the monitor source mode dynamic range must stay eight bits")
+    # Eight bits by default, and not conditional on colour admission: a ten-bit
+    # dynamic range here was measured as the thing that leaves dxgkrnl with
+    # nothing to commit -- but that was measured against a link that never
+    # claimed HighColorSpace, because the Host never admitted PQ. It is now
+    # registry-selectable so the pair can be swept on target; the default stays
+    # eight, and the selector is the tested one. Every channel of every mode in
+    # the set must still carry the same value, from one symbol -- describing the
+    # preferred mode alone publishes the current resolution twice, two different
+    # ways, which is its own failure.
+    need("constUINTmonitorColorRange=MonitorColorRange();", monitor_mode,
+         "the monitor source mode dynamic range must come from the registry selector")
+    need("returnfound&&value>=VIOGPU_MONITOR_COLOR_RANGE_MIN&&value<=VIOGPU_MONITOR_COLOR_RANGE_MAX?value:VIOGPU_MONITOR_COLOR_RANGE_DEFAULT;",
+         canonical_code(SHARED_DISPLAY_COLOR_PATH.read_text(encoding="utf-8")),
+         "an out-of-range or absent monitor colour range must fall back to the default")
+    if "#define VIOGPU_MONITOR_COLOR_RANGE_DEFAULT 8U" not in SHARED_DISPLAY_COLOR_PATH.read_text(encoding="utf-8"):
+        violations.append("the monitor source mode dynamic range must still default to eight bits")
     if monitor_mode.count("=monitorColorRange;") != 8:
         violations.append("every monitor source mode must carry the same dynamic range")
     if "VioGpuScRgbScanoutAdmitted(&monitorCaps" in monitor_mode:

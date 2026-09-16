@@ -276,6 +276,34 @@ inline unsigned VioGpuMonitorLinkCapabilities(const VIOGPU_DISPLAY_COLOR_RESPONS
     return VIOGPU_LINK_CAP_WIDE_COLOR_SPACE | (claimHighColor ? VIOGPU_LINK_CAP_HIGH_COLOR_SPACE : 0U);
 }
 
+/* Monitor source mode dynamic range, and the colour basis published on VidPn
+ * source modes. Both are pinned by measurement rather than by spec -- ten bits
+ * here was measured to empty the topology, and every source mode currently
+ * claims scRGB because the KMDOD sample does -- and both are suspects once the
+ * link claims HighColorSpace. Registry-selectable so the combinations can be
+ * swept on target without a rebuild, exactly like the HDR trial mask. */
+#define VIOGPU_MONITOR_COLOR_RANGE_DEFAULT 8U
+#define VIOGPU_MONITOR_COLOR_RANGE_MIN 6U
+#define VIOGPU_MONITOR_COLOR_RANGE_MAX 16U
+
+inline unsigned VioGpuSelectMonitorColorRange(bool found, unsigned value)
+{
+    return found && value >= VIOGPU_MONITOR_COLOR_RANGE_MIN && value <= VIOGPU_MONITOR_COLOR_RANGE_MAX
+               ? value
+               : VIOGPU_MONITOR_COLOR_RANGE_DEFAULT;
+}
+
+/* 0 keeps every source mode on scRGB (the shipped behaviour). 1 publishes the
+ * basis each format actually carries: sRGB for the 8-bit and 10:10:10:2
+ * primaries, scRGB only for the canonical FP16 one. */
+#define VIOGPU_SOURCE_COLOR_BASIS_ALL_SCRGB 0U
+#define VIOGPU_SOURCE_COLOR_BASIS_PER_FORMAT 1U
+
+inline unsigned VioGpuSelectSourceColorBasisMode(bool found, unsigned value)
+{
+    return found && value <= VIOGPU_SOURCE_COLOR_BASIS_PER_FORMAT ? value : VIOGPU_SOURCE_COLOR_BASIS_ALL_SCRGB;
+}
+
 /* DXGK_DISPLAYDETECTCONTROLTYPE (d3dkmddi.h, WDDM 2.2+). */
 typedef enum VIOGPU_DETECT_CONTROL_TYPE
 {
