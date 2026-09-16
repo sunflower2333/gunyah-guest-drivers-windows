@@ -10659,6 +10659,7 @@ VioGpuWddmGetMultiPlaneOverlayCaps(CONST HANDLE hAdapter, DXGKARG_GETMULTIPLANEO
     {
         return STATUS_INVALID_PARAMETER;
     }
+    reinterpret_cast<VioGpuDod *>(hAdapter)->CountDisplayEvent(VioGpuOverlayCapsQueries);
     args->MaxPlanes = 1;
     args->MaxRGBPlanes = 1;
     args->MaxYUVPlanes = 0;

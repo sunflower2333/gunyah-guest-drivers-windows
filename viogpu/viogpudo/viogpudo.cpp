@@ -6755,6 +6755,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD timingPathWireFormat = ReadDisplayCounter(VioGpuTimingPathWireFormat);
     DWORD timingPathColorSpace = ReadDisplayCounter(VioGpuTimingPathColorSpace);
     DWORD timingPathRejects = ReadDisplayCounter(VioGpuTimingPathRejects);
+    DWORD overlayCapsQueries = ReadDisplayCounter(VioGpuOverlayCapsQueries);
     DWORD displayMmioFlipCalls = ReadDisplayCounter(VioGpuDisplayMmioFlipCalls);
     DWORD displayMmioFlipRejects = ReadDisplayCounter(VioGpuDisplayMmioFlipRejects);
     DWORD displayMmioFlipRejectKind = ReadDisplayCounter(VioGpuDisplayMmioFlipRejectKind);
@@ -7344,6 +7345,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &timingPathColorSpace},
                                                                                                         {L"NativeTimingPathRejects",
                                                                                                          &timingPathRejects},
+                                                                                                        {L"NativeOverlayCapsQueries",
+                                                                                                         &overlayCapsQueries},
                                                                                                         {L"NativeDispla"
                                                                                                          L"yMmioFlipCal"
                                                                                                          L"ls",

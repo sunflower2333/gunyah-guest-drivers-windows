@@ -170,5 +170,9 @@ enum : unsigned
     VioGpuTimingPathWireFormat = 82,
     VioGpuTimingPathColorSpace = 83,
     VioGpuTimingPathRejects = 84,
-    VioGpuDisplayCounterCount = 85,
+    /* Did dxgkrnl ever ask what overlay planes exist? Without an answer to that
+     * there is no way to tell "MPO is unreachable" from "the probe never ran",
+     * and the whole point of the caps probe is that distinction. */
+    VioGpuOverlayCapsQueries = 85,
+    VioGpuDisplayCounterCount = 86,
 };
