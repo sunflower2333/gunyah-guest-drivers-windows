@@ -64,6 +64,7 @@ struct SegmentFlags
     UINT CpuVisible;
     UINT Aperture;
     UINT CacheCoherent;
+    UINT DirectFlip;
     UINT Unimplemented;
 };
 struct DXGK_SEGMENTDESCRIPTOR4
@@ -202,6 +203,14 @@ struct DXGK_ALLOCATIONINFO
     HANDLE hAllocation;
 };
 
+/* Direct flip is advertised only while the one-shot trial is armed, so the
+ * segment descriptor has to answer both states. */
+static bool g_DirectFlipTrial = false;
+BOOLEAN VioGpuWddmIsDirectFlipTrial()
+{
+    return g_DirectFlipTrial ? TRUE : FALSE;
+}
+
 // INSERT_PRODUCTION
 
 unsigned checks = 0;
@@ -246,6 +255,15 @@ int main()
     }
     check(tail && descriptor.BaseAddress == 0 && !descriptor.Flags.Unimplemented,
           "no descriptor overrun or invented VRAM/capabilities");
+    check(!descriptor.Flags.DirectFlip, "direct flip stays off while the trial is unarmed");
+    g_DirectFlipTrial = true;
+    storage.fill(0xa5);
+    check(QuerySegment4(&adapter, &query) == STATUS_SUCCESS, "armed trial still answers the segment query");
+    std::memcpy(&descriptor, storage.data(), sizeof(descriptor));
+    check(descriptor.Flags.DirectFlip && descriptor.Flags.Aperture && descriptor.Flags.CpuVisible &&
+                  descriptor.Flags.CacheCoherent,
+          "armed trial marks the primary segment direct-flip capable");
+    g_DirectFlipTrial = false;
     check(output.PagingBufferSegmentId == 0 && output.PagingBufferSize == PAGE_SIZE && output.PagingBufferPrivateDataSize == sizeof(VIOGPU_WDDM_PAGING_PRIVATE),
           "physical paging buffers preserve existing transaction storage");
     output.SegmentDescriptorStride = sizeof(descriptor) - 1;
