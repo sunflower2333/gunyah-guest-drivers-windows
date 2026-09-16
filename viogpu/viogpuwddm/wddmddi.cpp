@@ -10663,10 +10663,15 @@ VioGpuWddmGetMultiPlaneOverlayCaps(CONST HANDLE hAdapter, DXGKARG_GETMULTIPLANEO
     args->MaxRGBPlanes = 1;
     args->MaxYUVPlanes = 0;
     args->OverlayCaps.Value = 0;
-    /* No stretch and no shrink: the scanout is the guest primary at its own
-     * size. These are 1/16th-pixel fixed point, so 16 is exactly 1.0. */
-    args->MaxStretchFactor = 16;
-    args->MaxShrinkFactor = 16;
+    /* No stretch and no shrink: the scanout is the guest primary at its own size.
+     * These two fields are FLOAT, and a kernel driver that so much as stores a
+     * float literal drags in `_fltused` (this is exactly how the first build of
+     * this function failed to link). Write the IEEE-754 pattern for 1.0f instead
+     * and keep floating point out of the driver entirely -- the value is a
+     * constant, so there is nothing to compute. */
+    const ULONG oneF = 0x3F800000UL;
+    RtlCopyMemory(&args->MaxStretchFactor, &oneF, sizeof(oneF));
+    RtlCopyMemory(&args->MaxShrinkFactor, &oneF, sizeof(oneF));
     return STATUS_SUCCESS;
 }
 
