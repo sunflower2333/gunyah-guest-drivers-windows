@@ -2733,6 +2733,7 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
         "PAGED_CODE(); "
         "BOOLEAN renderOnly = VioGpuWddmReadRenderOnly(registryPath); "
         "g_VioGpuWddmRenderOnlyRegistration = renderOnly; "
+        "g_VioGpuWddmConnectorTimingModel = VioGpuWddmReadConnectorTimingModel(registryPath); "
         "DRIVER_INITIALIZATION_DATA initialData; "
         "VioGpuWddmBuildInitializationData(&initialData, renderOnly); "
         "WPP_INIT_TRACING(driverObject, registryPath); "
@@ -2799,6 +2800,17 @@ def check_callback_table() -> None:
     body, count = advanced_callbacks.subn("", body)
     if count != 1:
         fail("Advanced Color callbacks must remain an exact conditional display-only registration")
+    # CommitVidPn is withheld only under the connector timing model, because
+    # DXGKDDI_SETTIMINGSFROMVIDPN replaces it and offering both leaves dxgkrnl
+    # reporting SupportSetTimingsFromVidPn=0. The guard must be exactly this:
+    # anything else risks a build that registers neither way to set a mode.
+    commit_guard = re.compile(
+        r"if\s*\(\s*!\s*g_VioGpuWddmConnectorTimingModel\s*\)\s*\{\s*"
+        r"initialData->DxgkDdiCommitVidPn\s*=\s*VioGpuDodCommitVidPn;\s*\}"
+    )
+    body, count = commit_guard.subn("initialData->DxgkDdiCommitVidPn = VioGpuDodCommitVidPn;", body)
+    if count != 1:
+        fail("CommitVidPn must be registered unless the connector timing model is selected")
     zero_initialization = re.findall(
         r"\bRtlZeroMemory\s*\(\s*initialData\s*,\s*sizeof\s*\(\s*\*\s*initialData\s*\)\s*\)\s*;",
         body,

@@ -5,6 +5,15 @@
 #endif
 
 static BOOLEAN g_VioGpuWddmRenderOnlyRegistration = TRUE;
+/* dxgkrnl reports SupportSetTimingsFromVidPn=0 for this adapter even with the
+ * DDI registered, WDDM 2.3 reported and the whole WDDM 2.2 connection set in
+ * place (measured on target 2026-09-16 via KMTQAITYPE_ADAPTERTYPE). The DDI
+ * documentation says SetTimingsFromVidPn *replaces* DxgkDdiCommitVidPn, so the
+ * remaining discriminator is that this driver still offers CommitVidPn. This
+ * switch withholds it. Off by default: a driver that gets neither path would
+ * have no way to set a mode at all, so it is opt-in per device through the
+ * service Parameters key and recoverable with a reboot. */
+static BOOLEAN g_VioGpuWddmConnectorTimingModel = FALSE;
 
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration()
 {
@@ -71,6 +80,61 @@ static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
 
     ZwClose(parametersKey);
     return renderOnly;
+}
+
+static BOOLEAN VioGpuWddmReadConnectorTimingModel(_In_ UNICODE_STRING *registryPath)
+{
+    PAGED_CODE();
+
+    BOOLEAN connectorModel = FALSE;
+    OBJECT_ATTRIBUTES attributes;
+    InitializeObjectAttributes(&attributes, registryPath, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+
+    HANDLE serviceKey = NULL;
+    NTSTATUS status = ZwOpenKey(&serviceKey, KEY_READ, &attributes);
+    if (!NT_SUCCESS(status))
+    {
+        return FALSE;
+    }
+
+    UNICODE_STRING parametersName;
+    RtlInitUnicodeString(&parametersName, L"Parameters");
+    InitializeObjectAttributes(&attributes,
+                               &parametersName,
+                               OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+                               serviceKey,
+                               NULL);
+
+    HANDLE parametersKey = NULL;
+    status = ZwOpenKey(&parametersKey, KEY_QUERY_VALUE, &attributes);
+    ZwClose(serviceKey);
+    if (!NT_SUCCESS(status))
+    {
+        return FALSE;
+    }
+
+    UNICODE_STRING valueName;
+    RtlInitUnicodeString(&valueName, L"ConnectorTimingModel");
+    union {
+        KEY_VALUE_PARTIAL_INFORMATION Info;
+        UCHAR Bytes[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG)];
+    } valueInfo = {};
+    ULONG resultLength = 0;
+    status = ZwQueryValueKey(parametersKey,
+                             &valueName,
+                             KeyValuePartialInformation,
+                             valueInfo.Bytes,
+                             sizeof(valueInfo.Bytes),
+                             &resultLength);
+    if (NT_SUCCESS(status) && valueInfo.Info.Type == REG_DWORD && valueInfo.Info.DataLength == sizeof(ULONG))
+    {
+        ULONG value = 0;
+        RtlCopyMemory(&value, valueInfo.Info.Data, sizeof(value));
+        connectorModel = value != 0;
+    }
+
+    ZwClose(parametersKey);
+    return connectorModel;
 }
 
 VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData, _In_ BOOLEAN renderOnly)
@@ -172,7 +236,13 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
         initialData->DxgkDdiEnumVidPnCofuncModality = VioGpuDodEnumVidPnCofuncModality;
         initialData->DxgkDdiSetVidPnSourceAddress = VioGpuWddmSetVidPnSourceAddress;
         initialData->DxgkDdiSetVidPnSourceVisibility = VioGpuDodSetVidPnSourceVisibility;
-        initialData->DxgkDdiCommitVidPn = VioGpuDodCommitVidPn;
+        /* Withheld under the connector timing model: DXGKDDI_SETTIMINGSFROMVIDPN
+         * replaces this entry point, and offering both leaves dxgkrnl on the
+         * legacy path with SupportSetTimingsFromVidPn reported as 0. */
+        if (!g_VioGpuWddmConnectorTimingModel)
+        {
+            initialData->DxgkDdiCommitVidPn = VioGpuDodCommitVidPn;
+        }
         initialData->DxgkDdiUpdateActiveVidPnPresentPath = VioGpuDodUpdateActiveVidPnPresentPath;
         initialData->DxgkDdiRecommendMonitorModes = VioGpuDodRecommendMonitorModes;
         initialData->DxgkDdiGetScanLine = VioGpuWddmGetScanLine;
@@ -187,6 +257,7 @@ extern "C" NTSTATUS VioGpuWddmInitializeMiniport(_In_ DRIVER_OBJECT *driverObjec
 
     BOOLEAN renderOnly = VioGpuWddmReadRenderOnly(registryPath);
     g_VioGpuWddmRenderOnlyRegistration = renderOnly;
+    g_VioGpuWddmConnectorTimingModel = VioGpuWddmReadConnectorTimingModel(registryPath);
     DRIVER_INITIALIZATION_DATA initialData;
     VioGpuWddmBuildInitializationData(&initialData, renderOnly);
 
