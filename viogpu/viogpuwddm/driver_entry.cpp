@@ -23,6 +23,27 @@ static BOOLEAN g_VioGpuWddmRenderOnlyRegistration = TRUE;
  * retained only so the experiment is not repeated. */
 static BOOLEAN g_VioGpuWddmConnectorTimingModel = FALSE;
 
+/* Multi-plane overlay reachability probe. Windows can only take a fullscreen
+ * app's buffer straight to the scanout -- independent flip -- through MPO, and
+ * this driver reports no overlay planes, so every frame is composited by DWM
+ * instead. Measured 2026-09-16: DWM's own work is ~13 ms per frame and making
+ * the app fullscreen changed nothing (40.5 delivered against 88 rendered),
+ * because there is no independent-flip path to take.
+ *
+ * This arms only the *caps* half: DxgkDdiGetMultiPlaneOverlayCaps plus the
+ * DriverCaps overlay fields, so dxgkrnl can ask. CheckMultiPlaneOverlaySupport3
+ * keeps answering Supported=FALSE, so nothing is ever routed into the flip path
+ * that is not written yet -- the probe changes what the OS may ask, never what
+ * it may do. It is **one-shot**: the value is cleared as it is read, so a boot
+ * that goes wrong cannot repeat, which is the trap the guest-blob scanout
+ * experiment fell into. */
+static BOOLEAN g_VioGpuWddmOverlayProbe = FALSE;
+
+BOOLEAN VioGpuWddmIsOverlayProbeRegistration()
+{
+    return g_VioGpuWddmOverlayProbe;
+}
+
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration()
 {
     return g_VioGpuWddmRenderOnlyRegistration;
@@ -88,6 +109,66 @@ static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
 
     ZwClose(parametersKey);
     return renderOnly;
+}
+
+static BOOLEAN VioGpuWddmReadOverlayProbe(_In_ UNICODE_STRING *registryPath)
+{
+    PAGED_CODE();
+
+    BOOLEAN armed = FALSE;
+    OBJECT_ATTRIBUTES attributes;
+    InitializeObjectAttributes(&attributes, registryPath, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+
+    HANDLE serviceKey = NULL;
+    if (!NT_SUCCESS(ZwOpenKey(&serviceKey, KEY_READ, &attributes)))
+    {
+        return FALSE;
+    }
+
+    UNICODE_STRING parametersName;
+    RtlInitUnicodeString(&parametersName, L"Parameters");
+    InitializeObjectAttributes(&attributes,
+                               &parametersName,
+                               OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+                               serviceKey,
+                               NULL);
+
+    HANDLE parametersKey = NULL;
+    NTSTATUS status = ZwOpenKey(&parametersKey, KEY_QUERY_VALUE | KEY_SET_VALUE, &attributes);
+    ZwClose(serviceKey);
+    if (!NT_SUCCESS(status))
+    {
+        return FALSE;
+    }
+
+    UNICODE_STRING valueName;
+    RtlInitUnicodeString(&valueName, L"MultiPlaneOverlayProbe");
+    union {
+        KEY_VALUE_PARTIAL_INFORMATION Info;
+        UCHAR Bytes[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG)];
+    } valueInfo = {};
+    ULONG resultLength = 0;
+    status = ZwQueryValueKey(parametersKey,
+                             &valueName,
+                             KeyValuePartialInformation,
+                             valueInfo.Bytes,
+                             sizeof(valueInfo.Bytes),
+                             &resultLength);
+    if (NT_SUCCESS(status) && valueInfo.Info.Type == REG_DWORD && valueInfo.Info.DataLength == sizeof(ULONG))
+    {
+        ULONG value = 0;
+        RtlCopyMemory(&value, valueInfo.Info.Data, sizeof(value));
+        armed = value != 0;
+    }
+    if (armed)
+    {
+        /* Disarm before the probe can take effect: one bad boot, never a loop. */
+        ULONG cleared = 0;
+        (VOID)ZwSetValueKey(parametersKey, &valueName, 0, REG_DWORD, &cleared, sizeof(cleared));
+    }
+
+    ZwClose(parametersKey);
+    return armed;
 }
 
 static BOOLEAN VioGpuWddmReadConnectorTimingModel(_In_ UNICODE_STRING *registryPath)
@@ -229,6 +310,12 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
         initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3 = VioGpuWddmSetVidPnSourceAddressMpo3;
         initialData->DxgkDdiCheckMultiPlaneOverlaySupport3 = VioGpuWddmCheckMultiPlaneOverlaySupport3;
 #endif
+        /* Caps only: dxgkrnl may ask what planes exist. CheckMultiPlaneOverlaySupport3
+         * still refuses every plane, so no flip is ever routed here. */
+        if (g_VioGpuWddmOverlayProbe)
+        {
+            initialData->DxgkDdiGetMultiPlaneOverlayCaps = VioGpuWddmGetMultiPlaneOverlayCaps;
+        }
 #if defined(VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS)
         /* WDDM 2.2 connection model beside legacy child status. Separate
          * experiment: whether dxgkrnl requires or forbids it is a target question. */
@@ -266,6 +353,7 @@ extern "C" NTSTATUS VioGpuWddmInitializeMiniport(_In_ DRIVER_OBJECT *driverObjec
     BOOLEAN renderOnly = VioGpuWddmReadRenderOnly(registryPath);
     g_VioGpuWddmRenderOnlyRegistration = renderOnly;
     g_VioGpuWddmConnectorTimingModel = VioGpuWddmReadConnectorTimingModel(registryPath);
+    g_VioGpuWddmOverlayProbe = VioGpuWddmReadOverlayProbe(registryPath);
     DRIVER_INITIALIZATION_DATA initialData;
     VioGpuWddmBuildInitializationData(&initialData, renderOnly);
 

@@ -48,6 +48,7 @@ extern "C" UCHAR __ImageBase;
 
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
+BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
 VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter);
 
 static const ULONG VIOGPU_WIN7_DRIVERCAPS_SIZE = FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps);
@@ -3508,6 +3509,17 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
     if (!renderOnly)
     {
         driverCaps->FlipCaps.FlipOnVSyncMmIo = 1;
+        /* One RGB plane, advertised only while the one-shot overlay probe is
+         * armed. Without any overlay plane dxgkrnl has no independent-flip path
+         * and every frame -- fullscreen included -- goes through DWM, which is
+         * the measured ~13 ms that halves the delivered rate. The flip itself is
+         * still refused by CheckMultiPlaneOverlaySupport3, so this only lets the
+         * OS ask the question. */
+        if (VioGpuWddmIsOverlayProbeRegistration())
+        {
+            driverCaps->MaxOverlays = 1;
+            driverCaps->SupportMultiPlaneOverlay = 1;
+        }
     }
     driverCaps->SchedulingCaps.MultiEngineAware = 1;
     /* Physical-mode WDDM2 retains the allocation/patch-list scheduler.

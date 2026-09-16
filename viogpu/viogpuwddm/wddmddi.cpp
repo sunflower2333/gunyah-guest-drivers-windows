@@ -10639,6 +10639,37 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRestartFromTimeout(CONST HAND
 #pragma code_seg(pop)
 
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+/* What planes this adapter can scan out directly. One RGB plane, no scaling,
+ * no rotation, no filtering -- exactly a fullscreen primary handed to the
+ * scanout unchanged, which is the only shape this backend could ever flip.
+ *
+ * Reporting it lets dxgkrnl ask about independent flip; it does not grant one.
+ * VioGpuWddmCheckMultiPlaneOverlaySupport3 still answers Supported = FALSE, so
+ * the OS keeps compositing through DWM exactly as before. Registered only under
+ * the one-shot MultiPlaneOverlayProbe switch.
+ */
+_Use_decl_annotations_ NTSTATUS APIENTRY
+VioGpuWddmGetMultiPlaneOverlayCaps(CONST HANDLE hAdapter, DXGKARG_GETMULTIPLANEOVERLAYCAPS *args)
+{
+    if (hAdapter == NULL || args == NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (args->VidPnSourceId != 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    args->MaxPlanes = 1;
+    args->MaxRGBPlanes = 1;
+    args->MaxYUVPlanes = 0;
+    args->OverlayCaps.Value = 0;
+    /* No stretch and no shrink: the scanout is the guest primary at its own
+     * size. These are 1/16th-pixel fixed point, so 16 is exactly 1.0. */
+    args->MaxStretchFactor = 16;
+    args->MaxShrinkFactor = 16;
+    return STATUS_SUCCESS;
+}
+
 #include "advanced_color_ddi.inc"
 #endif
 

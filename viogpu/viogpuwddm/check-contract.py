@@ -2675,14 +2675,26 @@ def check_native_driver_caps_contract() -> None:
         "SupportPerEngineTDR",
         "MemoryManagementCaps",
         "FlipCaps",
+        # Overlay caps exist only while the one-shot MultiPlaneOverlayProbe switch
+        # is armed. Without an overlay plane dxgkrnl has no independent-flip path,
+        # so every frame goes through DWM; the probe lets the OS ask about MPO
+        # while CheckMultiPlaneOverlaySupport3 still refuses every plane.
+        "MaxOverlays",
+        "SupportMultiPlaneOverlay",
     }
     if helper_fields != expected_helper_fields:
         fail(f"Native Context DriverCaps helper writes an unexpected capability field: {helper_fields}")
     # WDDM 2.0 refuses a display adapter without FlipOnVSyncMmIo; no other flip
     # capability has a DIRQL implementation behind it.
     if helper.count("driverCaps->FlipCaps.") != 1 or \
-       "if(!renderOnly){driverCaps->FlipCaps.FlipOnVSyncMmIo=1;}" not in helper:
+       "if(!renderOnly){driverCaps->FlipCaps.FlipOnVSyncMmIo=1;" not in helper:
         fail("Native Context DriverCaps must advertise exactly FlipOnVSyncMmIo, and only for a display adapter")
+    # The overlay plane may only appear for a display adapter and only while the
+    # one-shot probe is armed -- an unconditional overlay cap would promise
+    # dxgkrnl a flip path that CheckMultiPlaneOverlaySupport3 refuses.
+    if "if(VioGpuWddmIsOverlayProbeRegistration()){driverCaps->MaxOverlays=1;driverCaps->SupportMultiPlaneOverlay=1;}" \
+            not in helper:
+        fail("overlay caps must be gated on the one-shot overlay probe, inside the display-adapter branch")
 
     query_body = function_body("VioGpuDod::QueryAdapterInfo", VIOGPU_CODE)
     driver_caps_case = re.search(
@@ -2734,6 +2746,7 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
         "BOOLEAN renderOnly = VioGpuWddmReadRenderOnly(registryPath); "
         "g_VioGpuWddmRenderOnlyRegistration = renderOnly; "
         "g_VioGpuWddmConnectorTimingModel = VioGpuWddmReadConnectorTimingModel(registryPath); "
+        "g_VioGpuWddmOverlayProbe = VioGpuWddmReadOverlayProbe(registryPath); "
         "DRIVER_INITIALIZATION_DATA initialData; "
         "VioGpuWddmBuildInitializationData(&initialData, renderOnly); "
         "WPP_INIT_TRACING(driverObject, registryPath); "
@@ -2793,6 +2806,10 @@ def check_callback_table() -> None:
         r"#if\s+defined\(VIOGPU_ADVANCED_COLOR_MPO3\)\s*"
         r"initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3\s*=\s*VioGpuWddmSetVidPnSourceAddressMpo3;\s*"
         r"initialData->DxgkDdiCheckMultiPlaneOverlaySupport3\s*=\s*VioGpuWddmCheckMultiPlaneOverlaySupport3;\s*#endif\s*"
+        # Caps-only overlay probe: the OS may ask what planes exist while
+        # CheckMultiPlaneOverlaySupport3 still refuses every one of them.
+        r"if\s*\(g_VioGpuWddmOverlayProbe\)\s*\{\s*"
+        r"initialData->DxgkDdiGetMultiPlaneOverlayCaps\s*=\s*VioGpuWddmGetMultiPlaneOverlayCaps;\s*\}\s*"
         r"#if\s+defined\(VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS\)\s*"
         r"initialData->DxgkDdiDisplayDetectControl\s*=\s*VioGpuWddmDisplayDetectControl;\s*"
         r"initialData->DxgkDdiQueryConnectionChange\s*=\s*VioGpuWddmQueryConnectionChange;\s*#endif\s*#endif"
@@ -5190,7 +5207,7 @@ def check_wddm2_start_queries() -> None:
 def check_mmio_flip_contract(native_caps: str) -> None:
     """FlipOnVSyncMmIo: validate at Present, publish at DIRQL, bind at PASSIVE."""
 
-    if "if(!renderOnly){driverCaps->FlipCaps.FlipOnVSyncMmIo=1;}" not in native_caps:
+    if "if(!renderOnly){driverCaps->FlipCaps.FlipOnVSyncMmIo=1;" not in native_caps:
         fail("a WDDM 2.0 display adapter must advertise FlipOnVSyncMmIo")
 
     set_ddi = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
