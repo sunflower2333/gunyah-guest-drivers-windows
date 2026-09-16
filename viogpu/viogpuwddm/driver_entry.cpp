@@ -12,7 +12,15 @@ static BOOLEAN g_VioGpuWddmRenderOnlyRegistration = TRUE;
  * remaining discriminator is that this driver still offers CommitVidPn. This
  * switch withholds it. Off by default: a driver that gets neither path would
  * have no way to set a mode at all, so it is opt-in per device through the
- * service Parameters key and recoverable with a reboot. */
+ * service Parameters key and recoverable with a reboot.
+ *
+ * FALSIFIED on target 2026-09-16: with the switch on, the adapter does not
+ * start -- `configManagerErrorCode=43`, `GetDisplayConfigBufferSizes` answers
+ * ERROR_NOT_SUPPORTED(50), and `NativeTimingPathCalls` is still 0, so
+ * DXGKDDI_SETTIMINGSFROMVIDPN is not called even in CommitVidPn's absence.
+ * dxgkrnl requires DxgkDdiCommitVidPn from this driver and does not accept
+ * SetTimingsFromVidPn as a replacement for it here. Keep the switch off; it is
+ * retained only so the experiment is not repeated. */
 static BOOLEAN g_VioGpuWddmConnectorTimingModel = FALSE;
 
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration()
