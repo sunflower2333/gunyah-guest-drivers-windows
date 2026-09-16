@@ -3342,11 +3342,31 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
     const LARGE_INTEGER now = KeQueryPerformanceCounter(&frequency);
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
-    const LONGLONG period = static_cast<LONGLONG>(VioGpuTimingPeriod100ns(m_CrtcTiming));
-    m_CrtcPeriodTicks = (frequency.QuadPart * m_CrtcTiming.TotalWidth * m_CrtcTiming.TotalHeight) /
-                        m_CrtcTiming.PixelClock;
-    m_CrtcEpoch = now.QuadPart;
+    /* The division below is by m_CrtcTiming.PixelClock and the result is handed
+     * to ExSetTimer, and this is reached directly from ControlInterrupt and
+     * CommitVidPn -- not only through SetCrtcTiming -- so it cannot lean on the
+     * validation there. The stored timing is zeroed until the first successful
+     * mode set: a zero clock bugchecks here, and a zero period makes ExSetTimer
+     * arm a one-shot, so vsync fires once, never repeats, and this function
+     * still returns STATUS_SUCCESS. Refuse rather than arm a timer that looks
+     * armed and delivers no vertical blank. */
+    const bool usableTiming = VioGpuTimingValid(m_CrtcTiming);
+    const LONGLONG period = usableTiming ? static_cast<LONGLONG>(VioGpuTimingPeriod100ns(m_CrtcTiming)) : 0;
+    if (period > 0)
+    {
+        m_CrtcPeriodTicks = (frequency.QuadPart * m_CrtcTiming.TotalWidth * m_CrtcTiming.TotalHeight) /
+                            m_CrtcTiming.PixelClock;
+        m_CrtcEpoch = now.QuadPart;
+    }
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
+    if (period <= 0)
+    {
+        ExDeleteTimer(m_CrtcVsyncTimer, TRUE, TRUE, NULL);
+        m_CrtcVsyncTimer = NULL;
+        InterlockedExchange(&m_CrtcVsyncTimerArmed, 0);
+        ExReleaseFastMutex(&m_CrtcTimerMutex);
+        return STATUS_INVALID_PARAMETER;
+    }
     ExSetTimer(m_CrtcVsyncTimer, -period, period, NULL);
     ExReleaseFastMutex(&m_CrtcTimerMutex);
     return STATUS_SUCCESS;
