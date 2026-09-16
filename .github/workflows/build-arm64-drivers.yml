@@ -576,6 +576,19 @@ jobs:
               # the WDDM 2.1-2.3 mandatory feature sets, which is exactly what the 58487-58490
               # activation work put in place; a refusal shows up as a Code 43 at install.
               $projectFlags += '/p:VIOGPU_REPORT_WDDM2_3=1'
+              # Advanced Color needs the WDDM 2.2 connection model, not just the
+              # link claim. Measured on target 2026-09-16: with the host admitting
+              # PQ (usable_hdr_types=1) and the link claiming WideColorSpace only
+              # (trial mask 7) the topology is healthy but Windows still answers
+              # GET_ADVANCED_COLOR_INFO with supported=0; adding HighColorSpace
+              # (mask 15) empties the topology instead -- QueryDisplayConfig
+              # returns zero paths for every filter. The difference is only the
+              # claim, and DxgkDdiSetTimingsFromVidPn -- where a color space and
+              # wire format are actually negotiated -- is never called
+              # (NativeTimingPathCalls=0) even though it is registered. dxgkrnl
+              # is kept on the legacy CommitVidPn path, so register the rest of
+              # the connection set and let it choose the connector model.
+              $projectFlags += '/p:VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS=1'
             }
             msbuild $j.p /p:Configuration="$($j.c)" /p:Platform="$($j.plat)" @common @projectFlags
             if ($LASTEXITCODE -ne 0) {

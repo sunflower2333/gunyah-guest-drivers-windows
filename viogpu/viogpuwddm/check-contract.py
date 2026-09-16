@@ -13476,16 +13476,22 @@ def check_advanced_color_admission_contract() -> None:
     violations = advanced_color_violations(sources)
     product = PRODUCT_WORKFLOW_PATH.read_text(encoding="utf-8")
     # 58495 is the canonical scRGB FP16 scanout trial, so the package builds the
-    # Advanced Color candidate plus that one flag -- and still none of the
-    # reported-2.3, MPO3 or connection-DDI experiments.
+    # Advanced Color candidate plus that flag, the reported-2.3 model and -- since
+    # 2026-09-16 -- the WDDM 2.2 connection DDIs. Measured on target: with the Host
+    # admitting PQ and the link claiming WideColorSpace only, Windows still answers
+    # GET_ADVANCED_COLOR_INFO with supported=0, and adding the HighColorSpace claim
+    # empties the topology instead (QueryDisplayConfig returns zero paths for every
+    # filter) while DxgkDdiSetTimingsFromVidPn is never called. Registering the rest
+    # of the connection set is what lets dxgkrnl leave the legacy CommitVidPn path.
+    # MPO3 remains a separate experiment and must stay out of the signed package.
     if (product.count("@{ p='viogpu/viogpuwddm/viogpuwddm.vcxproj';    c='Win11 Release'; plat='ARM64' ; hdr=$true },") != 1 or
             product.count("hdr=$true") != 1 or product.count("$projectFlags += '/p:VIOGPU_ADVANCED_COLOR=1'") != 1 or
             product.count("$projectFlags += '/p:VIOGPU_CANONICAL_FP16_SCANOUT=1'") != 1 or
             product.count("$projectFlags += '/p:VIOGPU_REPORT_WDDM2_3=1'") != 1 or
-            "VIOGPU_ADVANCED_COLOR_MPO3" in product or
-            "VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS" in product):
+            product.count("$projectFlags += '/p:VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS=1'") != 1 or
+            "VIOGPU_ADVANCED_COLOR_MPO3" in product):
         violations.append("the signed 58503 package must build the Advanced Color candidate with the canonical "
-                          "FP16 scanout and reported-2.3 trials and no other experiment")
+                          "FP16 scanout, reported-2.3 and connection-DDI trials and no other experiment")
     if violations:
         fail("Advanced Color default-build/admission contract: " + "; ".join(violations))
 
