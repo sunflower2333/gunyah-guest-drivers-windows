@@ -19,12 +19,24 @@ pages to VirtIO GPU with standard scatter/gather backing.
   legacy Win7/WDDMv1 display registration. The conditional registration change
   has only local source/ABI validation; Windows/KMT/Host/GPU runtime remains
   unverified, so no package containing it is approved for installation.
+- **PortCls** (viosnd) has a single DMA allocator to redirect, so
+  `viosnd/sys/ViosndRdma.cpp` sub-allocates the pool page by page and
+  `ViosndAllocateDmaBuffer` draws from it. The WaveRT buffer the Windows
+  audio engine writes into stays ordinary guest memory -- it is never
+  device-visible, because each period is copied into a pooled
+  `VIRTIO_SND_PCM_XFER` request before the descriptor is added.
+
+Every pVM path is gated on the presence of the `ACPI\RDMA0000` device
+interface: the same disk image falls back to the stock virtio paths on
+QEMU/KVM.
 
 ## Driver status
 
 Legend:
 * ✨ new driver added by this fork
 * ✅ ported and verified
+* ✨ new driver added by this fork 
+* ✅ ported and verified 
 * ⚠️ ported but not yet verified 
 * ❌ not ported
 * 🚫 explicitly unsupported and rejected
@@ -43,6 +55,9 @@ Legend:
 | viomem | ⚠️ | VirtIO-WDF routing in place, untested on a pVM |
 | viofs | ⚠️ | VirtIO-WDF routing in place, data path unreviewed |
 | viogpu | ⚠️ | Native Context full miniport has a locally validated conditional WDDM 1.2 render-only path and remains runtime-unverified/do-not-install |
+| viofs | ✅ | VirtIO-WDF routing + the FUSE payload staged through the rdmapool; ships with `virtiofs.exe`, the WinFsp service that does the mounting, and shared folders work in the DroidVM app |
+| viosnd | ✅ | **not from upstream virtio-win** -- virtio-win has no sound driver ([issue #929](https://github.com/virtio-win/kvm-guest-drivers-windows/issues/929) is still open). Ported from [317764920/viosnd](https://github.com/317764920/viosnd) (BSD-3, PortCls + WaveRT over the low-level VirtioLib), with the pVM staging in `ViosndRdma.{h,cpp}`. Playback and capture both work in the DroidVM app. |
+| viogpu | ❌ | not ported; need huge works(~~dxvk~~ -> ~~gfxstream~~ -> Turnip Driver -> AHardwareBuffer) |
 | pvpanic | ❌ | not ported |
 | fwcfg  | ❌ | not ported |
 | ivshmem | ❌ | not ported |

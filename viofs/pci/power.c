@@ -175,7 +175,6 @@ NTSTATUS VirtFsEvtDevicePrepareHardware(IN WDFDEVICE Device,
 NTSTATUS VirtFsEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST ResourcesTranslated)
 {
     PDEVICE_CONTEXT context = GetDeviceContext(Device);
-    NTSTATUS status;
 
     UNREFERENCED_PARAMETER(ResourcesTranslated);
 
@@ -183,19 +182,17 @@ NTSTATUS VirtFsEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Res
 
     PAGED_CODE();
 
-    status = VirtIOWdfDestroyQueues(&context->VDevice);
-    if (!NT_SUCCESS(status))
-    {
-        return status;
-    }
+    /* Before VirtIOWdfShutdown: the pool region outlives the device only as
+     * long as somebody holds it, and nothing may still be staged in it. */
+    VirtFsRdmaDisconnect(context);
+
+    VirtIOWdfShutdown(&context->VDevice);
 
     if (context->UseIndirect && context->IndirectVA != NULL)
     {
         VirtIOWdfDeviceFreeDmaMemory(&context->VDevice.VIODevice, context->IndirectVA);
         context->IndirectVA = NULL;
     }
-
-    status = VirtIOWdfShutdown(&context->VDevice);
 
     if (context->VirtQueues != NULL)
     {
@@ -211,7 +208,7 @@ NTSTATUS VirtFsEvtDeviceReleaseHardware(IN WDFDEVICE Device, IN WDFCMRESLIST Res
 
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_POWER, "<-- %!FUNC!");
 
-    return status;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS VirtFsEvtDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE PreviousState)
@@ -243,6 +240,12 @@ NTSTATUS VirtFsEvtDeviceD0Entry(IN WDFDEVICE Device, IN WDF_POWER_DEVICE_STATE P
                     __FUNCTION__,
                     queue_size,
                     context->QueueSize);
+        /* After the queues, because the vrings must already have come out of
+         * the pool by now, and before DriverOK, because the first request can
+         * arrive the moment the device is live. A failure here is not fatal:
+         * it only means payloads take the normal DMA path, which is right on
+         * every VM that is not a Gunyah protected one. */
+        (void)VirtFsRdmaConnect(context);
         VirtIOWdfSetDriverOK(&context->VDevice);
     }
     else
