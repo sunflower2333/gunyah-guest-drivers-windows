@@ -3257,20 +3257,53 @@ NTSTATUS VioGpuDod::GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine)
 NTSTATUS VioGpuDod::SetCrtcTiming(const VIOGPU_DISPLAY_TIMING &timing)
 {
     PAGED_CODE();
+    /* Validate before the running timer is touched. The division below is by
+     * timing.PixelClock, so a zero clock bugchecks outright, and a degenerate
+     * raster yields a zero period -- which ExSetTimer accepts as a one-shot, so
+     * vsync fires once and never again with nothing reporting an error.
+     * Either outcome silently removes the only vertical blank this adapter has,
+     * and the compositor then stops presenting to it altogether (the failure
+     * this software vblank exists to prevent). Refuse such a timing and leave
+     * the previous one running. */
+    if (!VioGpuTimingValid(timing))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
+    const VIOGPU_DISPLAY_TIMING previousTiming = m_CrtcTiming;
+    const LONGLONG previousPeriod = m_CrtcPeriodTicks;
+    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     DisarmCrtcVsyncTimer();
     LARGE_INTEGER frequency;
     const LARGE_INTEGER now = KeQueryPerformanceCounter(&frequency);
-    KIRQL oldIrql;
     KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
     m_CrtcTiming = timing;
     m_CrtcPeriodTicks = (frequency.QuadPart * timing.TotalWidth * timing.TotalHeight) / timing.PixelClock;
     m_CrtcEpoch = now.QuadPart;
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
-    if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0))
+    if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0) == 0)
     {
-        return ArmCrtcVsyncTimer();
+        return STATUS_SUCCESS;
     }
-    return STATUS_SUCCESS;
+    const NTSTATUS status = ArmCrtcVsyncTimer();
+    if (!NT_SUCCESS(status))
+    {
+        /* Arming failed after the old timer was already stopped. Put the timing
+         * that was running back and re-arm it: a refused mode change must not
+         * cost the caller its vertical blank, because nothing else restores it
+         * and the desktop would stay black with no error anywhere. */
+        KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
+        m_CrtcTiming = previousTiming;
+        m_CrtcPeriodTicks = previousPeriod;
+        m_CrtcEpoch = KeQueryPerformanceCounter(NULL).QuadPart;
+        KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
+        if (previousPeriod > 0)
+        {
+            (VOID)ArmCrtcVsyncTimer();
+        }
+    }
+    return status;
 }
 
 NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
