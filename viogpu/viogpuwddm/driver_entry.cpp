@@ -38,6 +38,12 @@ static BOOLEAN g_VioGpuWddmConnectorTimingModel = FALSE;
  * that goes wrong cannot repeat, which is the trap the guest-blob scanout
  * experiment fell into. */
 static BOOLEAN g_VioGpuWddmOverlayProbe = FALSE;
+static BOOLEAN g_VioGpuWddmDirectFlipTrial = FALSE;
+
+BOOLEAN VioGpuWddmIsDirectFlipTrial()
+{
+    return g_VioGpuWddmDirectFlipTrial;
+}
 
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration()
 {
@@ -111,7 +117,7 @@ static BOOLEAN VioGpuWddmReadRenderOnly(_In_ UNICODE_STRING *registryPath)
     return renderOnly;
 }
 
-static BOOLEAN VioGpuWddmReadOverlayProbe(_In_ UNICODE_STRING *registryPath)
+static BOOLEAN VioGpuWddmReadOneShotFlag(_In_ UNICODE_STRING *registryPath, _In_ PCWSTR flagName)
 {
     PAGED_CODE();
 
@@ -142,7 +148,7 @@ static BOOLEAN VioGpuWddmReadOverlayProbe(_In_ UNICODE_STRING *registryPath)
     }
 
     UNICODE_STRING valueName;
-    RtlInitUnicodeString(&valueName, L"MultiPlaneOverlayProbe");
+    RtlInitUnicodeString(&valueName, flagName);
     union {
         KEY_VALUE_PARTIAL_INFORMATION Info;
         UCHAR Bytes[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG)];
@@ -169,6 +175,23 @@ static BOOLEAN VioGpuWddmReadOverlayProbe(_In_ UNICODE_STRING *registryPath)
 
     ZwClose(parametersKey);
     return armed;
+}
+
+/* Reads the one-shot DirectFlipTrial arm exactly like the overlay probe: the
+ * value is cleared before the capability can take effect, so a boot that ends
+ * in a black desktop cannot repeat. Advertising SupportDirectFlip promises
+ * dxgkrnl that this adapter can scan out a flipped primary; until that promise
+ * is verified on hardware it stays behind the arm. */
+static BOOLEAN VioGpuWddmReadDirectFlipTrial(_In_ UNICODE_STRING *registryPath)
+{
+    PAGED_CODE();
+    return VioGpuWddmReadOneShotFlag(registryPath, L"DirectFlipTrial");
+}
+
+static BOOLEAN VioGpuWddmReadOverlayProbe(_In_ UNICODE_STRING *registryPath)
+{
+    PAGED_CODE();
+    return VioGpuWddmReadOneShotFlag(registryPath, L"MultiPlaneOverlayProbe");
 }
 
 static BOOLEAN VioGpuWddmReadConnectorTimingModel(_In_ UNICODE_STRING *registryPath)
@@ -354,6 +377,7 @@ extern "C" NTSTATUS VioGpuWddmInitializeMiniport(_In_ DRIVER_OBJECT *driverObjec
     g_VioGpuWddmRenderOnlyRegistration = renderOnly;
     g_VioGpuWddmConnectorTimingModel = VioGpuWddmReadConnectorTimingModel(registryPath);
     g_VioGpuWddmOverlayProbe = VioGpuWddmReadOverlayProbe(registryPath);
+    g_VioGpuWddmDirectFlipTrial = VioGpuWddmReadDirectFlipTrial(registryPath);
     DRIVER_INITIALIZATION_DATA initialData;
     VioGpuWddmBuildInitializationData(&initialData, renderOnly);
 

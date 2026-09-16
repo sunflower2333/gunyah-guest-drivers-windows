@@ -2681,6 +2681,14 @@ def check_native_driver_caps_contract() -> None:
         # while CheckMultiPlaneOverlaySupport3 still refuses every plane.
         "MaxOverlays",
         "SupportMultiPlaneOverlay",
+        # Direct flip exists only while the one-shot DirectFlipTrial switch is
+        # armed. Measured 2026-09-17: every present arrived as a pure Blt and
+        # NativeDisplayFlipPresentCalls stayed 0, so the desktop composites in
+        # blt model and each DWM frame costs a full-surface copy in the guest.
+        # SupportDirectFlip is the documented cap that lets dxgkrnl flip DWM's
+        # surface instead; MaxQueuedFlipOnVSync is the queue depth it may use.
+        "SupportDirectFlip",
+        "MaxQueuedFlipOnVSync",
     }
     if helper_fields != expected_helper_fields:
         fail(f"Native Context DriverCaps helper writes an unexpected capability field: {helper_fields}")
@@ -2695,6 +2703,19 @@ def check_native_driver_caps_contract() -> None:
     if "if(VioGpuWddmIsOverlayProbeRegistration()){driverCaps->MaxOverlays=1;driverCaps->SupportMultiPlaneOverlay=1;}" \
             not in helper:
         fail("overlay caps must be gated on the one-shot overlay probe, inside the display-adapter branch")
+    # Direct flip promises dxgkrnl this adapter can scan out a flipped primary.
+    # It may only appear for a display adapter and only while the one-shot trial
+    # is armed, and the primary's segment must carry the matching DirectFlip
+    # flag or dxgkrnl refuses the path anyway.
+    if "if(VioGpuWddmIsDirectFlipTrial()){driverCaps->SupportDirectFlip=1;driverCaps->MaxQueuedFlipOnVSync=1;}" \
+            not in helper:
+        fail("direct-flip caps must be gated on the one-shot DirectFlipTrial, inside the display-adapter branch")
+    compact_ddi = compact_code(WDDM_DDI_CODE)
+    segment_direct_flip = compact_ddi.count(
+        "if(VioGpuWddmIsDirectFlipTrial()){descriptor->Flags.DirectFlip=TRUE;}") + compact_ddi.count(
+        "if(VioGpuWddmIsDirectFlipTrial()){descriptor.Flags.DirectFlip=TRUE;}")
+    if segment_direct_flip != 3:
+        fail(f"every segment descriptor must gate DirectFlip on the trial, found {segment_direct_flip} of 3")
 
     query_body = function_body("VioGpuDod::QueryAdapterInfo", VIOGPU_CODE)
     driver_caps_case = re.search(
@@ -2747,6 +2768,7 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
         "g_VioGpuWddmRenderOnlyRegistration = renderOnly; "
         "g_VioGpuWddmConnectorTimingModel = VioGpuWddmReadConnectorTimingModel(registryPath); "
         "g_VioGpuWddmOverlayProbe = VioGpuWddmReadOverlayProbe(registryPath); "
+        "g_VioGpuWddmDirectFlipTrial = VioGpuWddmReadDirectFlipTrial(registryPath); "
         "DRIVER_INITIALIZATION_DATA initialData; "
         "VioGpuWddmBuildInitializationData(&initialData, renderOnly); "
         "WPP_INIT_TRACING(driverObject, registryPath); "

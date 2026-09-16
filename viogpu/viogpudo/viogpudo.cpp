@@ -49,6 +49,7 @@ extern "C" UCHAR __ImageBase;
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
+BOOLEAN VioGpuWddmIsDirectFlipTrial();
 VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter);
 
 static const ULONG VIOGPU_WIN7_DRIVERCAPS_SIZE = FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps);
@@ -3519,6 +3520,22 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
         {
             driverCaps->MaxOverlays = 1;
             driverCaps->SupportMultiPlaneOverlay = 1;
+        }
+        /* Measured 2026-09-17: NativeDisplayPresentCalls = 576441 with
+         * NativeDisplayPresentRejectFlags = 0, so every present arrived as a
+         * pure Blt (Flags.Value == 1, Blt set) and NativeDisplayFlipPresentCalls
+         * stayed 0 -- the desktop runs in blt model and each DWM frame costs a
+         * full-surface copy inside the guest. SupportDirectFlip is the cap that
+         * lets dxgkrnl flip DWM's composition surface instead, and it is
+         * mandatory for a full graphics driver; the segment must also carry
+         * DXGK_SEGMENTFLAGS.DirectFlip (see QuerySegment). MaxQueuedFlipOnVSync
+         * is the depth dxgkrnl may queue: one, matching the single scanout the
+         * Host binds per vsync. Behind the one-shot arm until proven on
+         * hardware. */
+        if (VioGpuWddmIsDirectFlipTrial())
+        {
+            driverCaps->SupportDirectFlip = 1;
+            driverCaps->MaxQueuedFlipOnVSync = 1;
         }
     }
     driverCaps->SchedulingCaps.MultiEngineAware = 1;

@@ -15,6 +15,7 @@ class VioGpuDod;
 VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initialData, _In_ BOOLEAN renderOnly);
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
+BOOLEAN VioGpuWddmIsDirectFlipTrial();
 NTSTATUS APIENTRY VioGpuWddmGetMultiPlaneOverlayCaps(CONST HANDLE hAdapter,
                                                      DXGKARG_GETMULTIPLANEOVERLAYCAPS *args);
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);

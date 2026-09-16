@@ -3826,6 +3826,11 @@ NTSTATUS QuerySegment(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO *queryA
         descriptor->Flags.CpuVisible = TRUE;
         descriptor->Flags.Aperture = TRUE;
         descriptor->Flags.CacheCoherent = TRUE;
+        /* Direct flip is refused unless the primary's segment allows it. */
+        if (VioGpuWddmIsDirectFlipTrial())
+        {
+            descriptor->Flags.DirectFlip = TRUE;
+        }
     }
 
     return STATUS_SUCCESS;
@@ -3871,6 +3876,11 @@ static NTSTATUS QuerySegmentVersioned(VioGpuDod *adapter, const DXGKARG_QUERYADA
         descriptor->Flags.CpuVisible = TRUE;
         descriptor->Flags.Aperture = TRUE;
         descriptor->Flags.CacheCoherent = TRUE;
+        /* Direct flip is refused unless the primary's segment allows it. */
+        if (VioGpuWddmIsDirectFlipTrial())
+        {
+            descriptor->Flags.DirectFlip = TRUE;
+        }
     }
 
     return STATUS_SUCCESS;
@@ -3911,6 +3921,11 @@ static NTSTATUS QuerySegment4(VioGpuDod *adapter, const DXGKARG_QUERYADAPTERINFO
     descriptor.Flags.CpuVisible = TRUE;
     descriptor.Flags.Aperture = TRUE;
     descriptor.Flags.CacheCoherent = TRUE;
+    /* Direct flip is refused unless the primary's segment allows it. */
+    if (VioGpuWddmIsDirectFlipTrial())
+    {
+        descriptor.Flags.DirectFlip = TRUE;
+    }
     /* There is no dedicated VRAM: all backing is ordinary guest system RAM
      * committed by VidMm. Preserve the supplied stride and its future tail. */
     RtlCopyMemory(output->pSegmentDescriptor, &descriptor, sizeof(descriptor));
