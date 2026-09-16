@@ -3665,9 +3665,20 @@ NTSTATUS VioGpuDod::QueryAdapterInfo(_In_ CONST DXGKARG_QUERYADAPTERINFO *pQuery
                 status = VioGpuQueryNativeDriverCaps(pQueryAdapterInfo, IsPointerEnabled(), IsRenderOnly());
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
                 VIOGPU_DISPLAY_COLOR_RESPONSE colorCaps = {};
+                /* DRIVERCAPS is queried once, at adapter start. Nothing has
+                 * attached a Surface yet, so QueryDisplayColor fails and the
+                 * admission gate publishes zero transform caps for the life of
+                 * the adapter -- while the monitor link claim, which *is*
+                 * re-queried after admission, goes on to promise
+                 * Wide/HighColorSpace. The OS will not engage wide colour with
+                 * only one half of that pair, which is the shape of the empty
+                 * topology measured on 2026-09-16. These caps describe what
+                 * this build implements, not what the Host has admitted this
+                 * second, so publish them statically; the trial bit keeps the
+                 * old admission-gated behaviour available for bisection. */
                 if (NT_SUCCESS(status) && !IsRenderOnly() &&
-                    pQueryAdapterInfo->OutputDataSize >= sizeof(DXGK_DRIVERCAPS) && QueryDisplayColor(&colorCaps) &&
-                    IsNativeHdrModeAvailable())
+                    pQueryAdapterInfo->OutputDataSize >= sizeof(DXGK_DRIVERCAPS) &&
+                    (HdrTrialTransformCaps() || (QueryDisplayColor(&colorCaps) && IsNativeHdrModeAvailable())))
                 {
                     auto driverCaps = static_cast<DXGK_DRIVERCAPS *>(pQueryAdapterInfo->pOutputData);
                     driverCaps->ColorTransformCaps.Gamma_Dxgi1 = 1;

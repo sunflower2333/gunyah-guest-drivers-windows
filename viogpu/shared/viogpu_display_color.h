@@ -189,9 +189,17 @@ inline bool VioGpuDisplayColorPqAdmitted(const VIOGPU_DISPLAY_COLOR_RESPONSE *ca
  * Clearing this bit claims Wide alone, which is the next question after the
  * claim as a whole was measured as what empties the topology. */
 #define VIOGPU_HDR_TRIAL_HIGH_COLOR 0x8U
+/* DXGK_DRIVERCAPS.ColorTransformCaps is queried once, at adapter start, long
+ * before any Surface exists to admit PQ -- so gating it on live admission
+ * publishes zero. Microsoft's rule is that the OS will not engage wide colour
+ * unless the Transform_3x4Matrix_WideColor cap AND the link's WideColorSpace
+ * bit are both set, and the link claim *is* re-queried after admission. This
+ * bit publishes the transform caps statically instead: they describe what this
+ * build can do, not what the Host has admitted this second. */
+#define VIOGPU_HDR_TRIAL_TRANSFORM_CAPS 0x10U
 #define VIOGPU_HDR_TRIAL_ALL                                                                   \
     (VIOGPU_HDR_TRIAL_SOURCE_MODES | VIOGPU_HDR_TRIAL_LINK_CAPS | VIOGPU_HDR_TRIAL_MONITOR_EDID | \
-     VIOGPU_HDR_TRIAL_HIGH_COLOR)
+     VIOGPU_HDR_TRIAL_HIGH_COLOR | VIOGPU_HDR_TRIAL_TRANSFORM_CAPS)
 
 inline unsigned VioGpuSelectHdrTrialMask(bool found, unsigned value)
 {

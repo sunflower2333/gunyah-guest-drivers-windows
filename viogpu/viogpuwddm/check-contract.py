@@ -13320,9 +13320,14 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     require_gate = "if(QueryDisplayColor(&caps)&&IsNativeHdrModeAvailable())"
     if require_gate not in colorimetry or colorimetry.find(require_gate) > colorimetry.find("StandardColorimetryFlags.ST2084=1;"):
         violations.append("colorimetry overrides must require native HDR before ST2084")
-    caps_gate = "QueryDisplayColor(&colorCaps)&&IsNativeHdrModeAvailable()"
+    # ColorTransformCaps is read once at adapter start, before any Surface can
+    # admit PQ, so an admission gate here publishes zero for the adapter's life
+    # while the link claim (re-queried after admission) promises wide colour.
+    # The caps describe the build, so they are published statically under the
+    # trial bit, with the old admission gate retained behind it for bisection.
+    caps_gate = ("(HdrTrialTransformCaps()||(QueryDisplayColor(&colorCaps)&&IsNativeHdrModeAvailable()))")
     if caps_gate not in query or query.find(caps_gate) > query.find("ColorTransformCaps.Transform_3x4Matrix_HighColor=1;"):
-        violations.append("color transform caps must require native HDR")
+        violations.append("color transform caps must be published statically or behind the native-HDR gate")
     storage = body("VioGpuDod::SetSourceModeAndPath", dod)
     need("VioGpuIsHighPrecisionSourceFormat(pSourceMode->Format.Graphics.PixelFormat)?pSourceMode->Format.Graphics.PixelFormat:D3DDDIFMT_X8R8G8B8;", storage,
          "candidate SDR modes must keep X8R8G8B8 framebuffer storage")

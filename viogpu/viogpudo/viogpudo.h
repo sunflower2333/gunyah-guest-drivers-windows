@@ -1481,6 +1481,10 @@ class VioGpuDod
     {
         return (m_HdrTrialMask & VIOGPU_HDR_TRIAL_HIGH_COLOR) != 0;
     }
+    BOOLEAN HdrTrialTransformCaps() const
+    {
+        return (m_HdrTrialMask & VIOGPU_HDR_TRIAL_TRANSFORM_CAPS) != 0;
+    }
     ULONG MonitorColorRange() const
     {
         return m_MonitorColorRange;

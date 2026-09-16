@@ -179,6 +179,11 @@ int main()
 
     // HDR trial mask: a bisection knob is only sound if it can subtract from
     // what the build claims and never add to it.
+    // The transform-caps bit is part of the shipped claim, so ALL must contain it.
+    assert((VIOGPU_HDR_TRIAL_ALL & VIOGPU_HDR_TRIAL_TRANSFORM_CAPS) != 0);
+    assert(VIOGPU_HDR_TRIAL_TRANSFORM_CAPS == 0x10U);
+    assert(VioGpuSelectHdrTrialMask(true, VIOGPU_HDR_TRIAL_TRANSFORM_CAPS) == VIOGPU_HDR_TRIAL_TRANSFORM_CAPS);
+    assert(VioGpuSelectHdrTrialMask(true, 0xffffffffU) == VIOGPU_HDR_TRIAL_ALL);
     assert(VioGpuSelectHdrTrialMask(false, 0) == VIOGPU_HDR_TRIAL_ALL);       // absent = shipped
     assert(VioGpuSelectHdrTrialMask(false, VIOGPU_HDR_TRIAL_LINK_CAPS) == VIOGPU_HDR_TRIAL_ALL);
     assert(VioGpuSelectHdrTrialMask(true, 0) == 0);                           // nothing claimed
@@ -188,11 +193,14 @@ int main()
     assert(VioGpuSelectHdrTrialMask(true, VIOGPU_HDR_TRIAL_MONITOR_EDID) == VIOGPU_HDR_TRIAL_MONITOR_EDID);
     // Undefined bits are dropped rather than carried, so a typo cannot widen it.
     assert(VioGpuSelectHdrTrialMask(true, 0xFFFFFFFFU) == VIOGPU_HDR_TRIAL_ALL);
-    assert(VioGpuSelectHdrTrialMask(true, 0x10U) == 0); // still undefined
+    assert(VioGpuSelectHdrTrialMask(true, 0x20U) == 0); // still undefined
     // The three bits are distinct and together are the whole mask.
     assert((VIOGPU_HDR_TRIAL_SOURCE_MODES & VIOGPU_HDR_TRIAL_LINK_CAPS) == 0);
     assert((VIOGPU_HDR_TRIAL_SOURCE_MODES & VIOGPU_HDR_TRIAL_MONITOR_EDID) == 0);
     assert((VIOGPU_HDR_TRIAL_LINK_CAPS & VIOGPU_HDR_TRIAL_MONITOR_EDID) == 0);
+    assert((VIOGPU_HDR_TRIAL_TRANSFORM_CAPS &
+            (VIOGPU_HDR_TRIAL_SOURCE_MODES | VIOGPU_HDR_TRIAL_LINK_CAPS | VIOGPU_HDR_TRIAL_MONITOR_EDID |
+             VIOGPU_HDR_TRIAL_HIGH_COLOR)) == 0);
     // The high-colour split: Wide is the floor, High is what the bit drops.
     {
         VIOGPU_DISPLAY_COLOR_RESPONSE pq = hdr;
