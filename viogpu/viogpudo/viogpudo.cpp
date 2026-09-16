@@ -3267,6 +3267,22 @@ NTSTATUS VioGpuDod::SetCrtcTiming(const VIOGPU_DISPLAY_TIMING &timing)
      * the previous one running. */
     if (!VioGpuTimingValid(timing))
     {
+        /* CommitVidPn disarms the timer before it calls here, so returning now
+         * would leave the source without a vertical blank exactly as the
+         * unvalidated division used to. Re-arm the timing that is still stored
+         * before refusing, so this function's contract holds on every exit:
+         * when it returns, the armed timer matches the stored timing. */
+        if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0))
+        {
+            KIRQL restoreIrql;
+            KeAcquireSpinLock(&m_CrtcTimingLock, &restoreIrql);
+            const bool restorable = m_CrtcPeriodTicks > 0;
+            KeReleaseSpinLock(&m_CrtcTimingLock, restoreIrql);
+            if (restorable)
+            {
+                (VOID)ArmCrtcVsyncTimer();
+            }
+        }
         return STATUS_INVALID_PARAMETER;
     }
     KIRQL oldIrql;
