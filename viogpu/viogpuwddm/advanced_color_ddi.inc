@@ -37,8 +37,7 @@ static BOOLEAN VioGpuSupportedSdrPlane(VioGpuDod *adapter,
 {
     return VioGpuDirectScanoutGeometry(adapter, allocation, attr) &&
            !IsHighPrecisionSurfaceFormat(allocation->Format) &&
-           (attr.ColorSpaceType == D3DDDI_COLOR_SPACE_RGB_FULL_G22_NONE_P709 ||
-            attr.ColorSpaceType == D3DDDI_COLOR_SPACE_RGB_FULL_G22_NONE_P709_X601);
+           attr.ColorSpaceType == D3DDDI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 }
 
 /* One exit point for the timing path's status, so no refusal can be added
