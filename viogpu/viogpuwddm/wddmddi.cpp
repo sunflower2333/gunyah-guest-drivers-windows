@@ -403,7 +403,7 @@ NTSTATUS CalculateSurfaceLayout(UINT width, UINT height, D3DDDIFORMAT format, UI
 
 NTSTATUS UnregisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation);
 
-BOOLEAN IsValidResourceSharePrivateData(PVOID data, UINT size);
+BOOLEAN IsValidResourceSharePrivateData(const VOID *data, UINT size);
 
 static inline BOOLEAN IsValidOpenResourceShare(CONST DXGKARG_OPENALLOCATION *openAllocation)
 {
@@ -412,7 +412,7 @@ static inline BOOLEAN IsValidOpenResourceShare(CONST DXGKARG_OPENALLOCATION *ope
 
 /* Resource-level private data is either absent or one zero-copy share record.
  * The miniport only checks its shape; the key is resolved by IMPORT_NATIVE. */
-BOOLEAN IsValidResourceSharePrivateData(PVOID data, UINT size)
+BOOLEAN IsValidResourceSharePrivateData(const VOID *data, UINT size)
 {
     if (data == NULL && size == 0)
     {
