@@ -167,7 +167,7 @@ if ($Architecture -eq 'arm64') {
     & cl /nologo /W4 /WX /EHsc /MT /c /arm64EC $frontSource "/Fo$front\front-arm64ec.obj"
     if ($LASTEXITCODE) { throw 'DXVK ARM64X entry: ARM64EC view compile failed' }
     & link /nologo /DLL /MACHINE:ARM64X "$front\front-arm64ec.obj" "@$front\arm64-merge.rsp" "/DEFARM64NATIVE:$front\front-arm64.def" `
-        "/DEF:$front\front-x64.def" "/OUT:$out\viogpudxvkx.dll" "/PDB:$out\viogpudxvkx.pdb" /DEBUG
+        "/DEF:$front\front-x64.def" "/OUT:$out\viogpudxvkx.dll" "/PDB:$out\viogpudxvkx.pdb" "/IMPLIB:$front\viogpudxvkx.lib" /DEBUG
     if ($LASTEXITCODE) { throw 'DXVK ARM64X entry: hybrid link failed' }
     $frontHeaders = (& dumpbin /nologo /headers "$out\viogpudxvkx.dll") -join "`n"
     if ($frontHeaders -notmatch '(?im)^\s*AA64 machine') { throw 'viogpudxvkx.dll is not an ARM64 machine image' }
@@ -204,6 +204,11 @@ foreach ($entry in $staged) {
     gates = [ordered]@{ loadability = 'PASSED'; gate_state = $gateState; wddm_integration = 'passed' }
     files = $files
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $out 'dxvk-umd.json') -Encoding utf8
+# The artifact is exactly what the record describes: no import library, export
+# file or other link by-product rides along into packaging.
+$actualFiles = @(Get-ChildItem -LiteralPath $out -File | ForEach-Object Name | Sort-Object)
+$recordedFiles = @(@($files.Keys) + 'dxvk-umd.json' | Sort-Object)
+if (Compare-Object $recordedFiles $actualFiles) { throw "DXVK $Architecture output is not exactly its record: $($actualFiles -join ', ')" }
 
 if ($Fixtures) {
     # Functional fixtures run natively on the ARM64 runner by the tree's own

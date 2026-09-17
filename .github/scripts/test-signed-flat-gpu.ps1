@@ -104,7 +104,7 @@ try {
         throw 'Unified installer reads DXVK as anything but an unregistered candidate'
     }
     Write-Host "PASS unified installer Read-FlatPackage accepts the signed receipt ($(@($package.Manifest.files.PSObject.Properties).Count) files)"
-    Write-Host 'PASS signed flat native/EC/x86 GL, CL and D3D UMD loading, ARM64 DXVK candidate loading; GPU rendering and driver binding remain untested'
+    Write-Host 'PASS signed flat native/EC/x86 GL, CL and D3D UMD loading, native/EC/x86 DXVK candidate loading; GPU rendering and driver binding remain untested'
 } finally {
     Remove-GpuAttemptTrust $created
     $cert.Dispose()
