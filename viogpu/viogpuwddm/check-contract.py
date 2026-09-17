@@ -7913,6 +7913,13 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT32 Reserved;
             VIOGPU_WDDM_UINT64 Reserved2[3];
         """,
+        "VIOGPU_WDDM_RESOURCE_SHARE": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            VIOGPU_WDDM_UINT64 ShareKey;
+            VIOGPU_WDDM_UINT32 Stride;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT64 Reserved[2];
+        """,
         "VIOGPU_WDDM_ALLOCATION_REFERENCE": """
             VIOGPU_WDDM_UINT32 AllocationIndex;
             VIOGPU_WDDM_UINT32 Flags;
@@ -8462,10 +8469,22 @@ def check_wddm_private_abi(root: ET.Element) -> None:
 
     create_allocation = canonical_code(function_body("VioGpuWddmCreateAllocation", WDDM_DDI_CODE))
     create_resource_guard = (
-        "createAllocation->pPrivateDriverData!=NULL||createAllocation->PrivateDriverDataSize!=0"
+        "constBOOLEANresourceShareValid=createAllocation!=NULL&&"
+        "IsValidResourceSharePrivateData(createAllocation->pPrivateDriverData,createAllocation->PrivateDriverDataSize);"
     )
-    if create_allocation.count(create_resource_guard) != 1:
-        fail("CreateAllocation must reject resource-private data in the current pre-v1 contract")
+    if create_allocation.count(create_resource_guard) != 1 or create_allocation.count("||!resourceShareValid)") != 1:
+        fail("CreateAllocation must accept only absent or zero-copy share resource-private data")
+    resource_share_validator = canonical_code(function_body("IsValidResourceSharePrivateData", WDDM_DDI_CODE))
+    for fragment in (
+        "if(data==NULL&&size==0){returnTRUE;}",
+        "if(data==NULL||size!=sizeof(VIOGPU_WDDM_RESOURCE_SHARE)){returnFALSE;}",
+        "__try{RtlCopyMemory(&share,data,sizeof(share));}__except(EXCEPTION_EXECUTE_HANDLER){returnFALSE;}",
+        "IsCurrentAbiHeader(&share.Header,sizeof(share))",
+        "share.ShareKey!=0",
+        "share.Flags==0&&share.Reserved[0]==0&&share.Reserved[1]==0",
+    ):
+        if resource_share_validator.count(fragment) != 1:
+            fail(f"resource-private share data must be validated exactly: {fragment}")
     create_private_copy_guard = (
         "__try{RtlCopyMemory(&privateData,allocationInfo->pPrivateDriverData,sizeof(privateData));}"
         "__except(EXCEPTION_EXECUTE_HANDLER){status=STATUS_INVALID_USER_BUFFER;break;}"
@@ -8491,10 +8510,10 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     open_allocation = canonical_code(function_body("VioGpuWddmOpenAllocation", WDDM_DDI_CODE))
     open_guard = (
         "openAllocation->SubresourceIndex!=0||(openAllocation->Flags.Value&~3)!=0||"
-        "openAllocation->pPrivateDriverData!=NULL||openAllocation->PrivateDriverSize!=0"
+        "!IsValidOpenResourceShare(openAllocation))"
     )
     if open_allocation.count(open_guard) != 1:
-        fail("OpenAllocation must reject unknown flags and resource-private data in the current pre-v1 contract")
+        fail("OpenAllocation must reject unknown flags and accept only zero-copy share resource-private data")
     open_private_copy_guard = (
         "__try{RtlCopyMemory(&privateData,openInfo->pPrivateDriverData,sizeof(privateData));}"
         "__except(EXCEPTION_EXECUTE_HANDLER){status=STATUS_INVALID_USER_BUFFER;break;}"

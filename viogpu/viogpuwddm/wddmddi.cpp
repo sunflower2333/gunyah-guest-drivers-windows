@@ -403,6 +403,38 @@ NTSTATUS CalculateSurfaceLayout(UINT width, UINT height, D3DDDIFORMAT format, UI
 
 NTSTATUS UnregisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation);
 
+BOOLEAN IsValidResourceSharePrivateData(PVOID data, UINT size);
+
+static inline BOOLEAN IsValidOpenResourceShare(CONST DXGKARG_OPENALLOCATION *openAllocation)
+{
+    return IsValidResourceSharePrivateData(openAllocation->pPrivateDriverData, openAllocation->PrivateDriverSize);
+}
+
+/* Resource-level private data is either absent or one zero-copy share record.
+ * The miniport only checks its shape; the key is resolved by IMPORT_NATIVE. */
+BOOLEAN IsValidResourceSharePrivateData(PVOID data, UINT size)
+{
+    if (data == NULL && size == 0)
+    {
+        return TRUE;
+    }
+    if (data == NULL || size != sizeof(VIOGPU_WDDM_RESOURCE_SHARE))
+    {
+        return FALSE;
+    }
+    VIOGPU_WDDM_RESOURCE_SHARE share = {};
+    __try
+    {
+        RtlCopyMemory(&share, data, sizeof(share));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return FALSE;
+    }
+    return IsCurrentAbiHeader(&share.Header, sizeof(share)) && share.ShareKey != 0 && share.ShareKey <= MAXULONG &&
+           share.Stride != 0 && share.Flags == 0 && share.Reserved[0] == 0 && share.Reserved[1] == 0;
+}
+
 NTSTATUS ValidateAllocationPrivate(const VIOGPU_WDDM_ALLOCATION_INFO *privateData, SIZE_T *alignedSize)
 {
     const VIOGPU_WDDM_UINT32 validFlags = VIOGPU_WDDM_ALLOCATION_PRIMARY | VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE |
@@ -5866,9 +5898,12 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
                                                                     DXGKARG_CREATEALLOCATION *createAllocation)
 {
     VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+    const BOOLEAN resourceShareValid = createAllocation != NULL &&
+                                       IsValidResourceSharePrivateData(createAllocation->pPrivateDriverData,
+                                                                       createAllocation->PrivateDriverDataSize);
     if (adapter == NULL || createAllocation == NULL || createAllocation->NumAllocations == 0 ||
         createAllocation->pAllocationInfo == NULL || (createAllocation->Flags.Value & ~1U) != 0 ||
-        createAllocation->pPrivateDriverData != NULL || createAllocation->PrivateDriverDataSize != 0)
+        !resourceShareValid)
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -6368,7 +6403,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmOpenAllocation(CONST HANDLE h
     if (device == NULL || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || openAllocation == NULL ||
         device->Adapter == NULL || openAllocation->NumAllocations == 0 || openAllocation->pOpenAllocation == NULL ||
         openAllocation->SubresourceIndex != 0 || (openAllocation->Flags.Value & ~3U) != 0 ||
-        openAllocation->pPrivateDriverData != NULL || openAllocation->PrivateDriverSize != 0)
+        !IsValidOpenResourceShare(openAllocation))
     {
         return STATUS_INVALID_PARAMETER;
     }
