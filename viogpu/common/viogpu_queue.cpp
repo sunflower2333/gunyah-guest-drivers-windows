@@ -401,7 +401,11 @@ BOOLEAN CtrlQueue::BeginSynchronousRequest(void)
 
     LARGE_INTEGER timeout;
     timeout.QuadPart = -5LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_SynchronousMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = STATUS_TIMEOUT;
+    for (ULONG slice = 0; slice < VIOGPU_SYNCHRONOUS_MUTEX_WAIT_SLICES && status == STATUS_TIMEOUT; ++slice)
+    {
+        status = KeWaitForSingleObject(&m_SynchronousMutex, Executive, KernelMode, FALSE, &timeout);
+    }
     if (status != STATUS_SUCCESS)
     {
         PoisonSynchronousRequests();
@@ -518,6 +522,11 @@ BOOLEAN CtrlQueue::GetFirstSynchronousTimeout(_Out_ VIOGPU_SYNCHRONOUS_TIMEOUT_D
     return TRUE;
 }
 
+ULONG CtrlQueue::SynchronousLongestWaitSlices(void)
+{
+    return static_cast<ULONG>(InterlockedCompareExchange(&m_SynchronousLongestWaitSlices, 0, 0));
+}
+
 BOOLEAN CtrlQueue::EnableSynchronousRequests(void)
 {
     PAGED_CODE();
@@ -528,7 +537,11 @@ BOOLEAN CtrlQueue::EnableSynchronousRequests(void)
     }
     LARGE_INTEGER timeout;
     timeout.QuadPart = -5LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&m_SynchronousMutex, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = STATUS_TIMEOUT;
+    for (ULONG slice = 0; slice < VIOGPU_SYNCHRONOUS_MUTEX_WAIT_SLICES && status == STATUS_TIMEOUT; ++slice)
+    {
+        status = KeWaitForSingleObject(&m_SynchronousMutex, Executive, KernelMode, FALSE, &timeout);
+    }
     if (status != STATUS_SUCCESS)
     {
         PoisonSynchronousRequests();
@@ -929,7 +942,22 @@ __declspec(noinline) BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf
 
     LARGE_INTEGER timeout;
     timeout.QuadPart = -5LL * 10 * 1000 * 1000;
-    NTSTATUS status = KeWaitForSingleObject(&buf->completion_event, Executive, KernelMode, FALSE, &timeout);
+    NTSTATUS status = STATUS_TIMEOUT;
+    LONG slices = 0;
+    while (slices < VIOGPU_SYNCHRONOUS_COMPLETION_WAIT_SLICES && status == STATUS_TIMEOUT)
+    {
+        ++slices;
+        status = KeWaitForSingleObject(&buf->completion_event, Executive, KernelMode, FALSE, &timeout);
+    }
+    for (LONG longest = InterlockedCompareExchange(&m_SynchronousLongestWaitSlices, 0, 0); slices > longest;)
+    {
+        LONG observed = InterlockedCompareExchange(&m_SynchronousLongestWaitSlices, slices, longest);
+        if (observed == longest)
+        {
+            break;
+        }
+        longest = observed;
+    }
     if (status != STATUS_SUCCESS)
     {
         // The device still owns the descriptor. The adapter reset path reclaims

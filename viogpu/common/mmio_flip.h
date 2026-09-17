@@ -184,5 +184,10 @@ enum : unsigned
     VioGpuOverlayFlipCalls = 88,
     VioGpuOverlayFlipRejects = 89,
     VioGpuOverlayFlipAccepts = 90,
-    VioGpuDisplayCounterCount = 91,
+    /* Most five second slices any synchronous control request has waited for
+     * its host answer, sampled with each guest-allocation GEM_NEW. More than
+     * one is a host stall that was waited out rather than turned into a
+     * boot-long loss of the native transport. */
+    VioGpuSynchronousLongestWaitSlices = 91,
+    VioGpuDisplayCounterCount = 92,
 };
