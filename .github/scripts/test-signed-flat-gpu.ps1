@@ -71,19 +71,39 @@ try {
         & (Join-Path $d3d "d3d-umd-probe-$arch.exe") $driver
         if ($LASTEXITCODE) { throw "Signed $arch D3D10 UMD ABI failed" }
     }
-    # DXVK candidate (ARM64): the signed image loads, its OpenAdapter10 gate is
-    # closed, and it resolves the private viogpu_gl_loader_arm64.dll beside it.
+    # DXVK candidates: ARM64 and x64 processes enter through the ARM64X
+    # viogpudxvkx.dll, x86 through viogpudxvk_x86.dll. Each must reach its own
+    # signed DXVK build, find its OpenAdapter10 gate closed and resolve its
+    # private viogpu_gl_loader_<arch>.dll beside it.
     $dxvkLog = Join-Path $env:RUNNER_TEMP 'dxvk-umd-probe-log'
     New-Item -ItemType Directory -Force $dxvkLog | Out-Null
-    $env:DXVK_LOG_PATH = $dxvkLog
-    try {
-        & (Join-Path $dxvk 'arm64/dxvk-umd-probe-arm64.exe') $driver
-        $probeExit = $LASTEXITCODE
-    } finally {
-        Remove-Item Env:DXVK_LOG_PATH
+    foreach ($arch in @('arm64','x64','x86')) {
+        $env:DXVK_LOG_PATH = $dxvkLog
+        try {
+            & (Join-Path $dxvk "$arch/dxvk-umd-probe-$arch.exe") $driver
+            $probeExit = $LASTEXITCODE
+        } finally {
+            Remove-Item Env:DXVK_LOG_PATH
+        }
+        if ($probeExit) { throw "Signed $arch DXVK candidate UMD ABI failed" }
     }
     Get-ChildItem -LiteralPath $dxvkLog -File | ForEach-Object { Write-Host "== $($_.Name)"; Get-Content -LiteralPath $_.FullName }
-    if ($probeExit) { throw 'Signed arm64 DXVK candidate UMD ABI failed' }
+    # The unified installer's own package reader must accept this receipt,
+    # including the candidate fields it does not act on.
+    Import-Module (Join-Path $outputRoot 'viogpu-install-state.psm1') -Force
+    $installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $outputRoot 'viogpu-unified-install.ps1'), [ref]$null, [ref]$null)
+    foreach ($function in $installerAst.FindAll({ param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -in @('Assert-FlatName', 'Read-FlatPackage') }, $true)) {
+        . ([scriptblock]::Create($function.Extent.Text))
+    }
+    $package = Read-FlatPackage $driver
+    if ($package.Manifest.candidate_activation -cne 'unregistered-candidate' -or
+        @($package.Manifest.registration.PSObject.Properties.Name) -contains 'UserModeDriverName') {
+        throw 'Unified installer reads DXVK as anything but an unregistered candidate'
+    }
+    Write-Host "PASS unified installer Read-FlatPackage accepts the signed receipt ($(@($package.Manifest.files.PSObject.Properties).Count) files)"
     Write-Host 'PASS signed flat native/EC/x86 GL, CL and D3D UMD loading, ARM64 DXVK candidate loading; GPU rendering and driver binding remain untested'
 } finally {
     Remove-GpuAttemptTrust $created

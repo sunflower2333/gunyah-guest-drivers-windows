@@ -71,12 +71,19 @@ class BundleTests(unittest.TestCase):
 
     def test_dxvk_candidate_ships_its_symbols(self):
         receipt = self.verify()
-        self.assertIn("viogpudxvk.pdb", receipt["gpu_files"])
+        self.assertTrue({"viogpudxvkx.pdb", "viogpudxvk.pdb", "viogpudxvk_x64.pdb",
+                         "viogpudxvk_x86.pdb"} <= receipt["gpu_files"].keys())
         self.assertTrue(receipt["candidate_umds"]["viogpudxvk.dll"]["admission"].startswith("closed; "))
+        self.assertEqual(receipt["candidate_d3d_registration"], package.CANDIDATE_D3D_REGISTRATION)
 
     def test_reject_missing_dxvk_symbols(self):
-        (self.driver / "viogpudxvk.pdb").unlink()
+        (self.driver / "viogpudxvk_x86.pdb").unlink()
         with self.assertRaisesRegex(ValueError, "debug files"):
+            self.verify()
+
+    def test_reject_candidate_d3d_registration_change(self):
+        self.change_manifest(lambda m: m["candidate_d3d_registration"].update(UserModeDriverName="viogpud3dx.dll"))
+        with self.assertRaisesRegex(ValueError, "opt-in candidate D3D registration"):
             self.verify()
 
     def test_reject_stale_d3d10_producer(self):

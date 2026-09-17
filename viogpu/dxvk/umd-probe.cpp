@@ -2,7 +2,8 @@
 // Loads the DXVK D3D10/11 user-mode driver a process of this architecture
 // would use from a package directory, then checks three things on the shipped
 // image without an adapter or a GPU:
-//   - it is the architecture-matched DXVK build, with its adapter entry points;
+//   - the entry (ARM64X viogpudxvkx.dll for ARM64 and x64 processes, the x86
+//     UMD itself for WoW64) reaches the architecture-matched DXVK build;
 //   - its admission gate is closed: the legacy OpenAdapter10 path refuses with
 //     DXGI_ERROR_UNSUPPORTED before it touches runtime callbacks (an open gate
 //     would reach them and fail with E_INVALIDARG instead);
@@ -19,12 +20,24 @@
 
 #if defined(_M_ARM64)
 static const wchar_t arch[] = L"arm64";
-static const wchar_t registered[] = L"viogpudxvk.dll";
+static const wchar_t registered[] = L"viogpudxvkx.dll";
 static const wchar_t runtime[] = L"viogpudxvk.dll";
 static const wchar_t loader[] = L"viogpu_gl_loader_arm64.dll";
 static const WORD runtime_machine = IMAGE_FILE_MACHINE_ARM64;
+#elif defined(_M_X64)
+static const wchar_t arch[] = L"x64";
+static const wchar_t registered[] = L"viogpudxvkx.dll";
+static const wchar_t runtime[] = L"viogpudxvk_x64.dll";
+static const wchar_t loader[] = L"viogpu_gl_loader_x64.dll";
+static const WORD runtime_machine = IMAGE_FILE_MACHINE_AMD64;
+#elif defined(_M_IX86)
+static const wchar_t arch[] = L"x86";
+static const wchar_t registered[] = L"viogpudxvk_x86.dll";
+static const wchar_t runtime[] = L"viogpudxvk_x86.dll";
+static const wchar_t loader[] = L"viogpu_gl_loader_x86.dll";
+static const WORD runtime_machine = IMAGE_FILE_MACHINE_I386;
 #else
-#error The DXVK UMD package probe is ARM64-only for now
+#error Unsupported probe architecture
 #endif
 
 static int fail(const wchar_t *what, unsigned long detail = GetLastError())
@@ -77,6 +90,19 @@ int wmain(int argc, wchar_t **argv)
         return fail(L"entry lacks OpenAdapter10/OpenAdapter10_2", 0);
     }
     HMODULE dxvk = entry;
+    if (std::wcscmp(registered, runtime))
+    {
+        auto target = reinterpret_cast<HMODULE(APIENTRY *)(void)>(GetProcAddress(entry, "VioGpuD3DUmdTarget"));
+        if (!target)
+        {
+            return fail(L"ARM64X entry lacks its load check", 0);
+        }
+        dxvk = target();
+        if (!dxvk)
+        {
+            return fail(L"ARM64X entry could not load its DXVK UMD");
+        }
+    }
     if (!module_path(dxvk, runtime_path))
     {
         return fail(L"DXVK UMD resolved from the wrong path", 0);
@@ -91,8 +117,9 @@ int wmain(int argc, wchar_t **argv)
         return fail(L"DXVK UMD lacks its Vulkan loader check", 0);
     }
 
-    // The exact legacy negotiation the D3D10 runtime performs. The canary
-    // proves the table outside D3D10DDI_ADAPTERFUNCS is never written.
+    // The exact legacy negotiation the D3D10 runtime performs, through the
+    // entry it would load. The canary proves nothing past
+    // D3D10DDI_ADAPTERFUNCS is written.
     struct
     {
         D3D10DDI_ADAPTERFUNCS table;

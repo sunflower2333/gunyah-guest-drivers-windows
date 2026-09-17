@@ -21,6 +21,10 @@ function Assert-CommitSha([string]$Name, [string]$Value) {
 }
 
 function Assert-Arm64Pe([string]$Path) {
+    Assert-PeMachine $Path 0xaa64
+}
+
+function Assert-PeMachine([string]$Path, [int]$Machine) {
     $stream = [IO.File]::OpenRead((Resolve-Path -LiteralPath $Path))
     try {
         $reader = [IO.BinaryReader]::new($stream)
@@ -36,8 +40,9 @@ function Assert-Arm64Pe([string]$Path) {
         if ($reader.ReadUInt32() -ne 0x00004550) {
             throw "$Path does not have a PE signature"
         }
-        if ($reader.ReadUInt16() -ne 0xaa64) {
-            throw "$Path PE machine is not ARM64 (AA64)"
+        $actual = $reader.ReadUInt16()
+        if ($actual -ne $Machine) {
+            throw ("{0} PE machine is {1:X4}, not {2:X4}" -f $Path, $actual, $Machine)
         }
     }
     finally {
@@ -140,24 +145,34 @@ $workRoot = Join-Path $env:RUNNER_TEMP 'droidvm-candidate-umds'
 New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
 $vkd3dRoot = Join-Path $workRoot 'vkd3d-proton'
 
-# DXVK is built, gated and probed by its own CI job; accept only that job's
-# exact output for the pinned commit.
-$dxvkRecordPath = Join-Path $DxvkRoot 'arm64/dxvk-umd.json'
-$dxvkRecord = Get-Content -LiteralPath $dxvkRecordPath -Raw | ConvertFrom-Json
-if ($dxvkRecord.schema -ne 1 -or $dxvkRecord.family -cne 'dxvk' -or $dxvkRecord.architecture -cne 'arm64' -or
-    $dxvkRecord.activation -cne 'unregistered-candidate' -or $dxvkRecord.sources.dxvk -cne $DxvkCommit) {
-    throw "DXVK job output is not the pinned arm64 candidate: $dxvkRecordPath"
+# DXVK is built, gated and probed by its own CI job, one leg per architecture;
+# accept only that job's exact output for the pinned commit. The arm64 leg also
+# carries the ARM64X entry, which has no gate or loader of its own.
+$dxvkCandidates = [ordered]@{}
+foreach ($leg in @(
+    @{ Arch = 'arm64'; Name = 'viogpudxvk.dll'; Machine = 'arm64'; Pe = 0xaa64; Role = 'candidate-runtime' },
+    @{ Arch = 'arm64'; Name = 'viogpudxvkx.dll'; Machine = 'arm64x'; Pe = 0xaa64; Role = 'candidate-entry' },
+    @{ Arch = 'x64'; Name = 'viogpudxvk_x64.dll'; Machine = 'x64'; Pe = 0x8664; Role = 'candidate-runtime' },
+    @{ Arch = 'x86'; Name = 'viogpudxvk_x86.dll'; Machine = 'x86'; Pe = 0x14c; Role = 'candidate-runtime' }
+)) {
+    $recordPath = Join-Path $DxvkRoot "$($leg.Arch)/dxvk-umd.json"
+    $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
+    if ($record.schema -ne 1 -or $record.family -cne 'dxvk' -or $record.architecture -cne $leg.Arch -or
+        $record.activation -cne 'unregistered-candidate' -or $record.sources.dxvk -cne $DxvkCommit) {
+        throw "DXVK job output is not the pinned $($leg.Arch) candidate: $recordPath"
+    }
+    $dll = Join-Path $DxvkRoot "$($leg.Arch)/$($leg.Name)"
+    $entry = $record.files.PSObject.Properties[$leg.Name]
+    if (-not $entry -or -not (Test-Path -LiteralPath $dll -PathType Leaf) -or $entry.Value.machine -cne $leg.Machine -or
+        $entry.Value.role -cne $leg.Role -or
+        (Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.Value.sha256) {
+        throw "DXVK job output changed or is incomplete: $dll"
+    }
+    Assert-PeMachine $dll $leg.Pe
+    Assert-Exports $dll @('OpenAdapter10', 'OpenAdapter10_2')
+    Copy-Item -LiteralPath $dll -Destination (Join-Path $output $leg.Name)
+    $dxvkCandidates[$leg.Name] = @{ Machine = $leg.Machine; Record = $record; Runtime = $leg.Role -ceq 'candidate-runtime' }
 }
-$dxvkDll = Join-Path $DxvkRoot 'arm64/viogpudxvk.dll'
-$dxvkEntry = $dxvkRecord.files.'viogpudxvk.dll'
-if (-not (Test-Path -LiteralPath $dxvkDll -PathType Leaf) -or $dxvkEntry.machine -cne 'arm64' -or
-    $dxvkEntry.role -cne 'candidate-runtime' -or
-    (Get-FileHash -LiteralPath $dxvkDll -Algorithm SHA256).Hash.ToLowerInvariant() -cne $dxvkEntry.sha256) {
-    throw "DXVK job output changed or is incomplete: $dxvkDll"
-}
-Assert-Arm64Pe $dxvkDll
-Assert-Exports $dxvkDll @('OpenAdapter10', 'OpenAdapter10_2')
-Copy-Item -LiteralPath $dxvkDll -Destination (Join-Path $output 'viogpudxvk.dll')
 
 # tools\build-windows-umd.ps1 expects meson and ninja on PATH. The inline DXVK
 # build used to install them first, as a side effect of its own script; DXVK
@@ -179,22 +194,27 @@ Assert-Exports $vkd3dDll @('OpenAdapter12')
 Copy-Item -LiteralPath $vkd3dDll -Destination (Join-Path $output 'viogpud3d12.dll')
 
 $files = [ordered]@{}
-foreach ($entry in @(
-    @{ Name = 'viogpudxvk.dll'; Family = 'dxvk' },
-    @{ Name = 'viogpud3d12.dll'; Family = 'vkd3d' }
-)) {
-    $path = Join-Path $output $entry.Name
-    $files[$entry.Name] = [ordered]@{
-        family = $entry.Family
-        machine = 'arm64'
+foreach ($name in $dxvkCandidates.Keys) {
+    $candidate = $dxvkCandidates[$name]
+    $files[$name] = [ordered]@{
+        family = 'dxvk'
+        machine = $candidate.Machine
         role = 'candidate-runtime'
-        sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        sha256 = (Get-FileHash -LiteralPath (Join-Path $output $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    if ($candidate.Runtime) {
+        # Carry the DXVK job's observed admission gate and loader choice into the
+        # package receipt: the reason the candidate stays unregistered travels with it.
+        $files[$name]['admission'] = [string]$candidate.Record.gates.gate_state
+        $files[$name]['vulkan_loader'] = [string]$candidate.Record.vulkan_loader
     }
 }
-# Carry the DXVK job's observed admission gate and loader choice into the
-# package receipt: the reason the candidate stays unregistered travels with it.
-$files['viogpudxvk.dll']['admission'] = [string]$dxvkRecord.gates.gate_state
-$files['viogpudxvk.dll']['vulkan_loader'] = [string]$dxvkRecord.vulkan_loader
+$files['viogpud3d12.dll'] = [ordered]@{
+    family = 'vkd3d'
+    machine = 'arm64'
+    role = 'candidate-runtime'
+    sha256 = (Get-FileHash -LiteralPath (Join-Path $output 'viogpud3d12.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+}
 
 $manifest = [ordered]@{
     schema = 1

@@ -96,7 +96,7 @@ class ComposerTests(unittest.TestCase):
                 "role": "candidate-runtime",
                 "sha256": package.sha(path),
             }
-            if family == "dxvk":
+            if name in package.DXVK_VULKAN_LOADERS:
                 files[name]["admission"] = package.CLOSED_ADMISSION + "StreamOutput"
                 files[name]["vulkan_loader"] = package.DXVK_VULKAN_LOADERS[name]
         (self.candidates / package.CANDIDATE_MANIFEST).write_text(json.dumps({
@@ -376,12 +376,61 @@ class ComposerTests(unittest.TestCase):
 
     def test_dxvk_candidate_records_closed_gate_and_private_loader(self):
         receipt = self.assemble()
-        entry = receipt["candidate_umds"]["viogpudxvk.dll"]
-        self.assertTrue(entry["admission"].startswith("closed; remaining: "))
-        self.assertEqual(entry["vulkan_loader"], "viogpu_gl_loader_arm64.dll")
+        for name, arch in (("viogpudxvk.dll", "arm64"), ("viogpudxvk_x64.dll", "x64"),
+                           ("viogpudxvk_x86.dll", "x86")):
+            entry = receipt["candidate_umds"][name]
+            self.assertEqual(entry["machine"], arch)
+            self.assertTrue(entry["admission"].startswith("closed; remaining: "))
+            self.assertEqual(entry["vulkan_loader"], f"viogpu_gl_loader_{arch}.dll")
+        self.assertEqual(receipt["candidate_umds"]["viogpudxvkx.dll"]["machine"], "arm64x")
         text = self.inf.read_text()
+        self.assertTrue(set(package.CANDIDATE_UMDS) <= set(package.source_files(text)))
         self.assertNotIn("viogpudxvk", "\n".join(line for line in text.splitlines() if "DriverName" in line))
-        self.assertEqual(package.finalize(self.driver)["candidate_umds"]["viogpudxvk.dll"], entry)
+        final = package.finalize(self.driver)
+        self.assertEqual(final["candidate_umds"], receipt["candidate_umds"])
+
+    def test_candidate_d3d_registration_is_receipt_data_only(self):
+        receipt = self.assemble()
+        self.assertEqual(receipt["candidate_d3d_registration"],
+                         {"UserModeDriverName": "viogpudxvkx.dll", "UserModeDriverNameWow": "viogpudxvk_x86.dll"})
+        self.assertEqual(receipt["d3d_registration"], package.D3D_REGISTRATION)
+        self.assertNotIn("UserModeDriverName", receipt["registration"])
+        self.assertEqual(package.finalize(self.driver)["candidate_d3d_registration"],
+                         package.CANDIDATE_D3D_REGISTRATION)
+
+    def test_finalize_rejects_candidate_written_into_inf(self):
+        self.assemble()
+        # The real registrations stay intact; only an extra candidate line is added.
+        self.inf.write_text(self.inf.read_text() + "HKR,,UserModeDriverName,%REG_MULTI_SZ%,"
+                            '"%13%\\viogpudxvkx.dll"\n')
+        path = self.driver / package.RECEIPT
+        manifest = json.loads(path.read_text())
+        manifest["inf_sha256"] = package.sha(self.inf)
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "Candidate UMD written into the INF"):
+            package.finalize(self.driver)
+
+    def test_finalize_rejects_changed_candidate_registration(self):
+        self.assemble()
+        path = self.driver / package.RECEIPT
+        manifest = json.loads(path.read_text())
+        manifest["candidate_d3d_registration"]["UserModeDriverName"] = "viogpudxvk.dll"
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "opt-in candidate D3D registration"):
+            package.finalize(self.driver)
+
+    def test_reject_missing_x86_dxvk_candidate(self):
+        (self.candidates / "viogpudxvk_x86.dll").unlink()
+        self.reject_unchanged("exact flat input")
+
+    def test_reject_native_only_dxvk_entry(self):
+        (self.candidates / "viogpudxvkx.dll").unlink()
+        self.save_candidates()
+        manifest = json.loads((self.candidates / package.CANDIDATE_MANIFEST).read_text())
+        (self.candidates / "viogpudxvkx.dll").write_bytes(pe("x64"))
+        manifest["files"]["viogpudxvkx.dll"]["sha256"] = package.sha(self.candidates / "viogpudxvkx.dll")
+        (self.candidates / package.CANDIDATE_MANIFEST).write_text(json.dumps(manifest))
+        self.reject_unchanged("Candidate PE machine mismatch")
 
     def test_reject_dxvk_candidate_with_open_gate(self):
         self.edit_candidate("viogpudxvk.dll", admission="OPEN")

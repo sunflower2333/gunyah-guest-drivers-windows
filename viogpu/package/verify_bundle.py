@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 import subprocess
 
-from flat_package import CANDIDATE_SOURCES, CANDIDATE_SYMBOLS, CANDIDATE_UMDS, D3D10_FILES, D3D_REGISTRATION
+from flat_package import CANDIDATE_D3D_REGISTRATION, CANDIDATE_SOURCES, CANDIDATE_SYMBOLS, CANDIDATE_UMDS
+from flat_package import D3D10_FILES, D3D_REGISTRATION, check_candidate_registration_unwritten
 from flat_package import d3d_registration_line
 from flat_package import LOADER_PROBES, MACHINES, RECEIPT, REGISTRATION
 from flat_package import flat_name, pe_machine, require, sha, source_files
@@ -61,7 +62,10 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
         require(pe_machine(driver / name) == MACHINES[machine], f"Wrong candidate PE architecture: {name}")
     require(manifest["loader_probes"] == LOADER_PROBES, "Wrong loader helper mapping")
     require(manifest.get("d3d_registration") == D3D_REGISTRATION, "Wrong D3D UMD registration mapping")
+    require(manifest.get("candidate_d3d_registration") == CANDIDATE_D3D_REGISTRATION,
+            "Wrong opt-in candidate D3D registration mapping")
     inf = (driver / manifest["inf"]).read_text(encoding="utf-8-sig")
+    check_candidate_registration_unwritten(inf)
     require(re.search(r"(?m)^DriverVer\s*=\s*[^,\r\n]+,\s*" + re.escape(version) + r"\s*$", inf),
             "INF version mismatch")
     names = set(source_files(inf))
@@ -97,6 +101,7 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
             "driver_version": version, "sources": manifest["sources"],
             "d3d10_mesa": D3D10_MESA,
             "d3d_registration": manifest["d3d_registration"],
+            "candidate_d3d_registration": manifest["candidate_d3d_registration"],
             "candidate_sources": manifest["candidate_sources"],
             "candidate_activation": manifest["candidate_activation"],
             "candidate_umds": manifest["candidate_umds"],

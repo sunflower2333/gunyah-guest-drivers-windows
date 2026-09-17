@@ -4,22 +4,29 @@
 # that tree's own scripts\build-native-umd.ps1. Validates the image (machine,
 # exact exports, allowed imports, private Vulkan loader, PDB identity), runs the
 # tree's host gates and stages:
-#   -Output    the UMD, its PDB, the package load probe and dxvk-umd.json;
-#   -Fixtures  the tree's WARP functional fixtures for the ARM64 runner.
+#   -Output    the UMD, its PDB, the package load probe and dxvk-umd.json; the
+#              arm64 leg also builds the ARM64X entry viogpudxvkx.dll;
+#   -Fixtures  (arm64) the tree's WARP functional fixtures for the ARM64 runner.
+#              x64 and x86 run those fixtures inside build-native-umd.ps1.
 # Run inside the target architecture's MSVC developer environment. The UMD
 # stays an unregistered candidate: nothing here touches the INF.
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('arm64')][string]$Architecture,
+    [Parameter(Mandatory = $true)][ValidateSet('arm64', 'x64', 'x86')][string]$Architecture,
     [Parameter(Mandatory = $true)][string]$Output,
-    [Parameter(Mandatory = $true)][string]$Fixtures
+    [string]$Fixtures
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+if (($Architecture -eq 'arm64') -ne [bool]$Fixtures) { throw 'Only the arm64 leg stages -Fixtures' }
 $out = [IO.Path]::GetFullPath($Output)
-$fixtureOut = [IO.Path]::GetFullPath($Fixtures)
-foreach ($directory in @($out, $fixtureOut)) {
+$directories = @($out)
+if ($Fixtures) {
+    $fixtureOut = [IO.Path]::GetFullPath($Fixtures)
+    $directories += $fixtureOut
+}
+foreach ($directory in $directories) {
     if (Test-Path -LiteralPath $directory) { throw "Output directory already exists: $directory" }
     New-Item -ItemType Directory -Path $directory | Out-Null
 }
@@ -32,9 +39,9 @@ if ($LASTEXITCODE -or $pin -notmatch '^[0-9a-f]{40}$') { throw 'Cannot read the 
 $parent = (& git -C $repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -or $parent -notmatch '^[0-9a-f]{40}$') { throw 'Cannot read the driver commit' }
 
-$library = @{ arm64 = 'viogpudxvk' }[$Architecture]
+$library = @{ arm64 = 'viogpudxvk'; x64 = 'viogpudxvk_x64'; x86 = 'viogpudxvk_x86' }[$Architecture]
 $loader = "viogpu_gl_loader_$Architecture.dll"
-$machine = @{ arm64 = 'AA64' }[$Architecture]
+$machine = @{ arm64 = 'AA64'; x64 = '8664'; x86 = '14C' }[$Architecture]
 
 # Exact source identity: a detached checkout of the pinned commit, never a branch.
 $dxvk = Join-Path $env:RUNNER_TEMP "dxvk-umd-$Architecture"
@@ -135,9 +142,52 @@ $probeHeaders = (& dumpbin /nologo /headers (Join-Path $out $probe)) -join "`n"
 if ($probeHeaders -notmatch "(?im)^\s*$machine machine") { throw "$probe is not a $machine image" }
 
 Copy-Item -LiteralPath $dll, $pdb -Destination $out
+$staged = @(@("$library.dll", $Architecture, 'candidate-runtime'), @("$library.pdb", 'data', 'symbols'),
+            @($probe, $Architecture, 'probe'))
+
+if ($Architecture -eq 'arm64') {
+    # ARM64X entry: the native view loads viogpudxvk.dll, the ARM64EC view (for
+    # emulated x64 processes) viogpudxvk_x64.dll, each by exact sibling path. The
+    # same entry source as the Mesa D3D10 UMD, with DXVK's target names.
+    $front = Join-Path $env:RUNNER_TEMP 'dxvk-umd-front'
+    New-Item -ItemType Directory -Force $front | Out-Null
+    $frontSource = Join-Path $repo 'viogpu/dxvk/umd-front.cpp'
+    $frontExports = @('OpenAdapter10', 'OpenAdapter10_2', 'VioGpuD3DUmdTarget')
+    foreach ($view in @('arm64', 'x64')) {
+        @('EXPORTS') + $frontExports | Set-Content (Join-Path $front "front-$view.def") -Encoding ascii
+    }
+    # Native view first, as its own DLL, only to capture the exact native link
+    # inputs (object plus static CRT libraries) for the ARM64X merge.
+    & cl /nologo /W4 /WX /EHsc /MT /LD $frontSource "/Fo$front\front-arm64.obj" /link "/DEF:$front\front-arm64.def" `
+        "/OUT:$front\viogpudxvkx_arm64.dll" "/PDB:$front\viogpudxvkx_arm64.pdb" /DEBUG "/LINKREPROFULLPATHRSP:$front\arm64-inputs.rsp"
+    if ($LASTEXITCODE) { throw 'DXVK ARM64X entry: native view build failed' }
+    $nativeInputs = @(Get-Content "$front\arm64-inputs.rsp" | Where-Object { $_ -match '(?i)\.(obj|lib)"$' })
+    if (!$nativeInputs.Count) { throw 'DXVK ARM64X entry: no native link inputs captured' }
+    $nativeInputs | Set-Content "$front\arm64-merge.rsp" -Encoding ascii
+    & cl /nologo /W4 /WX /EHsc /MT /c /arm64EC $frontSource "/Fo$front\front-arm64ec.obj"
+    if ($LASTEXITCODE) { throw 'DXVK ARM64X entry: ARM64EC view compile failed' }
+    & link /nologo /DLL /MACHINE:ARM64X "$front\front-arm64ec.obj" "@$front\arm64-merge.rsp" "/DEFARM64NATIVE:$front\front-arm64.def" `
+        "/DEF:$front\front-x64.def" "/OUT:$out\viogpudxvkx.dll" "/PDB:$out\viogpudxvkx.pdb" /DEBUG
+    if ($LASTEXITCODE) { throw 'DXVK ARM64X entry: hybrid link failed' }
+    $frontHeaders = (& dumpbin /nologo /headers "$out\viogpudxvkx.dll") -join "`n"
+    if ($frontHeaders -notmatch '(?im)^\s*AA64 machine') { throw 'viogpudxvkx.dll is not an ARM64 machine image' }
+    if ($frontHeaders -notmatch '\.a64xrm' -or $frontHeaders -notmatch '\.hexpthk') { throw 'viogpudxvkx.dll has no ARM64X hybrid view' }
+    $frontExportText = (& dumpbin /nologo /exports "$out\viogpudxvkx.dll") -join "`n"
+    foreach ($name in $frontExports) {
+        if ($frontExportText -notmatch ('(?m)\s' + [regex]::Escape($name) + '\s*$')) { throw "viogpudxvkx.dll native view lacks $name" }
+    }
+    $frontImports = (& dumpbin /nologo /dependents "$out\viogpudxvkx.dll") -join "`n"
+    if ($frontImports -match '(?i)\b(?:msvcp|vcruntime|ucrtbase)[0-9_]*\.dll\b|viogpudxvk(?:_x64)?\.dll') {
+        throw 'viogpudxvkx.dll must not import the CRT or statically import its DXVK targets'
+    }
+    & python (Join-Path $repo '.install_scripts/verify-pe-pdb.py') "$out\viogpudxvkx.dll" "$out\viogpudxvkx.pdb"
+    if ($LASTEXITCODE) { throw 'viogpudxvkx.dll/PDB identity mismatch' }
+    $staged += , @('viogpudxvkx.dll', 'arm64x', 'candidate-entry')
+    $staged += , @('viogpudxvkx.pdb', 'data', 'symbols')
+}
+
 $files = [ordered]@{}
-foreach ($entry in @(@("$library.dll", $Architecture, 'candidate-runtime'), @("$library.pdb", 'data', 'symbols'),
-                     @($probe, $Architecture, 'probe'))) {
+foreach ($entry in $staged) {
     $files[$entry[0]] = [ordered]@{
         sha256 = (Get-FileHash -LiteralPath (Join-Path $out $entry[0]) -Algorithm SHA256).Hash.ToLowerInvariant()
         machine = $entry[1]
@@ -155,14 +205,23 @@ foreach ($entry in @(@("$library.dll", $Architecture, 'candidate-runtime'), @("$
     files = $files
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $out 'dxvk-umd.json') -Encoding utf8
 
-# Functional fixtures run natively on the ARM64 runner by the tree's own
-# scripts\test-native-arm64.ps1, which also requires STATUS.txt.
-$fixtureNames = @('STATUS.txt', "$library.dll", 'dxvk-umd-texture1d-test.exe', 'dxvk-umd-runtime-gpu-test.exe',
-    'dxvk-umd-native-entry-test.exe', 'dxvk-umd-native-lifetime-test.exe', 'dxvk-umd-allocation-test.exe',
-    'dxvk-umd-predication-test.exe', 'dxvk-umd-stream-output-test.exe', 'dxvk-umd-query-test.exe',
-    'dxvk-umd-system-runtime-test.exe')
-foreach ($name in $fixtureNames) {
-    Copy-Item -LiteralPath (Join-Path $build $name) -Destination $fixtureOut
+if ($Fixtures) {
+    # Functional fixtures run natively on the ARM64 runner by the tree's own
+    # scripts\test-native-arm64.ps1, which also requires STATUS.txt.
+    $fixtureNames = @('STATUS.txt', "$library.dll", 'dxvk-umd-texture1d-test.exe', 'dxvk-umd-runtime-gpu-test.exe',
+        'dxvk-umd-native-entry-test.exe', 'dxvk-umd-native-lifetime-test.exe', 'dxvk-umd-allocation-test.exe',
+        'dxvk-umd-predication-test.exe', 'dxvk-umd-stream-output-test.exe', 'dxvk-umd-query-test.exe',
+        'dxvk-umd-system-runtime-test.exe')
+    foreach ($name in $fixtureNames) {
+        Copy-Item -LiteralPath (Join-Path $build $name) -Destination $fixtureOut
+    }
+} else {
+    # x64 and x86 already executed the same fixtures on this runner inside
+    # build-native-umd.ps1; show their verdict lines as evidence.
+    Get-ChildItem -LiteralPath $build -File -Filter '*-test.txt' | ForEach-Object {
+        Write-Host "== $($_.Name)"
+        Get-Content -LiteralPath $_.FullName | Select-String -Pattern 'PASS' | ForEach-Object { Write-Host $_.Line }
+    }
 }
 Get-ChildItem -LiteralPath $out -File | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize | Out-String | Write-Host
 Write-Host "PASS DXVK $Architecture UMD $library.dll from $pin; gate $gateState; Vulkan loader $loader; unregistered candidate"

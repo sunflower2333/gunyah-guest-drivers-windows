@@ -28,14 +28,31 @@ CANDIDATE_SOURCES = {
     "vkd3d": "376e716e4acdf7a9ded138b0099f2ee8a8863f91",
 }
 CANDIDATE_UMDS = {
+    "viogpudxvkx.dll": ("dxvk", "arm64x"),
     "viogpudxvk.dll": ("dxvk", "arm64"),
+    "viogpudxvk_x64.dll": ("dxvk", "x64"),
+    "viogpudxvk_x86.dll": ("dxvk", "x86"),
     "viogpud3d12.dll": ("vkd3d", "arm64"),
 }
 # Symbols shipped beside the signed package (not cataloged) for candidates built
 # by their own CI job, and the private Vulkan loader each DXVK build resolves.
-CANDIDATE_SYMBOLS = {"viogpudxvk.pdb": "viogpudxvk.dll"}
-DXVK_VULKAN_LOADERS = {"viogpudxvk.dll": "viogpu_gl_loader_arm64.dll"}
+CANDIDATE_SYMBOLS = {f"{Path(name).stem}.pdb": name for name, (family, _) in CANDIDATE_UMDS.items()
+                     if family == "dxvk"}
+DXVK_VULKAN_LOADERS = {
+    "viogpudxvk.dll": "viogpu_gl_loader_arm64.dll",
+    "viogpudxvk_x64.dll": "viogpu_gl_loader_x64.dll",
+    "viogpudxvk_x86.dll": "viogpu_gl_loader_x86.dll",
+}
 CLOSED_ADMISSION = "closed; remaining: "
+# Opt-in only. The D3D runtime would load DXVK through these adapter values,
+# mirroring D3D_REGISTRATION: the ARM64X entry for native ARM64 and emulated x64
+# processes, the x86 UMD for WoW64. Composition never writes them; the receipt
+# records them so a deliberate registry trial names exact package files. The
+# unified installer neither reads nor applies this key.
+CANDIDATE_D3D_REGISTRATION = {
+    "UserModeDriverName": "viogpudxvkx.dll",
+    "UserModeDriverNameWow": "viogpudxvk_x86.dll",
+}
 REGISTRATION = {
     "OpenGLDriverName": ("opengl", "viogpuopengl.dll", "arm64x", "0x00010000"),
     "OpenGLDriverNameWow": ("opengl", "viogpuopengl_x86.dll", "x86", "0x00010000"),
@@ -176,12 +193,24 @@ def read_candidate_umds(root):
 
 
 def check_dxvk_candidate(name, entry):
+    # The ARM64X entry has no gate of its own; it forwards to a runtime below.
+    if name not in DXVK_VULKAN_LOADERS:
+        return
     # An unregistered candidate is only coherent while its own admission gate
     # is closed; the DXVK job records the gate it observed.
     require(isinstance(entry.get("admission"), str) and entry["admission"].startswith(CLOSED_ADMISSION),
             f"DXVK candidate must record a closed admission gate: {name}")
     require(entry.get("vulkan_loader") == DXVK_VULKAN_LOADERS[name],
             f"DXVK candidate must resolve its private Vulkan loader: {name}")
+
+
+def check_candidate_registration_unwritten(inf_text):
+    # Every D3D registration line the INF carries (UserModeDriverName and Wow)
+    # must name only non-candidate UMDs; the candidate mapping stays receipt data.
+    for line in inf_text.splitlines():
+        if re.match(r"(?i)\s*HKR\s*,\s*,\s*UserModeDriverName", line):
+            require(not any(name.casefold() in line.casefold() for name in CANDIDATE_UMDS),
+                    f"Candidate UMD written into the INF: {line.strip()}")
 
 
 def check_required(manifests):
@@ -313,11 +342,15 @@ def assemble(driver, gl, cl, d3d10, mesa, clvk, d3d10_mesa, candidates):
         all_names.add(name.casefold())
         files[name] = {**entry, "family": family}
     registered = {value[1].casefold() for value in REGISTRATION.values()}
+    registered |= {value.casefold() for value in D3D_REGISTRATION.values()}
     require(not registered.intersection(name.casefold() for name in CANDIDATE_UMDS),
             "Candidate UMD must not replace an active registered runtime")
+    require(set(CANDIDATE_D3D_REGISTRATION.values()) <= set(CANDIDATE_UMDS),
+            "Candidate D3D registration must name candidate UMDs")
     inf = driver / "viogpuwddm.inf"
     original = inf.read_text(encoding="utf-8-sig")
     updated = compose_inf(original, sorted(set(files) | {RECEIPT}, key=str.casefold))
+    check_candidate_registration_unwritten(updated)
     for name, entry in files.items():
         source = roots[entry["family"]] / name
         require(sha(source) == entry["sha256"].lower(), f"Input changed during assembly: {name}")
@@ -335,7 +368,8 @@ def assemble(driver, gl, cl, d3d10, mesa, clvk, d3d10_mesa, candidates):
                "public_loaders": public_loaders,
                "loader_probes": manifests["opencl"]["loader_probes"],
                "registration": {key: value[1] for key, value in REGISTRATION.items()},
-               "d3d_registration": dict(D3D_REGISTRATION)}
+               "d3d_registration": dict(D3D_REGISTRATION),
+               "candidate_d3d_registration": dict(CANDIDATE_D3D_REGISTRATION)}
     (driver / RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     return receipt
 
@@ -376,7 +410,10 @@ def check_candidates_in_receipt(inventory):
     candidates = inventory.get("candidate_umds")
     require(isinstance(candidates, dict) and set(candidates) == set(CANDIDATE_UMDS),
             "Wrong candidate UMD receipt inventory")
+    require(inventory.get("candidate_d3d_registration") == CANDIDATE_D3D_REGISTRATION,
+            "Wrong opt-in candidate D3D registration mapping")
     registered = {name.casefold() for name in inventory.get("registration", {}).values()}
+    registered |= {name.casefold() for name in inventory.get("d3d_registration", {}).values()}
     for name, (family, machine) in CANDIDATE_UMDS.items():
         entry = candidates[name]
         require(entry.get("family") == family and entry.get("machine") == machine and
@@ -427,6 +464,7 @@ def finalize(driver):
         require(text.splitlines().count(d3d_registration_line(key, filename)) == 1,
                 f"Missing device-scoped D3D UMD registration: {key}")
     require(NATIVE_UMD_REGISTRATION not in text, "Native-only D3D UMD registration survived composition")
+    check_candidate_registration_unwritten(text)
     for name, (machine, _) in D3D10_FILES.items():
         entry = inventory["api_files_before_signing"].get(name, {})
         require(entry.get("machine") == machine and pe_machine(driver / name) == MACHINES[machine],
@@ -448,7 +486,8 @@ def finalize(driver):
               "candidate_activation": inventory["candidate_activation"],
               "candidate_umds": inventory["candidate_umds"],
               "registration": inventory["registration"],
-              "d3d_registration": inventory["d3d_registration"]}
+              "d3d_registration": inventory["d3d_registration"],
+              "candidate_d3d_registration": inventory["candidate_d3d_registration"]}
     manifest_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
@@ -476,7 +515,7 @@ def main():
     receipt = assemble(args.driver, args.gl, args.cl, args.d3d10, args.mesa, args.clvk, args.d3d10_mesa, candidates)
     print(f"PASS staged {len(receipt['api_files_before_signing'])} flat API files in display INF")
     print("PASS D3D10/11 UMD registered through the ARM64X entry, with an x86 UMD for WoW64")
-    print("PASS staged DXVK/VKD3D ARM64 candidates flat and unregistered")
+    print("PASS staged DXVK (ARM64X entry, arm64/x64/x86) and VKD3D (arm64) candidates flat and unregistered")
     print("PENDING PE/catalog signing, InfVerif, public-loader install, ABI and GPU tests")
 
 

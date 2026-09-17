@@ -14,10 +14,19 @@
 #include <cstring>
 #include <cwchar>
 
+// Another UMD family reuses this entry by defining both target names before
+// including this file (viogpu/dxvk/umd-front.cpp); the defaults are Mesa's.
+#ifndef VIOGPU_UMD_NATIVE_TARGET
+#define VIOGPU_UMD_NATIVE_TARGET L"viogpud3d.dll"
+#endif
+#ifndef VIOGPU_UMD_EC_TARGET
+#define VIOGPU_UMD_EC_TARGET L"viogpud3d_x64.dll"
+#endif
+
 #if defined(_M_ARM64) && !defined(_M_ARM64EC)
-static const wchar_t target_name[] = L"viogpud3d.dll";
+static const wchar_t target_name[] = VIOGPU_UMD_NATIVE_TARGET;
 #elif defined(_M_X64) || defined(_M_ARM64EC)
-static const wchar_t target_name[] = L"viogpud3d_x64.dll";
+static const wchar_t target_name[] = VIOGPU_UMD_EC_TARGET;
 #else
 #error The D3D UMD entry has only ARM64 and ARM64EC views
 #endif
