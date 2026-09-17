@@ -4705,13 +4705,13 @@ static NTSTATUS HandleNativeShareEscapeLocked(_In_ VioGpuDod *adapter,
             switch (request->Opcode)
             {
             case VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE:
-                status = ExportNativeShareLocked(adapter, context, &snapshot, &request);
+                status = ExportNativeShareLocked(adapter, context, &snapshot, request, stage);
                 break;
             case VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE:
-                status = ImportNativeShareLocked(adapter, context, &snapshot, &request);
+                status = ImportNativeShareLocked(adapter, context, &snapshot, request, stage, shareSize, hostResult);
                 break;
             default:
-                status = ReleaseNativeShareLocked(adapter, context, &snapshot, &request);
+                status = ReleaseNativeShareLocked(adapter, context, &snapshot, request, stage);
                 break;
             }
             ReleaseNativeShareRegistry();
