@@ -2104,6 +2104,59 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefNativeResource(UINT resource_id)
     return result;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetNativeResourceAttachment(UINT context_id, UINT resource_id, BOOLEAN attach)
+{
+    PAGED_CODE();
+
+    if (context_id == 0 || resource_id == 0 || !BeginSynchronousRequest())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    PGPU_VBUFFER vbuf = NULL;
+    PGPU_CTX_RESOURCE command = static_cast<PGPU_CTX_RESOURCE>(AllocCmd(&vbuf, sizeof(GPU_CTX_RESOURCE)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = attach ? VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE : VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE;
+    command->hdr.ctx_id = context_id;
+    command->resource_id = resource_id;
+
+    BOOLEAN releaseBuffer = TRUE;
+    BOOLEAN submitted = FALSE;
+    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
+    if (!submitted)
+    {
+        result = VioGpuHostContextNotSubmitted;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) &&
+             IsPlainControlResponse(response, VIRTIO_GPU_RESP_OK_NODATA))
+    {
+        result = VioGpuHostContextConfirmed;
+    }
+    else if (completed && vbuf->response_size == sizeof(GPU_CTRL_HDR) && IsPlainControlErrorResponse(response))
+    {
+        /* An unknown context or resource is refused without side effects. */
+        result = VioGpuHostContextRejected;
+    }
+    else if (completed)
+    {
+        PoisonSynchronousRequests();
+    }
+    if (releaseBuffer)
+    {
+        ReleaseBuffer(vbuf);
+    }
+    EndSynchronousRequest();
+    return result;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT
 CtrlQueue::SubmitNativeControl(UINT context_id,
                                const void *command,

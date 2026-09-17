@@ -4194,6 +4194,484 @@ NTSTATUS QueryContextInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
     return status;
 }
 
+/*
+ * Cross-context sharing of native allocations (VIOGPU_WDDM_NATIVE_SHARE).
+ *
+ * One table for every adapter; entries carry their adapter. The mutex keeps
+ * PASSIVE callers serialized across the host round trips below, so a revoke
+ * from DestroyAllocation can never interleave with an import of the same key,
+ * and an import record never outlives the context it names: DestroyContext
+ * drops its records under the same mutex before the context can go away.
+ */
+struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
+{
+    LIST_ENTRY Link;
+    VioGpuDod *Adapter;
+    ULONGLONG Key;
+    UINT ResourceId;
+    UINT OwnerContextId;
+    ULONGLONG Size;
+};
+
+struct VIOGPU_WDDM_NATIVE_IMPORT_ENTRY
+{
+    LIST_ENTRY Link;
+    VioGpuDod *Adapter;
+    ULONGLONG Key;
+    VIOGPU_WDDM_CONTEXT *Context;
+    UINT ResourceId;
+    ULONGLONG Iova;
+    ULONGLONG Size;
+};
+
+static KMUTEX g_VioGpuNativeShareMutex;
+static LIST_ENTRY g_VioGpuNativeShares;
+static LIST_ENTRY g_VioGpuNativeImports;
+static volatile LONG g_VioGpuNativeShareState;
+static ULONG g_VioGpuNativeShareSeed;
+
+enum : LONG
+{
+    VioGpuNativeShareRegistryNone = 0,
+    VioGpuNativeShareRegistryInitializing,
+    VioGpuNativeShareRegistryReady,
+};
+
+static BOOLEAN AcquireNativeShareRegistry(_In_ BOOLEAN createIfMissing)
+{
+    PAGED_CODE();
+
+    for (;;)
+    {
+        LONG state = createIfMissing ? InterlockedCompareExchange(&g_VioGpuNativeShareState,
+                                                                  VioGpuNativeShareRegistryInitializing,
+                                                                  VioGpuNativeShareRegistryNone)
+                                     : InterlockedCompareExchange(&g_VioGpuNativeShareState, 0, 0);
+        if (state == VioGpuNativeShareRegistryNone)
+        {
+            if (!createIfMissing)
+            {
+                return FALSE;
+            }
+            KeInitializeMutex(&g_VioGpuNativeShareMutex, 0);
+            InitializeListHead(&g_VioGpuNativeShares);
+            InitializeListHead(&g_VioGpuNativeImports);
+            LARGE_INTEGER counter = KeQueryPerformanceCounter(NULL);
+            g_VioGpuNativeShareSeed = counter.LowPart ^ static_cast<ULONG>(counter.HighPart) ^
+                                      static_cast<ULONG>(static_cast<ULONG_PTR>(KeQueryInterruptTime()));
+            InterlockedExchange(&g_VioGpuNativeShareState, VioGpuNativeShareRegistryReady);
+            break;
+        }
+        if (state == VioGpuNativeShareRegistryReady)
+        {
+            break;
+        }
+        LARGE_INTEGER delay = {};
+        delay.QuadPart = -10000;
+        KeDelayExecutionThread(KernelMode, FALSE, &delay);
+    }
+    return KeWaitForSingleObject(&g_VioGpuNativeShareMutex, Executive, KernelMode, FALSE, NULL) == STATUS_SUCCESS;
+}
+
+static VOID ReleaseNativeShareRegistry(void)
+{
+    KeReleaseMutex(&g_VioGpuNativeShareMutex, FALSE);
+}
+
+static VIOGPU_WDDM_NATIVE_SHARE_ENTRY *FindNativeShareByKeyLocked(_In_ VioGpuDod *adapter, _In_ ULONGLONG key)
+{
+    for (PLIST_ENTRY link = g_VioGpuNativeShares.Flink; link != &g_VioGpuNativeShares; link = link->Flink)
+    {
+        VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_SHARE_ENTRY, Link);
+        if (share->Adapter == adapter && share->Key == key)
+        {
+            return share;
+        }
+    }
+    return NULL;
+}
+
+static ULONGLONG NewNativeShareKeyLocked(_In_ VioGpuDod *adapter)
+{
+    for (;;)
+    {
+        /* RtlRandomEx yields 31 bits per call; fold three draws and the clock. */
+        LARGE_INTEGER counter = KeQueryPerformanceCounter(NULL);
+        ULONGLONG key = (static_cast<ULONGLONG>(RtlRandomEx(&g_VioGpuNativeShareSeed)) << 33) ^
+                        (static_cast<ULONGLONG>(RtlRandomEx(&g_VioGpuNativeShareSeed)) << 11) ^
+                        static_cast<ULONGLONG>(RtlRandomEx(&g_VioGpuNativeShareSeed)) ^
+                        static_cast<ULONGLONG>(counter.QuadPart);
+        if (key != 0 && FindNativeShareByKeyLocked(adapter, key) == NULL)
+        {
+            return key;
+        }
+    }
+}
+
+/* Drop every import record of a context that is being destroyed. The host
+ * context destroy releases the imported objects themselves. */
+VOID RemoveNativeImportsForContext(_In_ VIOGPU_WDDM_CONTEXT *context)
+{
+    PAGED_CODE();
+
+    if (context == NULL || !AcquireNativeShareRegistry(FALSE))
+    {
+        return;
+    }
+    PLIST_ENTRY link = g_VioGpuNativeImports.Flink;
+    while (link != &g_VioGpuNativeImports)
+    {
+        VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *entry = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_IMPORT_ENTRY, Link);
+        link = link->Flink;
+        if (entry->Context == context)
+        {
+            RemoveEntryList(&entry->Link);
+            delete entry;
+        }
+    }
+    ReleaseNativeShareRegistry();
+}
+
+/* A shared native allocation is being destroyed: its pages go back to VidMm,
+ * so every other context must lose the mapping first, and the key dies. */
+VOID RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
+{
+    PAGED_CODE();
+
+    if (adapter == NULL || resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || !AcquireNativeShareRegistry(FALSE))
+    {
+        return;
+    }
+    VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = NULL;
+    for (PLIST_ENTRY link = g_VioGpuNativeShares.Flink; link != &g_VioGpuNativeShares; link = link->Flink)
+    {
+        VIOGPU_WDDM_NATIVE_SHARE_ENTRY *candidate = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_SHARE_ENTRY, Link);
+        if (candidate->Adapter == adapter && candidate->ResourceId == resourceId)
+        {
+            share = candidate;
+            break;
+        }
+    }
+    if (share != NULL)
+    {
+        PLIST_ENTRY link = g_VioGpuNativeImports.Flink;
+        while (link != &g_VioGpuNativeImports)
+        {
+            VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *entry = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_IMPORT_ENTRY, Link);
+            link = link->Flink;
+            if (entry->Adapter != adapter || entry->Key != share->Key)
+            {
+                continue;
+            }
+            RemoveEntryList(&entry->Link);
+            VIOGPU_WDDM_CONTEXT *context = entry->Context;
+            if (context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE && ExAcquireRundownProtection(&context->Operations))
+            {
+                VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+                if (VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+                {
+                    if (adapter->AcquireNativeSubmissionOperation())
+                    {
+                        (VOID) snapshot.Adapter->ReleaseNativeSharedResource(&snapshot, entry->ResourceId);
+                        adapter->ReleaseNativeSubmissionOperation();
+                    }
+                    VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+                }
+                ExReleaseRundownProtection(&context->Operations);
+            }
+            delete entry;
+        }
+        RemoveEntryList(&share->Link);
+        delete share;
+    }
+    ReleaseNativeShareRegistry();
+}
+
+/* Runs under the context's binding spin lock, so it must not be paged. */
+__declspec(code_seg(".text"))
+static VOID FindNativeAllocationRangeByIova(_In_ VIOGPU_WDDM_CONTEXT *context,
+                                            _In_ ULONGLONG iova,
+                                            _In_ UINT contextId,
+                                            _Out_ UINT *resourceId,
+                                            _Out_ ULONGLONG *length)
+{
+    *resourceId = 0;
+    *length = 0;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->NativeContext.BindingLock, &oldIrql);
+    for (PLIST_ENTRY link = context->NativeContext.AllocationRanges.Flink;
+         link != &context->NativeContext.AllocationRanges;
+         link = link->Flink)
+    {
+        VIOGPU_WDDM_ALLOCATION_RANGE *range = CONTAINING_RECORD(link, VIOGPU_WDDM_ALLOCATION_RANGE, Link);
+        if (range->Linked && range->Iova == iova && range->ContextId == contextId)
+        {
+            *resourceId = range->ResourceId;
+            *length = range->Length;
+            break;
+        }
+    }
+    KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
+}
+
+static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
+                                        _In_ VIOGPU_WDDM_CONTEXT *context,
+                                        _In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
+                                        _Inout_ VIOGPU_WDDM_NATIVE_SHARE *request)
+{
+    UINT resourceId = 0;
+    ULONGLONG length = 0;
+    FindNativeAllocationRangeByIova(context, request->Iova, snapshot->ContextId, &resourceId, &length);
+    if (resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || resourceId == MAXUINT || length == 0)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = NULL;
+    for (PLIST_ENTRY link = g_VioGpuNativeShares.Flink; link != &g_VioGpuNativeShares; link = link->Flink)
+    {
+        VIOGPU_WDDM_NATIVE_SHARE_ENTRY *candidate = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_SHARE_ENTRY, Link);
+        if (candidate->Adapter == adapter && candidate->ResourceId == resourceId)
+        {
+            share = candidate;
+            break;
+        }
+    }
+    if (share == NULL)
+    {
+        share = new (NonPagedPoolNx) VIOGPU_WDDM_NATIVE_SHARE_ENTRY;
+        if (share == NULL)
+        {
+            return STATUS_NO_MEMORY;
+        }
+        RtlZeroMemory(share, sizeof(*share));
+        share->Adapter = adapter;
+        share->Key = NewNativeShareKeyLocked(adapter);
+        share->ResourceId = resourceId;
+        share->OwnerContextId = snapshot->ContextId;
+        share->Size = length;
+        InsertTailList(&g_VioGpuNativeShares, &share->Link);
+    }
+    request->ShareKey = share->Key;
+    request->Size = share->Size;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
+                                        _In_ VIOGPU_WDDM_CONTEXT *context,
+                                        _In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
+                                        _In_ const VIOGPU_WDDM_NATIVE_SHARE *request)
+{
+    VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = FindNativeShareByKeyLocked(adapter, request->ShareKey);
+    if (share == NULL || share->Size != request->Size || share->OwnerContextId == snapshot->ContextId)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    const ULONGLONG requestEnd = request->Iova + request->Size - 1;
+    for (PLIST_ENTRY link = g_VioGpuNativeImports.Flink; link != &g_VioGpuNativeImports; link = link->Flink)
+    {
+        VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *existing = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_IMPORT_ENTRY, Link);
+        if (existing->Context != context)
+        {
+            continue;
+        }
+        const ULONGLONG existingEnd = existing->Iova + existing->Size - 1;
+        if (existing->Key == request->ShareKey || (request->Iova <= existingEnd && existing->Iova <= requestEnd))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+
+    VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *entry = new (NonPagedPoolNx) VIOGPU_WDDM_NATIVE_IMPORT_ENTRY;
+    if (entry == NULL)
+    {
+        return STATUS_NO_MEMORY;
+    }
+    RtlZeroMemory(entry, sizeof(*entry));
+    entry->Adapter = adapter;
+    entry->Key = share->Key;
+    entry->Context = context;
+    entry->ResourceId = share->ResourceId;
+    entry->Iova = request->Iova;
+    entry->Size = request->Size;
+
+    if (!adapter->AcquireNativeSubmissionOperation())
+    {
+        delete entry;
+        return STATUS_DEVICE_NOT_READY;
+    }
+    VIOGPU_HOST_CONTEXT_RESULT result = snapshot->Adapter->ImportNativeSharedResource(snapshot,
+                                                                                      share->ResourceId,
+                                                                                      request->Iova);
+    adapter->ReleaseNativeSubmissionOperation();
+    if (result != VioGpuHostContextConfirmed)
+    {
+        delete entry;
+        return STATUS_DEVICE_NOT_READY;
+    }
+    InsertTailList(&g_VioGpuNativeImports, &entry->Link);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS ReleaseNativeShareLocked(_In_ VioGpuDod *adapter,
+                                         _In_ VIOGPU_WDDM_CONTEXT *context,
+                                         _In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
+                                         _In_ const VIOGPU_WDDM_NATIVE_SHARE *request)
+{
+    for (PLIST_ENTRY link = g_VioGpuNativeImports.Flink; link != &g_VioGpuNativeImports; link = link->Flink)
+    {
+        VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *entry = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_IMPORT_ENTRY, Link);
+        if (entry->Context != context || entry->Adapter != adapter || entry->Key != request->ShareKey ||
+            entry->Iova != request->Iova)
+        {
+            continue;
+        }
+        RemoveEntryList(&entry->Link);
+        VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
+        if (adapter->AcquireNativeSubmissionOperation())
+        {
+            result = snapshot->Adapter->ReleaseNativeSharedResource(snapshot, entry->ResourceId);
+            adapter->ReleaseNativeSubmissionOperation();
+        }
+        delete entry;
+        return result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
+    }
+    return STATUS_INVALID_PARAMETER;
+}
+
+NTSTATUS HandleNativeShareEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+
+    if (adapter == NULL || escape == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || escape->hDevice == NULL ||
+        escape->hContext == NULL || escape->Flags.Value != 0 || escape->pPrivateDriverData == NULL ||
+        escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_NATIVE_SHARE))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    VIOGPU_WDDM_NATIVE_SHARE request = {};
+    __try
+    {
+        RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return STATUS_INVALID_USER_BUFFER;
+    }
+
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
+        (request.Opcode != VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE && request.Opcode != VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE &&
+         request.Opcode != VIOGPU_WDDM_ESCAPE_RELEASE_NATIVE))
+    {
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;
+    }
+    BOOLEAN valid = request.Flags == VIOGPU_WDDM_ESCAPE_FLAGS_NONE && request.ExpectedResetGeneration != 0 &&
+                    request.Reserved == 0 && request.Reserved2[0] == 0 && request.Reserved2[1] == 0 &&
+                    request.Reserved2[2] == 0 && request.ContextId == 0 && request.Iova != 0 &&
+                    (request.Iova & (PAGE_SIZE - 1)) == 0;
+    switch (request.Opcode)
+    {
+    case VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE:
+        valid = valid && request.ShareKey == 0 && request.Size == 0;
+        break;
+    case VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE:
+        valid = valid && request.ShareKey != 0 && request.Size != 0 && (request.Size & (PAGE_SIZE - 1)) == 0 &&
+                request.Iova <= MAXULONGLONG - (request.Size - 1);
+        break;
+    default:
+        valid = valid && request.ShareKey != 0;
+        break;
+    }
+    if (!valid)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(escape->hContext);
+    if (!ExAcquireRundownProtection(&context->Operations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    NTSTATUS status = STATUS_SUCCESS;
+    VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+    BOOLEAN snapshotAcquired = FALSE;
+    VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(escape->hDevice);
+    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Type != VioGpuWddmContextNative ||
+        context->Device != device || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || device->Adapter != adapter)
+    {
+        status = STATUS_INVALID_HANDLE;
+    }
+    else if (!adapter->IsDriverActive())
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else
+    {
+        snapshotAcquired = TRUE;
+        const ULONGLONG vaEnd = snapshot.VaStart + snapshot.VaSize;
+        if (snapshot.ResetGeneration != request.ExpectedResetGeneration || snapshot.VaStart == 0 ||
+            snapshot.VaSize == 0 || vaEnd < snapshot.VaStart)
+        {
+            status = STATUS_DEVICE_NOT_READY;
+        }
+        else if (request.Opcode == VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE &&
+                 (request.Iova < snapshot.VaStart || request.Iova + request.Size > vaEnd))
+        {
+            status = STATUS_INVALID_PARAMETER;
+        }
+    }
+
+    if (NT_SUCCESS(status))
+    {
+        if (!AcquireNativeShareRegistry(TRUE))
+        {
+            status = STATUS_DEVICE_NOT_READY;
+        }
+        else
+        {
+            switch (request.Opcode)
+            {
+            case VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE:
+                status = ExportNativeShareLocked(adapter, context, &snapshot, &request);
+                break;
+            case VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE:
+                status = ImportNativeShareLocked(adapter, context, &snapshot, &request);
+                break;
+            default:
+                status = ReleaseNativeShareLocked(adapter, context, &snapshot, &request);
+                break;
+            }
+            ReleaseNativeShareRegistry();
+        }
+    }
+
+    if (NT_SUCCESS(status))
+    {
+        request.ContextId = snapshot.ContextId;
+        __try
+        {
+            RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            status = STATUS_INVALID_USER_BUFFER;
+        }
+    }
+
+    if (snapshotAcquired)
+    {
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+    }
+    ExReleaseRundownProtection(&context->Operations);
+    return status;
+}
+
 NTSTATUS QueryGpuTimestampInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
 {
     PAGED_CODE();
@@ -5201,6 +5679,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
     {
         return QueryCompletedFenceInfo(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
     }
+    if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_NATIVE_SHARE))
+    {
+        return HandleNativeShareEscape(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
+    }
     if (escape->hContext != NULL || escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_CONTEXT_INFO))
     {
         return QueryContextInfo(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
@@ -5615,6 +6097,17 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
             {
                 return STATUS_INVALID_PARAMETER;
             }
+        }
+    }
+
+    /* Other contexts may still map a shared native allocation. Unmap them
+     * before VidMm can hand these pages to anyone else. */
+    for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
+    {
+        VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
+        if (IsNativeAllocation(allocation))
+        {
+            RevokeNativeShares(adapter, allocation->ResourceId);
         }
     }
 
@@ -6575,6 +7068,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
 #endif
             return STATUS_GRAPHICS_ALLOCATION_BUSY;
         }
+    }
+
+    if (context->Type == VioGpuWddmContextNative)
+    {
+        RemoveNativeImportsForContext(context);
     }
 
     if (context->Type == VioGpuWddmContextNative)

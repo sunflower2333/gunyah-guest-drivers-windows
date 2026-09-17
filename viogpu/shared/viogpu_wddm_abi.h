@@ -47,6 +47,9 @@ typedef enum VIOGPU_WDDM_ESCAPE_OPCODE
     VIOGPU_WDDM_ESCAPE_GET_COMPLETED_FENCE = 2,
     VIOGPU_WDDM_ESCAPE_PRESENT_BLIT = 3,
     VIOGPU_WDDM_ESCAPE_GET_GPU_TIMESTAMP = 4,
+    VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE = 5,
+    VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE = 6,
+    VIOGPU_WDDM_ESCAPE_RELEASE_NATIVE = 7,
 } VIOGPU_WDDM_ESCAPE_OPCODE;
 
 #pragma pack(push, 4)
@@ -152,6 +155,30 @@ typedef struct VIOGPU_WDDM_TIMESTAMP_INFO
     VIOGPU_WDDM_UINT64 TimestampFrequency;
     VIOGPU_WDDM_UINT64 Reserved[2];
 } VIOGPU_WDDM_TIMESTAMP_INFO;
+
+/* Additive cross-context sharing of native allocations; old KMDs reject this
+ * distinct size. All three opcodes are issued on a native context.
+ *   EXPORT_NATIVE  Iova names a native allocation of the calling context. The
+ *                  KMD returns an unguessable ShareKey (stable per allocation)
+ *                  and the allocation's backing Size.
+ *   IMPORT_NATIVE  Maps the allocation behind ShareKey into the calling
+ *                  context at Iova; Size must equal the exported Size. The host
+ *                  shares the pages, no copy is made.
+ *   RELEASE_NATIVE Undoes the IMPORT_NATIVE of ShareKey at Iova.
+ * A key dies with its allocation, which also revokes every import of it. */
+typedef struct VIOGPU_WDDM_NATIVE_SHARE
+{
+    VIOGPU_WDDM_ABI_HEADER Header;
+    VIOGPU_WDDM_UINT32 Opcode;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+    VIOGPU_WDDM_UINT64 ShareKey;
+    VIOGPU_WDDM_UINT64 Iova;
+    VIOGPU_WDDM_UINT64 Size;
+    VIOGPU_WDDM_UINT32 ContextId;
+    VIOGPU_WDDM_UINT32 Reserved;
+    VIOGPU_WDDM_UINT64 Reserved2[3];
+} VIOGPU_WDDM_NATIVE_SHARE;
 
 typedef struct VIOGPU_WDDM_RENDER_COMMAND
 {

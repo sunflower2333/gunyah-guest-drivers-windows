@@ -759,6 +759,14 @@ class VioGpuAdapter : IVioGpuPCI
     VIOGPU_HOST_CONTEXT_RESULT DestroyNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
                                                             _In_ UINT resourceId,
                                                             _Out_ BOOLEAN *released);
+    /* Map another context's native resource into the importer's GPU address
+     * space at iova: CTX_ATTACH_RESOURCE, then GEM_SET_IOVA on the importer. */
+    VIOGPU_HOST_CONTEXT_RESULT ImportNativeSharedResource(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *importer,
+                                                          _In_ UINT resourceId,
+                                                          _In_ ULONGLONG iova);
+    /* Undo ImportNativeSharedResource on a still-live importer context. */
+    VIOGPU_HOST_CONTEXT_RESULT ReleaseNativeSharedResource(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *importer,
+                                                           _In_ UINT resourceId);
     BOOLEAN IsNativeContextResetRetired(_In_ ULONGLONG resetGeneration);
 #endif
     _IRQL_requires_max_(DISPATCH_LEVEL) BOOLEAN QueryNativeContextReadiness(_Out_ PGPU_CAPSET_DRM capset,

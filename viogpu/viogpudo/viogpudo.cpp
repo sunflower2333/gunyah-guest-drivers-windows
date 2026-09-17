@@ -11237,6 +11237,101 @@ VioGpuAdapter::DestroyNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNA
     return result;
 }
 
+static BOOLEAN IsLiveNativeImporter(_In_ VioGpuAdapter *adapter, _In_opt_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *importer)
+{
+    return importer != NULL && importer->Adapter == adapter && importer->Owner != NULL &&
+           importer->Registration != NULL && importer->Owner->Registration == importer->Registration &&
+           importer->ContextId != 0 && importer->Generation > 0 && importer->ResetGeneration != 0 &&
+           importer->Owner->State == VioGpuNativeContextOwnerLive &&
+           importer->Owner->Generation == importer->Generation &&
+           importer->Owner->ResetGeneration == importer->ResetGeneration &&
+           importer->Owner->ContextId == importer->ContextId;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ImportNativeSharedResource(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *importer,
+                                                                     _In_ UINT resourceId,
+                                                                     _In_ ULONGLONG iova)
+{
+    PAGED_CODE();
+
+    if (!IsLiveNativeImporter(this, importer) || resourceId < VIOGPU_NATIVE_RESOURCE_ID_START ||
+        resourceId == MAXUINT || iova == 0 || (iova & (PAGE_SIZE - 1)) != 0 || KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        !IsNativeContextGenerationCurrent(importer->Generation, importer->ResetGeneration) ||
+        !VioGpuNativeControlFaultsClear(this, importer->Owner))
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, TRUE);
+    if (result == VioGpuHostContextUnknown)
+    {
+        FailNativeContextAtAnyIrql();
+        return result;
+    }
+    if (result != VioGpuHostContextConfirmed)
+    {
+        return result;
+    }
+
+    MSM_CCMD_GEM_SET_IOVA_REQ request = {};
+    request.hdr.cmd = MSM_CCMD_GEM_SET_IOVA;
+    request.hdr.len = sizeof(request);
+    request.iova = iova;
+    request.res_id = resourceId;
+    result = m_CtrlQueue.SubmitNativeControl(importer->ContextId, &request, sizeof(request));
+    if (result == VioGpuHostContextConfirmed)
+    {
+        return result;
+    }
+    if (result == VioGpuHostContextUnknown)
+    {
+        FailNativeContextAtAnyIrql();
+        return result;
+    }
+    /* The binding never happened: take the import back out again. */
+    VIOGPU_HOST_CONTEXT_RESULT rollback = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE);
+    if (rollback == VioGpuHostContextUnknown)
+    {
+        FailNativeContextAtAnyIrql();
+        return rollback;
+    }
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ReleaseNativeSharedResource(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *importer,
+                                                                      _In_ UINT resourceId)
+{
+    PAGED_CODE();
+
+    if (!IsLiveNativeImporter(this, importer) || resourceId < VIOGPU_NATIVE_RESOURCE_ID_START ||
+        resourceId == MAXUINT || KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        !IsNativeContextGenerationCurrent(importer->Generation, importer->ResetGeneration))
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    /* drm2kgsl never unbinds on GEM_SET_IOVA(0): the stale range stays mapped,
+     * holding its pages, until the importer reuses the VA. Clearing the iova
+     * only drops the object's recorded address before detach frees it. */
+    MSM_CCMD_GEM_SET_IOVA_REQ request = {};
+    request.hdr.cmd = MSM_CCMD_GEM_SET_IOVA;
+    request.hdr.len = sizeof(request);
+    request.iova = 0;
+    request.res_id = resourceId;
+    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SubmitNativeControl(importer->ContextId, &request, sizeof(request));
+    if (result == VioGpuHostContextUnknown)
+    {
+        FailNativeContextAtAnyIrql();
+        return result;
+    }
+    result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE);
+    if (result == VioGpuHostContextUnknown)
+    {
+        FailNativeContextAtAnyIrql();
+    }
+    return result;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::QueryNativeContextParameterLocked(_Inout_ VIOGPU_NATIVE_CONTEXT_OWNER *owner,
                                                                             _In_ ULONG parameter,
                                                                             _Out_ PULONGLONG value,
