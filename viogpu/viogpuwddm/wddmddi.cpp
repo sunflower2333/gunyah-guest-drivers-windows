@@ -4228,7 +4228,7 @@ static KMUTEX g_VioGpuNativeShareMutex;
 static LIST_ENTRY g_VioGpuNativeShares;
 static LIST_ENTRY g_VioGpuNativeImports;
 static volatile LONG g_VioGpuNativeShareState;
-static ULONG g_VioGpuNativeShareSeed;
+static ULONGLONG g_VioGpuNativeShareSeed;
 
 enum : LONG
 {
@@ -4257,8 +4257,8 @@ static BOOLEAN AcquireNativeShareRegistry(_In_ BOOLEAN createIfMissing)
             InitializeListHead(&g_VioGpuNativeShares);
             InitializeListHead(&g_VioGpuNativeImports);
             LARGE_INTEGER counter = KeQueryPerformanceCounter(NULL);
-            g_VioGpuNativeShareSeed = counter.LowPart ^ static_cast<ULONG>(counter.HighPart) ^
-                                      static_cast<ULONG>(static_cast<ULONG_PTR>(KeQueryInterruptTime()));
+            g_VioGpuNativeShareSeed = static_cast<ULONGLONG>(counter.QuadPart) ^ (KeQueryInterruptTime() << 17) ^
+                                      0x9E3779B97F4A7C15ULL;
             InterlockedExchange(&g_VioGpuNativeShareState, VioGpuNativeShareRegistryReady);
             break;
         }
@@ -4296,12 +4296,15 @@ static ULONGLONG NewNativeShareKeyLocked(_In_ VioGpuDod *adapter)
     for (;;)
     {
         /* Keys travel as Vulkan KMT handle values, which are 32 bits wide in
-         * WoW64 processes, so keep them in the low 32 bits. RtlRandomEx yields
-         * 31 bits per call; fold two draws and the clock. */
+         * WoW64 processes, so keep them in the low 32 bits. xorshift64* over a
+         * seed stirred with the clock on every draw. */
         LARGE_INTEGER counter = KeQueryPerformanceCounter(NULL);
-        ULONGLONG key = ((static_cast<ULONGLONG>(RtlRandomEx(&g_VioGpuNativeShareSeed)) << 1) ^
-                         static_cast<ULONGLONG>(RtlRandomEx(&g_VioGpuNativeShareSeed)) ^ counter.LowPart) &
-                        0xFFFFFFFFULL;
+        ULONGLONG state = g_VioGpuNativeShareSeed ^ static_cast<ULONGLONG>(counter.QuadPart);
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        g_VioGpuNativeShareSeed = state;
+        ULONGLONG key = (state * 0x2545F4914F6CDD1DULL) >> 32;
         if (key != 0 && FindNativeShareByKeyLocked(adapter, key) == NULL)
         {
             return key;
