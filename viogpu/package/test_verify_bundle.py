@@ -25,8 +25,10 @@ class BundleTests(unittest.TestCase):
         self.fixture.manifests["opencl"]["sources"].update(
             parent=self.parent, clvk_runtime_ci=456,
             compiler_original_sha256="79e236af8febd67fd02adfd93f81295c87e868e9fd861f71d03d1057e6be1f9d")
+        self.fixture.manifests["d3d10"]["sources"].update(mesa=bundle.D3D10_MESA, parent=self.parent)
         self.fixture.save()
-        self.fixture.assemble()
+        package.assemble(self.driver, self.fixture.gl, self.fixture.cl, self.fixture.d3d10,
+                         fixtures.MESA, fixtures.CLVK, bundle.D3D10_MESA, self.fixture.candidates)
         package.finalize(self.driver)
         for name in bundle.DEBUG_FILES | {"viogpuwddm.cat"}:
             (self.driver / name).write_bytes(b"format fixture only")
@@ -60,6 +62,27 @@ class BundleTests(unittest.TestCase):
             text=True,
         ).strip()
         self.assertEqual(actual, bundle.D3D10_MESA)
+
+    def test_d3d_umds_are_signed_payload_with_symbols(self):
+        receipt = self.verify()
+        self.assertTrue(set(package.D3D10_FILES) <= receipt["gpu_files"].keys())
+        self.assertEqual(receipt["d3d_registration"], package.D3D_REGISTRATION)
+        self.assertTrue({"viogpud3dx.pdb", "viogpud3d_x64.pdb", "viogpud3d_x86.pdb"} <= receipt["gpu_files"].keys())
+
+    def test_reject_stale_d3d10_producer(self):
+        self.change_manifest(lambda m: m["sources"]["d3d10"].update(parent="d" * 40))
+        with self.assertRaisesRegex(ValueError, "Mixed producer"):
+            self.verify()
+
+    def test_reject_d3d10_mesa_other_than_gitlink(self):
+        self.change_manifest(lambda m: m["sources"]["d3d10"].update(mesa="e" * 40))
+        with self.assertRaisesRegex(ValueError, "D3D10 Mesa source"):
+            self.verify()
+
+    def test_reject_d3d_registration_change(self):
+        self.change_manifest(lambda m: m["d3d_registration"].update(UserModeDriverName="viogpud3d.dll"))
+        with self.assertRaisesRegex(ValueError, "D3D UMD registration"):
+            self.verify()
 
     def test_reject_stale_producer(self):
         self.change_manifest(lambda m: m["sources"]["opencl"].update(parent="d" * 40))

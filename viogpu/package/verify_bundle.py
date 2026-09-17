@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 import subprocess
 
-from flat_package import CANDIDATE_SOURCES, CANDIDATE_UMDS
+from flat_package import CANDIDATE_SOURCES, CANDIDATE_UMDS, D3D10_FILES, D3D_REGISTRATION
+from flat_package import d3d_registration_line
 from flat_package import LOADER_PROBES, MACHINES, RECEIPT, REGISTRATION
 from flat_package import flat_name, pe_machine, require, sha, source_files
 
@@ -20,7 +21,8 @@ INSTALLER_FILES = (
     "viogpu-install-native.cs", "viogpu-api-registration.psm1",
     "viogpu-install-certificates.psm1", "DroidVM_Test.cer",
 )
-DEBUG_FILES = {"viogpuwddm.pdb", "viogpuwddm.map", "viogpud3d.pdb"}
+DEBUG_FILES = {"viogpuwddm.pdb", "viogpuwddm.map", "viogpud3d.pdb",
+               "viogpud3dx.pdb", "viogpud3d_x64.pdb", "viogpud3d_x86.pdb"}
 
 
 def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
@@ -33,7 +35,9 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
             manifest["inf"] == "viogpuwddm.inf" and manifest["cat"] == "viogpuwddm.cat",
             "Wrong final driver identity")
     gl, cl = manifest["sources"]["opengl"], manifest["sources"]["opencl"]
-    require(gl["parent"] == cl["parent"] == parent, "Mixed producer parent revisions")
+    d3d10 = manifest["sources"]["d3d10"]
+    require(gl["parent"] == cl["parent"] == d3d10["parent"] == parent, "Mixed producer parent revisions")
+    require(d3d10["mesa"] == D3D10_MESA, "Wrong D3D10 Mesa source for the x64/x86 UMDs")
     require(gl["mesa"] == mesa and gl["mesa_run"] == mesa_run, "Wrong OpenGL Mesa source/run")
     require(cl["clvk"] == clvk and cl["clvk_runtime_ci"] == clvk_run, "Wrong CLVK source/run")
     require(cl["compiler_original_sha256"] ==
@@ -56,6 +60,7 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
         require(name.casefold() not in registered, f"Candidate UMD became registered: {name}")
         require(pe_machine(driver / name) == MACHINES[machine], f"Wrong candidate PE architecture: {name}")
     require(manifest["loader_probes"] == LOADER_PROBES, "Wrong loader helper mapping")
+    require(manifest.get("d3d_registration") == D3D_REGISTRATION, "Wrong D3D UMD registration mapping")
     inf = (driver / manifest["inf"]).read_text(encoding="utf-8-sig")
     require(re.search(r"(?m)^DriverVer\s*=\s*[^,\r\n]+,\s*" + re.escape(version) + r"\s*$", inf),
             "INF version mismatch")
@@ -66,6 +71,9 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
     require(set(CANDIDATE_UMDS) <= names, "Missing cataloged DXVK/VKD3D candidates")
     for key, (_, name, _, flags) in REGISTRATION.items():
         require(f'HKR,,{key},{flags},"%13%\\{name}"' in inf, f"Wrong INF API value: {key}")
+    for key, name in D3D_REGISTRATION.items():
+        require(inf.splitlines().count(d3d_registration_line(key, name)) == 1, f"Wrong INF D3D UMD value: {key}")
+    require(set(D3D10_FILES) <= names, "Missing cataloged D3D10 user-mode drivers")
     paths = list(driver.iterdir())
     require(all(p.is_file() and not p.is_symlink() and p.stat().st_size for p in paths) and
             {p.name for p in paths} == names | {manifest["inf"], manifest["cat"]} | DEBUG_FILES,
@@ -88,6 +96,7 @@ def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):
     return {"schema": 1, "layout": "flat-driverstore", "parent_commit": parent,
             "driver_version": version, "sources": manifest["sources"],
             "d3d10_mesa": D3D10_MESA,
+            "d3d_registration": manifest["d3d_registration"],
             "candidate_sources": manifest["candidate_sources"],
             "candidate_activation": manifest["candidate_activation"],
             "candidate_umds": manifest["candidate_umds"],

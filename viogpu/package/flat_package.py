@@ -39,6 +39,27 @@ REGISTRATION = {
     "OpenCLDriverName": ("opencl", "viogpucl.dll", "arm64x", "0x00000000"),
     "OpenCLDriverNameWow": ("opencl", "viogpucl_x86.dll", "x86", "0x00000000"),
 }
+# D3D10/11 UMDs. The INX registers the native Mesa UMD (viogpud3d.dll), which
+# emulated x64 processes cannot load; composition points UserModeDriverName at
+# the ARM64X entry and adds the x86 UMD for WoW64. Kept apart from REGISTRATION:
+# the installer's API contract covers only the ICD values.
+D3D10_FILES = {
+    "viogpud3dx.dll": ("arm64x", "icd"),
+    "viogpud3d_x64.dll": ("x64", "runtime"),
+    "viogpud3d_x86.dll": ("x86", "icd"),
+}
+D3D_REGISTRATION = {
+    "UserModeDriverName": "viogpud3dx.dll",
+    "UserModeDriverNameWow": "viogpud3d_x86.dll",
+}
+
+
+def d3d_registration_line(key, filename):
+    # One entry each for the D3D9, D3D10 and D3D11 runtimes, as the INX has.
+    return f"HKR,,{key},%REG_MULTI_SZ%," + ",".join([f'"%13%\\{filename}"'] * 3)
+
+
+NATIVE_UMD_REGISTRATION = d3d_registration_line("UserModeDriverName", "viogpud3d.dll")
 
 
 def require(condition, message):
@@ -166,6 +187,10 @@ def check_required(manifests):
             entry = manifests["opencl"]["files"].get(name, {})
             require(entry.get("machine") == arch and entry.get("role") in ("runtime", "icd"),
                     f"Missing actual {arch} OpenCL runtime: {name}")
+    for name, (machine, role) in D3D10_FILES.items():
+        entry = manifests["d3d10"]["files"].get(name, {})
+        require(entry.get("machine") == machine and entry.get("role") == role,
+                f"Missing actual {machine} D3D10 user-mode driver: {name}")
     compiler = manifests["opencl"]["files"].get("viogpu_clspv_x64.exe", {})
     require(compiler.get("machine") == "x64" and compiler.get("role") == "compiler",
             "Missing shared flat OpenCL compiler")
@@ -198,7 +223,7 @@ def replace_directive(text, section, old, new):
 
 def compose_inf(text, files):
     require("VioGpuWddm_Api" not in text, "INF API inventory already generated")
-    require(not re.search(r"(?i)OpenGLDriverName|OpenCLDriverName|VulkanDriverName", text),
+    require(not re.search(r"(?i)OpenGLDriverName|OpenCLDriverName|VulkanDriverName|UserModeDriverNameWow", text),
             "INF already contains API registrations")
     destinations = section_body(text, "DestinationDirs").group("body")
     require(re.search(r"(?im)^DefaultDestDir\s*=\s*13\s*$", destinations),
@@ -217,6 +242,8 @@ def compose_inf(text, files):
     text = replace_directive(text, "VioGpuWddm_Install.NT",
         "AddReg = VioGpuWddm_DeviceSettings",
         "AddReg = VioGpuWddm_DeviceSettings, VioGpuWddm_ApiSettings")
+    text = replace_directive(text, "VioGpuWddm_DeviceSettings", NATIVE_UMD_REGISTRATION,
+        d3d_registration_line("UserModeDriverName", D3D_REGISTRATION["UserModeDriverName"]))
     text += "\n[VioGpuWddm_ApiFiles]\n" + "\n".join(files) + "\n"
     text += "\n[VioGpuWddm_ApiSettings]\n"
     for key, (_, filename, _, flags) in REGISTRATION.items():
@@ -224,18 +251,20 @@ def compose_inf(text, files):
     for suffix in ("", "Wow"):
         text += f"HKR,,OpenGLVersion{suffix},0x00010001,1\n"
         text += f"HKR,,OpenGLFlags{suffix},0x00010001,1\n"
+    text += d3d_registration_line("UserModeDriverNameWow", D3D_REGISTRATION["UserModeDriverNameWow"]) + "\n"
     return text
 
 
-def assemble(driver, gl, cl, mesa, clvk, candidates):
+def assemble(driver, gl, cl, d3d10, mesa, clvk, d3d10_mesa, candidates):
     require(driver.is_dir() and not driver.is_symlink(), "Missing staged driver directory")
     require(all(p.is_file() and not p.is_symlink() for p in driver.iterdir()),
             "Staged driver must contain flat regular files")
     require(not any(p.suffix.lower() == ".cat" for p in driver.iterdir()),
             "Cannot modify a driver directory after catalog creation")
-    roots = {"opengl": gl, "opencl": cl, "dxvk": candidates, "vkd3d": candidates}
+    roots = {"opengl": gl, "opencl": cl, "d3d10": d3d10, "dxvk": candidates, "vkd3d": candidates}
     manifests = {"opengl": read_manifest(gl, "opengl", {"mesa": mesa}),
-                 "opencl": read_manifest(cl, "opencl", {"clvk": clvk})}
+                 "opencl": read_manifest(cl, "opencl", {"clvk": clvk}),
+                 "d3d10": read_manifest(d3d10, "d3d10", {"mesa": d3d10_mesa})}
     candidate_manifest = read_candidate_umds(candidates)
     check_required(manifests)
     for name, proxy in (("turnip.json", "viogpuopengl.dll"),
@@ -287,7 +316,8 @@ def assemble(driver, gl, cl, mesa, clvk, candidates):
                "inf_sha256": sha(inf), "api_files_before_signing": files,
                "public_loaders": public_loaders,
                "loader_probes": manifests["opencl"]["loader_probes"],
-               "registration": {key: value[1] for key, value in REGISTRATION.items()}}
+               "registration": {key: value[1] for key, value in REGISTRATION.items()},
+               "d3d_registration": dict(D3D_REGISTRATION)}
     (driver / RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     return receipt
 
@@ -372,6 +402,15 @@ def finalize(driver):
     for key, (_, filename, _, flags) in REGISTRATION.items():
         require(f'HKR,,{key},{flags},"%13%\\{filename}"' in text,
                 f"Missing device-scoped registration: {key}")
+    require(inventory.get("d3d_registration") == D3D_REGISTRATION, "Wrong D3D UMD registration mapping")
+    for key, filename in D3D_REGISTRATION.items():
+        require(text.splitlines().count(d3d_registration_line(key, filename)) == 1,
+                f"Missing device-scoped D3D UMD registration: {key}")
+    require(NATIVE_UMD_REGISTRATION not in text, "Native-only D3D UMD registration survived composition")
+    for name, (machine, _) in D3D10_FILES.items():
+        entry = inventory["api_files_before_signing"].get(name, {})
+        require(entry.get("machine") == machine and pe_machine(driver / name) == MACHINES[machine],
+                f"Wrong D3D10 user-mode driver architecture: {name}")
     files = {name: sha(driver / name) for name in sorted((set(names) | {inf_name}) - {RECEIPT})}
     loaders = []
     for source, directory, arch in (("OpenCL.dll", "System32", "arm64x"),
@@ -388,7 +427,8 @@ def finalize(driver):
               "candidate_sources": inventory["candidate_sources"],
               "candidate_activation": inventory["candidate_activation"],
               "candidate_umds": inventory["candidate_umds"],
-              "registration": inventory["registration"]}
+              "registration": inventory["registration"],
+              "d3d_registration": inventory["d3d_registration"]}
     manifest_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
@@ -401,17 +441,20 @@ def main():
     parser.add_argument("--cl", type=Path)
     parser.add_argument("--mesa")
     parser.add_argument("--clvk")
+    parser.add_argument("--d3d10", type=Path)
+    parser.add_argument("--d3d10-mesa")
     parser.add_argument("--candidate-root", type=Path)
     args = parser.parse_args()
     if args.finalize:
         receipt = finalize(args.driver)
         print(f"PASS final inventory of {len(receipt['files'])} driver files; catalog signing pending")
         return
-    parser.error("--gl --cl --mesa --clvk required for staging") if any(
-        value is None for value in (args.gl, args.cl, args.mesa, args.clvk)) else None
+    parser.error("--gl --cl --d3d10 --mesa --clvk --d3d10-mesa required for staging") if any(
+        value is None for value in (args.gl, args.cl, args.d3d10, args.mesa, args.clvk, args.d3d10_mesa)) else None
     candidates = args.candidate_root if args.candidate_root is not None else build_candidate_umds()
-    receipt = assemble(args.driver, args.gl, args.cl, args.mesa, args.clvk, candidates)
+    receipt = assemble(args.driver, args.gl, args.cl, args.d3d10, args.mesa, args.clvk, args.d3d10_mesa, candidates)
     print(f"PASS staged {len(receipt['api_files_before_signing'])} flat API files in display INF")
+    print("PASS D3D10/11 UMD registered through the ARM64X entry, with an x86 UMD for WoW64")
     print("PASS staged DXVK/VKD3D ARM64 candidates flat and unregistered")
     print("PENDING PE/catalog signing, InfVerif, public-loader install, ABI and GPU tests")
 

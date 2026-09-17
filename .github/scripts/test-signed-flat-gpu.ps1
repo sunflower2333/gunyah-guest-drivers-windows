@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Disposable Windows CI runner only. No adapter staging, binding or GPU context.
 [CmdletBinding()]
-param([string]$Output='out', [string]$GlProbes='opengl-payload', [string]$ClProbes='opencl-payload')
+param([string]$Output='out', [string]$GlProbes='opengl-payload', [string]$ClProbes='opencl-payload',
+    [string]$D3dProbes='d3d10-payload')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This trust/ABI fixture is for disposable GitHub runners' }
@@ -9,6 +10,7 @@ $outputRoot = (Resolve-Path $Output).Path
 $driver = Join-Path $outputRoot 'drivers/viogpu'
 $gl = (Resolve-Path $GlProbes).Path
 $cl = (Resolve-Path $ClProbes).Path
+$d3d = (Resolve-Path $D3dProbes).Path
 Import-Module (Join-Path $outputRoot 'viogpu-install-certificates.psm1') -Force
 Add-Type -Path (Join-Path $outputRoot 'viogpu-install-native.cs')
 $cat = Join-Path $driver 'viogpuwddm.cat'
@@ -63,8 +65,12 @@ try {
         if ($LASTEXITCODE) { throw "Signed $arch GL/Vulkan ABI failed" }
         & (Join-Path $gl "gles-probe-$arch.exe") --load-only $driver
         if ($LASTEXITCODE) { throw "Signed $arch GLES ABI failed" }
+        # ARM64 and x64 processes enter through the ARM64X viogpud3dx.dll, x86
+        # through viogpud3d_x86.dll; each must reach its own Mesa UMD build.
+        & (Join-Path $d3d "d3d-umd-probe-$arch.exe") $driver
+        if ($LASTEXITCODE) { throw "Signed $arch D3D10 UMD ABI failed" }
     }
-    Write-Host 'PASS signed flat native/EC/x86 loading; GPU rendering and driver binding remain untested'
+    Write-Host 'PASS signed flat native/EC/x86 GL, CL and D3D UMD loading; GPU rendering and driver binding remain untested'
 } finally {
     Remove-GpuAttemptTrust $created
     $cert.Dispose()

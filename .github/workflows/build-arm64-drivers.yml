@@ -428,9 +428,269 @@ jobs:
           path: mesa-umd/
           if-no-files-found: error
 
+  mesa-umd-emulated:
+    # Emulated x64 and x86 processes cannot load the native ARM64 UMD, so D3D10
+    # and D3D11 reported "not supported" there. These are the same Mesa zink UMD
+    # built for each emulated architecture. Zink opens the architecture's
+    # private Vulkan loader (viogpu_gl_loader_<arch>.dll), which the OpenGL
+    # payload already ships in the same DriverStore directory.
+    name: Mesa D3D10 UMD (${{ matrix.arch }}, emulated processes)
+    needs: zink-wait-tests
+    runs-on: windows-2025-vs2026
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            msvc: x64
+            triple: x86_64
+            family: x86_64
+            machine: '8664'
+          - arch: x86
+            msvc: x64_x86
+            triple: i686
+            family: x86
+            machine: '14C'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+
+      - name: Set up MSVC and WDK
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+
+      - name: Install the WDK matching the selected SDK
+        shell: pwsh
+        run: |
+          # Same kit rule as the ARM64 UMD: every Windows header from one kit.
+          $sdkVersion = ($env:WindowsSDKVersion -replace '\\+$', '')
+          if ([string]::IsNullOrWhiteSpace($sdkVersion)) {
+            throw 'msvc-dev-cmd did not report a Windows SDK version'
+          }
+          $roots = @(
+            'C:\Program Files (x86)\Windows Kits\10\Include',
+            'C:\Program Files\Windows Kits\10\Include'
+          ) | Where-Object { Test-Path $_ }
+          function Test-KitComplete($version) {
+            foreach ($root in $roots) {
+              $kit = Join-Path $root $version
+              if ((Test-Path (Join-Path $kit 'um\d3d10umddi.h')) -and
+                  (Test-Path (Join-Path $kit 'shared\d3dkmddi.h')) -and
+                  (Test-Path (Join-Path $kit 'um\windows.h'))) {
+                return $kit
+              }
+            }
+            return $null
+          }
+          $kit = Test-KitComplete $sdkVersion
+          if ($null -eq $kit) {
+            Write-Host "SDK $sdkVersion has no WDK headers; installing the WDK."
+            $installer = Join-Path $env:RUNNER_TEMP 'wdksetup.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile $installer
+            $proc = Start-Process -FilePath $installer -ArgumentList '/quiet', '/norestart', '/features', '+' -Wait -PassThru
+            Write-Host "WDK installer exit code: $($proc.ExitCode)"
+            $kit = Test-KitComplete $sdkVersion
+          }
+          if ($null -eq $kit) {
+            throw "no complete Windows kit for $sdkVersion after installing the WDK"
+          }
+          Write-Host "kit providing SDK and WDK headers: $kit"
+          foreach ($header in @('windows.h', 'd3dkmthk.h', 'd3dkmddi.h', 'd3d10umddi.h', 'd3dumddi.h')) {
+            $found = Get-ChildItem -Path ($env:INCLUDE -split ';' | Where-Object { $_ -and (Test-Path $_) }) `
+              -Filter $header -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -eq $found) { throw "required SDK/WDK header not found on INCLUDE: $header" }
+            if ($found.FullName -notmatch [regex]::Escape($sdkVersion)) {
+              throw "$header resolves outside kit ${sdkVersion}: $($found.FullName)"
+            }
+            Write-Host "$header -> $($found.FullName)"
+          }
+
+      - name: Set up Python build tools
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Meson generators and Windows flex/bison
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade `
+            "meson==1.9.1" mako packaging pyyaml
+          if ($LASTEXITCODE) { throw 'Python build tools failed' }
+          $flex = Get-Command win_flex.exe -ErrorAction SilentlyContinue
+          if ($null -eq $flex) {
+            choco install winflexbison3 --yes --no-progress
+            if ($LASTEXITCODE) { throw 'WinFlexBison installation failed' }
+            $flex = Get-ChildItem C:\ProgramData\chocolatey\lib -Recurse -Filter win_flex.exe | Select-Object -First 1
+            if (!$flex) { throw 'Missing win_flex.exe' }
+            $flexBin = $flex.DirectoryName
+          } else {
+            $flexBin = Split-Path -Parent $flex.Path
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $flexBin
+          Write-Host "win_flex -> $flexBin"
+
+      - name: Configure D3D10 UMD on zink
+        shell: pwsh
+        working-directory: external/mesa
+        run: |
+          $arch = '${{ matrix.arch }}'
+          $buildDir = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-$arch"
+          $mesonOptions = @(
+            '--backend=ninja',
+            '--buildtype=release',
+            # A failed assert must never abort() the application hosting the UMD.
+            '-Db_ndebug=true',
+            '-Ddebug=true',
+            '-Dplatforms=windows',
+            '-Dgallium-drivers=zink',
+            '-Dvulkan-drivers=[]',
+            '-Dgallium-d3d10umd=true',
+            '-Dgallium-d3d10umd-backend=zink',
+            "-Dgallium-d3d10-dll-name=viogpud3d_$arch",
+            # Zink opens viogpu_gl_loader_<arch>.dll beside the UMD instead of
+            # the public vulkan-1.dll, which has no emulated-architecture view.
+            "-Dwindows-private-gl-arch=$arch",
+            '-Dopengl=false',
+            '-Dgles1=disabled',
+            '-Dgles2=disabled',
+            '-Degl=disabled',
+            '-Dglx=disabled',
+            '-Dgbm=disabled',
+            '-Dllvm=disabled',
+            '-Dshader-cache=disabled',
+            '-Dzlib=enabled',
+            '-Dzlib:default_library=static',
+            '-Dzstd=disabled',
+            '-Db_vscrt=static_from_buildtype',
+            '-Dtools=[]',
+            '-Dbuild-tests=false',
+            '-Dwerror=false'
+          )
+          $env:CC = 'clang-cl'
+          $env:CXX = 'clang-cl'
+          $env:AR = 'llvm-lib'
+          $crossFile = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-$arch-cross.ini"
+          @(
+            '[binaries]'
+            "c = ['clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
+            "cpp = ['clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
+            "ar = 'llvm-lib'"
+            ''
+            '[host_machine]'
+            "system = 'windows'"
+            "cpu_family = '${{ matrix.family }}'"
+            "cpu = '${{ matrix.family }}'"
+            "endian = 'little'"
+            ''
+            '[properties]'
+            'needs_exe_wrapper = true'
+            ''
+            '[built-in options]'
+            "c_args = ['/Zi']"
+            "cpp_args = ['/Zi']"
+            "c_link_args = ['/DEBUG']"
+            "cpp_link_args = ['/DEBUG']"
+          ) | Set-Content -LiteralPath $crossFile -Encoding ascii
+          $setupArgs = @('setup', $buildDir, '.', '--cross-file', $crossFile) + $mesonOptions
+          & meson @setupArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Select-String -LiteralPath (Join-Path $buildDir 'build.ninja') -SimpleMatch "ZINK_PRIVATE_VK_LIBNAME" -Quiet)) {
+            throw "zink is not configured for the private $arch Vulkan loader"
+          }
+
+      - name: Compile, link and validate the D3D10 UMD
+        shell: pwsh
+        run: |
+          $arch = '${{ matrix.arch }}'
+          $buildDir = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-$arch"
+          meson compile -C $buildDir --ninja-args=-k0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $name = "viogpud3d_$arch.dll"
+          $libraries = @(Get-ChildItem -Path $buildDir -Recurse -File -Filter $name)
+          if ($libraries.Count -ne 1) { throw "expected exactly one $name, found $($libraries.Count)" }
+          $library = $libraries[0]
+          $headers = (& dumpbin /headers $library.FullName) -join "`n"
+          if ($LASTEXITCODE -or $headers -notmatch '(?im)^\s*${{ matrix.machine }} machine') {
+            throw "$name is not a ${{ matrix.machine }} machine image"
+          }
+          # The runtime asks for undecorated names, including in 32-bit processes.
+          $exports = (& dumpbin /exports $library.FullName) -join "`n"
+          foreach ($symbol in @('OpenAdapter10', 'OpenAdapter10_2')) {
+            $pattern = '(?m)^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+' + [regex]::Escape($symbol) + '(?:\s*=\s*\S+)?\s*$'
+            if ($exports -notmatch $pattern) { throw "$name must export undecorated $symbol" }
+          }
+          $imports = (& dumpbin /dependents $library.FullName) -join "`n"
+          $imports
+          if ($imports -match '(?im)^\s*(?:msvcp[0-9_]*|vcruntime[0-9_]*|z-1|zlib1|vulkan-1|vulkan_freedreno|libgallium_d3d10)\.dll\s*$') {
+            throw "$name has a dependency the driver package does not ship for $arch"
+          }
+          $symbols = Join-Path $library.DirectoryName "viogpud3d_$arch.pdb"
+          if (!(Test-Path $symbols)) { throw "$name has no matching PDB" }
+          python .install_scripts/verify-pe-pdb.py $library.FullName $symbols
+          if ($LASTEXITCODE -ne 0) { throw "$name/PDB identity mismatch" }
+          New-Item -ItemType Directory -Force mesa-umd | Out-Null
+          Copy-Item $library.FullName, $symbols mesa-umd -Force
+          Get-FileHash "mesa-umd/$name" -Algorithm SHA256 | Format-List
+
+      - name: Upload the Mesa user-mode driver
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesa-viogpud3d-${{ matrix.arch }}
+          path: mesa-umd/
+          if-no-files-found: error
+
+  d3d10-multiarch:
+    name: D3D10 UMD ARM64X entry and multi-architecture payload
+    needs: mesa-umd-emulated
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: mesa-viogpud3d-x64
+          path: d3d10-inputs/x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: mesa-viogpud3d-x86
+          path: d3d10-inputs/x86
+      - name: Build the ARM64X entry and load probes
+        shell: pwsh
+        run: ./viogpu/d3d10/build-front.ps1 -Output d3d10-inputs/front
+      - name: Stage the flat D3D10 payload
+        shell: pwsh
+        run: |
+          $mesa = git rev-parse HEAD:external/mesa
+          if ($LASTEXITCODE) { throw 'Cannot read the Mesa gitlink' }
+          python viogpu/d3d10/stage.py --inputs d3d10-inputs --output d3d10-payload --symbols d3d10-symbols `
+            --mesa $mesa.Trim() --parent (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE) { throw 'D3D10 payload staging failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-d3d10-multiarch-unsigned
+          path: d3d10-payload/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-d3d10-symbols
+          path: d3d10-symbols/
+          if-no-files-found: error
+
   build:
     runs-on: windows-11-arm
-    needs: [mesa-umd, opengl-icd, opencl-icd, flat-package-tests]
+    needs: [mesa-umd, d3d10-multiarch, opengl-icd, opencl-icd, flat-package-tests]
 
     steps:
       - name: Checkout
@@ -443,6 +703,18 @@ jobs:
         with:
           name: mesa-viogpud3d-arm64
           path: mesa-umd
+
+      - name: Download the multi-architecture D3D10 UMD payload
+        uses: actions/download-artifact@v4
+        with:
+          name: viogpu-d3d10-multiarch-unsigned
+          path: d3d10-payload
+
+      - name: Download the D3D10 UMD symbols
+        uses: actions/download-artifact@v4
+        with:
+          name: viogpu-d3d10-symbols
+          path: d3d10-symbols
 
       - name: Download the ABI-validated OpenGL system ICD payload
         uses: actions/download-artifact@v4
@@ -531,7 +803,7 @@ jobs:
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
           # Unified flat API installation atop frozen 58473. All API files
           # share the display INF and the same signed catalog as the KMD/UMD.
-          $minor = 58507
+          $minor = 58508
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -615,8 +887,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58507) {
-            throw "Unified flat candidate requires reserved version 100.6.101.58507"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58508) {
+            throw "Unified flat candidate requires reserved version 100.6.101.58508"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -882,6 +1154,7 @@ jobs:
             }
             if ($d.n -eq 'viogpu') {
               python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
+                --d3d10 d3d10-payload --d3d10-mesa (git rev-parse HEAD:external/mesa).Trim() `
                 --mesa 3e50dd4ba4f941fcb4ddeb91d0cbd688cabfdb4a --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
               if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
@@ -924,6 +1197,11 @@ jobs:
               Copy-Item -LiteralPath $mesaPdb -Destination $dest -Force
               python .install_scripts/verify-pe-pdb.py (Join-Path $dest 'viogpud3d.dll') (Join-Path $dest 'viogpud3d.pdb')
               if ($LASTEXITCODE -ne 0) { throw 'Packaged Mesa UMD/PDB identity mismatch' }
+              foreach ($umdName in @('viogpud3dx', 'viogpud3d_x64', 'viogpud3d_x86')) {
+                Copy-Item -LiteralPath (Join-Path 'd3d10-symbols' "$umdName.pdb") -Destination $dest -Force
+                python .install_scripts/verify-pe-pdb.py (Join-Path $dest "$umdName.dll") (Join-Path $dest "$umdName.pdb")
+                if ($LASTEXITCODE -ne 0) { throw "Packaged $umdName/PDB identity mismatch" }
+              }
             }
             $has = (Get-ChildItem "$dest" | ForEach-Object Name) -join ' '
             Write-Host "packed $($d.n): $has"
@@ -965,7 +1243,7 @@ jobs:
         run: |
           python viogpu/package/verify_bundle.py --output out `
             --mesa 3e50dd4ba4f941fcb4ddeb91d0cbd688cabfdb4a --mesa-run 34757244563 `
-            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58507
+            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58508
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact

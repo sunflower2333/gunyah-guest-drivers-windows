@@ -12,6 +12,7 @@ import flat_package as package
 
 MESA = "a" * 40
 CLVK = "b" * 40
+D3D10_MESA = "d" * 40
 
 
 def pe(machine):
@@ -30,9 +31,9 @@ class ComposerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.driver, self.gl, self.cl, self.candidates = (
-            self.root / name for name in ("driver", "gl", "cl", "candidates"))
-        for directory in (self.driver, self.gl, self.cl, self.candidates):
+        self.driver, self.gl, self.cl, self.d3d10, self.candidates = (
+            self.root / name for name in ("driver", "gl", "cl", "d3d10", "candidates"))
+        for directory in (self.driver, self.gl, self.cl, self.d3d10, self.candidates):
             directory.mkdir()
         source = Path(__file__).parents[1] / "viogpuwddm/viogpuwddm.inx"
         self.inf = self.driver / "viogpuwddm.inf"
@@ -43,7 +44,12 @@ class ComposerTests(unittest.TestCase):
         self.manifests = {
             "opengl": {"schema": 1, "family": "opengl", "sources": {"mesa": MESA}, "files": {}},
             "opencl": {"schema": 1, "family": "opencl", "sources": {"clvk": CLVK}, "files": {}},
+            "d3d10": {"schema": 1, "family": "d3d10", "sources": {"mesa": D3D10_MESA}, "files": {}},
         }
+        for name, (machine, role) in package.D3D10_FILES.items():
+            self.add("d3d10", name, machine, role)
+        for arch in package.ARCHES:
+            self.add("d3d10", f"d3d-umd-probe-{arch}.exe", arch, "probe")
         for arch in package.ARCHES:
             for stem in ("gl", "egl", "gles1", "gles2", "gl_vk", "gl_loader"):
                 self.add("opengl", f"viogpu_{stem}_{arch}.dll", arch, "runtime")
@@ -68,14 +74,14 @@ class ComposerTests(unittest.TestCase):
         self.save_candidates()
 
     def add(self, family, name, machine, role, content=None):
-        directory = self.gl if family == "opengl" else self.cl
+        directory = {"opengl": self.gl, "opencl": self.cl, "d3d10": self.d3d10}[family]
         data = content if content is not None else pe(machine)
         (directory / name).write_bytes(data)
         self.manifests[family]["files"][name] = {
             "sha256": hashlib.sha256(data).hexdigest(), "machine": machine, "role": role}
 
     def save(self):
-        for family, path in (("opengl", self.gl), ("opencl", self.cl)):
+        for family, path in (("opengl", self.gl), ("opencl", self.cl), ("d3d10", self.d3d10)):
             (path / package.MANIFEST).write_text(json.dumps(self.manifests[family]))
 
     def save_candidates(self):
@@ -98,7 +104,8 @@ class ComposerTests(unittest.TestCase):
         }))
 
     def assemble(self):
-        return package.assemble(self.driver, self.gl, self.cl, MESA, CLVK, self.candidates)
+        return package.assemble(self.driver, self.gl, self.cl, self.d3d10, MESA, CLVK, D3D10_MESA,
+                                self.candidates)
 
     def snapshot(self):
         return {p.name: p.read_bytes() for p in self.driver.iterdir()}
@@ -129,6 +136,55 @@ class ComposerTests(unittest.TestCase):
         self.assertFalse(registered.intersection(package.CANDIDATE_UMDS))
         self.assertNotIn("Program Files", text)
         self.assertNotIn("SOFTWARE\\Khronos", text)
+
+    def test_d3d_umd_registration_selects_arm64x_entry_and_wow_umd(self):
+        receipt = self.assemble()
+        text = self.inf.read_text()
+        copied = package.source_files(text)
+        self.assertTrue(set(package.D3D10_FILES) <= set(copied))
+        self.assertIn("viogpud3d.dll", copied)  # the native Mesa UMD behind the entry
+        self.assertFalse({f"d3d-umd-probe-{arch}.exe" for arch in package.ARCHES} & set(copied))
+        lines = text.splitlines()
+        self.assertEqual(lines.count(package.d3d_registration_line("UserModeDriverName", "viogpud3dx.dll")), 1)
+        self.assertEqual(lines.count(package.d3d_registration_line("UserModeDriverNameWow", "viogpud3d_x86.dll")), 1)
+        self.assertNotIn(package.NATIVE_UMD_REGISTRATION, text)
+        self.assertEqual(receipt["d3d_registration"], package.D3D_REGISTRATION)
+        self.assertNotIn("UserModeDriverName", receipt["registration"])
+        self.assertEqual(package.finalize(self.driver)["d3d_registration"], package.D3D_REGISTRATION)
+
+    def test_reject_missing_x86_d3d_umd(self):
+        name = "viogpud3d_x86.dll"
+        (self.d3d10 / name).unlink()
+        del self.manifests["d3d10"]["files"][name]
+        self.save()
+        self.reject_unchanged("Missing actual x86 D3D10")
+
+    def test_reject_native_only_d3d_entry(self):
+        name = "viogpud3dx.dll"
+        self.manifests["d3d10"]["files"][name]["machine"] = "arm64"
+        self.save()
+        self.reject_unchanged("Missing actual arm64x D3D10")
+
+    def test_reject_wrong_d3d10_source(self):
+        self.manifests["d3d10"]["sources"]["mesa"] = "e" * 40
+        self.save()
+        self.reject_unchanged("d3d10 source mismatch")
+
+    def test_reject_inf_without_native_umd_registration(self):
+        self.inf.write_text(self.inf.read_text().replace('"%13%\\viogpud3d.dll","%13%\\viogpud3d.dll"',
+                                                         '"%13%\\other.dll","%13%\\viogpud3d.dll"'))
+        self.reject_unchanged("Unexpected VioGpuWddm_DeviceSettings directive")
+
+    def test_finalize_rejects_dropped_wow_registration(self):
+        self.assemble()
+        text = self.inf.read_text().replace("UserModeDriverNameWow", "UserModeDriverNameOld")
+        self.inf.write_text(text)
+        path = self.driver / package.RECEIPT
+        manifest = json.loads(path.read_text())
+        manifest["inf_sha256"] = package.sha(self.inf)
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "D3D UMD registration: UserModeDriverNameWow"):
+            package.finalize(self.driver)
 
     def test_catalog_manifest_inventory_uses_post_signing_hashes(self):
         self.assemble()
