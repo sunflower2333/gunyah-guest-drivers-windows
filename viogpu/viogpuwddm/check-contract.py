@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58504",
+        "$minor = 58505",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58504",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58505",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -2825,13 +2825,13 @@ def check_callback_table() -> None:
         r"initialData->DxgkDdiSetTargetGamma\s*=\s*VioGpuWddmSetTargetGamma;\s*"
         r"initialData->DxgkDdiSetTimingsFromVidPn\s*=\s*VioGpuWddmSetTimingsFromVidPn;\s*"
         r"initialData->DxgkDdiUpdateMonitorLinkInfo\s*=\s*VioGpuWddmUpdateMonitorLinkInfo;\s*"
-        r"#if\s+defined\(VIOGPU_ADVANCED_COLOR_MPO3\)\s*"
-        r"initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3\s*=\s*VioGpuWddmSetVidPnSourceAddressMpo3;\s*"
-        r"initialData->DxgkDdiCheckMultiPlaneOverlaySupport3\s*=\s*VioGpuWddmCheckMultiPlaneOverlaySupport3;\s*#endif\s*"
-        # Caps-only overlay probe: the OS may ask what planes exist while
-        # CheckMultiPlaneOverlaySupport3 still refuses every one of them.
+        # The MPO set is registered whole or not at all: dxgkrnl fails adapter
+        # start (CM_PROB_FAILED_POST_START) when the caps are advertised without
+        # the check and flip DDIs, so all three share the one-shot probe gate.
         r"if\s*\(g_VioGpuWddmOverlayProbe\)\s*\{\s*"
-        r"initialData->DxgkDdiGetMultiPlaneOverlayCaps\s*=\s*VioGpuWddmGetMultiPlaneOverlayCaps;\s*\}\s*"
+        r"initialData->DxgkDdiGetMultiPlaneOverlayCaps\s*=\s*VioGpuWddmGetMultiPlaneOverlayCaps;\s*"
+        r"initialData->DxgkDdiCheckMultiPlaneOverlaySupport3\s*=\s*VioGpuWddmCheckMultiPlaneOverlaySupport3;\s*"
+        r"initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3\s*=\s*VioGpuWddmSetVidPnSourceAddressMpo3;\s*\}\s*"
         r"#if\s+defined\(VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS\)\s*"
         r"initialData->DxgkDdiDisplayDetectControl\s*=\s*VioGpuWddmDisplayDetectControl;\s*"
         r"initialData->DxgkDdiQueryConnectionChange\s*=\s*VioGpuWddmQueryConnectionChange;\s*#endif\s*#endif"

@@ -174,5 +174,15 @@ enum : unsigned
      * there is no way to tell "MPO is unreachable" from "the probe never ran",
      * and the whole point of the caps probe is that distinction. */
     VioGpuOverlayCapsQueries = 85,
-    VioGpuDisplayCounterCount = 86,
+    /* MPO3. Check/flip are what make the overlay caps honest: declaring
+     * MaxOverlays without them fails adapter start (CM_PROB_FAILED_POST_START).
+     * Accepts are the ones that matter -- a non-zero flip accept means the
+     * fullscreen app's own allocation reached the scanout without DWM copying
+     * it, which is the whole point of the path. */
+    VioGpuOverlayCheckQueries = 86,
+    VioGpuOverlayCheckAccepts = 87,
+    VioGpuOverlayFlipCalls = 88,
+    VioGpuOverlayFlipRejects = 89,
+    VioGpuOverlayFlipAccepts = 90,
+    VioGpuDisplayCounterCount = 91,
 };

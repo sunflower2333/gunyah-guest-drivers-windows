@@ -6773,6 +6773,11 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD timingPathColorSpace = ReadDisplayCounter(VioGpuTimingPathColorSpace);
     DWORD timingPathRejects = ReadDisplayCounter(VioGpuTimingPathRejects);
     DWORD overlayCapsQueries = ReadDisplayCounter(VioGpuOverlayCapsQueries);
+    DWORD overlayCheckQueries = ReadDisplayCounter(VioGpuOverlayCheckQueries);
+    DWORD overlayCheckAccepts = ReadDisplayCounter(VioGpuOverlayCheckAccepts);
+    DWORD overlayFlipCalls = ReadDisplayCounter(VioGpuOverlayFlipCalls);
+    DWORD overlayFlipRejects = ReadDisplayCounter(VioGpuOverlayFlipRejects);
+    DWORD overlayFlipAccepts = ReadDisplayCounter(VioGpuOverlayFlipAccepts);
     DWORD displayMmioFlipCalls = ReadDisplayCounter(VioGpuDisplayMmioFlipCalls);
     DWORD displayMmioFlipRejects = ReadDisplayCounter(VioGpuDisplayMmioFlipRejects);
     DWORD displayMmioFlipRejectKind = ReadDisplayCounter(VioGpuDisplayMmioFlipRejectKind);
@@ -7364,6 +7369,16 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &timingPathRejects},
                                                                                                         {L"NativeOverlayCapsQueries",
                                                                                                          &overlayCapsQueries},
+                                                                                                        {L"NativeOverlayCheckQueries",
+                                                                                                         &overlayCheckQueries},
+                                                                                                        {L"NativeOverlayCheckAccepts",
+                                                                                                         &overlayCheckAccepts},
+                                                                                                        {L"NativeOverlayFlipCalls",
+                                                                                                         &overlayFlipCalls},
+                                                                                                        {L"NativeOverlayFlipRejects",
+                                                                                                         &overlayFlipRejects},
+                                                                                                        {L"NativeOverlayFlipAccepts",
+                                                                                                         &overlayFlipAccepts},
                                                                                                         {L"NativeDispla"
                                                                                                          L"yMmioFlipCal"
                                                                                                          L"ls",

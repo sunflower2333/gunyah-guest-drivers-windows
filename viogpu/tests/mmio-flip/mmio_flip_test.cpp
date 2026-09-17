@@ -45,11 +45,19 @@ int main()
                       VioGpuGuestAllocSubmitResult == VioGpuDisplayFlipPresentRejects + 1U &&
                       VioGpuTimingPathCalls == VioGpuMonitorLinkClaims + 1U &&
                       VioGpuOverlayCapsQueries == VioGpuTimingPathRejects + 1U &&
-                      VioGpuDisplayCounterCount == VioGpuOverlayCapsQueries + 1U,
+                      VioGpuOverlayCheckQueries == VioGpuOverlayCapsQueries + 1U &&
+                      VioGpuOverlayCheckAccepts == VioGpuOverlayCheckQueries + 1U &&
+                      VioGpuOverlayFlipCalls == VioGpuOverlayCheckAccepts + 1U &&
+                      VioGpuOverlayFlipRejects == VioGpuOverlayFlipCalls + 1U &&
+                      VioGpuOverlayFlipAccepts == VioGpuOverlayFlipRejects + 1U &&
+                      VioGpuDisplayCounterCount == VioGpuOverlayFlipAccepts + 1U,
                   "new display counters follow the 64 historical slots");
     // Every slot is distinct and inside the published array.
     {
-        unsigned slots[] = {VioGpuDisplayMmioFlipCalls,       VioGpuDisplayMmioFlipRejects,
+        unsigned slots[] = {VioGpuOverlayCheckQueries,        VioGpuOverlayCheckAccepts,
+                            VioGpuOverlayFlipCalls,           VioGpuOverlayFlipRejects,
+                            VioGpuOverlayFlipAccepts,
+                            VioGpuDisplayMmioFlipCalls,       VioGpuDisplayMmioFlipRejects,
                             VioGpuDisplayMmioFlipRejectKind,  VioGpuDisplayMmioFlipLastFlags,
                             VioGpuDisplayMmioFlipApplied,     VioGpuDisplayMmioFlipApplyFailures,
                             VioGpuDisplayMmioFlipLastApplyStatus, VioGpuDisplayFlipPresentCalls,

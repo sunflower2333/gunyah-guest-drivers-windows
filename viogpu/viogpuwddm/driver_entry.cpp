@@ -30,11 +30,13 @@ static BOOLEAN g_VioGpuWddmConnectorTimingModel = FALSE;
  * the app fullscreen changed nothing (40.5 delivered against 88 rendered),
  * because there is no independent-flip path to take.
  *
- * This arms only the *caps* half: DxgkDdiGetMultiPlaneOverlayCaps plus the
- * DriverCaps overlay fields, so dxgkrnl can ask. CheckMultiPlaneOverlaySupport3
- * keeps answering Supported=FALSE, so nothing is ever routed into the flip path
- * that is not written yet -- the probe changes what the OS may ask, never what
- * it may do. It is **one-shot**: the value is cleared as it is read, so a boot
+ * This now arms the whole MPO set -- caps, CheckMultiPlaneOverlaySupport3 and
+ * SetVidPnSourceAddressWithMultiPlaneOverlay3 -- because dxgkrnl refuses to
+ * finish adapter start when the caps are advertised without the other two
+ * (CM_PROB_FAILED_POST_START, measured). Check accepts exactly one unrotated,
+ * unscaled, opaque full-target plane and refuses everything else, so the only
+ * traffic the flip path can ever see is the one case it implements. It is
+ * **one-shot**: the value is cleared as it is read, so a boot
  * that goes wrong cannot repeat, which is the trap the guest-blob scanout
  * experiment fell into. */
 static BOOLEAN g_VioGpuWddmOverlayProbe = FALSE;
@@ -327,17 +329,18 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
         initialData->DxgkDdiSetTargetGamma = VioGpuWddmSetTargetGamma;
         initialData->DxgkDdiSetTimingsFromVidPn = VioGpuWddmSetTimingsFromVidPn;
         initialData->DxgkDdiUpdateMonitorLinkInfo = VioGpuWddmUpdateMonitorLinkInfo;
-#if defined(VIOGPU_ADVANCED_COLOR_MPO3)
-        /* Unreachable without overlay caps (MaxOverlays 0); WDDM 2.2 MPO also
-         * needs DxgkDdiGetMultiPlaneOverlayCaps. Separate experiment only. */
-        initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3 = VioGpuWddmSetVidPnSourceAddressMpo3;
-        initialData->DxgkDdiCheckMultiPlaneOverlaySupport3 = VioGpuWddmCheckMultiPlaneOverlaySupport3;
-#endif
-        /* Caps only: dxgkrnl may ask what planes exist. CheckMultiPlaneOverlaySupport3
-         * still refuses every plane, so no flip is ever routed here. */
+        /* The MPO set is all-or-nothing. VIOGPU_ADVANCED_COLOR_MPO3 was never
+         * defined anywhere, so these two were dead code with no function bodies
+         * at all, while the caps below were gated separately -- arming the probe
+         * therefore advertised MaxOverlays=1 with the check and flip entry
+         * points absent, and dxgkrnl refused to finish adapter start
+         * (CM_PROB_FAILED_POST_START, measured 2026-09-17). Register the whole
+         * set on the one gate so the caps can never be advertised alone. */
         if (g_VioGpuWddmOverlayProbe)
         {
             initialData->DxgkDdiGetMultiPlaneOverlayCaps = VioGpuWddmGetMultiPlaneOverlayCaps;
+            initialData->DxgkDdiCheckMultiPlaneOverlaySupport3 = VioGpuWddmCheckMultiPlaneOverlaySupport3;
+            initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3 = VioGpuWddmSetVidPnSourceAddressMpo3;
         }
 #if defined(VIOGPU_ADVANCED_COLOR_CONNECTION_DDIS)
         /* WDDM 2.2 connection model beside legacy child status. Separate
