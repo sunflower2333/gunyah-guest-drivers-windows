@@ -96,6 +96,9 @@ class ComposerTests(unittest.TestCase):
                 "role": "candidate-runtime",
                 "sha256": package.sha(path),
             }
+            if family == "dxvk":
+                files[name]["admission"] = package.CLOSED_ADMISSION + "StreamOutput"
+                files[name]["vulkan_loader"] = package.DXVK_VULKAN_LOADERS[name]
         (self.candidates / package.CANDIDATE_MANIFEST).write_text(json.dumps({
             "schema": 1,
             "activation": "unregistered-candidate",
@@ -364,6 +367,44 @@ class ComposerTests(unittest.TestCase):
     def test_reject_candidate_subdirectory(self):
         (self.candidates / "nested").mkdir()
         self.reject_unchanged("no subdirectories")
+
+    def edit_candidate(self, name, **fields):
+        path = self.candidates / package.CANDIDATE_MANIFEST
+        manifest = json.loads(path.read_text())
+        manifest["files"][name].update(fields)
+        path.write_text(json.dumps(manifest))
+
+    def test_dxvk_candidate_records_closed_gate_and_private_loader(self):
+        receipt = self.assemble()
+        entry = receipt["candidate_umds"]["viogpudxvk.dll"]
+        self.assertTrue(entry["admission"].startswith("closed; remaining: "))
+        self.assertEqual(entry["vulkan_loader"], "viogpu_gl_loader_arm64.dll")
+        text = self.inf.read_text()
+        self.assertNotIn("viogpudxvk", "\n".join(line for line in text.splitlines() if "DriverName" in line))
+        self.assertEqual(package.finalize(self.driver)["candidate_umds"]["viogpudxvk.dll"], entry)
+
+    def test_reject_dxvk_candidate_with_open_gate(self):
+        self.edit_candidate("viogpudxvk.dll", admission="OPEN")
+        self.reject_unchanged("closed admission gate")
+
+    def test_reject_dxvk_candidate_without_gate_record(self):
+        manifest = json.loads((self.candidates / package.CANDIDATE_MANIFEST).read_text())
+        del manifest["files"]["viogpudxvk.dll"]["admission"]
+        (self.candidates / package.CANDIDATE_MANIFEST).write_text(json.dumps(manifest))
+        self.reject_unchanged("closed admission gate")
+
+    def test_reject_dxvk_candidate_on_public_vulkan_loader(self):
+        self.edit_candidate("viogpudxvk.dll", vulkan_loader="vulkan-1.dll")
+        self.reject_unchanged("private Vulkan loader")
+
+    def test_finalize_rejects_opened_dxvk_gate(self):
+        self.assemble()
+        path = self.driver / package.RECEIPT
+        manifest = json.loads(path.read_text())
+        manifest["candidate_umds"]["viogpudxvk.dll"]["admission"] = "OPEN"
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "closed admission gate"):
+            package.finalize(self.driver)
 
     def test_finalize_rejects_candidate_activation(self):
         self.assemble()

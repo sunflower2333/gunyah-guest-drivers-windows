@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from flat_package import CANDIDATE_SOURCES, CANDIDATE_UMDS, D3D10_FILES, D3D_REGISTRATION
+from flat_package import CANDIDATE_SOURCES, CANDIDATE_SYMBOLS, CANDIDATE_UMDS, D3D10_FILES, D3D_REGISTRATION
 from flat_package import d3d_registration_line
 from flat_package import LOADER_PROBES, MACHINES, RECEIPT, REGISTRATION
 from flat_package import flat_name, pe_machine, require, sha, source_files
@@ -22,7 +22,7 @@ INSTALLER_FILES = (
     "viogpu-install-certificates.psm1", "DroidVM_Test.cer",
 )
 DEBUG_FILES = {"viogpuwddm.pdb", "viogpuwddm.map", "viogpud3d.pdb",
-               "viogpud3dx.pdb", "viogpud3d_x64.pdb", "viogpud3d_x86.pdb"}
+               "viogpud3dx.pdb", "viogpud3d_x64.pdb", "viogpud3d_x86.pdb"} | set(CANDIDATE_SYMBOLS)
 
 
 def verify(output, parent, mesa, mesa_run, clvk, clvk_run, version):

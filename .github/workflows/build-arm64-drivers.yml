@@ -688,9 +688,49 @@ jobs:
           path: d3d10-symbols/
           if-no-files-found: error
 
+  dxvk-umd:
+    # The DXVK D3D10/11 user-mode driver, built from the sunflower2333/dxvk
+    # commit pinned in viogpu/package/flat_package.py through that tree's own
+    # scripts/build-native-umd.ps1. viogpu/dxvk/build-umd.ps1 checks the image
+    # (machine, exact exports, OS-only imports, PDB identity, private Vulkan
+    # loader) and runs the tree's host gates. The package keeps it an
+    # unregistered candidate, so the job fails if its admission gate opens.
+    name: DXVK D3D10/11 UMD (${{ matrix.arch }}, unregistered candidate)
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            msvc: x64_arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+      - name: Build, validate and gate the pinned DXVK UMD
+        shell: pwsh
+        run: ./viogpu/dxvk/build-umd.ps1 -Architecture ${{ matrix.arch }} -Output dxvk-umd/${{ matrix.arch }} -Fixtures dxvk-fixtures/${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-dxvk-umd-${{ matrix.arch }}
+          path: dxvk-umd/${{ matrix.arch }}/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-dxvk-fixtures-${{ matrix.arch }}
+          path: dxvk-fixtures/${{ matrix.arch }}/
+          if-no-files-found: error
+
   build:
     runs-on: windows-11-arm
-    needs: [mesa-umd, d3d10-multiarch, opengl-icd, opencl-icd, flat-package-tests]
+    needs: [mesa-umd, d3d10-multiarch, dxvk-umd, opengl-icd, opencl-icd, flat-package-tests]
 
     steps:
       - name: Checkout
@@ -715,6 +755,43 @@ jobs:
         with:
           name: viogpu-d3d10-symbols
           path: d3d10-symbols
+
+      - name: Download the gated DXVK D3D10/11 candidate UMD
+        uses: actions/download-artifact@v4
+        with:
+          name: viogpu-dxvk-umd-arm64
+          path: dxvk-umd/arm64
+
+      - name: Download the DXVK ARM64 functional fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: viogpu-dxvk-fixtures-arm64
+          path: dxvk-fixtures
+
+      # The pinned DXVK tree's own functional fixtures, run natively on this
+      # ARM64 runner by its own scripts/test-native-arm64.ps1 before anything is
+      # packaged: Texture1D, runtime GPU dispatch, production OpenAdapter and
+      # CreateDevice entry with the real admission gate, allocation, predication,
+      # stream output, queries and a Microsoft D3D11 runtime Draw/readback/Present.
+      # The backend is WARP: DDI translation is proven, Turnip rendering is not.
+      - name: Run the pinned DXVK tree's ARM64 functional fixtures
+        shell: pwsh
+        run: |
+          $pins = @(Select-String -LiteralPath viogpu/package/flat_package.py -Pattern '^\s*"dxvk": "([0-9a-f]{40})",\s*$')
+          if ($pins.Count -ne 1) { throw 'Cannot read the pinned DXVK commit' }
+          $pin = $pins[0].Matches[0].Groups[1].Value
+          $dxvk = Join-Path $env:RUNNER_TEMP 'dxvk-functional'
+          git init --quiet $dxvk
+          git -C $dxvk remote add origin https://github.com/sunflower2333/dxvk.git
+          git -C $dxvk fetch --quiet --depth 1 origin $pin
+          if ($LASTEXITCODE) { throw "Cannot fetch DXVK $pin" }
+          git -C $dxvk checkout --quiet --detach FETCH_HEAD
+          if ($LASTEXITCODE -or (git -C $dxvk rev-parse HEAD).Trim() -cne $pin) { throw "DXVK checkout is not $pin" }
+          # The script binds the fixtures to the source they were built from
+          # through STATUS.txt and GITHUB_SHA; for this step that source is the pin.
+          $env:GITHUB_SHA = $pin
+          & (Join-Path $dxvk 'scripts/test-native-arm64.ps1') -Directory dxvk-fixtures
+          Write-Host "PASS DXVK $pin ARM64 functional fixtures (WARP backend; no Turnip rendering claim)"
 
       - name: Download the ABI-validated OpenGL system ICD payload
         uses: actions/download-artifact@v4
@@ -803,7 +880,7 @@ jobs:
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
           # Unified flat API installation atop frozen 58473. All API files
           # share the display INF and the same signed catalog as the KMD/UMD.
-          $minor = 58510
+          $minor = 58520
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -887,8 +964,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58510) {
-            throw "Unified flat candidate requires reserved version 100.6.101.58510"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58520) {
+            throw "Unified flat candidate requires reserved version 100.6.101.58520"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -1154,7 +1231,7 @@ jobs:
             }
             if ($d.n -eq 'viogpu') {
               python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
-                --d3d10 d3d10-payload --d3d10-mesa (git rev-parse HEAD:external/mesa).Trim() `
+                --d3d10 d3d10-payload --d3d10-mesa (git rev-parse HEAD:external/mesa).Trim() --dxvk dxvk-umd `
                 --mesa 3e50dd4ba4f941fcb4ddeb91d0cbd688cabfdb4a --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
               if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
@@ -1202,6 +1279,10 @@ jobs:
                 python .install_scripts/verify-pe-pdb.py (Join-Path $dest "$umdName.dll") (Join-Path $dest "$umdName.pdb")
                 if ($LASTEXITCODE -ne 0) { throw "Packaged $umdName/PDB identity mismatch" }
               }
+              # The DXVK candidate's symbols come from the dxvk-umd job's link.
+              Copy-Item -LiteralPath 'dxvk-umd/arm64/viogpudxvk.pdb' -Destination $dest -Force
+              python .install_scripts/verify-pe-pdb.py (Join-Path $dest 'viogpudxvk.dll') (Join-Path $dest 'viogpudxvk.pdb')
+              if ($LASTEXITCODE -ne 0) { throw 'Packaged DXVK candidate UMD/PDB identity mismatch' }
             }
             $has = (Get-ChildItem "$dest" | ForEach-Object Name) -join ' '
             Write-Host "packed $($d.n): $has"
@@ -1243,7 +1324,7 @@ jobs:
         run: |
           python viogpu/package/verify_bundle.py --output out `
             --mesa 3e50dd4ba4f941fcb4ddeb91d0cbd688cabfdb4a --mesa-run 34757244563 `
-            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58510
+            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58520
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact

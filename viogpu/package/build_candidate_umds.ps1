@@ -2,7 +2,12 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputRoot,
 
-    [string]$DxvkCommit = '48e25ca83b56b713a70b6ae9f57adaf3e6b09f29',
+    # Output of the dxvk-umd CI job (viogpu/dxvk/build-umd.ps1): one directory
+    # per architecture holding the built UMD and its dxvk-umd.json record.
+    [Parameter(Mandatory = $true)]
+    [string]$DxvkRoot,
+
+    [string]$DxvkCommit = '804a99ecf7e29179f2b72703f268d7051a3b4391',
     [string]$Vkd3dCommit = '376e716e4acdf7a9ded138b0099f2ee8a8863f91'
 )
 
@@ -133,18 +138,22 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
 
 $workRoot = Join-Path $env:RUNNER_TEMP 'droidvm-candidate-umds'
 New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
-$dxvkRoot = Join-Path $workRoot 'dxvk'
 $vkd3dRoot = Join-Path $workRoot 'vkd3d-proton'
-$dxvkOutput = Join-Path $workRoot 'dxvk-package'
 
-Checkout-ExactCommit 'sunflower2333/dxvk' $DxvkCommit $dxvkRoot
-Invoke-Arm64DeveloperCommand $dxvkRoot `
-    "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\build-native-umd.ps1 -OutputDirectory `"$dxvkOutput`"" `
-    'dxvk'
-
-$dxvkDll = Join-Path $dxvkOutput 'viogpudxvk.dll'
-if (-not (Test-Path -LiteralPath $dxvkDll -PathType Leaf)) {
-    throw "DXVK build did not produce $dxvkDll"
+# DXVK is built, gated and probed by its own CI job; accept only that job's
+# exact output for the pinned commit.
+$dxvkRecordPath = Join-Path $DxvkRoot 'arm64/dxvk-umd.json'
+$dxvkRecord = Get-Content -LiteralPath $dxvkRecordPath -Raw | ConvertFrom-Json
+if ($dxvkRecord.schema -ne 1 -or $dxvkRecord.family -cne 'dxvk' -or $dxvkRecord.architecture -cne 'arm64' -or
+    $dxvkRecord.activation -cne 'unregistered-candidate' -or $dxvkRecord.sources.dxvk -cne $DxvkCommit) {
+    throw "DXVK job output is not the pinned arm64 candidate: $dxvkRecordPath"
+}
+$dxvkDll = Join-Path $DxvkRoot 'arm64/viogpudxvk.dll'
+$dxvkEntry = $dxvkRecord.files.'viogpudxvk.dll'
+if (-not (Test-Path -LiteralPath $dxvkDll -PathType Leaf) -or $dxvkEntry.machine -cne 'arm64' -or
+    $dxvkEntry.role -cne 'candidate-runtime' -or
+    (Get-FileHash -LiteralPath $dxvkDll -Algorithm SHA256).Hash.ToLowerInvariant() -cne $dxvkEntry.sha256) {
+    throw "DXVK job output changed or is incomplete: $dxvkDll"
 }
 Assert-Arm64Pe $dxvkDll
 Assert-Exports $dxvkDll @('OpenAdapter10', 'OpenAdapter10_2')
@@ -176,6 +185,10 @@ foreach ($entry in @(
         sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
 }
+# Carry the DXVK job's observed admission gate and loader choice into the
+# package receipt: the reason the candidate stays unregistered travels with it.
+$files['viogpudxvk.dll']['admission'] = [string]$dxvkRecord.gates.gate_state
+$files['viogpudxvk.dll']['vulkan_loader'] = [string]$dxvkRecord.vulkan_loader
 
 $manifest = [ordered]@{
     schema = 1

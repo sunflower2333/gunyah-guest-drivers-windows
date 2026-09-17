@@ -2,7 +2,7 @@
 # Disposable Windows CI runner only. No adapter staging, binding or GPU context.
 [CmdletBinding()]
 param([string]$Output='out', [string]$GlProbes='opengl-payload', [string]$ClProbes='opencl-payload',
-    [string]$D3dProbes='d3d10-payload')
+    [string]$D3dProbes='d3d10-payload', [string]$DxvkProbes='dxvk-umd')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This trust/ABI fixture is for disposable GitHub runners' }
@@ -11,6 +11,7 @@ $driver = Join-Path $outputRoot 'drivers/viogpu'
 $gl = (Resolve-Path $GlProbes).Path
 $cl = (Resolve-Path $ClProbes).Path
 $d3d = (Resolve-Path $D3dProbes).Path
+$dxvk = (Resolve-Path $DxvkProbes).Path
 Import-Module (Join-Path $outputRoot 'viogpu-install-certificates.psm1') -Force
 Add-Type -Path (Join-Path $outputRoot 'viogpu-install-native.cs')
 $cat = Join-Path $driver 'viogpuwddm.cat'
@@ -70,7 +71,20 @@ try {
         & (Join-Path $d3d "d3d-umd-probe-$arch.exe") $driver
         if ($LASTEXITCODE) { throw "Signed $arch D3D10 UMD ABI failed" }
     }
-    Write-Host 'PASS signed flat native/EC/x86 GL, CL and D3D UMD loading; GPU rendering and driver binding remain untested'
+    # DXVK candidate (ARM64): the signed image loads, its OpenAdapter10 gate is
+    # closed, and it resolves the private viogpu_gl_loader_arm64.dll beside it.
+    $dxvkLog = Join-Path $env:RUNNER_TEMP 'dxvk-umd-probe-log'
+    New-Item -ItemType Directory -Force $dxvkLog | Out-Null
+    $env:DXVK_LOG_PATH = $dxvkLog
+    try {
+        & (Join-Path $dxvk 'arm64/dxvk-umd-probe-arm64.exe') $driver
+        $probeExit = $LASTEXITCODE
+    } finally {
+        Remove-Item Env:DXVK_LOG_PATH
+    }
+    Get-ChildItem -LiteralPath $dxvkLog -File | ForEach-Object { Write-Host "== $($_.Name)"; Get-Content -LiteralPath $_.FullName }
+    if ($probeExit) { throw 'Signed arm64 DXVK candidate UMD ABI failed' }
+    Write-Host 'PASS signed flat native/EC/x86 GL, CL and D3D UMD loading, ARM64 DXVK candidate loading; GPU rendering and driver binding remain untested'
 } finally {
     Remove-GpuAttemptTrust $created
     $cert.Dispose()

@@ -24,13 +24,18 @@ MANIFEST = "flat-runtime.json"
 RECEIPT = "viogpu-flat-package.json"
 CANDIDATE_MANIFEST = "candidate-sources.json"
 CANDIDATE_SOURCES = {
-    "dxvk": "48e25ca83b56b713a70b6ae9f57adaf3e6b09f29",
+    "dxvk": "804a99ecf7e29179f2b72703f268d7051a3b4391",
     "vkd3d": "376e716e4acdf7a9ded138b0099f2ee8a8863f91",
 }
 CANDIDATE_UMDS = {
     "viogpudxvk.dll": ("dxvk", "arm64"),
     "viogpud3d12.dll": ("vkd3d", "arm64"),
 }
+# Symbols shipped beside the signed package (not cataloged) for candidates built
+# by their own CI job, and the private Vulkan loader each DXVK build resolves.
+CANDIDATE_SYMBOLS = {"viogpudxvk.pdb": "viogpudxvk.dll"}
+DXVK_VULKAN_LOADERS = {"viogpudxvk.dll": "viogpu_gl_loader_arm64.dll"}
+CLOSED_ADMISSION = "closed; remaining: "
 REGISTRATION = {
     "OpenGLDriverName": ("opengl", "viogpuopengl.dll", "arm64x", "0x00010000"),
     "OpenGLDriverNameWow": ("opengl", "viogpuopengl_x86.dll", "x86", "0x00010000"),
@@ -124,8 +129,9 @@ def read_manifest(root, family, expected_sources):
     return data
 
 
-def build_candidate_umds():
+def build_candidate_umds(dxvk):
     require(os.name == "nt", "Candidate UMD auto-build is available only on Windows")
+    require(dxvk is not None and dxvk.is_dir(), "The dxvk-umd job output (--dxvk) is required")
     runner_temp = os.environ.get("RUNNER_TEMP")
     require(runner_temp, "RUNNER_TEMP is required for candidate UMD auto-build")
     output = Path(runner_temp) / "droidvm-candidate-umd-package"
@@ -134,6 +140,7 @@ def build_candidate_umds():
     subprocess.run([
         "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
         "-OutputRoot", str(output),
+        "-DxvkRoot", str(dxvk.resolve()),
         "-DxvkCommit", CANDIDATE_SOURCES["dxvk"],
         "-Vkd3dCommit", CANDIDATE_SOURCES["vkd3d"],
     ], check=True)
@@ -163,7 +170,18 @@ def read_candidate_umds(root):
                 re.fullmatch(r"[a-fA-F0-9]{64}", entry["sha256"]) and
                 sha(root / name) == entry["sha256"].lower(), f"Changed candidate UMD: {name}")
         require(pe_machine(root / name) == MACHINES[machine], f"Candidate PE machine mismatch: {name}")
+        if family == "dxvk":
+            check_dxvk_candidate(name, entry)
     return data
+
+
+def check_dxvk_candidate(name, entry):
+    # An unregistered candidate is only coherent while its own admission gate
+    # is closed; the DXVK job records the gate it observed.
+    require(isinstance(entry.get("admission"), str) and entry["admission"].startswith(CLOSED_ADMISSION),
+            f"DXVK candidate must record a closed admission gate: {name}")
+    require(entry.get("vulkan_loader") == DXVK_VULKAN_LOADERS[name],
+            f"DXVK candidate must resolve its private Vulkan loader: {name}")
 
 
 def check_required(manifests):
@@ -364,6 +382,8 @@ def check_candidates_in_receipt(inventory):
         require(entry.get("family") == family and entry.get("machine") == machine and
                 entry.get("role") == "candidate-runtime", f"Wrong candidate UMD receipt: {name}")
         require(name.casefold() not in registered, f"Candidate UMD became active registration: {name}")
+        if family == "dxvk":
+            check_dxvk_candidate(name, entry)
 
 
 def finalize(driver):
@@ -444,6 +464,7 @@ def main():
     parser.add_argument("--d3d10", type=Path)
     parser.add_argument("--d3d10-mesa")
     parser.add_argument("--candidate-root", type=Path)
+    parser.add_argument("--dxvk", type=Path, help="dxvk-umd CI job output, one directory per architecture")
     args = parser.parse_args()
     if args.finalize:
         receipt = finalize(args.driver)
@@ -451,7 +472,7 @@ def main():
         return
     parser.error("--gl --cl --d3d10 --mesa --clvk --d3d10-mesa required for staging") if any(
         value is None for value in (args.gl, args.cl, args.d3d10, args.mesa, args.clvk, args.d3d10_mesa)) else None
-    candidates = args.candidate_root if args.candidate_root is not None else build_candidate_umds()
+    candidates = args.candidate_root if args.candidate_root is not None else build_candidate_umds(args.dxvk)
     receipt = assemble(args.driver, args.gl, args.cl, args.d3d10, args.mesa, args.clvk, args.d3d10_mesa, candidates)
     print(f"PASS staged {len(receipt['api_files_before_signing'])} flat API files in display INF")
     print("PASS D3D10/11 UMD registered through the ARM64X entry, with an x86 UMD for WoW64")

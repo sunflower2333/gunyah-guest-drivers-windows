@@ -69,6 +69,16 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(receipt["d3d_registration"], package.D3D_REGISTRATION)
         self.assertTrue({"viogpud3dx.pdb", "viogpud3d_x64.pdb", "viogpud3d_x86.pdb"} <= receipt["gpu_files"].keys())
 
+    def test_dxvk_candidate_ships_its_symbols(self):
+        receipt = self.verify()
+        self.assertIn("viogpudxvk.pdb", receipt["gpu_files"])
+        self.assertTrue(receipt["candidate_umds"]["viogpudxvk.dll"]["admission"].startswith("closed; "))
+
+    def test_reject_missing_dxvk_symbols(self):
+        (self.driver / "viogpudxvk.pdb").unlink()
+        with self.assertRaisesRegex(ValueError, "debug files"):
+            self.verify()
+
     def test_reject_stale_d3d10_producer(self):
         self.change_manifest(lambda m: m["sources"]["d3d10"].update(parent="d" * 40))
         with self.assertRaisesRegex(ValueError, "Mixed producer"):
