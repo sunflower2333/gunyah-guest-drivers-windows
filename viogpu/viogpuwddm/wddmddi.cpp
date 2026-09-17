@@ -4453,13 +4453,15 @@ static VOID FindNativeAllocationRangeByIova(_In_ VIOGPU_WDDM_CONTEXT *context,
 static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
                                         _In_ VIOGPU_WDDM_CONTEXT *context,
                                         _In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
-                                        _Inout_ VIOGPU_WDDM_NATIVE_SHARE *request)
+                                        _Inout_ VIOGPU_WDDM_NATIVE_SHARE *request,
+                                        _Out_ ULONG *stage)
 {
     UINT resourceId = 0;
     ULONGLONG length = 0;
     FindNativeAllocationRangeByIova(context, request->Iova, snapshot->ContextId, &resourceId, &length);
     if (resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || resourceId == MAXUINT || length == 0)
     {
+        *stage = 21;
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -4478,6 +4480,7 @@ static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
         share = new (NonPagedPoolNx) VIOGPU_WDDM_NATIVE_SHARE_ENTRY;
         if (share == NULL)
         {
+            *stage = 22;
             return STATUS_NO_MEMORY;
         }
         RtlZeroMemory(share, sizeof(*share));
@@ -4496,11 +4499,16 @@ static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
 static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
                                         _In_ VIOGPU_WDDM_CONTEXT *context,
                                         _In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
-                                        _In_ const VIOGPU_WDDM_NATIVE_SHARE *request)
+                                        _In_ const VIOGPU_WDDM_NATIVE_SHARE *request,
+                                        _Out_ ULONG *stage,
+                                        _Out_ ULONGLONG *shareSize,
+                                        _Out_ ULONG *hostResult)
 {
     VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = FindNativeShareByKeyLocked(adapter, request->ShareKey);
+    *shareSize = share != NULL ? share->Size : 0;
     if (share == NULL || share->Size != request->Size || share->OwnerContextId == snapshot->ContextId)
     {
+        *stage = share == NULL ? 31 : share->Size != request->Size ? 32 : 33;
         return STATUS_INVALID_PARAMETER;
     }
     const ULONGLONG requestEnd = request->Iova + request->Size - 1;
@@ -4514,6 +4522,7 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
         const ULONGLONG existingEnd = existing->Iova + existing->Size - 1;
         if (existing->Key == request->ShareKey || (request->Iova <= existingEnd && existing->Iova <= requestEnd))
         {
+            *stage = existing->Key == request->ShareKey ? 34 : 35;
             return STATUS_INVALID_PARAMETER;
         }
     }
@@ -4521,6 +4530,7 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
     VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *entry = new (NonPagedPoolNx) VIOGPU_WDDM_NATIVE_IMPORT_ENTRY;
     if (entry == NULL)
     {
+        *stage = 36;
         return STATUS_NO_MEMORY;
     }
     RtlZeroMemory(entry, sizeof(*entry));
@@ -4534,15 +4544,18 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
     if (!adapter->AcquireNativeSubmissionOperation())
     {
         delete entry;
+        *stage = 37;
         return STATUS_DEVICE_NOT_READY;
     }
     VIOGPU_HOST_CONTEXT_RESULT result = snapshot->Adapter->ImportNativeSharedResource(snapshot,
                                                                                       share->ResourceId,
                                                                                       request->Iova);
     adapter->ReleaseNativeSubmissionOperation();
+    *hostResult = static_cast<ULONG>(result);
     if (result != VioGpuHostContextConfirmed)
     {
         delete entry;
+        *stage = 38;
         return STATUS_DEVICE_NOT_READY;
     }
     InsertTailList(&g_VioGpuNativeImports, &entry->Link);
@@ -4552,7 +4565,8 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
 static NTSTATUS ReleaseNativeShareLocked(_In_ VioGpuDod *adapter,
                                          _In_ VIOGPU_WDDM_CONTEXT *context,
                                          _In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
-                                         _In_ const VIOGPU_WDDM_NATIVE_SHARE *request)
+                                         _In_ const VIOGPU_WDDM_NATIVE_SHARE *request,
+                                         _Out_ ULONG *stage)
 {
     for (PLIST_ENTRY link = g_VioGpuNativeImports.Flink; link != &g_VioGpuNativeImports; link = link->Flink)
     {
@@ -4570,12 +4584,19 @@ static NTSTATUS ReleaseNativeShareLocked(_In_ VioGpuDod *adapter,
             adapter->ReleaseNativeSubmissionOperation();
         }
         delete entry;
+        *stage = result == VioGpuHostContextConfirmed ? 0 : 42;
         return result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
     }
+    *stage = 41;
     return STATUS_INVALID_PARAMETER;
 }
 
-NTSTATUS HandleNativeShareEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
+static NTSTATUS HandleNativeShareEscapeLocked(_In_ VioGpuDod *adapter,
+                                              _In_ const DXGKARG_ESCAPE *escape,
+                                              _Out_ VIOGPU_WDDM_NATIVE_SHARE *request,
+                                              _Out_ ULONG *stage,
+                                              _Out_ ULONGLONG *shareSize,
+                                              _Out_ ULONG *hostResult)
 {
     PAGED_CODE();
 
@@ -4583,50 +4604,54 @@ NTSTATUS HandleNativeShareEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escap
         escape->hContext == NULL || escape->Flags.Value != 0 || escape->pPrivateDriverData == NULL ||
         escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_NATIVE_SHARE))
     {
+        *stage = 1;
         return STATUS_INVALID_PARAMETER;
     }
 
-    VIOGPU_WDDM_NATIVE_SHARE request = {};
     __try
     {
-        RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
+        RtlCopyMemory(request, escape->pPrivateDriverData, sizeof(*request));
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
+        *stage = 2;
         return STATUS_INVALID_USER_BUFFER;
     }
 
-    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
-        (request.Opcode != VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE && request.Opcode != VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE &&
-         request.Opcode != VIOGPU_WDDM_ESCAPE_RELEASE_NATIVE))
+    if (!IsCurrentAbiHeader(&request->Header, sizeof(*request)) ||
+        (request->Opcode != VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE && request->Opcode != VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE &&
+         request->Opcode != VIOGPU_WDDM_ESCAPE_RELEASE_NATIVE))
     {
+        *stage = 3;
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
-    BOOLEAN valid = request.Flags == VIOGPU_WDDM_ESCAPE_FLAGS_NONE && request.ExpectedResetGeneration != 0 &&
-                    request.Reserved == 0 && request.Reserved2[0] == 0 && request.Reserved2[1] == 0 &&
-                    request.Reserved2[2] == 0 && request.ContextId == 0 && request.Iova != 0 &&
-                    (request.Iova & (PAGE_SIZE - 1)) == 0;
-    switch (request.Opcode)
+    BOOLEAN valid = request->Flags == VIOGPU_WDDM_ESCAPE_FLAGS_NONE && request->ExpectedResetGeneration != 0 &&
+                    request->Reserved == 0 && request->Reserved2[0] == 0 && request->Reserved2[1] == 0 &&
+                    request->Reserved2[2] == 0 && request->ContextId == 0 && request->Iova != 0 &&
+                    (request->Iova & (PAGE_SIZE - 1)) == 0;
+    switch (request->Opcode)
     {
     case VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE:
-        valid = valid && request.ShareKey == 0 && request.Size == 0;
+        valid = valid && request->ShareKey == 0 && request->Size == 0;
         break;
     case VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE:
-        valid = valid && request.ShareKey != 0 && request.Size != 0 && (request.Size & (PAGE_SIZE - 1)) == 0 &&
-                request.Iova <= MAXULONGLONG - (request.Size - 1);
+        valid = valid && request->ShareKey != 0 && request->Size != 0 && (request->Size & (PAGE_SIZE - 1)) == 0 &&
+                request->Iova <= MAXULONGLONG - (request->Size - 1);
         break;
     default:
-        valid = valid && request.ShareKey != 0;
+        valid = valid && request->ShareKey != 0;
         break;
     }
     if (!valid)
     {
+        *stage = 4;
         return STATUS_INVALID_PARAMETER;
     }
 
     VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(escape->hContext);
     if (!ExAcquireRundownProtection(&context->Operations))
     {
+        *stage = 5;
         return STATUS_DEVICE_NOT_READY;
     }
 
@@ -4637,28 +4662,33 @@ NTSTATUS HandleNativeShareEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escap
     if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Type != VioGpuWddmContextNative ||
         context->Device != device || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || device->Adapter != adapter)
     {
+        *stage = 6;
         status = STATUS_INVALID_HANDLE;
     }
     else if (!adapter->IsDriverActive())
     {
+        *stage = 7;
         status = STATUS_DEVICE_NOT_READY;
     }
     else if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
     {
+        *stage = 8;
         status = STATUS_DEVICE_NOT_READY;
     }
     else
     {
         snapshotAcquired = TRUE;
         const ULONGLONG vaEnd = snapshot.VaStart + snapshot.VaSize;
-        if (snapshot.ResetGeneration != request.ExpectedResetGeneration || snapshot.VaStart == 0 ||
+        if (snapshot.ResetGeneration != request->ExpectedResetGeneration || snapshot.VaStart == 0 ||
             snapshot.VaSize == 0 || vaEnd < snapshot.VaStart)
         {
+            *stage = 9;
             status = STATUS_DEVICE_NOT_READY;
         }
-        else if (request.Opcode == VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE &&
-                 (request.Iova < snapshot.VaStart || request.Iova + request.Size > vaEnd))
+        else if (request->Opcode == VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE &&
+                 (request->Iova < snapshot.VaStart || request->Iova + request->Size > vaEnd))
         {
+            *stage = 10;
             status = STATUS_INVALID_PARAMETER;
         }
     }
@@ -4667,11 +4697,12 @@ NTSTATUS HandleNativeShareEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escap
     {
         if (!AcquireNativeShareRegistry(TRUE))
         {
+            *stage = 11;
             status = STATUS_DEVICE_NOT_READY;
         }
         else
         {
-            switch (request.Opcode)
+            switch (request->Opcode)
             {
             case VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE:
                 status = ExportNativeShareLocked(adapter, context, &snapshot, &request);
@@ -4689,13 +4720,14 @@ NTSTATUS HandleNativeShareEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escap
 
     if (NT_SUCCESS(status))
     {
-        request.ContextId = snapshot.ContextId;
+        request->ContextId = snapshot.ContextId;
         __try
         {
-            RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request));
+            RtlCopyMemory(escape->pPrivateDriverData, request, sizeof(*request));
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
+            *stage = 50;
             status = STATUS_INVALID_USER_BUFFER;
         }
     }
@@ -4705,6 +4737,28 @@ NTSTATUS HandleNativeShareEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escap
         VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
     }
     ExReleaseRundownProtection(&context->Operations);
+    return status;
+}
+
+NTSTATUS HandleNativeShareEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+
+    VIOGPU_WDDM_NATIVE_SHARE request = {};
+    ULONG stage = 0;
+    ULONGLONG shareSize = 0;
+    ULONG hostResult = 0;
+    NTSTATUS status = HandleNativeShareEscapeLocked(adapter, escape, &request, &stage, &shareSize, &hostResult);
+    if (adapter != NULL && KeGetCurrentIrql() == PASSIVE_LEVEL)
+    {
+        adapter->RecordNativeShareDiagnostic(request.Opcode,
+                                             status,
+                                             stage,
+                                             request.ShareKey,
+                                             request.Size,
+                                             shareSize,
+                                             hostResult);
+    }
     return status;
 }
 

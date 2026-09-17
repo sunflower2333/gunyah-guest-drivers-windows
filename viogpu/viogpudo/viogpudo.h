@@ -2133,6 +2133,17 @@ class VioGpuDod
                                                 _In_ LONG hostResult,
                                                 _In_ ULONG stage,
                                                 _In_ ULONG detail);
+    /* Native share escape outcome: counters for every request, and the stage,
+     * status and sizes of the most recent refusal (NativeShareFail*). */
+    VOID RecordNativeShareDiagnostic(_In_ ULONG opcode,
+                                     _In_ NTSTATUS status,
+                                     _In_ ULONG stage,
+                                     _In_ ULONGLONG shareKey,
+                                     _In_ ULONGLONG requestSize,
+                                     _In_ ULONGLONG shareSize,
+                                     _In_ ULONG hostResult);
+    volatile LONG m_NativeShareOk[3];
+    volatile LONG m_NativeShareFailed[3];
     VOID RecordNativeReadinessDiagnostic(void);
     volatile LONG m_DodReadinessFailMask;
     VOID RecordNativeQueryAdapterInfoDiagnostic(_In_ UINT type,

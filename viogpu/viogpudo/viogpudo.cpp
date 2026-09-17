@@ -228,6 +228,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_PublishSequence = 0;
     m_PublishSequenceAtFlip = 0;
     RtlZeroMemory((void *)m_DisplayCounters, sizeof(m_DisplayCounters));
+    RtlZeroMemory((void *)m_NativeShareOk, sizeof(m_NativeShareOk));
+    RtlZeroMemory((void *)m_NativeShareFailed, sizeof(m_NativeShareFailed));
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
     m_NativeSubmissionFaultCallerRva = 0;
     m_NativeSubmissionFaultExecutionDiagnosticState = 0;
@@ -8039,6 +8041,71 @@ VOID VioGpuDod::RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId,
                    detailWrite,
                    queueWrite);
     }
+}
+
+VOID VioGpuDod::RecordNativeShareDiagnostic(_In_ ULONG opcode,
+                                            _In_ NTSTATUS status,
+                                            _In_ ULONG stage,
+                                            _In_ ULONGLONG shareKey,
+                                            _In_ ULONGLONG requestSize,
+                                            _In_ ULONGLONG shareSize,
+                                            _In_ ULONG hostResult)
+{
+    PAGED_CODE();
+
+    const ULONG slot = opcode >= 5 && opcode <= 7 ? opcode - 5 : 2;
+    const LONG count = NT_SUCCESS(status) ? InterlockedIncrement(&m_NativeShareOk[slot])
+                                          : InterlockedIncrement(&m_NativeShareFailed[slot]);
+    /* Successes publish only their first few counts; every refusal publishes. */
+    if (NT_SUCCESS(status) && count > 8)
+    {
+        return;
+    }
+    HANDLE deviceKey = NULL;
+    if (!NT_SUCCESS(IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey)))
+    {
+        return;
+    }
+    const struct
+    {
+        PCWSTR Name;
+        DWORD Value;
+    } counters[] = {
+        {L"NativeShareExportOk", static_cast<DWORD>(InterlockedCompareExchange(&m_NativeShareOk[0], 0, 0))},
+        {L"NativeShareImportOk", static_cast<DWORD>(InterlockedCompareExchange(&m_NativeShareOk[1], 0, 0))},
+        {L"NativeShareReleaseOk", static_cast<DWORD>(InterlockedCompareExchange(&m_NativeShareOk[2], 0, 0))},
+        {L"NativeShareExportFailed", static_cast<DWORD>(InterlockedCompareExchange(&m_NativeShareFailed[0], 0, 0))},
+        {L"NativeShareImportFailed", static_cast<DWORD>(InterlockedCompareExchange(&m_NativeShareFailed[1], 0, 0))},
+        {L"NativeShareReleaseFailed", static_cast<DWORD>(InterlockedCompareExchange(&m_NativeShareFailed[2], 0, 0))},
+    };
+    for (ULONG index = 0; index < ARRAYSIZE(counters); ++index)
+    {
+        DWORD value = counters[index].Value;
+        (VOID) WriteRegistryDWORD(deviceKey, counters[index].Name, &value);
+    }
+    if (!NT_SUCCESS(status))
+    {
+        const struct
+        {
+            PCWSTR Name;
+            DWORD Value;
+        } failure[] = {
+            {L"NativeShareFailOpcode", opcode},
+            {L"NativeShareFailStatus", static_cast<DWORD>(status)},
+            {L"NativeShareFailKey", static_cast<DWORD>(shareKey)},
+            {L"NativeShareFailRequestSize", static_cast<DWORD>(requestSize)},
+            {L"NativeShareFailShareSize", static_cast<DWORD>(shareSize)},
+            {L"NativeShareFailHostResult", hostResult},
+            // The stage is the commit marker for the fields above.
+            {L"NativeShareFailStage", stage},
+        };
+        for (ULONG index = 0; index < ARRAYSIZE(failure); ++index)
+        {
+            DWORD value = failure[index].Value;
+            (VOID) WriteRegistryDWORD(deviceKey, failure[index].Name, &value);
+        }
+    }
+    ZwClose(deviceKey);
 }
 
 VOID VioGpuDod::RecordAdapterInfoTypeMap(void)
