@@ -135,6 +135,15 @@ typedef struct viogpu_synchronous_timeout_diagnostic
     ULONG EpochGeneration;
 } VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC;
 
+/* A synchronous control request waits in five second slices. A GPU fault or
+ * hang on the host (KGSL snapshot and GMU restart) stalls the control queue
+ * for longer than one slice while the host itself stays healthy, and a request
+ * that is given up on quarantines the transport for the rest of the boot, so
+ * the completion wait allows several slices. Mutex waiters must outlast one
+ * such request. */
+#define VIOGPU_SYNCHRONOUS_COMPLETION_WAIT_SLICES 6
+#define VIOGPU_SYNCHRONOUS_MUTEX_WAIT_SLICES      7
+
 enum VIOGPU_HOST_CONTEXT_RESULT : LONG
 {
     VioGpuHostContextNotSubmitted = 0,
@@ -464,6 +473,7 @@ class CtrlQueue : public VioGpuQueue
         m_SynchronousEpochState = VioGpuSynchronousOffline;
         m_SynchronousPoisonCallerRva = 0;
         m_SynchronousTimeoutPublication = 0;
+        m_SynchronousLongestWaitSlices = 0;
         RtlZeroMemory(&m_FirstSynchronousTimeout, sizeof(m_FirstSynchronousTimeout));
         KeInitializeSpinLock(&m_NativeSubmitLock);
         InitializeListHead(&m_NativeSubmitBacklog);
@@ -558,6 +568,9 @@ class CtrlQueue : public VioGpuQueue
     ULONG SynchronousEpochStateValue(void);
     ULONG SynchronousEpochGenerationValue(void);
     BOOLEAN GetFirstSynchronousTimeout(_Out_ VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *diagnostic);
+    /* Most completion-wait slices any synchronous request has needed. More than
+     * one means the host stalled past a single slice and was waited out. */
+    ULONG SynchronousLongestWaitSlices(void);
 
     BOOLEAN CreateResource(UINT res_id, UINT format, UINT width, UINT height);
     BOOLEAN DestroyResource(UINT id);
@@ -583,6 +596,7 @@ class CtrlQueue : public VioGpuQueue
     DECLSPEC_ALIGN(8) volatile LONG64 m_SynchronousEpochState;
     volatile LONG m_SynchronousPoisonCallerRva;
     volatile LONG m_SynchronousTimeoutPublication;
+    volatile LONG m_SynchronousLongestWaitSlices;
     VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC m_FirstSynchronousTimeout;
     volatile LONG m_FenceIdr;
     KSPIN_LOCK m_NativeSubmitLock;

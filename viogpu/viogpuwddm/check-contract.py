@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58511",
+        "$minor = 58524",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58511",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58524",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -6750,10 +6750,15 @@ def check_native_context_ownership() -> None:
         copy.find("PULONGresponseWords=static_cast<PULONG>(response);"),
         copy.find("ULONGresponseWordCount=responseSize/sizeof(ULONG);"),
         copy.find("for(ULONGwordIndex=0;wordIndex<responseWordCount;++wordIndex){responseWords[wordIndex]=VioGpuReadSharedU32(&sharedResponseWords[wordIndex]);}"),
-        copy.find("if(responseHeader->len!=responseSize||sharedAsyncError!=0||sharedGlobalFaults!=0)"),
+        copy.find("if(responseHeader->len!=responseSize)"),
     )
     if min(copy_sequence) < 0 or list(copy_sequence) != sorted(copy_sequence):
         fail("native response copy must acquire seqno before copying and validating the response")
+    # The fault counters are this context's GPU fault status, not response
+    # framing: rejecting a reply because of them made a faulted context's
+    # teardown impossible and poisoned the shared synchronous queue.
+    if "sharedAsyncError!=0" in copy or "sharedGlobalFaults!=0" in copy:
+        fail("native response copy must not treat context fault counters as a malformed response")
     for fragment in (
         "VioGpuReadSharedU32(&shmem->async_error)==0",
         "VioGpuReadSharedU32(&shmem->global_faults)==0",
@@ -9441,6 +9446,13 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     )
     if min(host_sequence) < 0 or list(host_sequence) != sorted(host_sequence):
         fail("guest-backed BO creation must bind GEM_NEW ownership before creating its guest-memory blob")
+    # Admission refuses a faulted context before GEM_NEW; once GEM_NEW is
+    # confirmed only a transport generation change may latch the adapter.
+    submit_at = create_host.find("m_CtrlQueue.SubmitNativeControl(snapshot->ContextId,&request,sizeof(request),&submitDiagnostic)")
+    if create_host.find("!VioGpuNativeControlFaultsClear(this,snapshot->Owner))", 0, submit_at) < 0:
+        fail("guest-backed BO creation must refuse a faulted context before GEM_NEW")
+    if create_host.find("VioGpuNativeControlFaultsClear", submit_at) >= 0:
+        fail("a context fault after a confirmed GEM_NEW must not latch the adapter")
     for fragment in (
         "resourceId!=blobId",
         "resourceId==MAXUINT",

@@ -50,7 +50,8 @@ int main()
                       VioGpuOverlayFlipCalls == VioGpuOverlayCheckAccepts + 1U &&
                       VioGpuOverlayFlipRejects == VioGpuOverlayFlipCalls + 1U &&
                       VioGpuOverlayFlipAccepts == VioGpuOverlayFlipRejects + 1U &&
-                      VioGpuDisplayCounterCount == VioGpuOverlayFlipAccepts + 1U,
+                      VioGpuSynchronousLongestWaitSlices == VioGpuOverlayFlipAccepts + 1U &&
+                      VioGpuDisplayCounterCount == VioGpuSynchronousLongestWaitSlices + 1U,
                   "new display counters follow the 64 historical slots");
     // Every slot is distinct and inside the published array.
     {

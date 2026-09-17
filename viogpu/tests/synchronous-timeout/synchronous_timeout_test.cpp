@@ -138,6 +138,7 @@ struct CtrlQueue
     volatile LONG64 m_SynchronousEpochState = VioGpuSynchronousOffline;
     volatile LONG m_SynchronousPoisonCallerRva = 0;
     volatile LONG m_SynchronousTimeoutPublication = 0;
+    volatile LONG m_SynchronousLongestWaitSlices = 0;
     VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC m_FirstSynchronousTimeout = {};
     int m_SynchronousMutex = 0;
     int queueResult = 0;
@@ -154,6 +155,7 @@ struct CtrlQueue
     void PoisonSynchronousRequests();
     void RecordFirstSynchronousTimeout(PGPU_VBUFFER, NTSTATUS, LONG64, ULONG_PTR);
     BOOLEAN GetFirstSynchronousTimeout(VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *);
+    ULONG SynchronousLongestWaitSlices();
     BOOLEAN EnableSynchronousRequests();
     void CompleteSynchronousRequestTeardown();
     BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER, PBOOLEAN);
@@ -196,6 +198,27 @@ static void lifecycle()
                                         &release,
                                         &submitted) && release && submitted && buf.completion_event.signaled,
           "completion succeeds and releases normally");
+    check(queue.SynchronousLongestWaitSlices() == 1, "prompt completion needs one wait slice");
+    {
+        /* The host answers in the third slice, as during a host GPU recovery. */
+        unsigned slice = 0;
+        waitResult = STATUS_TIMEOUT;
+        waitAction = [&] {
+            if (++slice == 3)
+            {
+                buf.complete_cb(buf.complete_ctx);
+                waitResult = STATUS_SUCCESS;
+            }
+        };
+        beforeWaits = waits;
+        check(queue.SubmitSynchronousLocked(&buf, &release, &submitted) && release && submitted &&
+                  waits == beforeWaits + 3 && queue.IsSynchronousRequestsHealthy() &&
+                  !queue.GetFirstSynchronousTimeout(&diagnostic),
+              "a host stall shorter than the budget completes without poisoning");
+        check(queue.SynchronousLongestWaitSlices() == 3, "longest wait records the stalled request");
+        waitResult = STATUS_SUCCESS;
+    }
+    waitAction = [&] { buf.complete_cb(buf.complete_ctx); };
     check(!queue.GetFirstSynchronousTimeout(&diagnostic), "success records no timeout");
     waitAction = [&] { buf.synchronous_epoch_state = 0; };
     check(!queue.SubmitSynchronousLocked(&buf,
@@ -204,11 +227,15 @@ static void lifecycle()
           "completion epoch mismatch quarantines without timeout");
     waitAction = {};
     waitResult = STATUS_TIMEOUT;
+    beforeWaits = waits;
     check(!queue.SubmitSynchronousLocked(&buf,
                                          &release,
                                          &submitted) && !release && submitted && !buf.auto_release && buf.complete_cb &&
                                                                                                               buf.complete_ctx,
           "submitted timeout quarantines owned descriptor");
+    check(waits == beforeWaits + VIOGPU_SYNCHRONOUS_COMPLETION_WAIT_SLICES &&
+              queue.SynchronousLongestWaitSlices() == VIOGPU_SYNCHRONOUS_COMPLETION_WAIT_SLICES,
+          "an unanswered request is given up only after the whole wait budget");
     check(!queue.IsSynchronousRequestsHealthy(), "timeout poisons actual queue");
     check(queue.GetFirstSynchronousTimeout(&diagnostic) && diagnostic.Flags == 3 && diagnostic.Type == VIRTIO_GPU_CMD_RESOURCE_UNREF &&
                                                                                                               diagnostic.ContextId == 91 &&

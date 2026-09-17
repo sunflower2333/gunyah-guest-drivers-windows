@@ -5797,7 +5797,12 @@ VioGpuCopyNativeControlResponse(_In_ VioGpuAdapter *adapter,
         diagnostic->SharedAsyncError = sharedAsyncError;
         diagnostic->SharedGlobalFaults = sharedGlobalFaults;
     }
-    if (responseHeader->len != responseSize || sharedAsyncError != 0 || sharedGlobalFaults != 0)
+    /* async_error and global_faults are this context's cumulative GPU fault
+     * counters, not response framing. A context whose GPU work faulted still
+     * answers its control requests correctly, and its teardown depends on
+     * reading those answers. Admission of new work checks the counters
+     * separately (VioGpuNativeControlFaultsClear). */
+    if (responseHeader->len != responseSize)
     {
         if (diagnostic != NULL)
         {
@@ -6801,6 +6806,7 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD guestAllocSubmitted = ReadDisplayCounter(VioGpuGuestAllocSubmitted);
     DWORD guestAllocCompleted = ReadDisplayCounter(VioGpuGuestAllocCompleted);
     DWORD guestAllocUnanswered = ReadDisplayCounter(VioGpuGuestAllocUnanswered);
+    DWORD synchronousLongestWaitSlices = ReadDisplayCounter(VioGpuSynchronousLongestWaitSlices);
     DWORD timingPathCalls = ReadDisplayCounter(VioGpuTimingPathCalls);
     DWORD timingPathLastStatus = ReadDisplayCounter(VioGpuTimingPathLastStatus);
     DWORD timingPathWireFormat = ReadDisplayCounter(VioGpuTimingPathWireFormat);
@@ -7391,6 +7397,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &guestAllocCompleted},
                                                                                                         {L"NativeGuestAllocUnanswered",
                                                                                                          &guestAllocUnanswered},
+                                                                                                        {L"NativeSynchronousLongestWaitSlices",
+                                                                                                         &synchronousLongestWaitSlices},
                                                                                                         {L"NativeTimingPathCalls",
                                                                                                          &timingPathCalls},
                                                                                                         {L"NativeTimingPathLastStatus",
@@ -11126,6 +11134,8 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
                                          static_cast<LONG>(submitDiagnostic.OuterSubmitted));
         m_pVioGpuDod->RecordDisplayValue(VioGpuGuestAllocCompleted,
                                          static_cast<LONG>(submitDiagnostic.OuterCompleted));
+        m_pVioGpuDod->RecordDisplayMaximum(VioGpuSynchronousLongestWaitSlices,
+                                           static_cast<LONG>(m_CtrlQueue.SynchronousLongestWaitSlices()));
         if (result == VioGpuHostContextUnknown)
         {
             m_pVioGpuDod->CountDisplayEvent(VioGpuGuestAllocUnanswered);
@@ -11149,8 +11159,12 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         return result;
     }
     *ownershipRetained = TRUE;
-    if (!IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration) ||
-        !VioGpuNativeControlFaultsClear(this, snapshot->Owner))
+    /* A fault published by this context while GEM_NEW was in flight belongs to
+     * that context's GPU work, not to the shared transport: complete the blob so
+     * the allocation stays consistent, and let the admission check above refuse
+     * the context's next allocation. Latching the adapter here turned one
+     * application's GPU fault into a boot-long loss of every device. */
+    if (!IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration))
     {
         FailNativeContextAtAnyIrql();
         return VioGpuHostContextUnknown;
