@@ -49,6 +49,7 @@ extern "C" UCHAR __ImageBase;
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
+BOOLEAN VioGpuWddmIsMpo3Registration();
 BOOLEAN VioGpuWddmIsDirectFlipTrial();
 VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter);
 
@@ -3488,6 +3489,30 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
      * 2.3 additionally makes dxgkrnl validate the WDDM 2.1-2.3 mandatory
      * feature sets, which this physical-mode driver does not claim. */
     driverCaps->WDDMVersion = DXGKDDI_WDDMv2_3;
+    /* A display adapter may claim 2.3 only while the MPO3 flip DDI is really
+     * registered. dxgkrnl 10.0.26100 derives three things from the reported
+     * model and that one slot (disassembled 2026-09-17):
+     *   - IsLegacyDisplayStateSynchronization() is FALSE for WDDMVersion >=
+     *     0x2300, with no check of the slot;
+     *   - on that non-legacy path DxgkDestroyAllocationInternal calls
+     *     DisableMPOPlanes(source, TRUE), which walks from plane 0 (dxgkrnl
+     *     normalizes MaxOverlayPlanes to 1 for a non-MPO driver) and, because
+     *     every single-plane present records plane 0 as enabled, calls
+     *     DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3 through an
+     *     unchecked pointer when DWM destroys the scanned-out primary;
+     *   - every other MPO3 caller (SetVidPnSourceVisibility, the CDD primary
+     *     present, SetTimingsFromVidPn) is gated on the slot being non-NULL.
+     * Unarmed, the slot is empty, so 2.3 was a promise the table does not keep
+     * and the guest bugchecked (0x3B, PC 0, dwm.exe) whenever the Android
+     * display attached and DWM rebuilt its primary. 2.2 still satisfies the
+     * WDDM 2.2+ requirement Advanced Color was reported for, and keeps dxgkrnl
+     * on legacy synchronization, where DisableMPOPlanes starts at plane 1 and
+     * never reaches the slot. Render-only registers no display DDIs and has no
+     * primary to destroy, so it is unchanged. */
+    if (!renderOnly && !VioGpuWddmIsMpo3Registration())
+    {
+        driverCaps->WDDMVersion = DXGKDDI_WDDMv2_2;
+    }
 #endif
     driverCaps->HighestAcceptableAddress.QuadPart = (ULONG64)-1;
 

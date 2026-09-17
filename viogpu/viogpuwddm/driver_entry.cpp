@@ -41,6 +41,18 @@ static BOOLEAN g_VioGpuWddmConnectorTimingModel = FALSE;
  * experiment fell into. */
 static BOOLEAN g_VioGpuWddmOverlayProbe = FALSE;
 static BOOLEAN g_VioGpuWddmDirectFlipTrial = FALSE;
+/* Whether the table handed to DxgkInitialize carries
+ * DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3. Read from the built
+ * table, not re-derived from the probe, so DriverCaps can never describe a
+ * registration that did not happen. dxgkrnl 10.0.26100 treats a display
+ * adapter reporting DXGKDDI_WDDMv2_3 as an MPO3 driver: on 2.3 it leaves
+ * legacy display-state synchronization, and when DWM destroys the scanned-out
+ * primary DxgkDestroyAllocationInternal calls ADAPTER_DISPLAY::DisableMPOPlanes
+ * starting at plane 0, which calls this slot with no NULL check. With the slot
+ * empty that is a jump to 0 -- the 0x3B/STATUS_BREAKPOINT bugcheck in dwm.exe
+ * every time the Android display attached (four identical minidumps on
+ * 58505, 2026-09-17). */
+static BOOLEAN g_VioGpuWddmMpo3Registration = FALSE;
 
 BOOLEAN VioGpuWddmIsDirectFlipTrial()
 {
@@ -50,6 +62,11 @@ BOOLEAN VioGpuWddmIsDirectFlipTrial()
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration()
 {
     return g_VioGpuWddmOverlayProbe;
+}
+
+BOOLEAN VioGpuWddmIsMpo3Registration()
+{
+    return g_VioGpuWddmMpo3Registration;
 }
 
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration()
@@ -194,6 +211,17 @@ static BOOLEAN VioGpuWddmReadOverlayProbe(_In_ UNICODE_STRING *registryPath)
 {
     PAGED_CODE();
     return VioGpuWddmReadOneShotFlag(registryPath, L"MultiPlaneOverlayProbe");
+}
+
+static BOOLEAN VioGpuWddmRegistersMpo3(_In_ CONST DRIVER_INITIALIZATION_DATA *initialData)
+{
+    PAGED_CODE();
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    return initialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3 != NULL;
+#else
+    UNREFERENCED_PARAMETER(initialData);
+    return FALSE;
+#endif
 }
 
 static BOOLEAN VioGpuWddmReadConnectorTimingModel(_In_ UNICODE_STRING *registryPath)
@@ -383,6 +411,7 @@ extern "C" NTSTATUS VioGpuWddmInitializeMiniport(_In_ DRIVER_OBJECT *driverObjec
     g_VioGpuWddmDirectFlipTrial = VioGpuWddmReadDirectFlipTrial(registryPath);
     DRIVER_INITIALIZATION_DATA initialData;
     VioGpuWddmBuildInitializationData(&initialData, renderOnly);
+    g_VioGpuWddmMpo3Registration = VioGpuWddmRegistersMpo3(&initialData);
 
     WPP_INIT_TRACING(driverObject, registryPath);
     NTSTATUS status = DxgkInitialize(driverObject, registryPath, &initialData);

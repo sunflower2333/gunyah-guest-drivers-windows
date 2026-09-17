@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58505",
+        "$minor = 58506",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58505",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58506",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -2710,6 +2710,24 @@ def check_native_driver_caps_contract() -> None:
     if "if(VioGpuWddmIsDirectFlipTrial()){driverCaps->SupportDirectFlip=1;driverCaps->MaxQueuedFlipOnVSync=1;}" \
             not in helper:
         fail("direct-flip caps must be gated on the one-shot DirectFlipTrial, inside the display-adapter branch")
+    # dxgkrnl 10.0.26100 leaves legacy display-state synchronization for any
+    # adapter reporting WDDMVersion >= 2.3 and then, when DWM destroys the
+    # scanned-out primary, calls DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3
+    # for plane 0 without a NULL check (0x3B, PC 0, dwm.exe on 58505). A display
+    # adapter may therefore claim 2.3 only while that slot is really registered,
+    # and must fall back to 2.2 -- still Advanced Color's floor -- otherwise.
+    mpo3_fallback = "if(!renderOnly&&!VioGpuWddmIsMpo3Registration()){driverCaps->WDDMVersion=DXGKDDI_WDDMv2_2;}"
+    claim_23 = helper.find("driverCaps->WDDMVersion=DXGKDDI_WDDMv2_3;")
+    if helper.count(mpo3_fallback) != 1 or claim_23 < 0 or helper.find(mpo3_fallback) < claim_23:
+        fail("a display adapter may report WDDM 2.3 only while the MPO3 flip DDI is registered")
+    if canonical_code(function_body("VioGpuWddmRegistersMpo3", DRIVER_CODE)) != (
+            "PAGED_CODE();#if(DXGKDDI_INTERFACE_VERSION>=DXGKDDI_INTERFACE_VERSION_WDDM2_3)"
+            "returninitialData->DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3!=NULL;"
+            "#elseUNREFERENCED_PARAMETER(initialData);returnFALSE;#endif"):
+        fail("the MPO3 registration flag must be read from the built DRIVER_INITIALIZATION_DATA slot")
+    if canonical_code(function_body("VioGpuWddmIsMpo3Registration", DRIVER_CODE)) != \
+            "returng_VioGpuWddmMpo3Registration;":
+        fail("VioGpuWddmIsMpo3Registration must report only the recorded table slot")
     compact_ddi = compact_code(WDDM_DDI_CODE)
     segment_direct_flip = compact_ddi.count(
         "if(VioGpuWddmIsDirectFlipTrial()){descriptor->Flags.DirectFlip=TRUE;}") + compact_ddi.count(
@@ -2771,6 +2789,9 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
         "g_VioGpuWddmDirectFlipTrial = VioGpuWddmReadDirectFlipTrial(registryPath); "
         "DRIVER_INITIALIZATION_DATA initialData; "
         "VioGpuWddmBuildInitializationData(&initialData, renderOnly); "
+        # DriverCaps reports the 2.3 model only when the MPO3 flip slot is filled;
+        # the flag is read back from the table actually handed to DxgkInitialize.
+        "g_VioGpuWddmMpo3Registration = VioGpuWddmRegistersMpo3(&initialData); "
         "WPP_INIT_TRACING(driverObject, registryPath); "
         "NTSTATUS status = DxgkInitialize(driverObject, registryPath, &initialData); "
         "if (!NT_SUCCESS(status)) { WPP_CLEANUP(NULL); } "
