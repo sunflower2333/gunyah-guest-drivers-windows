@@ -159,8 +159,8 @@ typedef struct VIOGPU_WDDM_TIMESTAMP_INFO
 /* Additive cross-context sharing of native allocations; old KMDs reject this
  * distinct size. All three opcodes are issued on a native context.
  *   EXPORT_NATIVE  Iova names a native allocation of the calling context. The
- *                  KMD returns an unguessable ShareKey (stable per allocation)
- *                  and the allocation's backing Size.
+ *                  KMD returns an unguessable nonzero ShareKey below 2^32
+ *                  (stable per allocation) and the allocation's backing Size.
  *   IMPORT_NATIVE  Maps the allocation behind ShareKey into the calling
  *                  context at Iova; Size must equal the exported Size. The host
  *                  shares the pages, no copy is made.

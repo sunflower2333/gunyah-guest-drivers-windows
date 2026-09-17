@@ -225,7 +225,6 @@ static_assert(sizeof(GPU_CTRL_HDR) == 24, "virtio-gpu control header wire size")
 static_assert(sizeof(GPU_CMD_SUBMIT_3D) == 32, "virtio-gpu submit wire size");
 static_assert(sizeof(GPU_CMD_CTX_CREATE) == 96, "virtio-gpu context create wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_CREATE_BLOB) == 56, "virtio-gpu blob create wire size");
-static_assert(sizeof(GPU_CTX_RESOURCE) == 32, "virtio-gpu context resource attach wire size");
 static_assert(sizeof(GPU_CMD_SET_SCANOUT_BLOB) == 96, "virtio-gpu scanout blob wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_MAP_BLOB) == 40, "virtio-gpu blob map wire size");
 static_assert(sizeof(GPU_RESP_MAP_INFO) == 32, "virtio-gpu blob map response wire size");
@@ -260,6 +259,7 @@ typedef struct virtio_gpu_ctx_resource
     ULONG padding;
 } GPU_CTX_RESOURCE, *PGPU_CTX_RESOURCE;
 #pragma pack()
+static_assert(sizeof(GPU_CTX_RESOURCE) == 32, "virtio-gpu context resource attach wire size");
 
 /* VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: create a 2d resource with a format */
 #pragma pack(1)

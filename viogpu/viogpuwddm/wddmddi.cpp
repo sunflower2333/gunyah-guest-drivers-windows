@@ -4295,12 +4295,13 @@ static ULONGLONG NewNativeShareKeyLocked(_In_ VioGpuDod *adapter)
 {
     for (;;)
     {
-        /* RtlRandomEx yields 31 bits per call; fold three draws and the clock. */
+        /* Keys travel as Vulkan KMT handle values, which are 32 bits wide in
+         * WoW64 processes, so keep them in the low 32 bits. RtlRandomEx yields
+         * 31 bits per call; fold two draws and the clock. */
         LARGE_INTEGER counter = KeQueryPerformanceCounter(NULL);
-        ULONGLONG key = (static_cast<ULONGLONG>(RtlRandomEx(&g_VioGpuNativeShareSeed)) << 33) ^
-                        (static_cast<ULONGLONG>(RtlRandomEx(&g_VioGpuNativeShareSeed)) << 11) ^
-                        static_cast<ULONGLONG>(RtlRandomEx(&g_VioGpuNativeShareSeed)) ^
-                        static_cast<ULONGLONG>(counter.QuadPart);
+        ULONGLONG key = ((static_cast<ULONGLONG>(RtlRandomEx(&g_VioGpuNativeShareSeed)) << 1) ^
+                         static_cast<ULONGLONG>(RtlRandomEx(&g_VioGpuNativeShareSeed)) ^ counter.LowPart) &
+                        0xFFFFFFFFULL;
         if (key != 0 && FindNativeShareByKeyLocked(adapter, key) == NULL)
         {
             return key;
