@@ -2469,6 +2469,15 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Flush2DResource(_In_ UINT resourceId,
     return result;
 }
 
+VOID VioGpuDod::LatchFlippedScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height)
+{
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (adapter != NULL)
+    {
+        adapter->LatchFlippedScanout(resourceId, width, height);
+    }
+}
+
 NTSTATUS VioGpuDod::PublishPresentBlit(_In_ UINT width,
                                        _In_ UINT height,
                                        _In_ UINT sourcePitch,
@@ -14768,6 +14777,25 @@ VOID VioGpuAdapter::RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _
     InterlockedExchange(&m_ActiveScanoutWidth, static_cast<LONG>(width));
     InterlockedExchange(&m_ActiveScanoutHeight, static_cast<LONG>(height));
     InterlockedExchange(&m_ActiveScanoutResourceId, static_cast<LONG>(resourceId));
+    KeReleaseSpinLock(&m_ActiveScanoutLock, oldIrql);
+}
+
+VOID VioGpuAdapter::LatchFlippedScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height)
+{
+    /* Without this every MMIO flip re-armed the vsync republish: the bind's
+     * SET_SCANOUT clears the latch and only a Present sets it again, so the
+     * worker flushed the unchanged primary on every guest vblank (164.6/s
+     * against 59.3 flips/s). Each of those was a host blit plus a reader
+     * fence, and the Android layer counted the repeats as frames. */
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_ActiveScanoutLock, &oldIrql);
+    if (resourceId != 0 &&
+        static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutResourceId, 0, 0)) == resourceId &&
+        static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutWidth, 0, 0)) == width &&
+        static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutHeight, 0, 0)) == height)
+    {
+        InterlockedExchange(&m_ExplicitPresentResourceId, static_cast<LONG>(resourceId));
+    }
     KeReleaseSpinLock(&m_ActiveScanoutLock, oldIrql);
 }
 

@@ -10924,6 +10924,14 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
                                                                                              allocation->Height,
                                                                                              &allocation->Resource2DState,
                                                                                              &allocation->Resource2DResetGeneration);
+            /* A mode change keeps the vsync republish: a compositor that
+             * programs its primary once draws into it in place. A flipped
+             * primary is final until the next flip replaces it. An empty one
+             * (never bound over a published frame) keeps the refresh. */
+            if (!modeChange && primaryNonZero != 0 && flush == VioGpuHostContextConfirmed)
+            {
+                adapter->LatchFlippedScanout(allocation->ResourceId, allocation->Width, allocation->Height);
+            }
 #if defined(VIOGPU_NATIVE_CONTEXT)
             adapter->CountDisplayEvent(18);
             adapter->RecordDisplayValue(19, static_cast<LONG>(flush));

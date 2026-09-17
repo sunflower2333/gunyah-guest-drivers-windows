@@ -717,6 +717,10 @@ class VioGpuAdapter : IVioGpuPCI
      * display's cadence for anything to reach the host. */
     VOID RequestScanoutRefresh(void);
     VOID RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height, _In_ BOOLEAN guestBlob = FALSE);
+    /* A flip publishes a finished primary that the compositor does not write
+     * again while it is scanned out, so the vsync republish stands down for
+     * it exactly as it does after a completed Present of the binding. */
+    VOID LatchFlippedScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
     NTSTATUS PublishPresentBlit(_In_ UINT width,
                                 _In_ UINT height,
                                 _In_ UINT sourcePitch,
@@ -1404,6 +1408,7 @@ class VioGpuDod
                                                _In_ UINT height,
                                                _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                _Inout_ ULONGLONG *resourceResetGeneration);
+    VOID LatchFlippedScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
     NTSTATUS PublishPresentBlit(_In_ UINT width,
                                 _In_ UINT height,
                                 _In_ UINT sourcePitch,
