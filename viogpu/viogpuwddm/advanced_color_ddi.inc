@@ -1,17 +1,44 @@
 /* Included after the allocation/lifecycle helpers. Opt-in WDDM 2.3 candidate. */
+/* Geometry this scanout can honour without a compositor: one full-target,
+ * unrotated, unscaled, unblended plane. Shared by the HDR and SDR planes --
+ * only the surface format and colour space differ between them. */
+static BOOLEAN VioGpuDirectScanoutGeometry(VioGpuDod *adapter,
+                                           VIOGPU_WDDM_ALLOCATION *allocation,
+                                           const DXGK_MULTIPLANE_OVERLAY_ATTRIBUTES3 &attr)
+{
+    return IsOwnedAllocation(allocation, adapter) && IsStandardPrimaryAllocation(allocation) &&
+           allocation->Width != 0 && allocation->Height != 0 && allocation->Width <= MAXLONG &&
+           allocation->Height <= MAXLONG && attr.Flags.Value == 0 && attr.Blend.Value == 0 &&
+           attr.Rotation == D3DDDI_ROTATION_IDENTITY && attr.SrcRect.left == 0 && attr.SrcRect.top == 0 &&
+           attr.SrcRect.right == static_cast<LONG>(allocation->Width) &&
+           attr.SrcRect.bottom == static_cast<LONG>(allocation->Height) &&
+           RtlCompareMemory(&attr.SrcRect, &attr.DstRect, sizeof(RECT)) == sizeof(RECT) &&
+           RtlCompareMemory(&attr.SrcRect, &attr.ClipRect, sizeof(RECT)) == sizeof(RECT);
+}
+
 static BOOLEAN VioGpuSupportedHdrPlane(VioGpuDod *adapter,
                                        VIOGPU_WDDM_ALLOCATION *allocation,
                                        const DXGK_MULTIPLANE_OVERLAY_ATTRIBUTES3 &attr)
 {
-    return IsOwnedAllocation(allocation, adapter) && IsStandardPrimaryAllocation(allocation) &&
-           allocation->Width != 0 && allocation->Height != 0 && allocation->Width <= MAXLONG &&
-           allocation->Height <= MAXLONG && allocation->Format == D3DDDIFMT_A2B10G10R10 && attr.Flags.Value == 0 &&
-           attr.Blend.Value == 0 && attr.Rotation == D3DDDI_ROTATION_IDENTITY &&
-           attr.ColorSpaceType == D3DDDI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 && attr.SrcRect.left == 0 &&
-           attr.SrcRect.top == 0 && attr.SrcRect.right == static_cast<LONG>(allocation->Width) &&
-           attr.SrcRect.bottom == static_cast<LONG>(allocation->Height) &&
-           RtlCompareMemory(&attr.SrcRect, &attr.DstRect, sizeof(RECT)) == sizeof(RECT) &&
-           RtlCompareMemory(&attr.SrcRect, &attr.ClipRect, sizeof(RECT)) == sizeof(RECT);
+    return VioGpuDirectScanoutGeometry(adapter, allocation, attr) &&
+           allocation->Format == D3DDDIFMT_A2B10G10R10 &&
+           attr.ColorSpaceType == D3DDDI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+}
+
+/* The SDR twin of the HDR plane, and the one that matters for the frame rate:
+ * an ordinary 8-bit fullscreen primary in sRGB. Accepting it is what lets
+ * dxgkrnl hand the app's own allocation to the scanout instead of making DWM
+ * copy it into its primary every frame (measured: DWM's per-frame work is the
+ * binding limit, ~21 ms of a 25 ms frame). Carries no colour claim, so it
+ * needs none of the PQ admission the HDR plane does. */
+static BOOLEAN VioGpuSupportedSdrPlane(VioGpuDod *adapter,
+                                       VIOGPU_WDDM_ALLOCATION *allocation,
+                                       const DXGK_MULTIPLANE_OVERLAY_ATTRIBUTES3 &attr)
+{
+    return VioGpuDirectScanoutGeometry(adapter, allocation, attr) &&
+           !IsHighPrecisionSurfaceFormat(allocation->Format) &&
+           (attr.ColorSpaceType == D3DDDI_COLOR_SPACE_RGB_FULL_G22_NONE_P709 ||
+            attr.ColorSpaceType == D3DDDI_COLOR_SPACE_RGB_FULL_G22_NONE_P709_X601);
 }
 
 /* One exit point for the timing path's status, so no refusal can be added
@@ -125,8 +152,20 @@ VioGpuWddmCheckMultiPlaneOverlaySupport3(CONST HANDLE hAdapter, DXGKARG_CHECKMUL
     }
     const auto plane = args->ppPlanes[0];
     auto allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(plane->hAllocation);
-    if (plane->VidPnSourceId != 0 || plane->LayerIndex != 0 ||
-        !VioGpuSupportedHdrPlane(adapter, allocation, plane->PlaneAttributes))
+    adapter->CountDisplayEvent(VioGpuOverlayCheckQueries);
+    if (plane->VidPnSourceId != 0 || plane->LayerIndex != 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    /* SDR needs no colour admission, so answer it without taking the colour
+     * slot -- this is the ordinary fullscreen case. */
+    if (VioGpuSupportedSdrPlane(adapter, allocation, plane->PlaneAttributes))
+    {
+        args->Supported = TRUE;
+        adapter->CountDisplayEvent(VioGpuOverlayCheckAccepts);
+        return STATUS_SUCCESS;
+    }
+    if (!VioGpuSupportedHdrPlane(adapter, allocation, plane->PlaneAttributes))
     {
         return STATUS_SUCCESS;
     }
@@ -138,6 +177,10 @@ VioGpuWddmCheckMultiPlaneOverlaySupport3(CONST HANDLE hAdapter, DXGKARG_CHECKMUL
     VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
     args->Supported = adapter->QueryDisplayColor(&caps) && (caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ) != 0 &&
                       adapter->MatchesNativeHdrMode(allocation->Width, allocation->Height);
+    if (args->Supported)
+    {
+        adapter->CountDisplayEvent(VioGpuOverlayCheckAccepts);
+    }
     return STATUS_SUCCESS;
 }
 
@@ -287,9 +330,46 @@ VioGpuWddmSetVidPnSourceAddressMpo3(CONST HANDLE hAdapter, DXGKARG_SETVIDPNSOURC
     }
     const auto primary = plane->ppContextData[0];
     auto allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(primary->hAllocation);
-    if (!VioGpuSupportedHdrPlane(adapter, allocation, plane->PlaneAttributes) ||
-        primary->SegmentId != VIOGPU_WDDM_SEGMENT_ID || primary->SegmentAddress.QuadPart < 0)
+    adapter->CountDisplayEvent(VioGpuOverlayFlipCalls);
+    if (primary->SegmentId != VIOGPU_WDDM_SEGMENT_ID || primary->SegmentAddress.QuadPart < 0)
     {
+        adapter->CountDisplayEvent(VioGpuOverlayFlipRejects);
+        return STATUS_INVALID_PARAMETER;
+    }
+    /* SDR: the plane carries no colour claim, so none of the PQ admission,
+     * colour-state slot or fence-epoch work below applies. Bind it with the
+     * same target contract QueueMmioFlip uses and return -- this is the path
+     * that removes DWM's per-frame copy. */
+    if (VioGpuSupportedSdrPlane(adapter, allocation, plane->PlaneAttributes))
+    {
+        VioGpuFlipTarget target = {};
+        target.SourceId = args->VidPnSourceId;
+        target.Segment = primary->SegmentId;
+        target.ExpectedSegment = VIOGPU_WDDM_SEGMENT_ID;
+        target.Address = primary->SegmentAddress.QuadPart;
+        target.HasAllocation = TRUE;
+        target.OwnedByAdapter = TRUE;
+        target.StandardPrimary = TRUE;
+        target.PlacementValid = allocation->PlacementValid;
+        target.PlacementOffset = allocation->PlacementOffset;
+        target.HighPrecision = FALSE;
+        target.HighPrecisionAdmitted = adapter->IsNativeHdrModeAvailable();
+        const VioGpuFlipTargetStatus verdict = VioGpuValidateFlipTarget(target);
+        if (verdict != VioGpuFlipTargetAccepted)
+        {
+            adapter->CountDisplayEvent(VioGpuOverlayFlipRejects);
+            adapter->RecordDisplayValue(VioGpuDisplayMmioFlipRejectKind, static_cast<LONG>(verdict));
+            return STATUS_INVALID_PARAMETER;
+        }
+        adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(target.Address));
+        adapter->ClearColorPresentCompletion();
+        adapter->PublishPendingFlip(primary->hAllocation);
+        adapter->CountDisplayEvent(VioGpuOverlayFlipAccepts);
+        return STATUS_SUCCESS;
+    }
+    if (!VioGpuSupportedHdrPlane(adapter, allocation, plane->PlaneAttributes))
+    {
+        adapter->CountDisplayEvent(VioGpuOverlayFlipRejects);
         return STATUS_INVALID_PARAMETER;
     }
     VIOGPU_DISPLAY_COLOR_RESPONSE caps;
