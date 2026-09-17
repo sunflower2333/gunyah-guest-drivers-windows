@@ -159,6 +159,12 @@ Assert-Arm64Pe $dxvkDll
 Assert-Exports $dxvkDll @('OpenAdapter10', 'OpenAdapter10_2')
 Copy-Item -LiteralPath $dxvkDll -Destination (Join-Path $output 'viogpudxvk.dll')
 
+# tools\build-windows-umd.ps1 expects meson and ninja on PATH. The inline DXVK
+# build used to install them first, as a side effect of its own script; DXVK
+# now builds in the dxvk-umd job, so install the same unpinned tools here.
+& python -m pip install --disable-pip-version-check meson ninja
+if ($LASTEXITCODE -ne 0) { throw 'meson/ninja installation for the VKD3D candidate failed' }
+
 Checkout-ExactCommit 'sunflower2333/vkd3d-proton' $Vkd3dCommit $vkd3dRoot
 Invoke-Arm64DeveloperCommand $vkd3dRoot `
     'pwsh -NoProfile -ExecutionPolicy Bypass -File tools\build-windows-umd.ps1 -Architecture arm64' `
