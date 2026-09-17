@@ -4491,6 +4491,12 @@ static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
         share->Size = length;
         InsertTailList(&g_VioGpuNativeShares, &share->Link);
     }
+    /* A host resource id outlives its share entry only until the allocation is
+     * destroyed, but ids are recycled: re-exporting one rebinds the entry to
+     * the context that owns it now, so an importer is never compared against a
+     * previous owner. */
+    share->OwnerContextId = snapshot->ContextId;
+    share->Size = length;
     request->ShareKey = share->Key;
     request->Size = share->Size;
     return STATUS_SUCCESS;
@@ -4502,10 +4508,14 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
                                         _In_ const VIOGPU_WDDM_NATIVE_SHARE *request,
                                         _Out_ ULONG *stage,
                                         _Out_ ULONGLONG *shareSize,
-                                        _Out_ ULONG *hostResult)
+                                        _Out_ ULONG *hostResult,
+                                        _Out_ ULONG *ownerContextId,
+                                        _Out_ ULONG *resourceId)
 {
     VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = FindNativeShareByKeyLocked(adapter, request->ShareKey);
     *shareSize = share != NULL ? share->Size : 0;
+    *ownerContextId = share != NULL ? share->OwnerContextId : 0;
+    *resourceId = share != NULL ? share->ResourceId : 0;
     if (share == NULL || share->Size != request->Size || share->OwnerContextId == snapshot->ContextId)
     {
         *stage = share == NULL ? 31 : share->Size != request->Size ? 32 : 33;
@@ -4596,7 +4606,10 @@ static NTSTATUS HandleNativeShareEscapeLocked(_In_ VioGpuDod *adapter,
                                               _Out_ VIOGPU_WDDM_NATIVE_SHARE *request,
                                               _Out_ ULONG *stage,
                                               _Out_ ULONGLONG *shareSize,
-                                              _Out_ ULONG *hostResult)
+                                              _Out_ ULONG *hostResult,
+                                              _Out_ ULONG *ownerContextId,
+                                              _Out_ ULONG *resourceId,
+                                              _Out_ ULONG *importerContextId)
 {
     PAGED_CODE();
 
@@ -4678,6 +4691,7 @@ static NTSTATUS HandleNativeShareEscapeLocked(_In_ VioGpuDod *adapter,
     else
     {
         snapshotAcquired = TRUE;
+        *importerContextId = snapshot.ContextId;
         const ULONGLONG vaEnd = snapshot.VaStart + snapshot.VaSize;
         if (snapshot.ResetGeneration != request->ExpectedResetGeneration || snapshot.VaStart == 0 ||
             snapshot.VaSize == 0 || vaEnd < snapshot.VaStart)
@@ -4708,7 +4722,8 @@ static NTSTATUS HandleNativeShareEscapeLocked(_In_ VioGpuDod *adapter,
                 status = ExportNativeShareLocked(adapter, context, &snapshot, request, stage);
                 break;
             case VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE:
-                status = ImportNativeShareLocked(adapter, context, &snapshot, request, stage, shareSize, hostResult);
+                status = ImportNativeShareLocked(adapter, context, &snapshot, request, stage, shareSize, hostResult,
+                                                 ownerContextId, resourceId);
                 break;
             default:
                 status = ReleaseNativeShareLocked(adapter, context, &snapshot, request, stage);
@@ -4748,7 +4763,11 @@ NTSTATUS HandleNativeShareEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escap
     ULONG stage = 0;
     ULONGLONG shareSize = 0;
     ULONG hostResult = 0;
-    NTSTATUS status = HandleNativeShareEscapeLocked(adapter, escape, &request, &stage, &shareSize, &hostResult);
+    ULONG ownerContextId = 0;
+    ULONG resourceId = 0;
+    ULONG importerContextId = 0;
+    NTSTATUS status = HandleNativeShareEscapeLocked(adapter, escape, &request, &stage, &shareSize, &hostResult,
+                                                    &ownerContextId, &resourceId, &importerContextId);
     if (adapter != NULL && KeGetCurrentIrql() == PASSIVE_LEVEL)
     {
         adapter->RecordNativeShareDiagnostic(request.Opcode,
@@ -4757,7 +4776,10 @@ NTSTATUS HandleNativeShareEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escap
                                              request.ShareKey,
                                              request.Size,
                                              shareSize,
-                                             hostResult);
+                                             hostResult,
+                                             ownerContextId,
+                                             resourceId,
+                                             importerContextId);
     }
     return status;
 }

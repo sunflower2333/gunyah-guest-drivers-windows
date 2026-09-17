@@ -2141,7 +2141,10 @@ class VioGpuDod
                                      _In_ ULONGLONG shareKey,
                                      _In_ ULONGLONG requestSize,
                                      _In_ ULONGLONG shareSize,
-                                     _In_ ULONG hostResult);
+                                     _In_ ULONG hostResult,
+                                     _In_ ULONG ownerContextId,
+                                     _In_ ULONG resourceId,
+                                     _In_ ULONG importerContextId);
     volatile LONG m_NativeShareOk[3];
     volatile LONG m_NativeShareFailed[3];
     VOID RecordNativeReadinessDiagnostic(void);

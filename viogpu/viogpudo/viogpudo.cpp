@@ -8049,7 +8049,10 @@ VOID VioGpuDod::RecordNativeShareDiagnostic(_In_ ULONG opcode,
                                             _In_ ULONGLONG shareKey,
                                             _In_ ULONGLONG requestSize,
                                             _In_ ULONGLONG shareSize,
-                                            _In_ ULONG hostResult)
+                                            _In_ ULONG hostResult,
+                                            _In_ ULONG ownerContextId,
+                                            _In_ ULONG resourceId,
+                                            _In_ ULONG importerContextId)
 {
     PAGED_CODE();
 
@@ -8096,6 +8099,9 @@ VOID VioGpuDod::RecordNativeShareDiagnostic(_In_ ULONG opcode,
             {L"NativeShareFailRequestSize", static_cast<DWORD>(requestSize)},
             {L"NativeShareFailShareSize", static_cast<DWORD>(shareSize)},
             {L"NativeShareFailHostResult", hostResult},
+            {L"NativeShareFailOwnerContextId", ownerContextId},
+            {L"NativeShareFailResourceId", resourceId},
+            {L"NativeShareFailImporterContextId", importerContextId},
             // The stage is the commit marker for the fields above.
             {L"NativeShareFailStage", stage},
         };
