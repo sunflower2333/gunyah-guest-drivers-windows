@@ -13,7 +13,7 @@ from flat_package import d3d_registration_line
 from flat_package import LOADER_PROBES, MACHINES, RECEIPT, REGISTRATION
 from flat_package import flat_name, pe_machine, require, sha, source_files
 
-D3D10_MESA = "369e1d11a7962012582759e1bd9f831cf8094fa8"
+D3D10_MESA = "54d1eb61daa7e5d8cd5c17999a0189520c340a4e"
 
 INSTALLER_FILES = (
     "INSTALL.cmd", "install-drivers.ps1", "pvmpower-devnode.ps1",
