@@ -11550,7 +11550,7 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
                 return result;
             }
         }
-        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResourceIdRetire);
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteGuestAllocBlobUnknown);
         return VioGpuHostContextUnknown;
     }
 
@@ -11600,14 +11600,14 @@ VioGpuAdapter::DestroyNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNA
         BOOLEAN countReleased = ReleaseNativeAllocationCount(snapshot->Owner);
         if (!countReleased)
         {
-            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResourceIdRelease);
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteGuestAllocCountUnderflow);
             return VioGpuHostContextUnknown;
         }
         *released = TRUE;
     }
     else if (result == VioGpuHostContextUnknown || result == VioGpuHostContextRejected)
     {
-        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResourceIdUnref);
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteGuestAllocUnrefUnproven);
         return VioGpuHostContextUnknown;
     }
     return result;
@@ -11694,16 +11694,25 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ReleaseNativeSharedResource(_In_ const
     request.hdr.len = sizeof(request);
     request.iova = 0;
     request.res_id = resourceId;
+    /* Both gates below are the mirror of ImportNativeSharedResource, scoped in
+     * 58543 on the same argument.  Nothing adapter-wide is at risk here: this
+     * function holds no allocation count, allocates no resource id, and both
+     * operations are keyed on importer->ContextId.  What an unknowable answer
+     * leaves uncertain is the importing context's own view of a resource the
+     * exporter owns -- a stale iova or a stale attachment -- and both are bounded
+     * by that context's lifetime, because tearing the context down releases its
+     * attachments on the host.  Quarantine the importer and let Turnip report
+     * DEVICE_LOST to that application alone. */
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SubmitNativeControl(importer->ContextId, &request, sizeof(request));
     if (result == VioGpuHostContextUnknown)
     {
-        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteReleaseSharedDetach);
+        VioGpuQuarantineNativeContextOwner(importer->Owner);
         return result;
     }
     result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE);
     if (result == VioGpuHostContextUnknown)
     {
-        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteReleaseSharedUnref);
+        VioGpuQuarantineNativeContextOwner(importer->Owner);
     }
     return result;
 }

@@ -590,15 +590,31 @@ enum VIOGPU_NATIVE_FAIL_SITE : LONG
     VioGpuNativeFailSiteDpcUnexpectedCompletion,
     VioGpuNativeFailSiteResetDeviceEntry,
 
-    /* Per-context, and therefore wrong: each escalates one application's
-     * unknowable answer into an adapter-wide latch.  ImportNativeSharedResource's
-     * three were scoped alongside this census; the rest are tracked as pending by
-     * check-contract.py and are the next work. */
-    VioGpuNativeFailSiteResourceIdRetire,
-    VioGpuNativeFailSiteResourceIdRelease,
-    VioGpuNativeFailSiteResourceIdUnref,
-    VioGpuNativeFailSiteReleaseSharedDetach,
-    VioGpuNativeFailSiteReleaseSharedUnref,
+    /* Reviewed individually rather than as a batch, because they are not one
+     * decision.  The first two escalate for reasons that survive scrutiny and are
+     * classified adapter-wide in check-contract.py with their arguments; the third
+     * should be containable and is the one still tracked as pending.
+     * ImportNativeSharedResource's three gates and ReleaseNativeSharedResource's
+     * two are gone from this list because they were scoped.
+     *
+     * GuestAllocBlobUnknown: blob creation failed and the GEM_NEW object could not
+     * be proven released, so the owner keeps its allocation count.  A retained
+     * count makes context destroy answer STATUS_DEVICE_BUSY, so quarantining here
+     * would trade one adapter reset for a permanently undestroyable context and a
+     * leaked control-BAR slot -- a scarce adapter resource, not a per-context one.
+     *
+     * GuestAllocCountUnderflow: the Host confirmed the UNREF and then
+     * ReleaseNativeAllocationCount failed, which it can only do when the count is
+     * already zero -- after entry validation required it non-zero.  That is this
+     * driver's own bookkeeping contradicting itself, not a Host problem, and
+     * continuing per-context would mean running on accounting known to be wrong.
+     *
+     * GuestAllocUnrefUnproven: still pending.  It should be containable, and is
+     * blocked on the same retained-count problem as GuestAllocBlobUnknown rather
+     * than on any argument that the adapter must die. */
+    VioGpuNativeFailSiteGuestAllocBlobUnknown,
+    VioGpuNativeFailSiteGuestAllocCountUnderflow,
+    VioGpuNativeFailSiteGuestAllocUnrefUnproven,
 };
 
 struct VIOGPU_NATIVE_CONTEXT_OWNER

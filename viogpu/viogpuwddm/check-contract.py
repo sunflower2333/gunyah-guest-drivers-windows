@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58544",
+        "$minor = 58545",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58544",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58545",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -7411,6 +7411,25 @@ def check_native_fail_site_census() -> None:
     forty-three call sites sharing one first-caller RVA, so when one of them fired
     on 58539 the snapshot said only "0x45718" and naming it needed a PDB and hours.
 
+    What a zero means, written down before the fact so it cannot be reinterpreted
+    after it.  NativeContextFailFirstSite == 0 means no adapter-wide escalation
+    happened at all -- it does NOT mean the instrument failed to run, because the
+    site is latched by the same interlocked write as NativeContextFailCount and the
+    two move together.  If a symptom persists while both read zero, the escalation
+    is not coming through this helper and the census has said something real by
+    staying silent; look elsewhere rather than assuming the counter is broken.  An
+    absent registry value is a different fact again, and means the driver under test
+    is older than the census -- check the loaded .sys by hash before reading any of
+    these as a verification.
+
+    What this check does NOT verify, stated so nobody mistakes it for verified:
+    the classification below is enforced for completeness, not for honesty.  Every
+    site must appear in exactly one of the two sets, but nothing stops an entry
+    being moved from CONTEXT_PENDING to ADAPTER_WIDE to silence the ratchet.  That
+    move is a judgement and belongs in review of the diff.  Do not replace this
+    paragraph with a cleverer checker: a check that claims to verify a judgement it
+    cannot verify is worse than an honest gap.
+
     The tag is the diagnostic and the audit at once.  The classification below has
     to list every enumerator, so a new escalation cannot be added without deciding
     whether escalating the whole adapter is defensible for it; and CONTEXT_PENDING
@@ -7435,14 +7454,32 @@ def check_native_fail_site_census() -> None:
         "Backing2DCreate", "Backing2DAttach", "Backing2DRollback", "Backing2DGeneration",
         "Destroy2DPreexisting", "Destroy2DGeneration", "Destroy2DUnref",
         "ResetRetireGeneration", "ResetRetirePublish",
+        # Reviewed one at a time and moved here with an argument, not as a batch.
+        # GuestAllocBlobUnknown: blob creation failed and the GEM_NEW object could
+        # not be proven released, so the owner keeps its allocation count.  A
+        # retained count makes context destroy answer STATUS_DEVICE_BUSY
+        # (viogpudo.cpp, the ReadNativeAllocationCount(owner)!=0 gate), so
+        # containing it would trade one adapter reset for a context that can never
+        # be destroyed and a leaked control-BAR slot -- adapter-wide scarcity, not
+        # per-context damage.
+        # GuestAllocCountUnderflow: the Host confirmed the UNREF and then
+        # ReleaseNativeAllocationCount failed, which happens only when the count is
+        # already zero, after entry validation required it non-zero.  That is the
+        # driver's own accounting contradicting itself; carrying on per-context
+        # would mean running on bookkeeping known to be wrong.
+        "GuestAllocBlobUnknown", "GuestAllocCountUnderflow",
     }
     # Known-wrong and pending: each escalates one context's unknowable answer into
     # an adapter-wide latch, exactly as the GEM_NEW Unknown path did before 58537
     # and the generation checks did before 58541.  Removing an entry here is the
     # commit that scopes it; adding one is a regression.
     CONTEXT_PENDING = {
-        "ResourceIdRetire", "ResourceIdRelease", "ResourceIdUnref",
-        "ReleaseSharedDetach", "ReleaseSharedUnref",
+        # One left.  It should be containable -- nothing here argues the adapter
+        # must die -- but it strands the same retained allocation count as
+        # GuestAllocBlobUnknown, so scoping it means first giving that count an
+        # owner-side release that does not claim proof the Host released the
+        # object.  That is real work, not a rename.
+        "GuestAllocUnrefUnproven",
     }
 
     header = VIOGPU_HEADER_SOURCE
@@ -7484,6 +7521,11 @@ def check_native_fail_site_census() -> None:
         fail("a shared-resource import must quarantine the importing context, not the adapter")
     if importer.count("VioGpuQuarantineNativeContextOwner(importer->Owner);") != 3:
         fail("all three shared-resource import gates must quarantine the importing context")
+    releaser = canonical_code(function_body("VioGpuAdapter::ReleaseNativeSharedResource", source))
+    if "FailNativeContextAtAnyIrql(" in releaser:
+        fail("a shared-resource release must quarantine the importing context, not the adapter")
+    if releaser.count("VioGpuQuarantineNativeContextOwner(importer->Owner);") != 2:
+        fail("both shared-resource release gates must quarantine the importing context")
 
 
 def check_synchronous_channel_split() -> None:
