@@ -611,6 +611,36 @@ class CtrlQueue : public VioGpuQueue
      * including the standard-2D CreateResource2DSynchronous/AttachBackingSynchronous
      * that MapApertureAllocation uses for DWM's primaries.  That produced 376
      * stage-MapHost STATUS_DEVICE_NOT_READY refusals and an adapter reset. */
+    /* Re-arming a poisoned epoch without an adapter reset was designed and then
+     * deliberately shelved.  Read this before rebuilding it.
+     *
+     * A poison is still a boot-lifetime latch: about thirty sites can set one --
+     * submit timeouts, malformed-response classification, the Begin/Quiesce mutex
+     * waits, native bring-up, and FailNativeContextAtAnyIrql -- while these Enable
+     * helpers have exactly one caller between them (StartNativeContextTransport).
+     * So the latch is real and the single re-arm point is real.
+     *
+     * It was shelved anyway, on evidence rather than taste.  The original design
+     * paired the re-arm with single-descriptor reclamation, to make it safe to
+     * re-arm after a request had been abandoned mid-flight.  No such abandonment
+     * has ever been observed: the one captured Geekbench hang reported
+     * NativeSynchronousFirstTimeoutValid = 0, so nothing timed out, and the
+     * failure was an escalation-policy bug instead.  Reclamation would have been
+     * built for a failure mode with no field evidence -- and it was never the real
+     * blocker either, because an abandoned descriptor is already safe: the buffer
+     * is retained off the free list, the terminal-claim protocol arbitrates
+     * ownership, and VioGpuBuf::GetBuf grows the pool on demand.
+     *
+     * Rebuild it when, and only when, a snapshot shows a poisoned epoch beside
+     * NativeHardwareResetState == 0.  Today every observed poison arrives with the
+     * reset latch already set, and the reset re-arms the epoch anyway, so the
+     * re-arm would buy nothing.  A poison without a latch is the case it would
+     * buy something for; NativeSynchronousFirstTimeoutValid == 1 in any later
+     * capture separately reopens the reclamation half on its own terms.
+     *
+     * If that trigger fires, the narrow version is the one to build: a poison with
+     * no request in flight needs no reclamation at all, only the generation bump
+     * these helpers already perform. */
     BOOLEAN EnableNativeSynchronousRequests(void);
     NTSTATUS QuiesceNativeSynchronousRequests(void);
     BOOLEAN IsNativeSynchronousRequestsHealthy(void);

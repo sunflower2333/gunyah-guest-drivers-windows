@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58542",
+        "$minor = 58543",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58542",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58543",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -3871,7 +3871,7 @@ def check_native_context_readiness(
         if set(canonical_code(condition).split("&&"))
         == {"!IsListEmpty(&m_NativeContextRegistry)", "!m_bVirtioInitialized"}
     ]
-    no_reset_failure = "FailNativeContextAtAnyIrql();returnSTATUS_DEVICE_NOT_READY;"
+    no_reset_failure = "FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportRegistryLive);returnSTATUS_DEVICE_NOT_READY;"
     if len(no_reset_blocks) != 1 or no_reset_failure not in no_reset_blocks[0]:
         fail("transport teardown must retain Host ownership when no VirtIO reset can prove retirement")
 
@@ -3881,7 +3881,7 @@ def check_native_context_readiness(
         if "virtio_get_status(&m_VioDev)" in canonical_code(condition)
     ]
     expected_reset_guard = "!NT_SUCCESS(status)||virtio_get_status(&m_VioDev)!=0"
-    reset_failure_body = "FailNativeContextAtAnyIrql();returnNT_SUCCESS(status)?STATUS_DEVICE_NOT_READY:status;"
+    reset_failure_body = "FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportStatus);returnNT_SUCCESS(status)?STATUS_DEVICE_NOT_READY:status;"
     if (
         len(reset_guard_blocks) != 1
         or reset_guard_blocks[0][0] != expected_reset_guard
@@ -3916,7 +3916,7 @@ def check_native_context_readiness(
     offline_publish = stop_compact.find("InterlockedExchange(&m_NativeContextState,VioGpuNativeContextOffline)")
     buffer_drain = stop_compact.find("if(!m_GpuBuf.Close())")
     buffer_drain_failure = stop_compact.find(
-        "FailNativeContextAtAnyIrql();returnSTATUS_DEVICE_NOT_READY;", buffer_drain
+        "FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportBufClose);returnSTATUS_DEVICE_NOT_READY;", buffer_drain
     )
     if min(buffer_drain, buffer_drain_failure, offline_publish) < 0 or not (
         buffer_drain < buffer_drain_failure < offline_publish
@@ -4001,11 +4001,11 @@ def check_native_context_readiness(
     )
     retire_call = stop_canonical.find("status=RetireAllNativeContextOwnersLocked();", publish_2d_retirement)
     retire_failure = stop_canonical.find(
-        "if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql();returnstatus;}", retire_call
+        "if(!NT_SUCCESS(status)){FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportRetireOwners);returnstatus;}", retire_call
     )
     if min(retire_call, retire_failure, final_barrier) < 0 or not retire_call < retire_failure < final_barrier:
         fail("transport teardown must preserve owners and stop before queue deletion when BAR-slot unmap fails")
-    if compact_code(reset).count("FailNativeContextAtAnyIrql()") != 1:
+    if compact_code(reset).count("FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResetDeviceEntry)") != 1:
         fail("ResetDevice must fail closed through the nonpaged native-context failure path exactly once")
     destructor_compact = compact_code(destructor)
     if "StopNativeContextTransport()" not in destructor_compact:
@@ -4571,7 +4571,7 @@ def check_wddm_2d_resource_ownership() -> None:
         "if(rollback==VioGpuHostContextConfirmed)",
         "*resourceState=VioGpu2DResourceNone;",
         "*resourceState=VioGpu2DResourceUnknown;",
-        "FailNativeContextAtAnyIrql();",
+        "FailNativeContextAtAnyIrql(",
     ):
         if fragment not in create_host:
             fail(f"2D primary creation must retain transactional Host ownership: {fragment}")
@@ -4595,7 +4595,7 @@ def check_wddm_2d_resource_ownership() -> None:
         fail("2D primary teardown must quarantine generation mismatch and uncertain UNREF ownership")
     if destroy_host.count("*released=TRUE;") != 2:
         fail("2D primary teardown may release only an already-empty or confirmed-UNREF owner")
-    if destroy_host.count("FailNativeContextAtAnyIrql();") != 3:
+    if destroy_host.count("FailNativeContextAtAnyIrql(") != 3:
         fail("2D primary teardown must quarantine preexisting, generation-mismatched, and response-derived unknown ownership")
     if "result==VioGpuHostContextConfirmed||result==VioGpuHostContextRejected" in destroy_host:
         fail("2D primary teardown must not interpret INVALID_RESOURCE_ID as released ownership")
@@ -5078,7 +5078,7 @@ def check_wddm_standard_primary_scanout() -> None:
         "elseif(result==VioGpuHostContextUnknown)",
         "m_2DScanoutUnknown=TRUE;",
         "m_2DScanoutResetGeneration=operationGeneration;",
-        "FailNativeContextAtAnyIrql();",
+        "FailNativeContextAtAnyIrql(",
         "KeReleaseMutex(&m_2DScanoutMutex,FALSE);",
     ):
         if fragment not in set_host:
@@ -5098,7 +5098,7 @@ def check_wddm_standard_primary_scanout() -> None:
         "*detached=TRUE;",
         "elseif(result==VioGpuHostContextUnknown)",
         "m_2DScanoutUnknown=TRUE;",
-        "FailNativeContextAtAnyIrql();",
+        "FailNativeContextAtAnyIrql(",
         "KeReleaseMutex(&m_2DScanoutMutex,FALSE);",
     ):
         if fragment not in detach_host:
@@ -6980,7 +6980,7 @@ def check_native_context_ownership() -> None:
         "ULONGLONGcandidate=VIOGPU_NATIVE_CONTROL_BAR_GUARD_SIZE+slot*VIOGPU_NATIVE_CONTROL_BLOB_SIZE;"
     ) != 1:
         fail("native control BAR allocator must skip crosvm's drm2kgsl base guard")
-    if create.count("owner->Registration=NULL;FailNativeContextAtAnyIrql();") != 1:
+    if create.count("owner->Registration=NULL;FailNativeContextAtAnyIrql(VioGpuNativeFailSiteControlSlotRetire);") != 1:
         fail("native create must retain every unresolved Host owner until reset")
     va_validation = (
         "vaStart==0||vaSize==0||(vaStart&(PAGE_SIZE-1))!=0||(vaSize&(PAGE_SIZE-1))!=0||"
@@ -7401,6 +7401,89 @@ def check_native_context_currency_diagnostics() -> None:
         "RecordNativeContextDestroyDiagnostic(VioGpuNativeContextDestroyHostResult,STATUS_SUCCESS,0,"
     ) != 1:
         fail("the successful teardown record must keep a zero Detail field")
+
+
+def check_native_fail_site_census() -> None:
+    """Every adapter-wide escalation names itself, and the per-context ones shrink.
+
+    FailNativeContextAtAnyIrql bumps the adapter-wide reset generation, poisons
+    both synchronous epochs and latches RequestHardwareReset for the boot.  It had
+    forty-three call sites sharing one first-caller RVA, so when one of them fired
+    on 58539 the snapshot said only "0x45718" and naming it needed a PDB and hours.
+
+    The tag is the diagnostic and the audit at once.  The classification below has
+    to list every enumerator, so a new escalation cannot be added without deciding
+    whether escalating the whole adapter is defensible for it; and CONTEXT_PENDING
+    can only shrink, so the remaining instances of the 58537/58541 bug class are
+    tracked rather than rediscovered.  Reading the call sites rather than the
+    comments is the point: the 58541 fix was claimed by two comments while the code
+    still latched, and a third comment repeated the claim.
+    """
+
+    ADAPTER_WIDE = {
+        # transport lifecycle
+        "TransportStopIrql", "TransportStopStatus", "TransportRegistryLive", "TransportState",
+        "TransportQuiesce", "TransportStopWorkThread", "TransportQueues", "TransportSyncInterrupts",
+        "TransportStatus", "TransportRetireOwners", "TransportSyncInterruptsFinal", "TransportBufClose",
+        # adapter lifecycle, power, config, the DPC/fence bridge
+        "ResetDeviceEntry", "PowerStateReadiness", "ConfigChangedHealth",
+        "DpcUnexpectedCompletion", "FenceNotify", "SubmissionFault",
+        # the shared control-slot registry
+        "ControlSlotRetire", "ControlSlotState", "ControlSlotDuplicate",
+        # 2D/display: these resources are the adapter's own, not one application's
+        "TargetTransform", "ResourceColor", "PresentColor", "Scanout2DSet", "Scanout2DDetach",
+        "Backing2DCreate", "Backing2DAttach", "Backing2DRollback", "Backing2DGeneration",
+        "Destroy2DPreexisting", "Destroy2DGeneration", "Destroy2DUnref",
+        "ResetRetireGeneration", "ResetRetirePublish",
+    }
+    # Known-wrong and pending: each escalates one context's unknowable answer into
+    # an adapter-wide latch, exactly as the GEM_NEW Unknown path did before 58537
+    # and the generation checks did before 58541.  Removing an entry here is the
+    # commit that scopes it; adding one is a regression.
+    CONTEXT_PENDING = {
+        "ResourceIdRetire", "ResourceIdRelease", "ResourceIdUnref",
+        "ReleaseSharedDetach", "ReleaseSharedUnref",
+    }
+
+    header = VIOGPU_HEADER_SOURCE
+    enum_match = re.search(r"enum\s+VIOGPU_NATIVE_FAIL_SITE\s*:\s*LONG\s*\{(.*?)\};", header, re.DOTALL)
+    if enum_match is None:
+        fail("the adapter-wide escalation must declare a site enumeration")
+    declared = [name for name in re.findall(r"VioGpuNativeFailSite(\w+)", enum_match.group(1)) if name != "None"]
+    if len(declared) != len(set(declared)):
+        fail("each escalation site must have exactly one enumerator")
+    classified = ADAPTER_WIDE | CONTEXT_PENDING
+    if set(declared) != classified:
+        unclassified = sorted(set(declared) - classified)
+        stale = sorted(classified - set(declared))
+        fail(
+            "every escalation site must be classified adapter-wide or context-pending: "
+            f"unclassified={unclassified} stale={stale}"
+        )
+
+    source = VIOGPU_SOURCE
+    if re.search(r"FailNativeContextAtAnyIrql\s*\(\s*\)", source):
+        fail("an adapter-wide escalation must name its site; the untagged form is gone")
+    if "FailNativeContextAtAnyIrql(VioGpuNativeFailSiteNone)" in compact_code(source):
+        fail("VioGpuNativeFailSiteNone is the unset value and may not be passed by a call site")
+    used = re.findall(r"FailNativeContextAtAnyIrql\(VioGpuNativeFailSite(\w+)\)", source)
+    for name in declared:
+        if used.count(name) != 1:
+            fail(f"escalation site {name} must appear at exactly one call site, found {used.count(name)}")
+    if len(used) != len(declared):
+        fail("every escalation call site must pass a declared site tag")
+    declaration = canonical_code(VIOGPU_HEADER_SOURCE)
+    if "voidFailNativeContextAtAnyIrql(_In_LONGsite);" not in declaration:
+        fail("the escalation site must be a required parameter so the compiler refuses an unclassified call")
+
+    # ImportNativeSharedResource's three gates were the verified instance of the
+    # bug class: all three keyed on importer->ContextId and latched the adapter for
+    # one importing context's unknowable answer.
+    importer = canonical_code(function_body("VioGpuAdapter::ImportNativeSharedResource", source))
+    if "FailNativeContextAtAnyIrql(" in importer:
+        fail("a shared-resource import must quarantine the importing context, not the adapter")
+    if importer.count("VioGpuQuarantineNativeContextOwner(importer->Owner);") != 3:
+        fail("all three shared-resource import gates must quarantine the importing context")
 
 
 def check_synchronous_channel_split() -> None:
@@ -9457,7 +9540,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "context->VaStart!=0||context->VaSize!=0||context->SubmitQueueId!=0)",
         dead_state,
     )
-    dead_state_failure = destroy_context.find("FailNativeContextAtAnyIrql();", dead_state_guard)
+    dead_state_failure = destroy_context.find("FailNativeContextAtAnyIrql(", dead_state_guard)
     dead_state_return = destroy_context.find("returnSTATUS_INVALID_DEVICE_STATE;", dead_state_failure)
     dead_state_success = destroy_context.find("*released=TRUE;", dead_state_return)
     if min(dead_state, dead_state_guard, dead_state_failure, dead_state_return, dead_state_success) < 0 or not (
@@ -9587,7 +9670,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     release_count = rollback_proof
     release_ownership = create_host.find("*ownershipRetained=FALSE;", release_count)
     preserve_result = create_host.find("returnresult;", release_ownership)
-    poison = create_host.find("FailNativeContextAtAnyIrql();", preserve_result)
+    poison = create_host.find("FailNativeContextAtAnyIrql(", preserve_result)
     unknown_result = create_host.find("returnVioGpuHostContextUnknown;", poison)
     rollback_sequence = (
         create_blob_call,
@@ -9629,7 +9712,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     # make the two fragments above vacuously true.
     if create_host.count("IsNativeContextGenerationCurrent(snapshot->Generation,snapshot->ResetGeneration)") != 4:
         fail("guest-backed BO creation must keep all four generation-currency checks")
-    if create_host.count("FailNativeContextAtAnyIrql();") != 1:
+    if create_host.count("FailNativeContextAtAnyIrql(") != 1:
         fail(
             "guest-backed BO creation may latch the adapter only for an unknowable transport "
             "after failed blob creation"
@@ -9649,8 +9732,8 @@ def check_wddm_guest_allocation_lifecycle() -> None:
                 fail(f"guest allocation teardown must quarantine unproven UNREF ownership: {fragment}")
         elif destroy_host.count(fragment) != 1:
             fail(f"guest allocation teardown must quarantine unproven UNREF ownership: {fragment}")
-    if destroy_host.count("FailNativeContextAtAnyIrql();") < 1:
-        fail("guest allocation teardown must quarantine unproven UNREF ownership: FailNativeContextAtAnyIrql();")
+    if destroy_host.count("FailNativeContextAtAnyIrql(") < 1:
+        fail("guest allocation teardown must quarantine unproven UNREF ownership: FailNativeContextAtAnyIrql")
 
     release_ownership = canonical_code(function_body("ReleaseAllocationHostOwnership", WDDM_DDI_CODE))
     for fragment in (
@@ -11575,7 +11658,7 @@ def check_wddm_submission_lifetime() -> None:
         (
             "RequestHardwareResetAtAnyIrql();",
             "InvalidateNativeFenceTracker();",
-            "adapter->FailNativeContextAtAnyIrql();",
+            "adapter->FailNativeContextAtAnyIrql(",
         ),
         "every fault identity must close outer and inner publication before waiting for scheduler recovery",
     )
@@ -12149,7 +12232,7 @@ def check_dpc_completion_semantics() -> None:
         {
             VioGpuDetachVbufferTerminalCallbacks(pvbuf);
             m_CtrlQueue.ReleaseBuffer(pvbuf);
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteDpcUnexpectedCompletion);
             continue;
         }
         """
@@ -13795,6 +13878,7 @@ def main() -> None:
     check_native_context_ownership()
     check_native_context_destroy_diagnostics()
     check_native_context_currency_diagnostics()
+    check_native_fail_site_census()
     check_synchronous_channel_split()
     check_native_synchronous_poison_diagnostics()
     check_versioned_segment_query_contract()

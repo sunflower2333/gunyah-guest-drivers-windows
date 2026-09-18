@@ -214,6 +214,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_HardwareResetFirstCallerRva = 0;
     m_NativeContextFailFirstCallerRva = 0;
     m_NativeContextFailCount = 0;
+    m_NativeContextFailFirstSite = VioGpuNativeFailSiteNone;
+    m_NativeContextFailLastSite = VioGpuNativeFailSiteNone;
     m_NativeContextGenerationStaleCount = 0;
     m_NativeContextGenerationStaleFirstSite = VioGpuNativeGenerationStaleNone;
     m_NativeContextGenerationStaleFirstCallerRva = 0;
@@ -1505,7 +1507,7 @@ BOOLEAN VioGpuDod::NotifyNativeCompletedFence(_In_ UINT completedFence,
             VioGpuAdapter *adapter = m_pHWDevice;
             if (adapter != NULL)
             {
-                adapter->FailNativeContextAtAnyIrql();
+                adapter->FailNativeContextAtAnyIrql(VioGpuNativeFailSiteFenceNotify);
             }
             ExReleaseRundownProtection(&m_HardwareOperations);
         }
@@ -1577,7 +1579,7 @@ __declspec(noinline) void VioGpuDod::NotifyNativeSubmissionFault(_In_ UINT fence
         VioGpuAdapter *adapter = m_pHWDevice;
         if (adapter != NULL)
         {
-            adapter->FailNativeContextAtAnyIrql();
+            adapter->FailNativeContextAtAnyIrql(VioGpuNativeFailSiteSubmissionFault);
         }
         ExReleaseRundownProtection(&m_HardwareOperations);
     }
@@ -5946,7 +5948,7 @@ static BOOLEAN VioGpuNativeControlFaultsClear(_In_ VioGpuAdapter *adapter,
 }
 #endif
 
-__declspec(noinline) void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
+__declspec(noinline) void VioGpuAdapter::FailNativeContextAtAnyIrql(_In_ LONG site)
 {
 #if defined(VIOGPU_NATIVE_CONTEXT)
     ULONG_PTR failImageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
@@ -5954,8 +5956,10 @@ __declspec(noinline) void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
     ULONG_PTR failCallerRva = failReturnAddress >= failImageBase ? failReturnAddress - failImageBase : 0;
     if (m_pVioGpuDod != NULL)
     {
-        m_pVioGpuDod->RecordNativeContextFailProvenance(failCallerRva);
+        m_pVioGpuDod->RecordNativeContextFailProvenance(failCallerRva, site);
     }
+#else
+    UNREFERENCED_PARAMETER(site);
 #endif
     InterlockedIncrement(&m_NativeContextGeneration);
     InterlockedIncrement64(&m_NativeContextResetGeneration);
@@ -6815,6 +6819,11 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD hardwareResetFirstCallerRva = ReadHardwareResetFirstCallerRva();
     DWORD nativeContextFailFirstCallerRva = ReadNativeContextFailFirstCallerRva();
     DWORD nativeContextFailCount = ReadNativeContextFailCount();
+    /* Which gate escalated, readable without a PDB.  FirstSite is the episode's
+     * origin and LastSite whoever re-failed an already dead adapter; the caller
+     * RVAs beside them separate several gates inside one function. */
+    DWORD nativeContextFailFirstSite = ReadNativeContextFailFirstSite();
+    DWORD nativeContextFailLastSite = ReadNativeContextFailLastSite();
     DWORD nativeGenerationStaleCount = ReadNativeContextGenerationStaleCount();
     DWORD nativeGenerationStaleFirstSite = ReadNativeContextGenerationStaleFirstSite();
     DWORD nativeGenerationStaleFirstCallerRva = ReadNativeContextGenerationStaleFirstCallerRva();
@@ -7237,6 +7246,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                         {L"NativeContex"
                                                                                                          L"tFailCount",
                                                                                                          &nativeContextFailCount},
+                                                                                                        {L"NativeContextFailFirstSite",
+                                                                                                         &nativeContextFailFirstSite},
+                                                                                                        {L"NativeContextFailLastSite",
+                                                                                                         &nativeContextFailLastSite},
                                                                                                         {L"NativeContex"
                                                                                                          L"tLifecycleTi"
                                                                                                          L"m"
@@ -10113,7 +10126,7 @@ NTSTATUS VioGpuAdapter::SetPowerState(DXGK_DEVICE_INFO *pDeviceInfo,
                     GPU_CAPSET_DRM capset = {};
                     if (!QueryNativeContextReadiness(&capset, NULL, NULL, NULL))
                     {
-                        FailNativeContextAtAnyIrql();
+                        FailNativeContextAtAnyIrql(VioGpuNativeFailSitePowerStateReadiness);
                         NTSTATUS closeStatus = StopNativeContextTransport();
                         return NT_SUCCESS(closeStatus) ? STATUS_DEVICE_NOT_READY : closeStatus;
                     }
@@ -10716,7 +10729,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::SetTargetTransform(ULONGLONG generatio
                                            : m_CtrlQueue.SetTargetTransform(generation, transform);
     if (result == VioGpuHostContextUnknown)
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTargetTransform);
     }
     KeReleaseMutex(&m_2DScanoutMutex, FALSE);
     return result;
@@ -10737,7 +10750,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::SetResourceColor(_In_ const VIOGPU_SET
                                                            : m_CtrlQueue.SetResourceColor(color);
     if (result == VioGpuHostContextUnknown)
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResourceColor);
     }
     KeReleaseMutex(&m_2DScanoutMutex, FALSE);
     return result;
@@ -10791,7 +10804,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::PresentColorResource(_In_ const VIOGPU
     {
         m_2DScanoutUnknown = TRUE;
         m_2DScanoutResetGeneration = resetGeneration;
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSitePresentColor);
     }
     KeReleaseMutex(&m_2DScanoutMutex, FALSE);
     return result;
@@ -10864,7 +10877,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
         RecordActiveScanout(0, 0, 0);
         m_2DScanoutUnknown = TRUE;
         m_2DScanoutResetGeneration = operationGeneration;
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteScanout2DSet);
     }
     KeReleaseMutex(&m_2DScanoutMutex, FALSE);
     return result;
@@ -10919,7 +10932,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Detach2DScanoutResource(_In_ UINT reso
     {
         m_2DScanoutUnknown = TRUE;
         m_2DScanoutResetGeneration = operationGeneration;
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteScanout2DDetach);
     }
     KeReleaseMutex(&m_2DScanoutMutex, FALSE);
     return result;
@@ -11032,7 +11045,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
         {
             *resourceState = VioGpu2DResourceUnknown;
             *resourceResetGeneration = operationGeneration;
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteBacking2DCreate);
         }
         return result;
     }
@@ -11047,7 +11060,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
             {
                 *resourceState = VioGpu2DResourceUnknown;
                 *resourceResetGeneration = operationGeneration;
-                FailNativeContextAtAnyIrql();
+                FailNativeContextAtAnyIrql(VioGpuNativeFailSiteBacking2DAttach);
             }
             return result;
         }
@@ -11074,7 +11087,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
         }
         *resourceState = VioGpu2DResourceUnknown;
         *resourceResetGeneration = operationGeneration;
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteBacking2DRollback);
         return VioGpuHostContextUnknown;
     }
     *resourceState = VioGpu2DResourceBackingAttached;
@@ -11087,7 +11100,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
     {
         *resourceState = VioGpu2DResourceUnknown;
         *resourceResetGeneration = operationGeneration;
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteBacking2DGeneration);
         return VioGpuHostContextUnknown;
     }
     return VioGpuHostContextConfirmed;
@@ -11123,7 +11136,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId
     if (*resourceState == VioGpu2DResourceUnknown ||
         (*resourceState != VioGpu2DResourceCreated && !VioGpuResourceBackingAttached(*resourceState)))
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteDestroy2DPreexisting);
         return VioGpuHostContextUnknown;
     }
 
@@ -11133,7 +11146,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId
     if (operationGeneration == 0 || *resourceResetGeneration != operationGeneration)
     {
         *resourceState = VioGpu2DResourceUnknown;
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteDestroy2DGeneration);
         return VioGpuHostContextUnknown;
     }
 
@@ -11147,7 +11160,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId
     else if (result == VioGpuHostContextUnknown || result == VioGpuHostContextRejected)
     {
         *resourceState = VioGpu2DResourceUnknown;
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteDestroy2DUnref);
         return VioGpuHostContextUnknown;
     }
     return result;
@@ -11537,7 +11550,7 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
                 return result;
             }
         }
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResourceIdRetire);
         return VioGpuHostContextUnknown;
     }
 
@@ -11587,14 +11600,14 @@ VioGpuAdapter::DestroyNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNA
         BOOLEAN countReleased = ReleaseNativeAllocationCount(snapshot->Owner);
         if (!countReleased)
         {
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResourceIdRelease);
             return VioGpuHostContextUnknown;
         }
         *released = TRUE;
     }
     else if (result == VioGpuHostContextUnknown || result == VioGpuHostContextRejected)
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResourceIdUnref);
         return VioGpuHostContextUnknown;
     }
     return result;
@@ -11628,7 +11641,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ImportNativeSharedResource(_In_ const 
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, TRUE);
     if (result == VioGpuHostContextUnknown)
     {
-        FailNativeContextAtAnyIrql();
+        VioGpuQuarantineNativeContextOwner(importer->Owner);
         return result;
     }
     if (result != VioGpuHostContextConfirmed)
@@ -11648,14 +11661,14 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ImportNativeSharedResource(_In_ const 
     }
     if (result == VioGpuHostContextUnknown)
     {
-        FailNativeContextAtAnyIrql();
+        VioGpuQuarantineNativeContextOwner(importer->Owner);
         return result;
     }
     /* The binding never happened: take the import back out again. */
     VIOGPU_HOST_CONTEXT_RESULT rollback = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE);
     if (rollback == VioGpuHostContextUnknown)
     {
-        FailNativeContextAtAnyIrql();
+        VioGpuQuarantineNativeContextOwner(importer->Owner);
         return rollback;
     }
     return result;
@@ -11684,13 +11697,13 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ReleaseNativeSharedResource(_In_ const
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SubmitNativeControl(importer->ContextId, &request, sizeof(request));
     if (result == VioGpuHostContextUnknown)
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteReleaseSharedDetach);
         return result;
     }
     result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE);
     if (result == VioGpuHostContextUnknown)
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteReleaseSharedUnref);
     }
     return result;
 }
@@ -12507,7 +12520,7 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::CreateNativeContext(_Inout
         if (!ownerRetired)
         {
             owner->Registration = NULL;
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteControlSlotRetire);
         }
         KeAcquireSpinLock(&context->BindingLock, &oldIrql);
         context->Adapter = NULL;
@@ -12647,7 +12660,7 @@ __declspec(code_seg(".text")) NTSTATUS VioGpuAdapter::DestroyNativeContext(_Inou
             BOOLEAN ownerRetained = context->Owner != NULL;
             KeReleaseSpinLock(&context->BindingLock, oldIrql);
             KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteControlSlotState);
 #if defined(VIOGPU_NATIVE_CONTEXT)
             if (m_pVioGpuDod != NULL)
             {
@@ -13152,7 +13165,7 @@ __declspec(code_seg(".text")) BOOLEAN VioGpuAdapter::AcquireNativeContextSnapsho
         ExReleaseRundownProtection(&m_NativeContextReferences);
         if (duplicate)
         {
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteControlSlotDuplicate);
         }
         return FALSE;
     }
@@ -13389,7 +13402,7 @@ void VioGpuAdapter::Publish2DResetRetirementLocked(void)
                                                                                       0));
     if (resetGeneration == 0 || resetGeneration < retiredGeneration)
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResetRetireGeneration);
         return;
     }
     InterlockedExchange64(&m_2DRetiredResetGeneration, static_cast<LONG64>(resetGeneration));
@@ -13402,7 +13415,7 @@ void VioGpuAdapter::Publish2DResetRetirementLocked(void)
     }
     else
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResetRetirePublish);
     }
 #endif
 }
@@ -14874,14 +14887,14 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransport(void)
 
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportStopIrql);
         return STATUS_DEVICE_NOT_READY;
     }
 
     NTSTATUS status = WaitNativeContextLifecycle();
     if (status != STATUS_SUCCESS)
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportStopStatus);
         return status;
     }
 
@@ -14942,7 +14955,7 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     if (!IsListEmpty(&m_NativeContextRegistry) && !m_bVirtioInitialized)
     {
         InterlockedCompareExchange(&m_NativeContextState, VioGpuNativeContextFailed, VioGpuNativeContextOffline);
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportRegistryLive);
         return STATUS_DEVICE_NOT_READY;
     }
     if (state == VioGpuNativeContextOffline)
@@ -14990,7 +15003,7 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     {
         if (state != VioGpuNativeContextStarting && state != VioGpuNativeContextReady)
         {
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportState);
             return STATUS_DEVICE_NOT_READY;
         }
         LONG observed = InterlockedCompareExchange(&m_NativeContextState, VioGpuNativeContextQuiescing, state);
@@ -15018,14 +15031,14 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     NTSTATUS status = m_CtrlQueue.QuiesceSynchronousRequests();
     if (!NT_SUCCESS(status))
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportQuiesce);
         return status;
     }
 
     status = StopWorkThread();
     if (!NT_SUCCESS(status))
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportStopWorkThread);
         return status;
     }
 
@@ -15033,7 +15046,7 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
 
     if (m_bQueuesInitialized && !m_bVirtioInitialized)
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportQueues);
         return STATUS_DEVICE_NOT_READY;
     }
     InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
@@ -15042,7 +15055,7 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
         status = SynchronizeInterruptMessages();
         if (!NT_SUCCESS(status))
         {
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportSyncInterrupts);
             return status;
         }
         KeFlushQueuedDpcs();
@@ -15059,7 +15072,7 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
         status = virtio_device_reset_checked(&m_VioDev);
         if (!NT_SUCCESS(status) || virtio_get_status(&m_VioDev) != 0)
         {
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportStatus);
             return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
         }
         /* A confirmed device reset is the Host-ownership boundary.  Publish
@@ -15069,13 +15082,13 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
         status = RetireAllNativeContextOwnersLocked();
         if (!NT_SUCCESS(status))
         {
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportRetireOwners);
             return status;
         }
         status = SynchronizeInterruptMessages();
         if (!NT_SUCCESS(status))
         {
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportSyncInterruptsFinal);
             return status;
         }
     }
@@ -15113,7 +15126,7 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     m_CursorSegment.Close();
     if (!m_GpuBuf.Close())
     {
-        FailNativeContextAtAnyIrql();
+        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteTransportBufClose);
         return STATUS_DEVICE_NOT_READY;
     }
     ClearNativeContextReadiness();
@@ -15367,7 +15380,7 @@ void VioGpuAdapter::ConfigChanged(void)
         GetDisplayInfo();
         if (!m_CtrlQueue.IsSynchronousRequestsHealthy())
         {
-            FailNativeContextAtAnyIrql();
+            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteConfigChangedHealth);
             ClearNativeContextReadiness();
             return;
         }
@@ -15513,7 +15526,7 @@ VOID VioGpuAdapter::DpcRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface)
                 {
                     VioGpuDetachVbufferTerminalCallbacks(pvbuf);
                     m_CtrlQueue.ReleaseBuffer(pvbuf);
-                    FailNativeContextAtAnyIrql();
+                    FailNativeContextAtAnyIrql(VioGpuNativeFailSiteDpcUnexpectedCompletion);
                     continue;
                 }
                 if (pvbuf->auto_release)
@@ -15561,7 +15574,7 @@ __declspec(noinline) VOID VioGpuAdapter::ResetDevice(VOID)
         m_pVioGpuDod->RecordResetDeviceProvenance(resetCallerRva);
     }
 #endif
-    FailNativeContextAtAnyIrql();
+    FailNativeContextAtAnyIrql(VioGpuNativeFailSiteResetDeviceEntry);
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 }
 

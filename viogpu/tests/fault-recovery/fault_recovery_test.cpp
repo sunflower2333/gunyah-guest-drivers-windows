@@ -99,9 +99,14 @@ struct DXGKARG_QUERYCURRENTFENCE
 struct VioGpuAdapter
 {
     bool failed = false;
-    void FailNativeContextAtAnyIrql()
+    LONG failedSite = 0;
+    /* The site tag is required in production so an unclassified escalation cannot
+     * compile; record it here too, so this fixture asserts which gate escalated
+     * rather than only that one did. */
+    void FailNativeContextAtAnyIrql(LONG site)
     {
         failed = true;
+        failedSite = site;
     }
 };
 struct VioGpuDod
@@ -192,6 +197,8 @@ int main()
         check(device.reset && device.m_NativeFenceNotificationClosed,
               "fault closes publication even without identity/transport");
         check(mode >= 2 || device.hardware.failed, "available host transport is invalidated");
+        check(mode >= 2 || device.hardware.failedSite == VioGpuNativeFailSiteSubmissionFault,
+              "the escalation names the submission-fault gate, not just that it escalated");
         check(device.notifications.empty(), "fault emits no reserved DMA fault or success interrupt");
         DXGKARG_QUERYCURRENTFENCE query;
         check(VioGpuWddmQueryCurrentFence(&device, &query) == STATUS_SUCCESS && query.CurrentFence == 41,

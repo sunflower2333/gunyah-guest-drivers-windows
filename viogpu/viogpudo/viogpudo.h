@@ -525,6 +525,82 @@ enum VIOGPU_NATIVE_GENERATION_STALE_SITE : LONG
     VioGpuNativeGenerationStalePostBlob = 2,
 };
 
+/* Every path into FailNativeContextAtAnyIrql names itself on arrival.
+ *
+ * That helper bumps the adapter-wide reset generation, poisons both synchronous
+ * epochs and latches RequestHardwareReset for the life of the boot -- it is the
+ * heaviest thing this driver can do -- and it had forty-three call sites sharing
+ * a single first-caller RVA.  On 58539 one of them fired from RVA 0x45718 after a
+ * fully successful allocation and cost every process its device; naming it took
+ * hours, a matching PDB and offline symbol resolution, because a bare RVA is not
+ * a one-read diagnostic.
+ *
+ * The tag is also the audit.  check-contract.py holds a classification for every
+ * enumerator below and requires each to appear exactly once as an argument, so a
+ * new escalation cannot be added without classifying it, and a site cannot be
+ * silently reclassified.  That matters more than it sounds: the 58541 fix had been
+ * claimed by two code comments while the code still latched, and a third comment
+ * (written in 58537, mine) repeated the claim -- careful reading of comments is
+ * demonstrably not enough, so the check reads the call sites instead.
+ *
+ * Sites are grouped by whether escalating the whole adapter is defensible.  The
+ * per-context group is the remaining instance of the bug class fixed in 58537 and
+ * 58541: one context's unknowable answer taking the adapter down.  The contract
+ * tracks that group explicitly so it can only shrink. */
+enum VIOGPU_NATIVE_FAIL_SITE : LONG
+{
+    VioGpuNativeFailSiteNone = 0,
+
+    /* Adapter-wide: transport lifecycle, power, the shared control-slot registry,
+     * the DPC/fence bridge, and the 2D/display path, whose resources are the
+     * adapter's own rather than any one application's. */
+    VioGpuNativeFailSiteFenceNotify,
+    VioGpuNativeFailSiteSubmissionFault,
+    VioGpuNativeFailSitePowerStateReadiness,
+    VioGpuNativeFailSiteTargetTransform,
+    VioGpuNativeFailSiteResourceColor,
+    VioGpuNativeFailSitePresentColor,
+    VioGpuNativeFailSiteScanout2DSet,
+    VioGpuNativeFailSiteScanout2DDetach,
+    VioGpuNativeFailSiteBacking2DCreate,
+    VioGpuNativeFailSiteBacking2DAttach,
+    VioGpuNativeFailSiteBacking2DRollback,
+    VioGpuNativeFailSiteBacking2DGeneration,
+    VioGpuNativeFailSiteDestroy2DPreexisting,
+    VioGpuNativeFailSiteDestroy2DGeneration,
+    VioGpuNativeFailSiteDestroy2DUnref,
+    VioGpuNativeFailSiteControlSlotRetire,
+    VioGpuNativeFailSiteControlSlotState,
+    VioGpuNativeFailSiteControlSlotDuplicate,
+    VioGpuNativeFailSiteResetRetireGeneration,
+    VioGpuNativeFailSiteResetRetirePublish,
+    VioGpuNativeFailSiteTransportStopIrql,
+    VioGpuNativeFailSiteTransportStopStatus,
+    VioGpuNativeFailSiteTransportRegistryLive,
+    VioGpuNativeFailSiteTransportState,
+    VioGpuNativeFailSiteTransportQuiesce,
+    VioGpuNativeFailSiteTransportStopWorkThread,
+    VioGpuNativeFailSiteTransportQueues,
+    VioGpuNativeFailSiteTransportSyncInterrupts,
+    VioGpuNativeFailSiteTransportStatus,
+    VioGpuNativeFailSiteTransportRetireOwners,
+    VioGpuNativeFailSiteTransportSyncInterruptsFinal,
+    VioGpuNativeFailSiteTransportBufClose,
+    VioGpuNativeFailSiteConfigChangedHealth,
+    VioGpuNativeFailSiteDpcUnexpectedCompletion,
+    VioGpuNativeFailSiteResetDeviceEntry,
+
+    /* Per-context, and therefore wrong: each escalates one application's
+     * unknowable answer into an adapter-wide latch.  ImportNativeSharedResource's
+     * three were scoped alongside this census; the rest are tracked as pending by
+     * check-contract.py and are the next work. */
+    VioGpuNativeFailSiteResourceIdRetire,
+    VioGpuNativeFailSiteResourceIdRelease,
+    VioGpuNativeFailSiteResourceIdUnref,
+    VioGpuNativeFailSiteReleaseSharedDetach,
+    VioGpuNativeFailSiteReleaseSharedUnref,
+};
+
 struct VIOGPU_NATIVE_CONTEXT_OWNER
 {
     LIST_ENTRY AdapterLink;
@@ -667,7 +743,11 @@ class VioGpuAdapter : IVioGpuPCI
                                 _In_ CONST CURRENT_MODE *pModeCur);
     NTSTATUS Escape(_In_ CONST DXGKARG_ESCAPE *pEscap);
     /* May be called by the display-only transport completion path at any IRQL. */
-    __declspec(noinline) void FailNativeContextAtAnyIrql(void);
+    /* The site tag is required, not defaulted: the compiler refuses an
+     * unclassified escalation, and check-contract.py refuses a misclassified one.
+     * A default would have left the census enforceable only by the check, which is
+     * the weaker of the two guarantees. */
+    __declspec(noinline) void FailNativeContextAtAnyIrql(_In_ LONG site);
     /* Records a generation-currency escalation without failing the adapter.
      * Noinline so _ReturnAddress() names the checking site rather than this
      * helper, exactly as FailNativeContextAtAnyIrql does. */
@@ -1162,6 +1242,8 @@ class VioGpuDod
     volatile LONG m_HardwareResetFirstCallerRva;
     volatile LONG m_NativeContextFailFirstCallerRva;
     volatile LONG m_NativeContextFailCount;
+    volatile LONG m_NativeContextFailFirstSite;
+    volatile LONG m_NativeContextFailLastSite;
     /* Generation-currency escalations in CreateNativeGuestAllocation.  These no
      * longer reach FailNativeContextAtAnyIrql, so they no longer appear in
      * NativeContextFailFirstCallerRva, and without a dedicated latch a
@@ -1777,9 +1859,15 @@ class VioGpuDod
     /* The native-context failure handler has eight call sites in the virtqueue
      * and control-queue error paths; publishing which one ran is the only way to
      * name the fault that closes the submission gate. */
-    VOID RecordNativeContextFailProvenance(_In_ ULONG_PTR callerRva)
+    VOID RecordNativeContextFailProvenance(_In_ ULONG_PTR callerRva, _In_ LONG site)
     {
         InterlockedIncrement(&m_NativeContextFailCount);
+        /* First-writer for the site that opened the episode, last-writer for the
+         * most recent one.  The RVA is kept beside the tag because a tag names the
+         * gate while the RVA separates several gates inside one function -- which
+         * is exactly the case in ImportNativeSharedResource. */
+        InterlockedCompareExchange(&m_NativeContextFailFirstSite, site, VioGpuNativeFailSiteNone);
+        InterlockedExchange(&m_NativeContextFailLastSite, site);
         if (callerRva != 0 && callerRva <= MAXULONG)
         {
             InterlockedExchange(&m_NativeContextFailCallerRva, static_cast<LONG>(callerRva));
@@ -1973,6 +2061,14 @@ class VioGpuDod
     DWORD ReadNativeContextFailCount(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailCount, 0, 0));
+    }
+    DWORD ReadNativeContextFailFirstSite(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailFirstSite, 0, 0));
+    }
+    DWORD ReadNativeContextFailLastSite(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailLastSite, 0, 0));
     }
     DWORD ReadNativeContextGenerationStaleCount(void)
     {

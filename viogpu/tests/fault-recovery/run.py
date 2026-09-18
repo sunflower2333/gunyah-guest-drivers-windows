@@ -29,7 +29,20 @@ def function(text, signature):
 
 dod = source('viogpu/viogpudo/viogpudo.cpp')
 ddi = source('viogpu/viogpuwddm/wddmddi.cpp')
+hdr = source('viogpu/viogpudo/viogpudo.h')
+
+def enumeration(text, name):
+    # Pulled from the header rather than restated here, so a new escalation site
+    # cannot leave this fixture behind.  Absent on --revision sources older than
+    # the site census, where the extracted production code does not need it.
+    marker = f'enum {name}'
+    if marker not in text:
+        return ''
+    start = text.index(marker)
+    return text[start:text.index('};', start) + 2]
+
 production = '\n'.join([
+    enumeration(hdr, 'VIOGPU_NATIVE_FAIL_SITE : LONG'),
     function(dod, '__declspec(noinline) void VioGpuDod::NotifyNativeSubmissionFault('),
     function(dod, 'void VioGpuDod::InvalidateNativeFenceTracker('),
     function(dod, 'void VioGpuDod::CompleteNativeFenceReset('),
