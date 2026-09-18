@@ -9,8 +9,8 @@ import shutil
 import struct
 import subprocess
 
-MESA_COMMIT = "701f70af065bdfd324eb26f1ece18abb38de6e6c"
-MESA_RUN = 35331375318
+MESA_COMMIT = "dacfb94ce0e677b300aea9fd2adb0b91dd7a47fb"
+MESA_RUN = 35340872613
 MACHINES = {"arm64": 0xAA64, "x64": 0x8664, "x86": 0x14C}
 DLL_STEMS = ("viogpu_gl", "viogpu_egl", "viogpu_gles1", "viogpu_gles2",
              "viogpu_gl_vk", "viogpu_gl_loader")
