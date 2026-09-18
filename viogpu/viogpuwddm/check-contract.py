@@ -7443,6 +7443,19 @@ def check_native_fail_site_census() -> None:
     paragraph with a cleverer checker: a check that claims to verify a judgement it
     cannot verify is worse than an honest gap.
 
+    A fix must stay in the shape its own audit can see.  The 2026-09-19 mutation
+    audit of every negative clause -- a guard that fails because forbidden text is
+    present, which is the class that goes quiet rather than red when its needle
+    rots -- found the Advanced Color 2.3 guard passing an unsanctioned
+    driverCaps->WDDMVersion write.  The first repair was correct and expressed the
+    invariant as span arithmetic over re.finditer offsets, which the enumerator no
+    longer recognised as a negative clause at all: the next run of the audit that
+    found the defect would not have examined the fix for it.  Restating it as a
+    plain absence requirement over a narrowed region put it back in view.  A repair
+    that makes itself invisible to the check that discovered the defect is a new
+    defect wearing the old one's fix as cover, so when a guard changes shape,
+    re-run the enumeration and confirm the guard is still counted.
+
     The tag is the diagnostic and the audit at once.  The classification below has
     to list every enumerator, so a new escalation cannot be added without deciding
     whether escalating the whole adapter is defensible for it; and CONTEXT_PENDING
@@ -13829,8 +13842,22 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
                           "VioGpuTimingPathResult")
     need("if(caps.generation==0||!(caps.usable_hdr_types&VIOGPU_DISPLAY_COLOR_PQ)){returnSTATUS_NOT_SUPPORTED;}",
          acdi, "an MPO3 PQ plane must require usable PQ")
-    if "PreserveInherited" in acdi and "STATUS_NOT_SUPPORTED" in acdi[acdi.find("PreserveInherited") - 40:acdi.find("PreserveInherited") + 80]:
-        violations.append("PreserveInherited must be applied and reported, not refused")
+    # PreserveInherited is a request, not an option: this backend cannot keep a
+    # firmware-owned scanout across the virtio device reset, and the DDI contract
+    # reserves failure for bad parameters, so SetTimingsFromVidPn applies such a
+    # request as a normal timing set (see advanced_color_ddi.inc). That decision
+    # is implemented by never consulting the flag, so any code reference to it
+    # means the decision changed and must be re-stated here deliberately.
+    #
+    # Audited 2026-09-19: the previous form was
+    #   if "PreserveInherited" in acdi and "STATUS_NOT_SUPPORTED" in acdi[
+    #           acdi.find("PreserveInherited") - 40:acdi.find("PreserveInherited") + 80]
+    # and could never run. acdi is the comment-stripped view, the token lives
+    # only in that rationale comment, so the left conjunct was always False --
+    # the one guard of 222 never reached on a clean run. Had it ever activated,
+    # find() - 40 on an early match wraps to the end of the string.
+    if "PreserveInherited" in acdi:
+        violations.append("PreserveInherited must be applied as a normal timing set, never consulted or refused")
     # MMIO flips (FlipOnVSyncMmIo): a legacy flip never scans out ten-bit pixels,
     # ends any queued color presentation, and serializes with color state.
     ddi = interface_view(code["wddmddi.cpp"], advanced=True)
@@ -13945,10 +13972,31 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     need("if(!interruptible){returnVioGpuColorConnectionNone;}", policy,
          "an always-connected child must never be reported disconnected")
     need("if(!isAdmitted){returnVioGpuColorConnectionNone;}", policy, "SDR generations must never pulse the monitor")
-    if re.search(r"DXGKDDI_WDDMv2_3", code["viogpudo.cpp"]) and not re.search(
-            r"#\s*if\s*\(\s*DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\s*\)\s*&&\s*"
-            r"defined\s*\(\s*VIOGPU_REPORT_WDDM2_3\s*\)\s*/?\*?[^\n]*\n(?:[^\n]*\n)*?\s*driverCaps->WDDMVersion\s*=\s*DXGKDDI_WDDMv2_3\s*;",
-            code["viogpudo.cpp"]):
+    # Every occurrence must be the sanctioned write, not merely one of them.
+    #
+    # Audited 2026-09-19: the previous form was
+    #   if re.search("DXGKDDI_WDDMv2_3", ...) and not re.search(<sanctioned>, ...)
+    # which reads "the token appears somewhere AND the sanctioned block is
+    # absent". The sanctioned block permanently exists, so the second conjunct
+    # was always False and an added unsanctioned occurrence was invisible. A
+    # driverCaps->WDDMVersion = DXGKDDI_WDDMv2_3 placed inside a plain
+    # #if (DXGKDDI_INTERFACE_VERSION >= ...WDDM2_3) branch -- with no
+    # VIOGPU_REPORT_WDDM2_3 -- passed the whole contract; the default-view token
+    # scan above cannot see it either, because it is not in the default view.
+    # Cut the one sanctioned span out and forbid the token in what is left, so
+    # this stays a plain absence requirement over a narrowed region -- the shape
+    # a mutation audit can enumerate and exercise -- rather than span arithmetic.
+    # If the sanctioned block is missing entirely, nothing is cut and the
+    # surviving write reports itself.
+    unsanctioned_wddm23 = code["viogpudo.cpp"]
+    sanctioned_wddm23 = re.search(
+        r"#\s*if\s*\(\s*DXGKDDI_INTERFACE_VERSION\s*>=\s*DXGKDDI_INTERFACE_VERSION_WDDM2_3\s*\)\s*&&\s*"
+        r"defined\s*\(\s*VIOGPU_REPORT_WDDM2_3\s*\)\s*/?\*?[^\n]*\n(?:[^\n]*\n)*?\s*driverCaps->WDDMVersion\s*=\s*DXGKDDI_WDDMv2_3\s*;",
+        unsanctioned_wddm23)
+    if sanctioned_wddm23 is not None:
+        unsanctioned_wddm23 = (unsanctioned_wddm23[:sanctioned_wddm23.start()]
+                               + unsanctioned_wddm23[sanctioned_wddm23.end():])
+    if "DXGKDDI_WDDMv2_3" in unsanctioned_wddm23:
         violations.append("driver model 2.3 may be reported only by the explicit VIOGPU_REPORT_WDDM2_3 experiment")
     project = sources["viogpuwddm.vcxproj"]
     if project.count("VIOGPU_REPORT_WDDM2_3=1") != 1 or \
