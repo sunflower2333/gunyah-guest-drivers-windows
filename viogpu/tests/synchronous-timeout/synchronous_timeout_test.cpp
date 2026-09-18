@@ -41,10 +41,14 @@ struct LARGE_INTEGER
 };
 constexpr BOOLEAN TRUE = true, FALSE = false;
 constexpr NTSTATUS STATUS_SUCCESS = 0, STATUS_TIMEOUT = 0x102;
+constexpr NTSTATUS STATUS_DEVICE_NOT_READY = static_cast<NTSTATUS>(0xC00000A3U);
 constexpr ULONG MAXULONG = UINT32_MAX;
 constexpr int Executive = 0, KernelMode = 0, PASSIVE_LEVEL = 0;
 #ifndef _Out_
 #define _Out_
+#endif
+#ifndef _Inout_
+#define _Inout_
 #endif
 #define PAGED_CODE()  ((void)0)
 #define DbgPrint(...) ((void)0)
@@ -160,6 +164,19 @@ struct CtrlQueue
     void CompleteSynchronousRequestTeardown();
     BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER, PBOOLEAN);
     BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER, PBOOLEAN, PBOOLEAN);
+    /* Second synchronous channel: per-context control rides its own epoch so one
+     * application's stall cannot poison the adapter-scoped 2D/display control that
+     * MapApertureAllocation needs for DWM's primaries. */
+    volatile LONG64 m_NativeSynchronousEpochState = VioGpuSynchronousOffline;
+    volatile LONG m_NativeSynchronousPoisonCallerRva = 0;
+    volatile LONG m_NativeSynchronousLongestWaitSlices = 0;
+    int m_NativeSynchronousMutex = 0;
+    void PoisonNativeSynchronousRequests();
+    BOOLEAN IsNativeSynchronousRequestsHealthy();
+    BOOLEAN EnableNativeSynchronousRequests();
+    NTSTATUS QuiesceNativeSynchronousRequests();
+    ULONG NativeSynchronousLongestWaitSlices();
+    BOOLEAN SubmitNativeSynchronousLocked(PGPU_VBUFFER, PBOOLEAN, PBOOLEAN);
 };
 // INSERT_PRODUCTION
 
@@ -387,10 +404,83 @@ static void publication()
     check(consistent && queue.GetFirstSynchronousTimeout(&diagnostic) && diagnostic.EpochGeneration == 8,
           "published first record remains immutable for concurrent readers");
 }
+/* The runtime counterpart of the channel-split contract pin.  On 58535 a single
+ * GEM_NEW timeout poisoned the one shared epoch, so the standard-2D control that
+ * MapApertureAllocation uses for DWM's primaries failed 376 times and drove an
+ * adapter reset.  The whole point of the split is the third check below: the
+ * adapter epoch must still be Enabled after a native-channel request is given up. */
+static void channel_isolation()
+{
+    CtrlQueue queue;
+    GPU_RES_UNREF command = {};
+    command.hdr.type = VIRTIO_GPU_CMD_RESOURCE_UNREF;
+    command.hdr.ctx_id = 77;
+    command.resource_id = 0x80000abc;
+    GPU_VBUFFER buf = {};
+    buf.buf = reinterpret_cast<char *>(&command);
+    buf.size = sizeof(command);
+    BOOLEAN release = false, submitted = false;
+
+    /* The two channels are enabled explicitly and in lockstep, the way
+     * StartNativeContextTransport does it. */
+    waitAction = {};
+    waitResult = STATUS_SUCCESS;
+    check(queue.EnableNativeSynchronousRequests() && queue.EnableSynchronousRequests() &&
+              queue.IsSynchronousRequestsHealthy() && queue.IsNativeSynchronousRequestsHealthy(),
+          "both epochs come up together");
+
+    waitAction = {};
+    waitResult = STATUS_TIMEOUT;
+    unsigned beforeWaits = waits;
+    check(!queue.SubmitNativeSynchronousLocked(&buf, &release, &submitted) && !release && submitted && buf.complete_cb &&
+              buf.complete_ctx,
+          "a native timeout quarantines its own descriptor and keeps its callbacks");
+    check(waits == beforeWaits + VIOGPU_SYNCHRONOUS_COMPLETION_WAIT_SLICES &&
+              queue.NativeSynchronousLongestWaitSlices() == VIOGPU_SYNCHRONOUS_COMPLETION_WAIT_SLICES,
+          "a native request is given up only after the whole wait budget, on its own counter");
+    check(!queue.IsNativeSynchronousRequestsHealthy(), "a native timeout poisons the native epoch");
+    check(queue.IsSynchronousRequestsHealthy(), "a native timeout leaves the adapter epoch usable");
+    check(queue.SynchronousLongestWaitSlices() == 0, "a native wait is not charged to the adapter channel");
+
+    /* And the adapter channel still actually works, which is the property the 376
+     * stage-MapHost refusals proved absent. */
+    waitAction = [&] { buf.complete_cb(buf.complete_ctx); };
+    waitResult = STATUS_SUCCESS;
+    check(queue.SubmitSynchronousLocked(&buf, &release, &submitted) && release && submitted,
+          "adapter-scoped control still completes while the native epoch is poisoned");
+
+    /* Symmetry: the inverse must hold too, or a display-path stall would take the
+     * per-context channel down with it. */
+    CtrlQueue other;
+    waitAction = {};
+    waitResult = STATUS_SUCCESS;
+    check(other.EnableNativeSynchronousRequests() && other.EnableSynchronousRequests(),
+          "second fixture enables both epochs");
+    waitResult = STATUS_TIMEOUT;
+    check(!other.SubmitSynchronousLocked(&buf, &release, &submitted) && !release && submitted,
+          "an adapter timeout quarantines its own descriptor");
+    check(!other.IsSynchronousRequestsHealthy(), "an adapter timeout poisons the adapter epoch");
+    check(other.IsNativeSynchronousRequestsHealthy(), "an adapter timeout leaves the native epoch usable");
+
+    /* Teardown requires every epoch to have already left Enabled -- the shared
+     * helper asserts exactly that, which is why QuiesceSynchronousRequests runs
+     * before CompleteSynchronousRequestTeardown in the StopDevice order.  Poison
+     * the adapter channel too, then confirm teardown takes both offline. */
+    waitAction = {};
+    waitResult = STATUS_TIMEOUT;
+    check(!queue.SubmitSynchronousLocked(&buf, &release, &submitted) && !release && submitted,
+          "adapter timeout poisons the adapter epoch for teardown");
+    check(!queue.IsSynchronousRequestsHealthy() && !queue.IsNativeSynchronousRequestsHealthy(),
+          "both epochs are poisoned before teardown");
+    queue.CompleteSynchronousRequestTeardown();
+    check(!queue.IsSynchronousRequestsHealthy() && !queue.IsNativeSynchronousRequestsHealthy(),
+          "teardown takes both epochs offline");
+}
 int main()
 {
     lifecycle();
     decoding();
     publication();
+    channel_isolation();
     std::printf("PASS synchronous timeout lifecycle and boundaries: %d checks\n", checks);
 }

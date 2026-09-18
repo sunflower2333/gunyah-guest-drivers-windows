@@ -398,6 +398,17 @@ BOOLEAN CtrlQueue::BeginSynchronousRequest(void)
 {
     PAGED_CODE();
 
+    /* Adapter-then-native is the only legal order (see the owner fields in
+     * viogpu_queue.h).  A thread already holding the native epoch asking for the
+     * adapter epoch is the one way this split can deadlock, so refuse it here
+     * instead of reasoning about it. */
+    if (IsNativeSynchronousOwnedByCurrentThread())
+    {
+        InterlockedIncrement(&m_SynchronousLockOrderRefusals);
+        NT_ASSERT(FALSE);
+        return FALSE;
+    }
+
     if (KeGetCurrentIrql() != PASSIVE_LEVEL ||
         VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)) != VioGpuSynchronousEnabled)
     {
@@ -428,6 +439,151 @@ void CtrlQueue::EndSynchronousRequest(void)
 {
     PAGED_CODE();
     KeReleaseMutex(&m_SynchronousMutex, FALSE);
+}
+
+/* The native (per-context) twin of BeginSynchronousRequest.  See the channel note
+ * in viogpu_queue.h: the no-argument entry points are the adapter channel because
+ * the contract pins them that way, so the second channel needs its own names. */
+BOOLEAN CtrlQueue::BeginNativeSynchronousRequest(void)
+{
+    PAGED_CODE();
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_NativeSynchronousEpochState)) !=
+            VioGpuSynchronousEnabled)
+    {
+        return FALSE;
+    }
+
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
+    NTSTATUS status = STATUS_TIMEOUT;
+    for (ULONG slice = 0; slice < VIOGPU_SYNCHRONOUS_MUTEX_WAIT_SLICES && status == STATUS_TIMEOUT; ++slice)
+    {
+        status = KeWaitForSingleObject(&m_NativeSynchronousMutex, Executive, KernelMode, FALSE, &timeout);
+    }
+    if (status != STATUS_SUCCESS)
+    {
+        PoisonNativeSynchronousRequests();
+        return FALSE;
+    }
+    if (VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_NativeSynchronousEpochState)) !=
+        VioGpuSynchronousEnabled)
+    {
+        KeReleaseMutex(&m_NativeSynchronousMutex, FALSE);
+        return FALSE;
+    }
+    InterlockedExchange64(&m_NativeSynchronousOwner, reinterpret_cast<LONG64>(KeGetCurrentThread()));
+    return TRUE;
+}
+
+void CtrlQueue::EndNativeSynchronousRequest(void)
+{
+    PAGED_CODE();
+    InterlockedExchange64(&m_NativeSynchronousOwner, 0);
+    KeReleaseMutex(&m_NativeSynchronousMutex, FALSE);
+}
+
+/* Refuse the inverse lock order rather than deadlock on it.  Adapter-then-native
+ * is legal and happens: CreateNativeGuestAllocation consults
+ * QueryNativeContextReadiness, whose capset queries take the adapter channel,
+ * before it takes the native one.  Native-then-adapter has no legitimate caller,
+ * so a thread that already holds the native epoch is refused the adapter epoch
+ * and the refusal is counted rather than silently tolerated. */
+BOOLEAN CtrlQueue::IsNativeSynchronousOwnedByCurrentThread(void)
+{
+    return InterlockedCompareExchange64(&m_NativeSynchronousOwner, 0, 0) ==
+           reinterpret_cast<LONG64>(KeGetCurrentThread());
+}
+
+__declspec(noinline) void CtrlQueue::PoisonNativeSynchronousRequests(void)
+{
+    /* Same provenance discipline as PoisonSynchronousRequests: record the first
+     * caller before the state changes, because the epoch cannot leave the
+     * poisoned state while the device stays started. */
+    ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    ULONG_PTR returnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+    ULONG_PTR callerRva = returnAddress >= imageBase ? returnAddress - imageBase : 0;
+    if (callerRva != 0 && callerRva <= MAXULONG)
+    {
+        InterlockedCompareExchange(&m_NativeSynchronousPoisonCallerRva, static_cast<LONG>(callerRva), 0);
+    }
+
+    LONG64 current = VioGpuReadSynchronousEpochState(&m_NativeSynchronousEpochState);
+    for (;;)
+    {
+        if (VioGpuSynchronousState(current) == VioGpuSynchronousPoisoned)
+        {
+            return;
+        }
+        ULONG generation = VioGpuSynchronousGeneration(current);
+        if (generation != MAXULONG)
+        {
+            ++generation;
+        }
+        LONG64 poisoned = VioGpuMakeSynchronousEpochState(generation, VioGpuSynchronousPoisoned);
+        LONG64 observed = InterlockedCompareExchange64(&m_NativeSynchronousEpochState, poisoned, current);
+        if (observed == current)
+        {
+            return;
+        }
+        current = observed;
+    }
+}
+
+BOOLEAN CtrlQueue::IsNativeSynchronousRequestsHealthy(void)
+{
+    return VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_NativeSynchronousEpochState)) ==
+           VioGpuSynchronousEnabled;
+}
+
+ULONG CtrlQueue::NativeSynchronousLongestWaitSlices(void)
+{
+    return static_cast<ULONG>(InterlockedCompareExchange(&m_NativeSynchronousLongestWaitSlices, 0, 0));
+}
+
+ULONG CtrlQueue::NativeSynchronousPoisonCallerRva(void)
+{
+    return static_cast<ULONG>(InterlockedCompareExchange(&m_NativeSynchronousPoisonCallerRva, 0, 0));
+}
+
+ULONG CtrlQueue::NativeSynchronousEpochStateValue(void)
+{
+    return static_cast<ULONG>(
+        VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_NativeSynchronousEpochState)));
+}
+
+ULONG CtrlQueue::NativeSynchronousEpochGenerationValue(void)
+{
+    return static_cast<ULONG>(
+        VioGpuSynchronousGeneration(VioGpuReadSynchronousEpochState(&m_NativeSynchronousEpochState)));
+}
+
+ULONG CtrlQueue::SynchronousLockOrderRefusals(void)
+{
+    return static_cast<ULONG>(InterlockedCompareExchange(&m_SynchronousLockOrderRefusals, 0, 0));
+}
+
+ULONG CtrlQueue::NativeResourceIdRefusals(void)
+{
+    return static_cast<ULONG>(InterlockedCompareExchange(&m_NativeResourceIdRefusals, 0, 0));
+}
+
+/* Every native method that names a resource id asserts the native half of the id
+ * space here.  The boundary is VIOGPU_NATIVE_RESOURCE_ID_START (0x80000000): the
+ * adapter-scoped methods already assert IsStandard2DResourceId, so asserting the
+ * complement on this channel makes the 16/9 assignment mechanically checkable
+ * instead of a matter of care -- which matters because CreateGuestBlobSynchronous
+ * (adapter) and CreateNativeGuestBlob (native) sit one word apart. */
+BOOLEAN CtrlQueue::AdmitNativeResourceId(UINT resource_id)
+{
+    if (IsNativeResourceId(resource_id))
+    {
+        return TRUE;
+    }
+    InterlockedIncrement(&m_NativeResourceIdRefusals);
+    NT_ASSERT(FALSE);
+    return FALSE;
 }
 
 ULONG CtrlQueue::SynchronousPoisonCallerRva(void)
@@ -590,15 +746,112 @@ BOOLEAN CtrlQueue::EnableSynchronousRequests(void)
     return enabled;
 }
 
+BOOLEAN CtrlQueue::EnableNativeSynchronousRequests(void)
+{
+    PAGED_CODE();
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return FALSE;
+    }
+    LARGE_INTEGER timeout;
+    /* Five seconds, matching the adapter twin EnableSynchronousRequests; the
+     * six-second wait belongs to the quiesce paths on both channels. */
+    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
+    if (KeWaitForSingleObject(&m_NativeSynchronousMutex, Executive, KernelMode, FALSE, &timeout) != STATUS_SUCCESS)
+    {
+        return FALSE;
+    }
+    LONG64 current = VioGpuReadSynchronousEpochState(&m_NativeSynchronousEpochState);
+    BOOLEAN enabled = FALSE;
+    VIOGPU_SYNCHRONOUS_STATE state = VioGpuSynchronousState(current);
+    /* Poisoned is recoverable here for the same reason it is on the adapter
+     * channel: this caller holds the channel mutex, so no request of this channel
+     * is in flight, and bumping the generation invalidates every waiter that
+     * observed the poisoned epoch. */
+    if (state == VioGpuSynchronousOffline || state == VioGpuSynchronousPoisoned)
+    {
+        ULONG generation = VioGpuSynchronousGeneration(current);
+        if (generation != MAXULONG)
+        {
+            LONG64 next = VioGpuMakeSynchronousEpochState(generation + 1, VioGpuSynchronousEnabled);
+            enabled = InterlockedCompareExchange64(&m_NativeSynchronousEpochState, next, current) == current;
+            if (enabled && state == VioGpuSynchronousPoisoned)
+            {
+                InterlockedExchange(&m_NativeSynchronousPoisonCallerRva, 0);
+            }
+        }
+    }
+    KeReleaseMutex(&m_NativeSynchronousMutex, FALSE);
+    return enabled;
+}
+
+/* Native twin of the adapter quiesce: move Enabled -> Quiescing, then drain by
+ * taking the channel mutex once, and poison on any failure so the epoch has
+ * certainly left Enabled before teardown takes it Offline. */
+NTSTATUS CtrlQueue::QuiesceNativeSynchronousRequests(void)
+{
+    PAGED_CODE();
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        PoisonNativeSynchronousRequests();
+        return STATUS_DEVICE_NOT_READY;
+    }
+    for (;;)
+    {
+        LONG64 current = VioGpuReadSynchronousEpochState(&m_NativeSynchronousEpochState);
+        VIOGPU_SYNCHRONOUS_STATE state = VioGpuSynchronousState(current);
+        if (state == VioGpuSynchronousOffline)
+        {
+            return STATUS_SUCCESS;
+        }
+        if (state == VioGpuSynchronousQuiescing || state == VioGpuSynchronousPoisoned)
+        {
+            break;
+        }
+        if (state == VioGpuSynchronousEnabled)
+        {
+            LONG64 quiescing = VioGpuMakeSynchronousEpochState(VioGpuSynchronousGeneration(current),
+                                                              VioGpuSynchronousQuiescing);
+            if (InterlockedCompareExchange64(&m_NativeSynchronousEpochState, quiescing, current) == current)
+            {
+                break;
+            }
+            continue;
+        }
+        PoisonNativeSynchronousRequests();
+        return STATUS_DEVICE_NOT_READY;
+    }
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -6LL * 10 * 1000 * 1000;
+    NTSTATUS status = KeWaitForSingleObject(&m_NativeSynchronousMutex, Executive, KernelMode, FALSE, &timeout);
+    if (status != STATUS_SUCCESS)
+    {
+        PoisonNativeSynchronousRequests();
+        return status;
+    }
+    KeReleaseMutex(&m_NativeSynchronousMutex, FALSE);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS CtrlQueue::QuiesceSynchronousRequests(void)
 {
     PAGED_CODE();
 
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
+        PoisonNativeSynchronousRequests();
         PoisonSynchronousRequests();
         return STATUS_DEVICE_NOT_READY;
     }
+    /* Quiesce the native channel first and unconditionally.  Every exit path
+     * below may return early, and CompleteSynchronousRequestTeardown asserts that
+     * each epoch it takes Offline was Quiescing or Poisoned -- so the native epoch
+     * has to have left Enabled before any of those returns.  The two mutexes are
+     * taken sequentially here, never nested, so this does not engage the
+     * adapter-then-native order. */
+    QuiesceNativeSynchronousRequests();
     for (;;)
     {
         LONG64 current = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
@@ -636,10 +889,40 @@ NTSTATUS CtrlQueue::QuiesceSynchronousRequests(void)
     return STATUS_SUCCESS;
 }
 
+/* Both channels go Offline together.  Factored on an epoch pointer because
+ * nothing here is contract-pinned -- only the call expression
+ * m_CtrlQueue.CompleteSynchronousRequestTeardown() is, in the ordered StopDevice
+ * and UnwindFailedStart sequences -- so the teardown loop is shared rather than
+ * duplicated the way the submit path had to be. */
+static void VioGpuCompleteSynchronousEpochTeardown(_Inout_ volatile LONG64 *epoch)
+{
+    for (;;)
+    {
+        LONG64 current = VioGpuReadSynchronousEpochState(epoch);
+        VIOGPU_SYNCHRONOUS_STATE state = VioGpuSynchronousState(current);
+        if (state == VioGpuSynchronousOffline)
+        {
+            return;
+        }
+        if (state != VioGpuSynchronousQuiescing && state != VioGpuSynchronousPoisoned)
+        {
+            NT_ASSERT(FALSE);
+            return;
+        }
+        LONG64 offline = VioGpuMakeSynchronousEpochState(VioGpuSynchronousGeneration(current),
+                                                         VioGpuSynchronousOffline);
+        if (InterlockedCompareExchange64(epoch, offline, current) == current)
+        {
+            return;
+        }
+    }
+}
+
 void CtrlQueue::CompleteSynchronousRequestTeardown(void)
 {
     PAGED_CODE();
 
+    VioGpuCompleteSynchronousEpochTeardown(&m_NativeSynchronousEpochState);
     for (;;)
     {
         LONG64 current = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
@@ -984,6 +1267,87 @@ __declspec(noinline) BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf
         // A reset or quiesce raced the completion callback. Even if the DPC
         // dequeued this descriptor, retain it until reset reclamation proves
         // that no host or callback can still reference its storage.
+        *release_buffer = FALSE;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* Deliberate twin of the three-parameter SubmitSynchronousLocked above.  It is a
+ * copy and not shared code because check-contract.py resolves that function by its
+ * exact three-parameter signature and then requires, inside that body, one literal
+ * &m_SynchronousEpochState read, one inline KeWaitForSingleObject, and a timeout
+ * block beginning with PoisonSynchronousRequests() -- none of which survives being
+ * factored out or parameterized.  The only differences here are the epoch, the
+ * poison and the wait-slice counter; RecordFirstSynchronousTimeout is shared on
+ * purpose, so the driver keeps one first-timeout record across both channels.
+ * Keep the two functions in step. */
+__declspec(noinline) BOOLEAN CtrlQueue::SubmitNativeSynchronousLocked(PGPU_VBUFFER buf,
+                                                                     _Out_ PBOOLEAN release_buffer,
+                                                                     _Out_ PBOOLEAN submitted)
+{
+    if (buf == NULL || release_buffer == NULL || submitted == NULL)
+    {
+        return FALSE;
+    }
+
+    *release_buffer = TRUE;
+    *submitted = FALSE;
+    LONG64 requestEpochState = VioGpuReadSynchronousEpochState(&m_NativeSynchronousEpochState);
+    if (VioGpuSynchronousState(requestEpochState) != VioGpuSynchronousEnabled)
+    {
+        return FALSE;
+    }
+    KeClearEvent(&buf->completion_event);
+    buf->synchronous_epoch_state = requestEpochState;
+    buf->complete_cb = NotifyEventCompleteCB;
+    buf->complete_ctx = &buf->completion_event;
+    buf->auto_release = false;
+
+    if (QueueBuffer(buf) < 0)
+    {
+        buf->complete_cb = NULL;
+        buf->complete_ctx = NULL;
+        buf->synchronous_epoch_state = 0;
+        return FALSE;
+    }
+    *submitted = TRUE;
+
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -5LL * 10 * 1000 * 1000;
+    NTSTATUS status = STATUS_TIMEOUT;
+    LONG slices = 0;
+    while (slices < VIOGPU_SYNCHRONOUS_COMPLETION_WAIT_SLICES && status == STATUS_TIMEOUT)
+    {
+        ++slices;
+        status = KeWaitForSingleObject(&buf->completion_event, Executive, KernelMode, FALSE, &timeout);
+    }
+    for (LONG longest = InterlockedCompareExchange(&m_NativeSynchronousLongestWaitSlices, 0, 0); slices > longest;)
+    {
+        LONG observed = InterlockedCompareExchange(&m_NativeSynchronousLongestWaitSlices, slices, longest);
+        if (observed == longest)
+        {
+            break;
+        }
+        longest = observed;
+    }
+    if (status != STATUS_SUCCESS)
+    {
+        /* The device still owns the descriptor, so it is retained exactly as on
+         * the adapter channel.  What is different, and is the entire point of the
+         * split, is that only the native epoch is poisoned: the adapter channel
+         * stays Enabled, so the standard-2D control that MapApertureAllocation
+         * needs for DWM's primaries keeps working while this context is refused. */
+        RecordFirstSynchronousTimeout(buf, status, requestEpochState, reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
+        PoisonNativeSynchronousRequests();
+        *release_buffer = FALSE;
+        DbgPrint(TRACE_LEVEL_ERROR, ("%s timed out with status 0x%x\n", __FUNCTION__, status));
+        return FALSE;
+    }
+    LONG64 completedEpochState = VioGpuReadSynchronousEpochState(&m_NativeSynchronousEpochState);
+    if (completedEpochState != requestEpochState || buf->synchronous_epoch_state != requestEpochState ||
+        VioGpuSynchronousState(completedEpochState) != VioGpuSynchronousEnabled)
+    {
         *release_buffer = FALSE;
         return FALSE;
     }
@@ -1647,7 +2011,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeContext(UINT context_id,
     {
         return VioGpuHostContextNotSubmitted;
     }
-    if (!BeginSynchronousRequest())
+    if (!BeginNativeSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -1656,7 +2020,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeContext(UINT context_id,
     PGPU_CMD_CTX_CREATE command = static_cast<PGPU_CMD_CTX_CREATE>(AllocCmd(&vbuf, sizeof(GPU_CMD_CTX_CREATE)));
     if (command == NULL)
     {
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -1670,7 +2034,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeContext(UINT context_id,
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
-    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    BOOLEAN completed = SubmitNativeSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
     output->ResponseSize = vbuf->response_size;
     output->Submitted = submitted;
@@ -1711,14 +2075,14 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeContext(UINT context_id,
     }
     else
     {
-        PoisonSynchronousRequests();
+        PoisonNativeSynchronousRequests();
     }
     RtlCopyMemory(&m_LastNativeContextResponseDiagnostic, output, sizeof(m_LastNativeContextResponseDiagnostic));
     if (releaseBuffer)
     {
         ReleaseBuffer(vbuf);
     }
-    EndSynchronousRequest();
+    EndNativeSynchronousRequest();
     return result;
 }
 
@@ -1730,7 +2094,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::DestroyNativeContext(UINT context_id)
     {
         return VioGpuHostContextNotSubmitted;
     }
-    if (!BeginSynchronousRequest())
+    if (!BeginNativeSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -1739,7 +2103,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::DestroyNativeContext(UINT context_id)
     PGPU_CMD_CTX_DESTROY command = static_cast<PGPU_CMD_CTX_DESTROY>(AllocCmd(&vbuf, sizeof(GPU_CMD_CTX_DESTROY)));
     if (command == NULL)
     {
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -1749,7 +2113,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::DestroyNativeContext(UINT context_id)
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
-    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    BOOLEAN completed = SubmitNativeSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
     if (!submitted)
@@ -1771,7 +2135,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::DestroyNativeContext(UINT context_id)
     {
         ReleaseBuffer(vbuf);
     }
-    EndSynchronousRequest();
+    EndNativeSynchronousRequest();
     return result;
 }
 
@@ -1779,7 +2143,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeControlBlob(UINT context_id, U
 {
     PAGED_CODE();
 
-    if (context_id == 0 || resource_id == 0 || !BeginSynchronousRequest())
+    if (context_id == 0 || !AdmitNativeResourceId(resource_id) || !BeginNativeSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -1789,7 +2153,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeControlBlob(UINT context_id, U
                                                                                                 sizeof(GPU_CMD_RESOURCE_CREATE_BLOB)));
     if (command == NULL)
     {
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -1804,7 +2168,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeControlBlob(UINT context_id, U
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
-    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    BOOLEAN completed = SubmitNativeSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
     if (!submitted)
@@ -1823,18 +2187,18 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeControlBlob(UINT context_id, U
         }
         else
         {
-            PoisonSynchronousRequests();
+            PoisonNativeSynchronousRequests();
         }
     }
     else if (completed)
     {
-        PoisonSynchronousRequests();
+        PoisonNativeSynchronousRequests();
     }
     if (releaseBuffer)
     {
         ReleaseBuffer(vbuf);
     }
-    EndSynchronousRequest();
+    EndNativeSynchronousRequest();
     return result;
 }
 
@@ -1853,7 +2217,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeGuestBlob(UINT context_id,
         resource_id != blob_id || size == 0 || size > MAXULONG || (size & (PAGE_SIZE - 1)) != 0 ||
         (blob_flags & VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE) == 0 || (blob_flags & ~validBlobFlags) != 0 ||
         entries == NULL || entry_count == 0 || entry_count > VIOGPU_MAX_BACKING_ENTRIES ||
-        entry_count > MAXULONG / sizeof(GPU_MEM_ENTRY) || !BeginSynchronousRequest())
+        entry_count > MAXULONG / sizeof(GPU_MEM_ENTRY) || !BeginNativeSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -1866,14 +2230,14 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeGuestBlob(UINT context_id,
             entries[index].addr > MAXULONGLONG - (entries[index].length - 1) || entryBytes > size ||
             entries[index].length > size - entryBytes)
         {
-            EndSynchronousRequest();
+            EndNativeSynchronousRequest();
             return VioGpuHostContextNotSubmitted;
         }
         entryBytes += entries[index].length;
     }
     if (entryBytes != size)
     {
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -1882,7 +2246,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeGuestBlob(UINT context_id,
                                                                                                 sizeof(*command)));
     if (command == NULL)
     {
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -1891,7 +2255,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeGuestBlob(UINT context_id,
     if (ownedEntries == NULL)
     {
         ReleaseBuffer(vbuf);
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
     RtlCopyMemory(ownedEntries, entries, entriesSize);
@@ -1910,7 +2274,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeGuestBlob(UINT context_id,
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
-    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    BOOLEAN completed = SubmitNativeSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
     if (!submitted)
@@ -1929,18 +2293,18 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeGuestBlob(UINT context_id,
         }
         else
         {
-            PoisonSynchronousRequests();
+            PoisonNativeSynchronousRequests();
         }
     }
     else if (completed)
     {
-        PoisonSynchronousRequests();
+        PoisonNativeSynchronousRequests();
     }
     if (releaseBuffer)
     {
         ReleaseBuffer(vbuf);
     }
-    EndSynchronousRequest();
+    EndNativeSynchronousRequest();
     return result;
 }
 
@@ -1953,7 +2317,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULO
     captured.Validation = VioGpuHostResponseNotSubmitted;
     RtlCopyMemory(&m_LastNativeMapResponseDiagnostic, &captured, sizeof(m_LastNativeMapResponseDiagnostic));
 
-    if (resource_id == 0 || (offset & (PAGE_SIZE - 1)) != 0 || !BeginSynchronousRequest())
+    if (!AdmitNativeResourceId(resource_id) || (offset & (PAGE_SIZE - 1)) != 0 || !BeginNativeSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -1961,7 +2325,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULO
     PGPU_RESP_MAP_INFO response = static_cast<PGPU_RESP_MAP_INFO>(m_pBuf->AllocateMemory(sizeof(GPU_RESP_MAP_INFO)));
     if (response == NULL)
     {
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -1973,7 +2337,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULO
     if (command == NULL)
     {
         m_pBuf->FreeMemory(response);
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -1984,7 +2348,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULO
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
-    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    BOOLEAN completed = SubmitNativeSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR header = reinterpret_cast<PGPU_CTRL_HDR>(&response->hdr);
     captured.ResponseSize = vbuf->response_size;
     captured.Submitted = submitted;
@@ -2031,14 +2395,14 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::MapNativeControlBlob(UINT resource_id, ULO
     }
     else if (completed)
     {
-        PoisonSynchronousRequests();
+        PoisonNativeSynchronousRequests();
     }
     RtlCopyMemory(&m_LastNativeMapResponseDiagnostic, &captured, sizeof(m_LastNativeMapResponseDiagnostic));
     if (releaseBuffer)
     {
         ReleaseBuffer(vbuf);
     }
-    EndSynchronousRequest();
+    EndNativeSynchronousRequest();
     return result;
 }
 
@@ -2046,7 +2410,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnmapNativeControlBlob(UINT resource_id)
 {
     PAGED_CODE();
 
-    if (resource_id == 0 || !BeginSynchronousRequest())
+    if (!AdmitNativeResourceId(resource_id) || !BeginNativeSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -2056,7 +2420,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnmapNativeControlBlob(UINT resource_id)
                                                                                               sizeof(GPU_CMD_RESOURCE_UNMAP_BLOB)));
     if (command == NULL)
     {
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -2066,7 +2430,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnmapNativeControlBlob(UINT resource_id)
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
-    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    BOOLEAN completed = SubmitNativeSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
     if (!submitted)
@@ -2085,13 +2449,13 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnmapNativeControlBlob(UINT resource_id)
     }
     else if (completed)
     {
-        PoisonSynchronousRequests();
+        PoisonNativeSynchronousRequests();
     }
     if (releaseBuffer)
     {
         ReleaseBuffer(vbuf);
     }
-    EndSynchronousRequest();
+    EndNativeSynchronousRequest();
     return result;
 }
 
@@ -2099,7 +2463,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefNativeResource(UINT resource_id)
 {
     PAGED_CODE();
 
-    if (resource_id == 0 || !BeginSynchronousRequest())
+    if (!AdmitNativeResourceId(resource_id) || !BeginNativeSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -2108,7 +2472,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefNativeResource(UINT resource_id)
     PGPU_RES_UNREF command = static_cast<PGPU_RES_UNREF>(AllocCmd(&vbuf, sizeof(GPU_RES_UNREF)));
     if (command == NULL)
     {
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -2118,7 +2482,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefNativeResource(UINT resource_id)
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
-    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    BOOLEAN completed = SubmitNativeSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
     if (!submitted)
@@ -2137,13 +2501,13 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefNativeResource(UINT resource_id)
     }
     else if (completed)
     {
-        PoisonSynchronousRequests();
+        PoisonNativeSynchronousRequests();
     }
     if (releaseBuffer)
     {
         ReleaseBuffer(vbuf);
     }
-    EndSynchronousRequest();
+    EndNativeSynchronousRequest();
     return result;
 }
 
@@ -2151,7 +2515,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetNativeResourceAttachment(UINT context_i
 {
     PAGED_CODE();
 
-    if (context_id == 0 || resource_id == 0 || !BeginSynchronousRequest())
+    if (context_id == 0 || !AdmitNativeResourceId(resource_id) || !BeginNativeSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -2160,7 +2524,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetNativeResourceAttachment(UINT context_i
     PGPU_CTX_RESOURCE command = static_cast<PGPU_CTX_RESOURCE>(AllocCmd(&vbuf, sizeof(GPU_CTX_RESOURCE)));
     if (command == NULL)
     {
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -2171,7 +2535,7 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetNativeResourceAttachment(UINT context_i
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
-    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    BOOLEAN completed = SubmitNativeSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
     if (!submitted)
@@ -2190,13 +2554,13 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetNativeResourceAttachment(UINT context_i
     }
     else if (completed)
     {
-        PoisonSynchronousRequests();
+        PoisonNativeSynchronousRequests();
     }
     if (releaseBuffer)
     {
         ReleaseBuffer(vbuf);
     }
-    EndSynchronousRequest();
+    EndNativeSynchronousRequest();
     return result;
 }
 
@@ -2218,7 +2582,7 @@ CtrlQueue::SubmitNativeControl(UINT context_id,
         diagnostic->SubmitResult = VioGpuHostContextNotSubmitted;
     }
 
-    if (context_id == 0 || command == NULL || command_size == 0 || !BeginSynchronousRequest())
+    if (context_id == 0 || command == NULL || command_size == 0 || !BeginNativeSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -2226,13 +2590,13 @@ CtrlQueue::SubmitNativeControl(UINT context_id,
     PGPU_VBUFFER vbuf = PrepareNativeSubmit(context_id, command, command_size);
     if (vbuf == NULL)
     {
-        EndSynchronousRequest();
+        EndNativeSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
-    BOOLEAN completed = SubmitSynchronousLocked(vbuf, &releaseBuffer, &submitted);
+    BOOLEAN completed = SubmitNativeSynchronousLocked(vbuf, &releaseBuffer, &submitted);
     PGPU_CTRL_HDR response = reinterpret_cast<PGPU_CTRL_HDR>(vbuf->resp_buf);
     UINT responseType = 0;
     UINT responseFlags = 0;
@@ -2284,13 +2648,13 @@ CtrlQueue::SubmitNativeControl(UINT context_id,
     }
     else if (completed)
     {
-        PoisonSynchronousRequests();
+        PoisonNativeSynchronousRequests();
     }
     if (releaseBuffer)
     {
         ReleaseBuffer(vbuf);
     }
-    EndSynchronousRequest();
+    EndNativeSynchronousRequest();
     if (diagnostic != NULL)
     {
         diagnostic->SubmitResult = result;

@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58538",
+        "$minor = 58539",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58538",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58539",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -4379,7 +4379,7 @@ def check_control_queue_dma_and_response_contract() -> None:
     create = canonical_code(function_body("CtrlQueue::CreateNativeContext", QUEUE_CODE))
     if create.count("VioGpuValidatePlainControlResponse(") != 1:
         fail("CTX_CREATE must use the focused shared response validator exactly once")
-    if create.count("PoisonSynchronousRequests();") != 1:
+    if create.count("PoisonNativeSynchronousRequests();") != 1:
         fail("ambiguous CTX_CREATE completion must poison the synchronous transport generation")
     if create.count("RtlCopyMemory(&m_LastNativeContextResponseDiagnostic,output,sizeof(m_LastNativeContextResponseDiagnostic));") != 2:
         fail("CTX_CREATE must publish both pre-submit and final response diagnostics")
@@ -6489,13 +6489,13 @@ def check_native_context_ownership() -> None:
     destroy_queue = canonical_code(function_body("CtrlQueue::DestroyNativeContext", QUEUE_CODE))
     create_required = (
         "BOOLEANsubmitted=FALSE;",
-        "SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)",
+        "SubmitNativeSynchronousLocked(vbuf,&releaseBuffer,&submitted)",
         "VioGpuValidatePlainControlResponse(",
         "VIOGPU_HOST_CONTEXT_RESULTresult=VioGpuHostContextUnknown;",
         "if(output->Validation==VioGpuHostResponseNotSubmitted){result=VioGpuHostContextNotSubmitted;}",
         "elseif(output->Validation==VioGpuHostResponseConfirmed){result=VioGpuHostContextConfirmed;}",
         "elseif(output->Validation==VioGpuHostResponseRejected){result=VioGpuHostContextRejected;}",
-        "else{PoisonSynchronousRequests();}",
+        "else{PoisonNativeSynchronousRequests();}",
         "returnresult;",
     )
     if any(create_queue.count(fragment) != 1 for fragment in create_required):
@@ -6505,7 +6505,7 @@ def check_native_context_ownership() -> None:
 
     destroy_required = (
         "BOOLEANsubmitted=FALSE;",
-        "SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)",
+        "SubmitNativeSynchronousLocked(vbuf,&releaseBuffer,&submitted)",
         "VIOGPU_HOST_CONTEXT_RESULTresult=VioGpuHostContextUnknown;",
         "if(!submitted){result=VioGpuHostContextNotSubmitted;}",
         "result=VioGpuHostContextConfirmed;",
@@ -6590,14 +6590,14 @@ def check_native_context_ownership() -> None:
         "if(captured.Validation==VioGpuHostResponseNotSubmitted){result=VioGpuHostContextNotSubmitted;}",
         "elseif(captured.Validation==VioGpuHostResponseConfirmed){result=VioGpuHostContextConfirmed;}",
         "elseif(captured.Validation==VioGpuHostResponseRejected){result=VioGpuHostContextRejected;}",
-        "elseif(completed){PoisonSynchronousRequests();}",
+        "elseif(completed){PoisonNativeSynchronousRequests();}",
     ):
         if map_blob.count(fragment) != 1:
             fail(f"control blob map must retain and classify its complete host response: {fragment}")
     if map_blob.count("RtlCopyMemory(&m_LastNativeMapResponseDiagnostic,&captured,sizeof(m_LastNativeMapResponseDiagnostic));") != 2:
         fail("control blob map must initialize and publish one complete diagnostic snapshot")
     if map_blob.find("captured.Validation=VioGpuValidateMapInfoResponse(") < map_blob.find(
-        "SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)"
+        "SubmitNativeSynchronousLocked(vbuf,&releaseBuffer,&submitted)"
     ):
         fail("control blob map must validate the response only after synchronous completion")
 
@@ -7403,6 +7403,110 @@ def check_native_context_currency_diagnostics() -> None:
         fail("the successful teardown record must keep a zero Detail field")
 
 
+def check_synchronous_channel_split() -> None:
+    """The per-context and adapter-scoped synchronous channels stay separate.
+
+    On 58535 there was one synchronous epoch.  A single application's GEM_NEW
+    timing out poisoned it, nothing re-arms a poisoned epoch except
+    StartNativeContextTransport, and so every later synchronous control failed --
+    including the standard-2D CreateResource2DSynchronous/AttachBackingSynchronous
+    that MapApertureAllocation uses for DWM's primaries.  That produced 376
+    stage-MapHost STATUS_DEVICE_NOT_READY refusals and drove an adapter reset.
+
+    The split is only worth having while the two channels cannot leak into each
+    other, and the leak is a one-word edit in either direction
+    (CreateGuestBlobSynchronous is adapter, CreateNativeGuestBlob is native), so
+    the assignment is pinned rather than trusted.
+    """
+
+    queue = QUEUE_CODE
+    native_methods = (
+        "CreateNativeContext",
+        "DestroyNativeContext",
+        "CreateNativeControlBlob",
+        "CreateNativeGuestBlob",
+        "MapNativeControlBlob",
+        "UnmapNativeControlBlob",
+        "UnrefNativeResource",
+        "SetNativeResourceAttachment",
+        "SubmitNativeControl",
+    )
+    adapter_methods = (
+        "CreateResource2DSynchronous",
+        "AttachBackingSynchronous",
+        "CreateGuestBlobSynchronous",
+        "DetachBackingSynchronous",
+        "UnrefResourceSynchronous",
+        "SetScanoutSynchronous",
+        "SetScanoutBlobSynchronous",
+        "TransferToHost2DSynchronous",
+        "FlushResourceSynchronous",
+        "QueryDisplayColor",
+        "SetResourceColor",
+        "SetTargetTransform",
+        "QueryCapsetInfo",
+        "QueryCapset",
+        "QueryDisplayInfo",
+        "QueryEdidInfo",
+    )
+    for name in native_methods:
+        body = canonical_code(function_body(f"CtrlQueue::{name}", queue))
+        if body.count("BeginNativeSynchronousRequest()") != 1:
+            fail(f"{name} must hold exactly one native synchronous epoch: BeginNativeSynchronousRequest")
+        if "BeginSynchronousRequest()" in body or "EndSynchronousRequest();" in body:
+            fail(f"{name} is per-context and must not take the adapter synchronous channel")
+    for name in adapter_methods:
+        body = canonical_code(function_body(f"CtrlQueue::{name}", queue))
+        if body.count("BeginSynchronousRequest()") != 1:
+            fail(f"{name} must hold exactly one adapter synchronous epoch: BeginSynchronousRequest")
+        if "BeginNativeSynchronousRequest()" in body or "EndNativeSynchronousRequest();" in body:
+            fail(f"{name} is adapter-scoped and must not take the per-context synchronous channel")
+
+    # The load-bearing pin: a native timeout may poison only the native epoch.
+    # Reconnecting it to the adapter epoch here would restore the 58535 behaviour
+    # exactly, with every other symptom unchanged.
+    native_submit = canonical_code(
+        function_body_with_parameters(
+            "CtrlQueue::SubmitNativeSynchronousLocked",
+            "PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer, _Out_ PBOOLEAN submitted",
+            queue,
+        )
+    )
+    if native_submit.count("PoisonNativeSynchronousRequests();") != 1:
+        fail("the native synchronous submit must poison its own epoch exactly once")
+    if "PoisonSynchronousRequests();" in native_submit or "&m_SynchronousEpochState" in native_submit:
+        fail("the native synchronous submit must never touch the adapter epoch")
+    if native_submit.count("&m_NativeSynchronousEpochState") < 2:
+        fail("the native synchronous submit must read and re-verify its own epoch")
+    if "PoisonNativeSynchronousRequests();*release_buffer=FALSE;" not in native_submit:
+        fail("the native synchronous submit must retain the device-owned descriptor when it poisons")
+
+    # Lock order is the only way this split can deadlock, so it is refused rather
+    # than reasoned about: adapter-then-native is legal, the inverse is not.
+    begin_adapter = canonical_code(function_body("CtrlQueue::BeginSynchronousRequest", queue))
+    if "IsNativeSynchronousOwnedByCurrentThread()" not in begin_adapter:
+        fail("the adapter synchronous channel must refuse a caller already holding the native epoch")
+    if "InterlockedIncrement(&m_SynchronousLockOrderRefusals);" not in begin_adapter:
+        fail("a refused synchronous lock order must be counted, not silently tolerated")
+
+    # Every native method that names a resource id asserts the native half of the
+    # id space.  CreateNativeGuestBlob is excluded because its own explicit
+    # VIOGPU_NATIVE_RESOURCE_ID_START/MAXUINT pair is already pinned above.
+    for name in (
+        "CreateNativeControlBlob",
+        "MapNativeControlBlob",
+        "UnmapNativeControlBlob",
+        "UnrefNativeResource",
+        "SetNativeResourceAttachment",
+    ):
+        body = canonical_code(function_body(f"CtrlQueue::{name}", queue))
+        if body.count("!AdmitNativeResourceId(resource_id)") != 1:
+            fail(f"{name} must admit only native-half resource identities: {name}")
+    admit = canonical_code(function_body("CtrlQueue::AdmitNativeResourceId", queue))
+    if "IsNativeResourceId(resource_id)" not in admit or "InterlockedIncrement(&m_NativeResourceIdRefusals);" not in admit:
+        fail("the native resource-id gate must test the id space and count every refusal")
+
+
 def check_native_synchronous_poison_diagnostics() -> None:
     """Poisoning the synchronous epoch is terminal, so record who caused it."""
     queue = QUEUE_CODE
@@ -7720,7 +7824,7 @@ def check_native_parameter_diagnostics() -> None:
     submit = canonical_code(function_body("CtrlQueue::SubmitNativeControl", QUEUE_CODE))
     submit_sequence = (
         submit.find("diagnostic->OuterResponseSize=0;"),
-        submit.find("SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)"),
+        submit.find("SubmitNativeSynchronousLocked(vbuf,&releaseBuffer,&submitted)"),
         submit.find("diagnostic->OuterResponseSize=vbuf->response_size;"),
         submit.find("ReleaseBuffer(vbuf);"),
         submit.find("diagnostic->SubmitResult=result;"),
@@ -9550,7 +9654,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         create_blob.find("command->blob_flags=blob_flags;"),
         create_blob.find("command->nr_entries=entry_count;"),
         create_blob.find("vbuf->data_buf=ownedEntries;"),
-        create_blob.find("SubmitSynchronousLocked(vbuf,&releaseBuffer,&submitted)"),
+        create_blob.find("SubmitNativeSynchronousLocked(vbuf,&releaseBuffer,&submitted)"),
     )
     if min(blob_sequence) < 0 or list(blob_sequence) != sorted(blob_sequence):
         fail("RESOURCE_CREATE_BLOB must validate and submit the complete queue-owned HOST3D_GUEST SG table")
@@ -13664,6 +13768,7 @@ def main() -> None:
     check_native_context_ownership()
     check_native_context_destroy_diagnostics()
     check_native_context_currency_diagnostics()
+    check_synchronous_channel_split()
     check_native_synchronous_poison_diagnostics()
     check_versioned_segment_query_contract()
     check_native_map_diagnostics()

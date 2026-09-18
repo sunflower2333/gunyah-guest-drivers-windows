@@ -685,6 +685,52 @@ class VioGpuAdapter : IVioGpuPCI
     {
         return m_CtrlQueue.GetFirstSynchronousTimeout(diagnostic);
     }
+    /* Per-channel epoch state for the driver key.  The pre-existing
+     * NativeSynchronous* triple is written by RecordNativeSynchronousPoisonDiagnostic
+     * and now describes the adapter channel; these are named explicitly so no
+     * reader has to infer which channel a value belongs to.  A poisoned adapter
+     * epoch means the split did not help and the native-channel values below are
+     * describing a different failure -- read NativeAdapterEpochState first. */
+    ULONG AdapterEpochState(void)
+    {
+        return m_CtrlQueue.SynchronousEpochStateValue();
+    }
+    ULONG AdapterEpochGeneration(void)
+    {
+        return m_CtrlQueue.SynchronousEpochGenerationValue();
+    }
+    ULONG AdapterPoisonCallerRva(void)
+    {
+        return m_CtrlQueue.SynchronousPoisonCallerRva();
+    }
+    ULONG AdapterMaxWaitSlices(void)
+    {
+        return m_CtrlQueue.SynchronousLongestWaitSlices();
+    }
+    ULONG NativeChannelEpochState(void)
+    {
+        return m_CtrlQueue.NativeSynchronousEpochStateValue();
+    }
+    ULONG NativeChannelEpochGeneration(void)
+    {
+        return m_CtrlQueue.NativeSynchronousEpochGenerationValue();
+    }
+    ULONG NativeChannelPoisonCallerRva(void)
+    {
+        return m_CtrlQueue.NativeSynchronousPoisonCallerRva();
+    }
+    ULONG NativeChannelMaxWaitSlices(void)
+    {
+        return m_CtrlQueue.NativeSynchronousLongestWaitSlices();
+    }
+    ULONG SynchronousLockOrderRefusals(void)
+    {
+        return m_CtrlQueue.SynchronousLockOrderRefusals();
+    }
+    ULONG NativeResourceIdRefusals(void)
+    {
+        return m_CtrlQueue.NativeResourceIdRefusals();
+    }
     /* Independent from the outer device rundown: D-state transitions keep
      * m_HardwareOperations open, but must still quiesce every WDDM native
      * submitter before the transport resets/deletes its virtqueues. */

@@ -5972,6 +5972,16 @@ __declspec(noinline) void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
     }
     if (state != VioGpuNativeContextOffline)
     {
+        /* Both channels, because this is an adapter-wide failure: it has already
+         * bumped the adapter reset generation and disabled interrupt dispatch, so
+         * there is nothing left for either epoch to carry.  Poisoning only the
+         * adapter epoch here would also let the two drift apart in lifecycle
+         * state, and UnwindFailedStart reaches CompleteSynchronousRequestTeardown
+         * without a quiesce -- the shared teardown helper asserts that an epoch it
+         * retires had already left Enabled, so the two must move together.
+         * Per-context faults do not come through here any more: the unanswered and
+         * rejected GEM_NEW paths quarantine their own context instead. */
+        m_CtrlQueue.PoisonNativeSynchronousRequests();
         m_CtrlQueue.PoisonSynchronousRequests();
     }
     if (m_pVioGpuDod != NULL)
@@ -6882,6 +6892,24 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
      * NativeGuestAllocUnanswered means the Host answered with something the queue
      * could not classify instead of stalling.  That is the distinction the whole
      * diagnosis turns on. */
+    /* Per-channel epoch state.  Read NativeAdapterEpochState first: a poisoned
+     * adapter epoch means one application's control stall still reached the
+     * display path and the channel split did not hold, so everything below is
+     * describing a different failure. */
+    DWORD adapterEpochState = m_pHWDevice != NULL ? m_pHWDevice->AdapterEpochState() : 0;
+    DWORD adapterEpochGeneration = m_pHWDevice != NULL ? m_pHWDevice->AdapterEpochGeneration() : 0;
+    DWORD adapterPoisonCallerRva = m_pHWDevice != NULL ? m_pHWDevice->AdapterPoisonCallerRva() : 0;
+    DWORD adapterMaxWaitSlices = m_pHWDevice != NULL ? m_pHWDevice->AdapterMaxWaitSlices() : 0;
+    DWORD nativeEpochState = m_pHWDevice != NULL ? m_pHWDevice->NativeChannelEpochState() : 0;
+    DWORD nativeEpochGeneration = m_pHWDevice != NULL ? m_pHWDevice->NativeChannelEpochGeneration() : 0;
+    DWORD nativePoisonCallerRva = m_pHWDevice != NULL ? m_pHWDevice->NativeChannelPoisonCallerRva() : 0;
+    DWORD nativeMaxWaitSlices = m_pHWDevice != NULL ? m_pHWDevice->NativeChannelMaxWaitSlices() : 0;
+    /* Both must stay zero.  A nonzero lock-order count means a thread holding the
+     * native epoch asked for the adapter epoch and was refused instead of
+     * deadlocking; a nonzero id count means a caller put a standard-2D resource on
+     * the native channel, or the reverse, and the 16/9 assignment has drifted. */
+    DWORD lockOrderRefusals = m_pHWDevice != NULL ? m_pHWDevice->SynchronousLockOrderRefusals() : 0;
+    DWORD nativeResourceIdRefusals = m_pHWDevice != NULL ? m_pHWDevice->NativeResourceIdRefusals() : 0;
     VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC firstTimeout = {};
     DWORD firstTimeoutValid =
         m_pHWDevice != NULL && m_pHWDevice->GetFirstSynchronousTimeout(&firstTimeout) ? 1U : 0U;
@@ -7481,6 +7509,26 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &guestAllocUnanswered},
                                                                                                         {L"NativeSynchronousLongestWaitSlices",
                                                                                                          &synchronousLongestWaitSlices},
+                                                                                                        {L"NativeAdapterEpochState",
+                                                                                                         &adapterEpochState},
+                                                                                                        {L"NativeAdapterEpochGeneration",
+                                                                                                         &adapterEpochGeneration},
+                                                                                                        {L"NativeAdapterPoisonCallerRva",
+                                                                                                         &adapterPoisonCallerRva},
+                                                                                                        {L"NativeAdapterMaxWaitSlices",
+                                                                                                         &adapterMaxWaitSlices},
+                                                                                                        {L"NativeContextEpochState",
+                                                                                                         &nativeEpochState},
+                                                                                                        {L"NativeContextEpochGeneration",
+                                                                                                         &nativeEpochGeneration},
+                                                                                                        {L"NativeContextPoisonCallerRva",
+                                                                                                         &nativePoisonCallerRva},
+                                                                                                        {L"NativeContextMaxWaitSlices",
+                                                                                                         &nativeMaxWaitSlices},
+                                                                                                        {L"NativeSynchronousLockOrderRefusals",
+                                                                                                         &lockOrderRefusals},
+                                                                                                        {L"NativeResourceIdRefusals",
+                                                                                                         &nativeResourceIdRefusals},
                                                                                                         {L"NativeGuestAllocRecordCount",
                                                                                                          &guestAllocRecordCount},
                                                                                                         {L"NativeGuestAllocRejected",
@@ -11349,7 +11397,12 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         m_pVioGpuDod->RecordNativeGuestAllocSubmit(static_cast<LONG>(result),
                                                    static_cast<LONG>(submitDiagnostic.OuterSubmitted),
                                                    static_cast<LONG>(submitDiagnostic.OuterCompleted),
-                                                   static_cast<LONG>(m_CtrlQueue.SynchronousLongestWaitSlices()),
+                                                   /* GEM_NEW rides the native channel, so report that channel's
+                                                    * slices.  Reading the adapter counter here would have made
+                                                    * NativeGuestAllocFirstFailWaitSlices describe a different
+                                                    * channel from the submit it is attached to, and steps 3-4 of
+                                                    * the read sequence turn on exactly that number. */
+                                                   static_cast<LONG>(m_CtrlQueue.NativeSynchronousLongestWaitSlices()),
                                                    submitCallerRva);
     }
     if (result == VioGpuHostContextUnknown)
@@ -13622,7 +13675,14 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
                                VioGpuNativeStartSynchronousRequests,
                                STATUS_PENDING,
                                VioGpuNativeStartDetailNone);
-    if (!m_CtrlQueue.EnableSynchronousRequests())
+    /* Both synchronous channels come up here, explicitly and in lockstep.  They
+     * are enabled together, quiesced together by QuiesceSynchronousRequests and
+     * taken offline together by CompleteSynchronousRequestTeardown, so the two
+     * epochs are never in different lifecycle states -- which is what lets the
+     * shared teardown helper keep asserting that an epoch it retires had already
+     * left Enabled.  Enabling them from inside EnableSynchronousRequests instead
+     * would have hidden that coupling behind a call that reads as single-channel. */
+    if (!m_CtrlQueue.EnableNativeSynchronousRequests() || !m_CtrlQueue.EnableSynchronousRequests())
     {
         VIOGPU_RECORD_NATIVE_START(m_pVioGpuDod,
                                    VioGpuNativeStartSynchronousRequests,

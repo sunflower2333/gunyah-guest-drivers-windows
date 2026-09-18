@@ -25,8 +25,15 @@ definitions = span(wire, '#pragma pack(1)\ntypedef struct virtio_gpu_rect',
 definitions += span(header, 'typedef struct virtio_gpu_vbuffer', '// #pragma pack()')
 definitions += span(header, 'enum VIOGPU_SYNCHRONOUS_STATE', 'enum VIOGPU_HOST_CONTEXT_RESULT')
 production = span(queue, 'static LONG64 VioGpuMakeSynchronousEpochState', 'static BOOLEAN IsPlainControlResponse')
+# The native channel's poison/health/wait-slice trio, kept contiguous in the
+# production file so this one span covers exactly what the fixture links against.
+production += span(queue, '__declspec(noinline) void CtrlQueue::PoisonNativeSynchronousRequests',
+                   'ULONG CtrlQueue::NativeSynchronousPoisonCallerRva')
 production += span(queue, 'static void VioGpuDecodeSynchronousTimeoutCommand', 'NTSTATUS CtrlQueue::QuiesceSynchronousRequests')
-production += span(queue, 'void CtrlQueue::CompleteSynchronousRequestTeardown', 'PAGED_CODE_SEG_BEGIN')
+# Starts at the shared epoch-teardown helper rather than at
+# CompleteSynchronousRequestTeardown itself: the helper is defined just above it and
+# the teardown now calls it for both channels.
+production += span(queue, 'static void VioGpuCompleteSynchronousEpochTeardown', 'PAGED_CODE_SEG_BEGIN')
 production += span(queue, 'BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer)\n',
                    'VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitSynchronousNoDataLocked')
 if args.negative_control_overwrite:

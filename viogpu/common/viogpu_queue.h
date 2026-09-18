@@ -474,6 +474,13 @@ class CtrlQueue : public VioGpuQueue
         m_SynchronousPoisonCallerRva = 0;
         m_SynchronousTimeoutPublication = 0;
         m_SynchronousLongestWaitSlices = 0;
+        KeInitializeMutex(&m_NativeSynchronousMutex, 0);
+        m_NativeSynchronousEpochState = VioGpuSynchronousOffline;
+        m_NativeSynchronousPoisonCallerRva = 0;
+        m_NativeSynchronousLongestWaitSlices = 0;
+        m_NativeSynchronousOwner = 0;
+        m_SynchronousLockOrderRefusals = 0;
+        m_NativeResourceIdRefusals = 0;
         RtlZeroMemory(&m_FirstSynchronousTimeout, sizeof(m_FirstSynchronousTimeout));
         KeInitializeSpinLock(&m_NativeSubmitLock);
         InitializeListHead(&m_NativeSubmitBacklog);
@@ -577,6 +584,46 @@ class CtrlQueue : public VioGpuQueue
      * one means the host stalled past a single slice and was waited out. */
     ULONG SynchronousLongestWaitSlices(void);
 
+    /* ---- Native (per-context) synchronous channel -------------------------
+     * There are two synchronous epochs inside this one CtrlQueue, not two queue
+     * objects and not one entry point with a channel parameter.  That shape is
+     * forced, not stylistic, so do not "simplify" it:
+     *
+     *   - check-contract.py pins the exact call expressions
+     *     m_CtrlQueue.CreateResource2DSynchronous(resourceId,format,width,height),
+     *     m_CtrlQueue.AttachBackingSynchronous(resourceId,entries,entryCount) and
+     *     rollback=m_CtrlQueue.UnrefResourceSynchronous(resourceId);, so a second
+     *     queue object would rename every one of them.
+     *   - it also requires body.count("BeginSynchronousRequest()") == 1, with
+     *     empty parens, in seven adapter-scoped methods, so adding a channel
+     *     argument to the existing entry point turns all seven red.
+     *   - and it pins SubmitSynchronousLocked by its exact three-parameter
+     *     signature, with a literal &m_SynchronousEpochState read, one inline
+     *     KeWaitForSingleObject and a timeout block that must begin with
+     *     PoisonSynchronousRequests(), so that function cannot be parameterized
+     *     either -- which is why SubmitNativeSynchronousLocked is a deliberate
+     *     twin rather than shared code.
+     *
+     * The no-argument entry points therefore *are* the adapter channel.  Why the
+     * split exists at all: on 58535 one application's GEM_NEW timing out poisoned
+     * this single epoch, and because nothing re-arms it except
+     * StartNativeContextTransport, every later synchronous control failed --
+     * including the standard-2D CreateResource2DSynchronous/AttachBackingSynchronous
+     * that MapApertureAllocation uses for DWM's primaries.  That produced 376
+     * stage-MapHost STATUS_DEVICE_NOT_READY refusals and an adapter reset. */
+    BOOLEAN EnableNativeSynchronousRequests(void);
+    NTSTATUS QuiesceNativeSynchronousRequests(void);
+    BOOLEAN IsNativeSynchronousRequestsHealthy(void);
+    __declspec(noinline) void PoisonNativeSynchronousRequests(void);
+    ULONG NativeSynchronousPoisonCallerRva(void);
+    ULONG NativeSynchronousEpochStateValue(void);
+    ULONG NativeSynchronousEpochGenerationValue(void);
+    /* Per-channel, so a stall can be attributed to a channel.  The GEM_NEW submit
+     * telemetry added in 58537 reads this one, not the adapter counter. */
+    ULONG NativeSynchronousLongestWaitSlices(void);
+    ULONG SynchronousLockOrderRefusals(void);
+    ULONG NativeResourceIdRefusals(void);
+
     BOOLEAN CreateResource(UINT res_id, UINT format, UINT width, UINT height);
     BOOLEAN DestroyResource(UINT id);
     BOOLEAN SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, UINT x, UINT y);
@@ -597,11 +644,35 @@ class CtrlQueue : public VioGpuQueue
                                                          _Out_ PBOOLEAN submitted);
     void RecordFirstSynchronousTimeout(PGPU_VBUFFER buf, NTSTATUS status, LONG64 epochState, ULONG_PTR caller);
     VIOGPU_HOST_CONTEXT_RESULT SubmitSynchronousNoDataLocked(PGPU_VBUFFER buf);
+    BOOLEAN BeginNativeSynchronousRequest(void);
+    void EndNativeSynchronousRequest(void);
+    BOOLEAN IsNativeSynchronousOwnedByCurrentThread(void);
+    BOOLEAN AdmitNativeResourceId(UINT resource_id);
+    /* Deliberate twin of the three-parameter SubmitSynchronousLocked above; see
+     * the channel note in the public section for why it cannot be shared code.
+     * Keep the two in step: any change to the wait/poison/epoch protocol in one
+     * belongs in the other. */
+    __declspec(noinline) BOOLEAN SubmitNativeSynchronousLocked(PGPU_VBUFFER buf,
+                                                              _Out_ PBOOLEAN release_buffer,
+                                                              _Out_ PBOOLEAN submitted);
     KMUTEX m_SynchronousMutex;
     DECLSPEC_ALIGN(8) volatile LONG64 m_SynchronousEpochState;
     volatile LONG m_SynchronousPoisonCallerRva;
     volatile LONG m_SynchronousTimeoutPublication;
     volatile LONG m_SynchronousLongestWaitSlices;
+    KMUTEX m_NativeSynchronousMutex;
+    DECLSPEC_ALIGN(8) volatile LONG64 m_NativeSynchronousEpochState;
+    volatile LONG m_NativeSynchronousPoisonCallerRva;
+    volatile LONG m_NativeSynchronousLongestWaitSlices;
+    /* Lock order is adapter-then-native and never the reverse: the native
+     * methods take only their own epoch, while CreateNativeGuestAllocation
+     * consults QueryNativeContextReadiness (capset queries, adapter channel)
+     * before it takes the native one.  Only the native holder has to be tracked:
+     * the check asks whether this thread already holds the native epoch, and
+     * refuses it the adapter epoch instead of deadlocking. */
+    DECLSPEC_ALIGN(8) volatile LONG64 m_NativeSynchronousOwner;
+    volatile LONG m_SynchronousLockOrderRefusals;
+    volatile LONG m_NativeResourceIdRefusals;
     VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC m_FirstSynchronousTimeout;
     volatile LONG m_FenceIdr;
     KSPIN_LOCK m_NativeSubmitLock;
