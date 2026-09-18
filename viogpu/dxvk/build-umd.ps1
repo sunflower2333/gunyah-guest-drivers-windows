@@ -128,7 +128,21 @@ if (!$gate.Success) { throw 'DXVK loadability policy reported no gate state' }
 $gateState = $gate.Groups[1].Value
 # The package ships DXVK unregistered because its admission gate is closed. An
 # open gate is a registration decision for a person, not something CI adopts.
+#
+# Asserting only the word "closed" was not enough: the mask could drop seven of
+# its eight gaps and this gate, and every check in the DXVK tree, stayed green.
+# Pin the set instead. check-umd-loadability.py now derives it from the source's
+# own stub and rejection sites, so narrowing it is a capability claim, and that
+# claim has to appear in this diff rather than arriving silently with a pin bump.
 if ($gateState -notmatch '^closed; remaining: ') { throw "DXVK admission gate is not closed: $gateState" }
+$expectedGaps = 'CompleteResources, CompleteShaderSemantics, MultipleRenderTargets, OpenedResources, Predication, PrimaryAndDxgi, RuntimeThreading, StreamOutput'
+$gaps = [regex]::Match($loadability, '(?m)^UMD gap set: (.+?)\s*$')
+if (!$gaps.Success) { throw 'DXVK loadability policy reported no gap set' }
+if ($gaps.Groups[1].Value -cne $expectedGaps) {
+    throw ("DXVK admission gap set changed: expected '$expectedGaps'; got '" +
+        $gaps.Groups[1].Value + "'. Update the expected set in " +
+        'viogpu/dxvk/build-umd.ps1 when a capability actually lands.')
+}
 $integration = (& python (Join-Path $dxvk 'tests/check-wddm-integration.py')) -join "`n"
 if ($LASTEXITCODE -or $integration -notmatch 'DXVK WDDM integration policy passed') { throw 'DXVK WDDM integration policy failed' }
 Write-Host $integration
