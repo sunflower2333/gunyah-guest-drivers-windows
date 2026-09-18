@@ -1242,7 +1242,7 @@ jobs:
         shell: pwsh
         run: |
           python viogpu/package/verify_bundle.py --output out `
-            --mesa 985b7a202979de10a81ceb5b970f2ac3f3dda96c --mesa-run 35355840911 `
+            --mesa 985b7a202979de10a81ceb5b970f2ac3f3dda96c --mesa-run 35358345085 `
             --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58547
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
