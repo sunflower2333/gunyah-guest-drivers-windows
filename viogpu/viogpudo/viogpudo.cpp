@@ -2573,12 +2573,27 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::PresentColorResource(_In_ const VIOGPU_SET
     return result;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::FlushNativeScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height)
+{
+    if (!AcquireNativeSubmissionOperation())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    VIOGPU_HOST_CONTEXT_RESULT result = adapter != NULL ? adapter->FlushNativeScanout(resourceId, width, height)
+                                                        : VioGpuHostContextNotSubmitted;
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
                                                    _In_ UINT resourceId,
                                                    _In_ UINT width,
                                                    _In_ UINT height,
                                                    _Out_ UINT *previousResourceId,
-                                                   _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout)
+                                                   _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout,
+                                                   _In_ BOOLEAN nativeResource)
 {
     if (previousResourceId == NULL)
     {
@@ -2596,7 +2611,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
                                                                                 width,
                                                                                 height,
                                                                                 previousResourceId,
-                                                                                layout)
+                                                                                layout,
+                                                                                nativeResource)
                                                         : VioGpuHostContextNotSubmitted;
     ReleaseNativeSubmissionOperation();
     return result;

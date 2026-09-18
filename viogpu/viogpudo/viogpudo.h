@@ -1572,7 +1572,9 @@ class VioGpuDod
                                             _In_ UINT width,
                                             _In_ UINT height,
                                             _Out_ UINT *previousResourceId,
-                                            _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout = NULL);
+                                            _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout = NULL,
+                                            _In_ BOOLEAN nativeResource = FALSE);
+    VIOGPU_HOST_CONTEXT_RESULT FlushNativeScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
     VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached);
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
