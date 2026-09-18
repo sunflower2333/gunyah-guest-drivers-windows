@@ -216,6 +216,9 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_NativeContextFailCount = 0;
     m_NativeContextFailFirstSite = VioGpuNativeFailSiteNone;
     m_NativeContextFailLastSite = VioGpuNativeFailSiteNone;
+    m_NativeOwnerUnprovenReleaseTotal = 0;
+    m_NativeOwnerUnprovenReleaseFirstSite = VioGpuNativeUnprovenReleaseNone;
+    m_NativeOwnerUnprovenReleaseFirstCallerRva = 0;
     m_NativeContextGenerationStaleCount = 0;
     m_NativeContextGenerationStaleFirstSite = VioGpuNativeGenerationStaleNone;
     m_NativeContextGenerationStaleFirstCallerRva = 0;
@@ -5918,8 +5921,14 @@ VioGpuConsumeNativeControlResponse(_In_ VioGpuAdapter *adapter,
  * gate below is the only reader, so a quarantined context simply stops being
  * allowed to take new Host ownership; Turnip sees its own allocations refused
  * and reports DEVICE_LOST for that application alone. */
-static VOID VioGpuQuarantineNativeContextOwner(_Inout_opt_ VIOGPU_NATIVE_CONTEXT_OWNER *owner)
+/* The site tag is required, not defaulted, so the compiler refuses an
+ * unclassified quarantine and check-contract.py refuses a duplicated or missing
+ * one.  Same shape as FailNativeContextAtAnyIrql, and for the same reason: a
+ * convention that only a checker enforces protects a tree exactly as well as the
+ * discipline of whoever skips the checker. */
+static VOID VioGpuQuarantineNativeContextOwner(_Inout_opt_ VIOGPU_NATIVE_CONTEXT_OWNER *owner, _In_ LONG site)
 {
+    UNREFERENCED_PARAMETER(site);
     if (owner != NULL)
     {
         InterlockedExchange(&owner->Quarantined, TRUE);
@@ -6016,6 +6025,22 @@ __declspec(noinline) void VioGpuAdapter::RecordNativeContextGenerationStaleAtAny
     if (m_pVioGpuDod != NULL)
     {
         m_pVioGpuDod->RecordNativeContextGenerationStale(staleCallerRva, site);
+    }
+#else
+    UNREFERENCED_PARAMETER(site);
+#endif
+}
+
+__declspec(noinline) void VioGpuAdapter::RecordNativeOwnerUnprovenReleaseAtAnyIrql(_In_ LONG site)
+{
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    ULONG_PTR releaseImageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    ULONG_PTR releaseReturnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+    ULONG_PTR releaseCallerRva =
+        releaseReturnAddress >= releaseImageBase ? releaseReturnAddress - releaseImageBase : 0;
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeOwnerUnprovenRelease(releaseCallerRva, site);
     }
 #else
     UNREFERENCED_PARAMETER(site);
@@ -6822,6 +6847,11 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     /* Which gate escalated, readable without a PDB.  FirstSite is the episode's
      * origin and LastSite whoever re-failed an already dead adapter; the caller
      * RVAs beside them separate several gates inside one function. */
+    /* Read NativeOwnerUnprovenReleaseTotal before the two values beside it: zero
+     * means the path never ran, not that no unproven release happened. */
+    DWORD nativeOwnerUnprovenReleaseTotal = ReadNativeOwnerUnprovenReleaseTotal();
+    DWORD nativeOwnerUnprovenReleaseFirstSite = ReadNativeOwnerUnprovenReleaseFirstSite();
+    DWORD nativeOwnerUnprovenReleaseFirstCallerRva = ReadNativeOwnerUnprovenReleaseFirstCallerRva();
     DWORD nativeContextFailFirstSite = ReadNativeContextFailFirstSite();
     DWORD nativeContextFailLastSite = ReadNativeContextFailLastSite();
     DWORD nativeGenerationStaleCount = ReadNativeContextGenerationStaleCount();
@@ -7246,6 +7276,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                         {L"NativeContex"
                                                                                                          L"tFailCount",
                                                                                                          &nativeContextFailCount},
+                                                                                                        {L"NativeOwnerUnprovenReleaseTotal",
+                                                                                                         &nativeOwnerUnprovenReleaseTotal},
+                                                                                                        {L"NativeOwnerUnprovenReleaseFirstSite",
+                                                                                                         &nativeOwnerUnprovenReleaseFirstSite},
+                                                                                                        {L"NativeOwnerUnprovenReleaseFirstCallerRva",
+                                                                                                         &nativeOwnerUnprovenReleaseFirstCallerRva},
                                                                                                         {L"NativeContextFailFirstSite",
                                                                                                          &nativeContextFailFirstSite},
                                                                                                         {L"NativeContextFailLastSite",
@@ -11484,7 +11520,7 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
          * context instead, exactly as the confirmed-GEM_NEW generation path below
          * already does, and let Turnip report DEVICE_LOST for this application
          * alone. */
-        VioGpuQuarantineNativeContextOwner(snapshot->Owner);
+        VioGpuQuarantineNativeContextOwner(snapshot->Owner, VioGpuNativeQuarantineGuestAllocUnknown);
         return result;
     }
     if (result != VioGpuHostContextConfirmed)
@@ -11502,7 +11538,7 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
              * adapter-wide latch would add is the reset-generation bump that
              * invalidates every other process's Turnip syncs.  Refuse this
              * context's next allocation instead. */
-            VioGpuQuarantineNativeContextOwner(snapshot->Owner);
+            VioGpuQuarantineNativeContextOwner(snapshot->Owner, VioGpuNativeQuarantineGuestAllocRejected);
         }
         return result;
     }
@@ -11519,7 +11555,7 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
     if (!IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration))
     {
         RecordNativeContextGenerationStaleAtAnyIrql(VioGpuNativeGenerationStalePreBlob);
-        VioGpuQuarantineNativeContextOwner(snapshot->Owner);
+        VioGpuQuarantineNativeContextOwner(snapshot->Owner, VioGpuNativeQuarantineGuestAllocStalePreBlob);
         return VioGpuHostContextUnknown;
     }
 
@@ -11550,7 +11586,26 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
                 return result;
             }
         }
-        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteGuestAllocBlobUnknown);
+        /* The rollback UNREF could not be proven, so the Host may still hold the
+         * GEM_NEW object.  That used to latch the adapter, on the argument that
+         * keeping the allocation count would protect the object -- but the count
+         * only gates context teardown, and CTX_DESTROY is precisely what frees a
+         * context's remaining objects (kgsl_renderer_destroy ends in
+         * drm_context_deinit).  Blocking teardown therefore turned a possible leak
+         * into a certain and permanent one, plus a leaked control-BAR slot against
+         * a 64-slot ceiling.
+         *
+         * What can honestly be asserted is not that the Host freed it -- that is
+         * unknowable -- but that the guest is done with it: resource ids are
+         * monotonic and never reused, and this allocation is being torn down.  So
+         * release the guest's own reference, record that the Host side is unproven,
+         * and quarantine this context.  Guest-side safety is unaffected: it is
+         * carried by context->AllocationReferences and AllocationRanges, which are
+         * separate gates and untouched here. */
+        RecordNativeOwnerUnprovenReleaseAtAnyIrql(VioGpuNativeUnprovenReleaseBlobRollback);
+        InterlockedIncrement(&snapshot->Owner->UnprovenReleaseCount);
+        ReleaseNativeAllocationCount(snapshot->Owner);
+        VioGpuQuarantineNativeContextOwner(snapshot->Owner, VioGpuNativeQuarantineGuestAllocBlobUnproven);
         return VioGpuHostContextUnknown;
     }
 
@@ -11565,7 +11620,7 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
     if (!IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration))
     {
         RecordNativeContextGenerationStaleAtAnyIrql(VioGpuNativeGenerationStalePostBlob);
-        VioGpuQuarantineNativeContextOwner(snapshot->Owner);
+        VioGpuQuarantineNativeContextOwner(snapshot->Owner, VioGpuNativeQuarantineGuestAllocStalePostBlob);
         return VioGpuHostContextUnknown;
     }
     return VioGpuHostContextConfirmed;
@@ -11607,7 +11662,15 @@ VioGpuAdapter::DestroyNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNA
     }
     else if (result == VioGpuHostContextUnknown || result == VioGpuHostContextRejected)
     {
-        FailNativeContextAtAnyIrql(VioGpuNativeFailSiteGuestAllocUnrefUnproven);
+        /* Same reasoning as the blob rollback above.  *released stays FALSE
+         * because that flag means "Host ownership proven released" and it was not;
+         * the caller keeps recording the allocation's host state as unknown and
+         * attributes the unmap stage accordingly.  Releasing the guest's own
+         * reference is a different and certain fact. */
+        RecordNativeOwnerUnprovenReleaseAtAnyIrql(VioGpuNativeUnprovenReleaseDestroyUnref);
+        InterlockedIncrement(&snapshot->Owner->UnprovenReleaseCount);
+        ReleaseNativeAllocationCount(snapshot->Owner);
+        VioGpuQuarantineNativeContextOwner(snapshot->Owner, VioGpuNativeQuarantineGuestDestroyUnrefUnproven);
         return VioGpuHostContextUnknown;
     }
     return result;
@@ -11641,7 +11704,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ImportNativeSharedResource(_In_ const 
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, TRUE);
     if (result == VioGpuHostContextUnknown)
     {
-        VioGpuQuarantineNativeContextOwner(importer->Owner);
+        VioGpuQuarantineNativeContextOwner(importer->Owner, VioGpuNativeQuarantineImportAttach);
         return result;
     }
     if (result != VioGpuHostContextConfirmed)
@@ -11661,14 +11724,14 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ImportNativeSharedResource(_In_ const 
     }
     if (result == VioGpuHostContextUnknown)
     {
-        VioGpuQuarantineNativeContextOwner(importer->Owner);
+        VioGpuQuarantineNativeContextOwner(importer->Owner, VioGpuNativeQuarantineImportSubmit);
         return result;
     }
     /* The binding never happened: take the import back out again. */
     VIOGPU_HOST_CONTEXT_RESULT rollback = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE);
     if (rollback == VioGpuHostContextUnknown)
     {
-        VioGpuQuarantineNativeContextOwner(importer->Owner);
+        VioGpuQuarantineNativeContextOwner(importer->Owner, VioGpuNativeQuarantineImportRollback);
         return rollback;
     }
     return result;
@@ -11706,13 +11769,13 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ReleaseNativeSharedResource(_In_ const
     VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SubmitNativeControl(importer->ContextId, &request, sizeof(request));
     if (result == VioGpuHostContextUnknown)
     {
-        VioGpuQuarantineNativeContextOwner(importer->Owner);
+        VioGpuQuarantineNativeContextOwner(importer->Owner, VioGpuNativeQuarantineReleaseDetach);
         return result;
     }
     result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE);
     if (result == VioGpuHostContextUnknown)
     {
-        VioGpuQuarantineNativeContextOwner(importer->Owner);
+        VioGpuQuarantineNativeContextOwner(importer->Owner, VioGpuNativeQuarantineReleaseAttachment);
     }
     return result;
 }

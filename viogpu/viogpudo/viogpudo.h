@@ -525,6 +525,48 @@ enum VIOGPU_NATIVE_GENERATION_STALE_SITE : LONG
     VioGpuNativeGenerationStalePostBlob = 2,
 };
 
+/* The two gates that release an allocation count without proof that the Host
+ * freed the object.  Both were adapter-wide escalations until 58546 established
+ * that CTX_DESTROY is the Host-side backstop, which made refusing teardown the
+ * worse outcome rather than the cautious one. */
+/* Every per-context quarantine names itself, for the same reason every
+ * adapter-wide escalation does -- and because the list-of-pins approach this
+ * replaces demonstrably rotted twice.  Auditing 58546 by deleting each quarantine
+ * in turn and re-running the contract found two of eleven unprotected: the 58537
+ * unknowable-GEM_NEW gate, which survived four versions, and the 58543 rejected
+ * GEM_NEW gate.  Both had pins nearby that named their neighbours, so the checks
+ * looked complete.
+ *
+ * A bijection with the call sites is enforced by check-contract.py, so a
+ * quarantine cannot be added, removed or duplicated without the census failing.
+ * That is coverage by construction rather than by anyone remembering. */
+enum VIOGPU_NATIVE_QUARANTINE_SITE : LONG
+{
+    VioGpuNativeQuarantineNone = 0,
+    /* CreateNativeGuestAllocation */
+    VioGpuNativeQuarantineGuestAllocUnknown,
+    VioGpuNativeQuarantineGuestAllocRejected,
+    VioGpuNativeQuarantineGuestAllocStalePreBlob,
+    VioGpuNativeQuarantineGuestAllocBlobUnproven,
+    VioGpuNativeQuarantineGuestAllocStalePostBlob,
+    /* DestroyNativeGuestAllocation */
+    VioGpuNativeQuarantineGuestDestroyUnrefUnproven,
+    /* ImportNativeSharedResource */
+    VioGpuNativeQuarantineImportAttach,
+    VioGpuNativeQuarantineImportSubmit,
+    VioGpuNativeQuarantineImportRollback,
+    /* ReleaseNativeSharedResource */
+    VioGpuNativeQuarantineReleaseDetach,
+    VioGpuNativeQuarantineReleaseAttachment,
+};
+
+enum VIOGPU_NATIVE_UNPROVEN_RELEASE_SITE : LONG
+{
+    VioGpuNativeUnprovenReleaseNone = 0,
+    VioGpuNativeUnprovenReleaseBlobRollback = 1,
+    VioGpuNativeUnprovenReleaseDestroyUnref = 2,
+};
+
 /* Every path into FailNativeContextAtAnyIrql names itself on arrival.
  *
  * That helper bumps the adapter-wide reset generation, poisons both synchronous
@@ -612,9 +654,7 @@ enum VIOGPU_NATIVE_FAIL_SITE : LONG
      * GuestAllocUnrefUnproven: still pending.  It should be containable, and is
      * blocked on the same retained-count problem as GuestAllocBlobUnknown rather
      * than on any argument that the adapter must die. */
-    VioGpuNativeFailSiteGuestAllocBlobUnknown,
     VioGpuNativeFailSiteGuestAllocCountUnderflow,
-    VioGpuNativeFailSiteGuestAllocUnrefUnproven,
 };
 
 struct VIOGPU_NATIVE_CONTEXT_OWNER
@@ -626,6 +666,13 @@ struct VIOGPU_NATIVE_CONTEXT_OWNER
     ULONGLONG ResetGeneration;
     UINT ContextId;
     volatile LONG AllocationCount;
+    /* Host objects this owner released without proof.  A fact, never a lock: it
+     * is published and never consulted by a gate, because the whole point of
+     * 58546 is that refusing teardown over an unproven UNREF blocks the very
+     * operation -- CTX_DESTROY, which reaches drm_context_deinit and frees the
+     * context's remaining objects -- that would definitively reclaim it.  Gating
+     * on this would restore exactly the behaviour it was added to remove. */
+    volatile LONG UnprovenReleaseCount;
     /* Set when this context's own Host traffic became unusable -- an unknowable
      * GEM_NEW answer, say -- so the admission check refuses only its next
      * allocation.  The adapter-wide alternative was measured on 58535: failing
@@ -768,6 +815,7 @@ class VioGpuAdapter : IVioGpuPCI
      * Noinline so _ReturnAddress() names the checking site rather than this
      * helper, exactly as FailNativeContextAtAnyIrql does. */
     __declspec(noinline) void RecordNativeContextGenerationStaleAtAnyIrql(_In_ LONG site);
+    __declspec(noinline) void RecordNativeOwnerUnprovenReleaseAtAnyIrql(_In_ LONG site);
     CPciResources *GetPciResources(void)
     {
         return &m_PciResources;
@@ -1260,6 +1308,9 @@ class VioGpuDod
     volatile LONG m_NativeContextFailCount;
     volatile LONG m_NativeContextFailFirstSite;
     volatile LONG m_NativeContextFailLastSite;
+    volatile LONG m_NativeOwnerUnprovenReleaseTotal;
+    volatile LONG m_NativeOwnerUnprovenReleaseFirstSite;
+    volatile LONG m_NativeOwnerUnprovenReleaseFirstCallerRva;
     /* Generation-currency escalations in CreateNativeGuestAllocation.  These no
      * longer reach FailNativeContextAtAnyIrql, so they no longer appear in
      * NativeContextFailFirstCallerRva, and without a dedicated latch a
@@ -2085,6 +2136,40 @@ class VioGpuDod
     DWORD ReadNativeContextFailLastSite(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailLastSite, 0, 0));
+    }
+    /* An UNREF whose completion could not be proven.  The count released here is
+     * the guest's own reference, which is certain to be over: resource ids are
+     * monotonic and never reused, and this is the allocation's teardown path.
+     * What stays unknown is whether the Host still holds the object, and that is
+     * recorded rather than used to block anything.
+     *
+     * NativeOwnerUnprovenReleaseTotal == 0 means this path never ran, and nothing
+     * derived from the other two values means anything in that case.  It does not
+     * mean "no unproven release happened" until the total is known to be live --
+     * the same rule as NativeContextFailFirstSite, which has now saved two
+     * conclusions from being drawn out of a silent counter. */
+    VOID RecordNativeOwnerUnprovenRelease(_In_ ULONG_PTR callerRva, _In_ LONG site)
+    {
+        InterlockedIncrement(&m_NativeOwnerUnprovenReleaseTotal);
+        if (callerRva != 0 && callerRva <= MAXULONG)
+        {
+            InterlockedCompareExchange(&m_NativeOwnerUnprovenReleaseFirstCallerRva,
+                                       static_cast<LONG>(callerRva),
+                                       0);
+        }
+        InterlockedCompareExchange(&m_NativeOwnerUnprovenReleaseFirstSite, site, 0);
+    }
+    DWORD ReadNativeOwnerUnprovenReleaseTotal(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeOwnerUnprovenReleaseTotal, 0, 0));
+    }
+    DWORD ReadNativeOwnerUnprovenReleaseFirstSite(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeOwnerUnprovenReleaseFirstSite, 0, 0));
+    }
+    DWORD ReadNativeOwnerUnprovenReleaseFirstCallerRva(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeOwnerUnprovenReleaseFirstCallerRva, 0, 0));
     }
     DWORD ReadNativeContextGenerationStaleCount(void)
     {

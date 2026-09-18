@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58547",
+        "$minor = 58548",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58547",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58548",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -7422,6 +7422,19 @@ def check_native_fail_site_census() -> None:
     is older than the census -- check the loaded .sys by hash before reading any of
     these as a verification.
 
+    Why these are censuses and not lists of pins.  Auditing 58546 by deleting each
+    quarantine in turn and re-running found two of eleven unprotected: the 58537
+    unknowable-GEM_NEW gate, which had survived four versions, and the 58543
+    rejected-GEM_NEW gate.  Both sat in functions whose other gates were pinned, by
+    checks whose messages named those neighbours, so the region read as covered
+    while nothing asserted anything about the site next to them.  Adjacent coverage
+    reads as complete coverage -- that is how a list-based guard rots without
+    anyone noticing, and "a pin exists somewhere in this function" was never the
+    property anyone wanted.  A bijection cannot rot that way, which is why both
+    censuses enforce one and why both tags are required parameters rather than
+    defaulted: the compiler refuses an unclassified site before the checker is even
+    run.
+
     What this check does NOT verify, stated so nobody mistakes it for verified:
     the classification below is enforced for completeness, not for honesty.  Every
     site must appear in exactly one of the two sets, but nothing stops an entry
@@ -7454,33 +7467,27 @@ def check_native_fail_site_census() -> None:
         "Backing2DCreate", "Backing2DAttach", "Backing2DRollback", "Backing2DGeneration",
         "Destroy2DPreexisting", "Destroy2DGeneration", "Destroy2DUnref",
         "ResetRetireGeneration", "ResetRetirePublish",
-        # Reviewed one at a time and moved here with an argument, not as a batch.
-        # GuestAllocBlobUnknown: blob creation failed and the GEM_NEW object could
-        # not be proven released, so the owner keeps its allocation count.  A
-        # retained count makes context destroy answer STATUS_DEVICE_BUSY
-        # (viogpudo.cpp, the ReadNativeAllocationCount(owner)!=0 gate), so
-        # containing it would trade one adapter reset for a context that can never
-        # be destroyed and a leaked control-BAR slot -- adapter-wide scarcity, not
-        # per-context damage.
-        # GuestAllocCountUnderflow: the Host confirmed the UNREF and then
-        # ReleaseNativeAllocationCount failed, which happens only when the count is
-        # already zero, after entry validation required it non-zero.  That is the
-        # driver's own accounting contradicting itself; carrying on per-context
-        # would mean running on bookkeeping known to be wrong.
-        "GuestAllocBlobUnknown", "GuestAllocCountUnderflow",
+        # GuestAllocCountUnderflow is the one guest-allocation gate that stays
+        # adapter-wide, and for a reason independent of teardown: entry validation
+        # requires the allocation count non-zero and ReleaseNativeAllocationCount
+        # then reports it already zero, which is the only way that helper can fail.
+        # The driver contradicts itself between two lines; there is no per-context
+        # story for that.  Its former neighbour GuestAllocBlobUnknown left in 58546
+        # once the argument it rested on -- that containment strands an
+        # undestroyable context -- was shown to be backwards.
+        "GuestAllocCountUnderflow",
     }
     # Known-wrong and pending: each escalates one context's unknowable answer into
     # an adapter-wide latch, exactly as the GEM_NEW Unknown path did before 58537
     # and the generation checks did before 58541.  Removing an entry here is the
     # commit that scopes it; adding one is a regression.
-    CONTEXT_PENDING = {
-        # One left.  It should be containable -- nothing here argues the adapter
-        # must die -- but it strands the same retained allocation count as
-        # GuestAllocBlobUnknown, so scoping it means first giving that count an
-        # owner-side release that does not claim proof the Host released the
-        # object.  That is real work, not a rename.
-        "GuestAllocUnrefUnproven",
-    }
+    # Empty, and deliberately kept.  A ratchet with nowhere to put the next
+    # escalation stops being a ratchet: an escalation added to a per-context path
+    # must land here and be argued out, not be waved through because the set
+    # looked finished.  Both former members left in 58546 -- not by
+    # reclassification, but because the sites no longer escalate at all.
+    # set(), not {}, which would be an empty dict.
+    CONTEXT_PENDING: set = set()
 
     header = VIOGPU_HEADER_SOURCE
     enum_match = re.search(r"enum\s+VIOGPU_NATIVE_FAIL_SITE\s*:\s*LONG\s*\{(.*?)\};", header, re.DOTALL)
@@ -7519,12 +7526,91 @@ def check_native_fail_site_census() -> None:
     importer = canonical_code(function_body("VioGpuAdapter::ImportNativeSharedResource", source))
     if "FailNativeContextAtAnyIrql(" in importer:
         fail("a shared-resource import must quarantine the importing context, not the adapter")
-    if importer.count("VioGpuQuarantineNativeContextOwner(importer->Owner);") != 3:
+    if importer.count("VioGpuQuarantineNativeContextOwner(importer->Owner,") != 3:
         fail("all three shared-resource import gates must quarantine the importing context")
+    # Quarantine census, the per-context counterpart of the escalation census.
+    # Auditing 58546 by deleting each quarantine in turn found two of eleven
+    # unprotected -- the 58537 unknowable-GEM_NEW gate, which had survived four
+    # versions, and the 58543 rejected-GEM_NEW gate -- because coverage was a list
+    # of pins that named some sites and not others, and a list rots.  A bijection
+    # cannot: adding, removing or duplicating a quarantine fails here.
+    quarantine_enum = re.search(
+        r"enum\s+VIOGPU_NATIVE_QUARANTINE_SITE\s*:\s*LONG\s*\{(.*?)\};", VIOGPU_HEADER_SOURCE, re.DOTALL
+    )
+    if quarantine_enum is None:
+        fail("per-context quarantine must declare a site enumeration")
+    quarantine_declared = [
+        name for name in re.findall(r"VioGpuNativeQuarantine(\w+)", quarantine_enum.group(1)) if name != "None"
+    ]
+    if len(quarantine_declared) != len(set(quarantine_declared)):
+        fail("each quarantine site must have exactly one enumerator")
+    if re.search(r"VioGpuQuarantineNativeContextOwner\([^,)]*\)", source):
+        fail("a per-context quarantine must name its site; the untagged form is gone")
+    quarantine_used = re.findall(
+        r"VioGpuQuarantineNativeContextOwner\([^,]+,\s*VioGpuNativeQuarantine(\w+)\)", source
+    )
+    for name in quarantine_declared:
+        if quarantine_used.count(name) != 1:
+            fail(f"quarantine site {name} must appear at exactly one call site, found {quarantine_used.count(name)}")
+    if len(quarantine_used) != len(quarantine_declared):
+        fail("every quarantine call site must pass a declared site tag")
+    if "VioGpuNativeQuarantineNone" in compact_code(source):
+        fail("VioGpuNativeQuarantineNone is the unset value and may not be passed by a call site")
+    quarantine_declaration = canonical_code(VIOGPU_CODE)
+    if "VioGpuQuarantineNativeContextOwner(_Inout_opt_VIOGPU_NATIVE_CONTEXT_OWNER*owner,_In_LONGsite)" not in \
+            quarantine_declaration:
+        fail("the quarantine site must be a required parameter so the compiler refuses an unclassified call")
+
+    # UnprovenReleaseCount is a fact, not a lock.  It exists because refusing
+    # teardown over an unproven UNREF blocks CTX_DESTROY, which is the Host-side
+    # backstop that frees a context's remaining objects -- so gating on it would
+    # restore precisely the behaviour 58546 removed, while looking like caution.
+    # It may therefore only ever be incremented, never compared.
+    unproven_uses = re.findall(r"[^\n]*UnprovenReleaseCount[^\n]*", source)
+    if len(unproven_uses) != 2:
+        fail(f"the unproven-release fact must be written at exactly two sites, found {len(unproven_uses)}")
+    for use in unproven_uses:
+        if "InterlockedIncrement(&snapshot->Owner->UnprovenReleaseCount);" not in use.strip():
+            fail(f"the unproven-release fact may only be incremented, never consulted: {use.strip()[:70]}")
+    # Both gates release the guest's own reference and quarantine the owning
+    # context rather than escalating.  Recording precedes releasing at both, so a
+    # snapshot taken between them cannot show a released count with no reason.
+    for function_name, site, quarantine in (
+        ("VioGpuAdapter::CreateNativeGuestAllocation", "VioGpuNativeUnprovenReleaseBlobRollback",
+         "GuestAllocBlobUnproven"),
+        ("VioGpuAdapter::DestroyNativeGuestAllocation", "VioGpuNativeUnprovenReleaseDestroyUnref",
+         "GuestDestroyUnrefUnproven"),
+    ):
+        body = canonical_code(function_body(function_name, source))
+        expected = (
+            f"RecordNativeOwnerUnprovenReleaseAtAnyIrql({site});"
+            "InterlockedIncrement(&snapshot->Owner->UnprovenReleaseCount);"
+            "ReleaseNativeAllocationCount(snapshot->Owner);"
+            f"VioGpuQuarantineNativeContextOwner(snapshot->Owner,VioGpuNativeQuarantine{quarantine});"
+            "returnVioGpuHostContextUnknown;"
+        )
+        if body.count(expected) != 1:
+            fail(f"{function_name} must record, release and quarantine an unproven UNREF in that order")
+
+    # The original 58537 gate: an unknowable GEM_NEW answer quarantines its own
+    # context.  It was never pinned, which a mutation test for 58546 exposed --
+    # deleting the quarantine left every check green while letting a context with
+    # an unknowable Host answer carry on allocating.  Pinned now, in the function
+    # whose other three gates already are.
+    # VIOGPU_CODE, not source: canonical_code does not strip comments, and this
+    # gate carries a comment block between the two statements being pinned.
+    create_unknown = canonical_code(function_body("VioGpuAdapter::CreateNativeGuestAllocation", VIOGPU_CODE))
+    if create_unknown.count(
+        "if(result==VioGpuHostContextUnknown){*ownershipRetained=TRUE;"
+        "VioGpuQuarantineNativeContextOwner(snapshot->Owner,"
+        "VioGpuNativeQuarantineGuestAllocUnknown);returnresult;}"
+    ) != 1:
+        fail("an unknowable GEM_NEW answer must retain ownership and quarantine its own context")
+
     releaser = canonical_code(function_body("VioGpuAdapter::ReleaseNativeSharedResource", source))
     if "FailNativeContextAtAnyIrql(" in releaser:
         fail("a shared-resource release must quarantine the importing context, not the adapter")
-    if releaser.count("VioGpuQuarantineNativeContextOwner(importer->Owner);") != 2:
+    if releaser.count("VioGpuQuarantineNativeContextOwner(importer->Owner,") != 2:
         fail("both shared-resource release gates must quarantine the importing context")
 
 
@@ -9712,7 +9798,15 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     release_count = rollback_proof
     release_ownership = create_host.find("*ownershipRetained=FALSE;", release_count)
     preserve_result = create_host.find("returnresult;", release_ownership)
-    poison = create_host.find("FailNativeContextAtAnyIrql(", preserve_result)
+    # The unproven tail no longer escalates.  It records the unproven Host side,
+    # releases the guest's own reference and quarantines the owning context, in
+    # that order -- recording before releasing, so a snapshot taken between them
+    # cannot show a released count with no reason attached.
+    unproven_record = create_host.find(
+        "RecordNativeOwnerUnprovenReleaseAtAnyIrql(VioGpuNativeUnprovenReleaseBlobRollback);", preserve_result
+    )
+    unproven_release = create_host.find("ReleaseNativeAllocationCount(snapshot->Owner);", unproven_record)
+    poison = create_host.find("VioGpuQuarantineNativeContextOwner(snapshot->Owner,", unproven_release)
     unknown_result = create_host.find("returnVioGpuHostContextUnknown;", poison)
     rollback_sequence = (
         create_blob_call,
@@ -9723,11 +9817,15 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         release_count,
         release_ownership,
         preserve_result,
+        unproven_record,
+        unproven_release,
         poison,
         unknown_result,
     )
     if min(rollback_sequence) < 0 or list(rollback_sequence) != sorted(rollback_sequence):
-        fail("failed blob creation must roll back confirmed GEM_NEW ownership or poison an unknowable transport")
+        fail("failed blob creation must roll back confirmed GEM_NEW ownership or release it as unproven")
+    if "FailNativeContextAtAnyIrql(" in create_host:
+        fail("guest-backed BO creation must never escalate to the adapter: CTX_DESTROY is the Host-side backstop")
     if create_host.count("m_CtrlQueue.UnrefNativeResource(resourceId)") != 1:
         fail("failed blob creation must attempt exactly one GEM_NEW resource rollback")
     if "rollback==VioGpuHostContextRejected" in create_host:
@@ -9741,10 +9839,10 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     # function is the unknowable-transport path after failed blob creation.
     for fragment in (
         "RecordNativeContextGenerationStaleAtAnyIrql(VioGpuNativeGenerationStalePreBlob);"
-        "VioGpuQuarantineNativeContextOwner(snapshot->Owner);"
+        "VioGpuQuarantineNativeContextOwner(snapshot->Owner,VioGpuNativeQuarantineGuestAllocStalePreBlob);"
         "returnVioGpuHostContextUnknown;",
         "RecordNativeContextGenerationStaleAtAnyIrql(VioGpuNativeGenerationStalePostBlob);"
-        "VioGpuQuarantineNativeContextOwner(snapshot->Owner);"
+        "VioGpuQuarantineNativeContextOwner(snapshot->Owner,VioGpuNativeQuarantineGuestAllocStalePostBlob);"
         "returnVioGpuHostContextUnknown;",
     ):
         if create_host.count(fragment) != 1:
@@ -9754,18 +9852,17 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     # make the two fragments above vacuously true.
     if create_host.count("IsNativeContextGenerationCurrent(snapshot->Generation,snapshot->ResetGeneration)") != 4:
         fail("guest-backed BO creation must keep all four generation-currency checks")
-    if create_host.count("FailNativeContextAtAnyIrql(") != 1:
-        fail(
-            "guest-backed BO creation may latch the adapter only for an unknowable transport "
-            "after failed blob creation"
-        )
+    # Superseded by 58546: this function no longer escalates at all, which the
+    # "must never escalate" check above enforces.  The count that used to justify
+    # the surviving escalation only gates context teardown, and CTX_DESTROY is
+    # what frees a context's remaining objects, so blocking teardown made a
+    # possible leak certain.
     destroy_host = canonical_code(function_body("VioGpuAdapter::DestroyNativeGuestAllocation", VIOGPU_CODE))
     if "result==VioGpuHostContextConfirmed||result==VioGpuHostContextRejected" in destroy_host:
         fail("guest allocation teardown cannot treat INVALID_RESOURCE_ID as released ownership")
     for fragment in (
         "if(result==VioGpuHostContextConfirmed)",
         "resourceId==MAXUINT",
-        "ReleaseNativeAllocationCount(snapshot->Owner)",
         "elseif(result==VioGpuHostContextUnknown||result==VioGpuHostContextRejected)",
         "returnVioGpuHostContextUnknown;",
     ):
@@ -9774,8 +9871,17 @@ def check_wddm_guest_allocation_lifecycle() -> None:
                 fail(f"guest allocation teardown must quarantine unproven UNREF ownership: {fragment}")
         elif destroy_host.count(fragment) != 1:
             fail(f"guest allocation teardown must quarantine unproven UNREF ownership: {fragment}")
-    if destroy_host.count("FailNativeContextAtAnyIrql(") < 1:
-        fail("guest allocation teardown must quarantine unproven UNREF ownership: FailNativeContextAtAnyIrql")
+    # Twice now: once on a confirmed UNREF, once on an unproven one.  Both release
+    # the guest's own reference, which is certain either way; only the Host side
+    # differs, and that is recorded rather than used to block teardown.
+    if destroy_host.count("ReleaseNativeAllocationCount(snapshot->Owner)") != 2:
+        fail("guest allocation teardown must release the guest reference on both the proven and unproven paths")
+    # The only escalation left here is the count underflow, which is the driver
+    # contradicting its own entry validation rather than anything about the Host.
+    if destroy_host.count("FailNativeContextAtAnyIrql(") != 1:
+        fail("guest allocation teardown may escalate only for an allocation-count underflow")
+    if "FailNativeContextAtAnyIrql(VioGpuNativeFailSiteGuestAllocCountUnderflow)" not in destroy_host:
+        fail("the surviving teardown escalation must be the allocation-count underflow")
 
     release_ownership = canonical_code(function_body("ReleaseAllocationHostOwnership", WDDM_DDI_CODE))
     for fragment in (
