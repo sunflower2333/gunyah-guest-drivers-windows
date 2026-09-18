@@ -214,6 +214,22 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_HardwareResetFirstCallerRva = 0;
     m_NativeContextFailFirstCallerRva = 0;
     m_NativeContextFailCount = 0;
+    m_NativeGuestAllocRecordCount = 0;
+    m_NativeGuestAllocUnansweredCount = 0;
+    m_NativeGuestAllocRejectedCount = 0;
+    m_NativeGuestAllocNotSubmittedCount = 0;
+    m_NativeGuestAllocLastResult = 0;
+    m_NativeGuestAllocLastSubmitted = 0;
+    m_NativeGuestAllocLastCompleted = 0;
+    m_NativeGuestAllocFirstFailClaim = 0;
+    m_NativeGuestAllocFirstFailValid = 0;
+    m_NativeGuestAllocFirstFailResult = 0;
+    m_NativeGuestAllocFirstFailSubmitted = 0;
+    m_NativeGuestAllocFirstFailCompleted = 0;
+    m_NativeGuestAllocFirstFailWaitSlices = 0;
+    m_NativeGuestAllocFirstFailCallerRva = 0;
+    m_NativeSynchronousMaxWaitSlices = 0;
+    m_NativePagingResetSuppressedCount = 0;
     m_NativeContextLifecycleTimeoutCount = 0;
     m_NativeContextLifecycleGaveUpCount = 0;
     m_NativeContextLifecycleHolderRva = 0;
@@ -5893,10 +5909,26 @@ VioGpuConsumeNativeControlResponse(_In_ VioGpuAdapter *adapter,
     return TRUE;
 }
 
+/* Quarantine one context without touching the shared transport.  The admission
+ * gate below is the only reader, so a quarantined context simply stops being
+ * allowed to take new Host ownership; Turnip sees its own allocations refused
+ * and reports DEVICE_LOST for that application alone. */
+static VOID VioGpuQuarantineNativeContextOwner(_Inout_opt_ VIOGPU_NATIVE_CONTEXT_OWNER *owner)
+{
+    if (owner != NULL)
+    {
+        InterlockedExchange(&owner->Quarantined, TRUE);
+    }
+}
+
 static BOOLEAN VioGpuNativeControlFaultsClear(_In_ VioGpuAdapter *adapter,
                                               _In_ const VIOGPU_NATIVE_CONTEXT_OWNER *owner)
 {
-    if (adapter == NULL || owner == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    /* A quarantined context is refused here rather than at the call sites: this
+     * helper is already the single admission gate that CreateNativeGuestAllocation,
+     * the import path and context readiness all consult, and extending it keeps
+     * the pinned admission expression byte-identical. */
+    if (adapter == NULL || owner == NULL || owner->Quarantined != 0 || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         return FALSE;
     }
@@ -6820,11 +6852,43 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD monitorLinkQueries = ReadDisplayCounter(VioGpuMonitorLinkQueries);
     DWORD monitorLinkLastValue = ReadDisplayCounter(VioGpuMonitorLinkLastValue);
     DWORD monitorLinkClaims = ReadDisplayCounter(VioGpuMonitorLinkClaims);
-    DWORD guestAllocSubmitResult = ReadDisplayCounter(VioGpuGuestAllocSubmitResult);
-    DWORD guestAllocSubmitted = ReadDisplayCounter(VioGpuGuestAllocSubmitted);
-    DWORD guestAllocCompleted = ReadDisplayCounter(VioGpuGuestAllocCompleted);
-    DWORD guestAllocUnanswered = ReadDisplayCounter(VioGpuGuestAllocUnanswered);
-    DWORD synchronousLongestWaitSlices = ReadDisplayCounter(VioGpuSynchronousLongestWaitSlices);
+    /* These five used to be read out of m_DisplayCounters.  They now come from
+     * the dedicated latches, so NativeGuestAllocUnanswered can no longer read 0
+     * in the same publish that carries a post-failure
+     * NativeContextFailFirstCallerRva.  NativeGuestAllocRecordCount is the
+     * witness for that: zero means the recorder never ran, which is a different
+     * fact from "no submit was ever unanswered". */
+    DWORD guestAllocSubmitResult = ReadNativeGuestAllocLastResult();
+    DWORD guestAllocSubmitted = ReadNativeGuestAllocLastSubmitted();
+    DWORD guestAllocCompleted = ReadNativeGuestAllocLastCompleted();
+    DWORD guestAllocUnanswered = ReadNativeGuestAllocUnansweredCount();
+    DWORD synchronousLongestWaitSlices = ReadNativeSynchronousMaxWaitSlices();
+    DWORD guestAllocRecordCount = ReadNativeGuestAllocRecordCount();
+    DWORD guestAllocRejected = ReadNativeGuestAllocRejectedCount();
+    DWORD guestAllocNotSubmitted = ReadNativeGuestAllocNotSubmittedCount();
+    DWORD guestAllocFirstFailValid = ReadNativeGuestAllocFirstFailValid();
+    DWORD guestAllocFirstFailResult = ReadNativeGuestAllocFirstFailResult();
+    DWORD guestAllocFirstFailSubmitted = ReadNativeGuestAllocFirstFailSubmitted();
+    DWORD guestAllocFirstFailCompleted = ReadNativeGuestAllocFirstFailCompleted();
+    DWORD guestAllocFirstFailWaitSlices = ReadNativeGuestAllocFirstFailWaitSlices();
+    DWORD guestAllocFirstFailCallerRva = ReadNativeGuestAllocFirstFailCallerRva();
+    DWORD pagingResetSuppressedCount = ReadNativePagingResetSuppressedCount();
+    /* The first synchronous timeout is already latched by the control queue with
+     * its own publication protocol, but the only routine that wrote it to the
+     * driver key did not run on 58535 -- no NativeSynchronousTimeout* value
+     * appears in that boot's snapshot at all.  Carry it on the publish that does
+     * run: Valid with WaitStatus STATUS_TIMEOUT means the 30 s budget ran out and
+     * the refusal was ours, while Valid==0 next to a nonzero
+     * NativeGuestAllocUnanswered means the Host answered with something the queue
+     * could not classify instead of stalling.  That is the distinction the whole
+     * diagnosis turns on. */
+    VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC firstTimeout = {};
+    DWORD firstTimeoutValid =
+        m_pHWDevice != NULL && m_pHWDevice->GetFirstSynchronousTimeout(&firstTimeout) ? 1U : 0U;
+    DWORD firstTimeoutWaitStatus = firstTimeout.WaitStatus;
+    DWORD firstTimeoutCallerRva = firstTimeout.CallerRva;
+    DWORD firstTimeoutEpochGeneration = firstTimeout.EpochGeneration;
+    DWORD firstTimeoutCommandBytes = firstTimeout.CommandBytes;
     DWORD timingPathCalls = ReadDisplayCounter(VioGpuTimingPathCalls);
     DWORD timingPathLastStatus = ReadDisplayCounter(VioGpuTimingPathLastStatus);
     DWORD timingPathWireFormat = ReadDisplayCounter(VioGpuTimingPathWireFormat);
@@ -7417,6 +7481,36 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &guestAllocUnanswered},
                                                                                                         {L"NativeSynchronousLongestWaitSlices",
                                                                                                          &synchronousLongestWaitSlices},
+                                                                                                        {L"NativeGuestAllocRecordCount",
+                                                                                                         &guestAllocRecordCount},
+                                                                                                        {L"NativeGuestAllocRejected",
+                                                                                                         &guestAllocRejected},
+                                                                                                        {L"NativeGuestAllocNotSubmitted",
+                                                                                                         &guestAllocNotSubmitted},
+                                                                                                        {L"NativeGuestAllocFirstFailValid",
+                                                                                                         &guestAllocFirstFailValid},
+                                                                                                        {L"NativeGuestAllocFirstFailResult",
+                                                                                                         &guestAllocFirstFailResult},
+                                                                                                        {L"NativeGuestAllocFirstFailSubmitted",
+                                                                                                         &guestAllocFirstFailSubmitted},
+                                                                                                        {L"NativeGuestAllocFirstFailCompleted",
+                                                                                                         &guestAllocFirstFailCompleted},
+                                                                                                        {L"NativeGuestAllocFirstFailWaitSlices",
+                                                                                                         &guestAllocFirstFailWaitSlices},
+                                                                                                        {L"NativeGuestAllocFirstFailCallerRva",
+                                                                                                         &guestAllocFirstFailCallerRva},
+                                                                                                        {L"NativePagingResetSuppressedCount",
+                                                                                                         &pagingResetSuppressedCount},
+                                                                                                        {L"NativeSynchronousFirstTimeoutValid",
+                                                                                                         &firstTimeoutValid},
+                                                                                                        {L"NativeSynchronousFirstTimeoutWaitStatus",
+                                                                                                         &firstTimeoutWaitStatus},
+                                                                                                        {L"NativeSynchronousFirstTimeoutCallerRva",
+                                                                                                         &firstTimeoutCallerRva},
+                                                                                                        {L"NativeSynchronousFirstTimeoutEpoch",
+                                                                                                         &firstTimeoutEpochGeneration},
+                                                                                                        {L"NativeSynchronousFirstTimeoutCommandBytes",
+                                                                                                         &firstTimeoutCommandBytes},
                                                                                                         {L"NativeTimingPathCalls",
                                                                                                          &timingPathCalls},
                                                                                                         {L"NativeTimingPathLastStatus",
@@ -11244,22 +11338,40 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         m_CtrlQueue.SubmitNativeControl(snapshot->ContextId, &request, sizeof(request), &submitDiagnostic);
     if (m_pVioGpuDod != NULL)
     {
-        m_pVioGpuDod->RecordDisplayValue(VioGpuGuestAllocSubmitResult, static_cast<LONG>(result));
-        m_pVioGpuDod->RecordDisplayValue(VioGpuGuestAllocSubmitted,
-                                         static_cast<LONG>(submitDiagnostic.OuterSubmitted));
-        m_pVioGpuDod->RecordDisplayValue(VioGpuGuestAllocCompleted,
-                                         static_cast<LONG>(submitDiagnostic.OuterCompleted));
-        m_pVioGpuDod->RecordDisplayMaximum(VioGpuSynchronousLongestWaitSlices,
-                                           static_cast<LONG>(m_CtrlQueue.SynchronousLongestWaitSlices()));
-        if (result == VioGpuHostContextUnknown)
-        {
-            m_pVioGpuDod->CountDisplayEvent(VioGpuGuestAllocUnanswered);
-        }
+        /* Record the caller of CreateNativeGuestAllocation, not this line: which
+         * WDDM path asked for the allocation (aperture map, allocation create)
+         * is the part a snapshot cannot otherwise recover, and the submit site
+         * itself is already named by NativeContextFailFirstCallerRva. */
+        ULONG_PTR submitImageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+        ULONG_PTR submitReturnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+        ULONG_PTR submitCallerRva =
+            submitReturnAddress >= submitImageBase ? submitReturnAddress - submitImageBase : 0;
+        m_pVioGpuDod->RecordNativeGuestAllocSubmit(static_cast<LONG>(result),
+                                                   static_cast<LONG>(submitDiagnostic.OuterSubmitted),
+                                                   static_cast<LONG>(submitDiagnostic.OuterCompleted),
+                                                   static_cast<LONG>(m_CtrlQueue.SynchronousLongestWaitSlices()),
+                                                   submitCallerRva);
     }
     if (result == VioGpuHostContextUnknown)
     {
         *ownershipRetained = TRUE;
-        FailNativeContextAtAnyIrql();
+        /* The GEM_NEW answer is unknowable, but that is a statement about this
+         * context's allocation, not about the shared transport.  The queue layer
+         * has already made the transport safe on its own: SubmitSynchronousLocked
+         * poisons the synchronous epoch and clears *release_buffer so the
+         * descriptor is never reused while the Host could still write it
+         * (viogpu_queue.cpp:970-978).  FailNativeContextAtAnyIrql adds nothing to
+         * that; what it adds is an adapter-wide m_NativeContextResetGeneration
+         * bump, which Turnip compares against
+         * adapter.private_info.ResetGeneration (tu_knl_wddm.cc:2201-2210), so
+         * every other process's sync objects went stale at once.  Measured on
+         * 58535: one Geekbench compute context took this branch and 376
+         * unrelated aperture maps then answered STATUS_DEVICE_NOT_READY at stage
+         * MapHost, each requesting an adapter reset.  Quarantine the owning
+         * context instead, exactly as the confirmed-GEM_NEW generation path below
+         * already does, and let Turnip report DEVICE_LOST for this application
+         * alone. */
+        VioGpuQuarantineNativeContextOwner(snapshot->Owner);
         return result;
     }
     if (result != VioGpuHostContextConfirmed)
@@ -11269,7 +11381,15 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         UNREFERENCED_PARAMETER(released);
         if (result == VioGpuHostContextRejected)
         {
-            FailNativeContextAtAnyIrql();
+            /* A rejection is the Host answering, so the transport is proven
+             * healthy here -- more clearly than on the Unknown path above, where
+             * at least the answer was missing.  Latching the adapter for a refused
+             * GEM_NEW is therefore even less defensible: the ownership count has
+             * just been released, nothing is in flight, and the only thing the
+             * adapter-wide latch would add is the reset-generation bump that
+             * invalidates every other process's Turnip syncs.  Refuse this
+             * context's next allocation instead. */
+            VioGpuQuarantineNativeContextOwner(snapshot->Owner);
         }
         return result;
     }

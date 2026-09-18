@@ -8390,7 +8390,26 @@ static NTSTATUS CompletePagingBufferOperation(_In_opt_ VioGpuDod *adapter, _In_ 
             adapter->RecordNativeApertureFailure(stage, status);
         }
         adapter->CountNativePagingReset();
-        adapter->RequestHardwareResetAtAnyIrql();
+        /* One reset request per epoch.  Measured on 58535: a single quarantined
+         * context made 376 aperture maps refuse at stage MapHost, and every
+         * refusal called RequestHardwareResetAtAnyIrql, which re-latches
+         * m_HardwareResetState and kicks RequestWddmSubmissionDrainAtAnyIrql
+         * again (viogpudo.cpp RequestHardwareResetAtAnyIrql).  The latch is
+         * already the epoch boundary -- it stays set until StartDevice or the
+         * SetPowerState recovery clears it -- so every later refusal in the same
+         * epoch is the same condition observed again, and re-requesting only
+         * delays the recovery that is already pending.  The benign race where
+         * two callers both observe Active costs two requests, not 376.  The
+         * refusal itself is still counted above, and the suppressed requests are
+         * counted so the amplification stays visible. */
+        if (!adapter->IsHardwareResetRequested())
+        {
+            adapter->RequestHardwareResetAtAnyIrql();
+        }
+        else
+        {
+            adapter->CountNativePagingResetSuppressed();
+        }
     }
     return STATUS_SUCCESS;
 }

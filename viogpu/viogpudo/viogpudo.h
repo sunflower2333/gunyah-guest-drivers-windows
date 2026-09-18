@@ -524,6 +524,15 @@ struct VIOGPU_NATIVE_CONTEXT_OWNER
     ULONGLONG ResetGeneration;
     UINT ContextId;
     volatile LONG AllocationCount;
+    /* Set when this context's own Host traffic became unusable -- an unknowable
+     * GEM_NEW answer, say -- so the admission check refuses only its next
+     * allocation.  The adapter-wide alternative was measured on 58535: failing
+     * the transport for one Geekbench compute context made 376 unrelated
+     * aperture maps answer STATUS_DEVICE_NOT_READY and drove the adapter into
+     * reset, losing every process's device.  Read without a barrier: a
+     * naturally aligned LONG is atomic, and a stale FALSE only costs one more
+     * refused allocation on the very next call. */
+    volatile LONG Quarantined;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     UINT ControlResourceId;
     ULONGLONG ControlBarOffset;
@@ -668,6 +677,14 @@ class VioGpuAdapter : IVioGpuPCI
     }
     PDXGKRNL_INTERFACE GetDxgkInterface(void);
 #if defined(VIOGPU_NATIVE_CONTEXT)
+    /* The control queue latches its first synchronous timeout, but the only
+     * routine that wrote it to the driver key never ran on 58535.  Expose it so
+     * the allocation-destroy publish -- a VioGpuDod method, which has no
+     * m_CtrlQueue of its own -- can carry it. */
+    BOOLEAN GetFirstSynchronousTimeout(_Out_ VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *diagnostic)
+    {
+        return m_CtrlQueue.GetFirstSynchronousTimeout(diagnostic);
+    }
     /* Independent from the outer device rundown: D-state transitions keep
      * m_HardwareOperations open, but must still quiesce every WDDM native
      * submitter before the transport resets/deletes its virtqueues. */
@@ -1085,6 +1102,46 @@ class VioGpuDod
     volatile LONG m_HardwareResetFirstCallerRva;
     volatile LONG m_NativeContextFailFirstCallerRva;
     volatile LONG m_NativeContextFailCount;
+    /* GEM_NEW submit telemetry.  This used to live in m_DisplayCounters, and on
+     * 58535 that cost us the diagnosis: one publish carried a post-failure
+     * NativeContextFailFirstCallerRva=0x441FC while NativeGuestAllocUnanswered
+     * still read 0 and NativeGuestAllocSubmitResult read Confirmed, although the
+     * line table puts CountDisplayEvent (viogpudo.h:1808, RVA 0x441D4..0x441DC)
+     * on the same basic block as the FailNativeContextAtAnyIrql whose RVA was
+     * latched (viogpudo.cpp:11254-11262).  Unanswered is monotonic and nothing
+     * outside the constructor clears it, so the two cannot both be right.  The
+     * shared index-addressed array is written by ~90 unrelated call sites at
+     * every IRQL with last-writer-wins semantics; these dedicated first-writer
+     * and monotonic fields sit next to the provenance that demonstrably
+     * survived.  m_NativeGuestAllocRecordCount is the self-consistency witness:
+     * a snapshot with a fail RVA but a zero record count proves the recorder
+     * never ran, which the display array could never distinguish from a genuine
+     * zero. */
+    volatile LONG m_NativeGuestAllocRecordCount;
+    volatile LONG m_NativeGuestAllocUnansweredCount;
+    volatile LONG m_NativeGuestAllocRejectedCount;
+    volatile LONG m_NativeGuestAllocNotSubmittedCount;
+    volatile LONG m_NativeGuestAllocLastResult;
+    volatile LONG m_NativeGuestAllocLastSubmitted;
+    volatile LONG m_NativeGuestAllocLastCompleted;
+    /* First non-confirmed submit, claimed once and never overwritten, so a
+     * recovery that follows cannot erase the submit that started the failure.
+     * Claim -> payload -> Valid, in that order; readers require Valid. */
+    volatile LONG m_NativeGuestAllocFirstFailClaim;
+    volatile LONG m_NativeGuestAllocFirstFailValid;
+    volatile LONG m_NativeGuestAllocFirstFailResult;
+    volatile LONG m_NativeGuestAllocFirstFailSubmitted;
+    volatile LONG m_NativeGuestAllocFirstFailCompleted;
+    volatile LONG m_NativeGuestAllocFirstFailWaitSlices;
+    volatile LONG m_NativeGuestAllocFirstFailCallerRva;
+    /* Highest synchronous wait slice count any control request has needed.
+     * VIOGPU_SYNCHRONOUS_COMPLETION_WAIT_SLICES means the 30 s budget ran out
+     * and the refusal was ours; 1 means the answer was prompt.  That decision
+     * is exactly what the display-counter copy of this value could not support. */
+    volatile LONG m_NativeSynchronousMaxWaitSlices;
+    /* One adapter reset request per epoch is enough; count what we suppressed
+     * so the amplification stays visible. */
+    volatile LONG m_NativePagingResetSuppressedCount;
     volatile LONG m_NativeContextLifecycleTimeoutCount;
     volatile LONG m_NativeContextLifecycleGaveUpCount;
     volatile LONG m_NativeContextLifecycleHolderRva;
@@ -1659,6 +1716,124 @@ class VioGpuDod
              * can name it. */
             InterlockedCompareExchange(&m_NativeContextFailFirstCallerRva, static_cast<LONG>(callerRva), 0);
         }
+    }
+    /* Record one GEM_NEW submit outcome.  Called on every submit, confirmed or
+     * not, so m_NativeGuestAllocRecordCount witnesses that this ran at all. */
+    VOID RecordNativeGuestAllocSubmit(_In_ LONG result,
+                                      _In_ LONG submitted,
+                                      _In_ LONG completed,
+                                      _In_ LONG waitSlices,
+                                      _In_ ULONG_PTR callerRva)
+    {
+        InterlockedIncrement(&m_NativeGuestAllocRecordCount);
+        InterlockedExchange(&m_NativeGuestAllocLastResult, result);
+        InterlockedExchange(&m_NativeGuestAllocLastSubmitted, submitted);
+        InterlockedExchange(&m_NativeGuestAllocLastCompleted, completed);
+        for (LONG observed = InterlockedCompareExchange(&m_NativeSynchronousMaxWaitSlices, 0, 0);
+             waitSlices > observed;)
+        {
+            LONG previous = InterlockedCompareExchange(&m_NativeSynchronousMaxWaitSlices, waitSlices, observed);
+            if (previous == observed)
+            {
+                break;
+            }
+            observed = previous;
+        }
+        if (result == VioGpuHostContextConfirmed)
+        {
+            return;
+        }
+        if (result == VioGpuHostContextUnknown)
+        {
+            InterlockedIncrement(&m_NativeGuestAllocUnansweredCount);
+        }
+        else if (result == VioGpuHostContextRejected)
+        {
+            InterlockedIncrement(&m_NativeGuestAllocRejectedCount);
+        }
+        else
+        {
+            InterlockedIncrement(&m_NativeGuestAllocNotSubmittedCount);
+        }
+        /* VioGpuHostContextNotSubmitted is 0, so the result field cannot double
+         * as the claim; take the claim first, then publish. */
+        if (InterlockedCompareExchange(&m_NativeGuestAllocFirstFailClaim, TRUE, FALSE) != FALSE)
+        {
+            return;
+        }
+        InterlockedExchange(&m_NativeGuestAllocFirstFailResult, result);
+        InterlockedExchange(&m_NativeGuestAllocFirstFailSubmitted, submitted);
+        InterlockedExchange(&m_NativeGuestAllocFirstFailCompleted, completed);
+        InterlockedExchange(&m_NativeGuestAllocFirstFailWaitSlices, waitSlices);
+        if (callerRva != 0 && callerRva <= MAXULONG)
+        {
+            InterlockedExchange(&m_NativeGuestAllocFirstFailCallerRva, static_cast<LONG>(callerRva));
+        }
+        InterlockedExchange(&m_NativeGuestAllocFirstFailValid, TRUE);
+    }
+    DWORD ReadNativeGuestAllocRecordCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocRecordCount, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocUnansweredCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocUnansweredCount, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocRejectedCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocRejectedCount, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocNotSubmittedCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocNotSubmittedCount, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocLastResult(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocLastResult, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocLastSubmitted(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocLastSubmitted, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocLastCompleted(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocLastCompleted, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocFirstFailValid(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocFirstFailValid, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocFirstFailResult(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocFirstFailResult, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocFirstFailSubmitted(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocFirstFailSubmitted, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocFirstFailCompleted(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocFirstFailCompleted, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocFirstFailWaitSlices(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocFirstFailWaitSlices, 0, 0));
+    }
+    DWORD ReadNativeGuestAllocFirstFailCallerRva(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeGuestAllocFirstFailCallerRva, 0, 0));
+    }
+    DWORD ReadNativeSynchronousMaxWaitSlices(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeSynchronousMaxWaitSlices, 0, 0));
+    }
+    VOID CountNativePagingResetSuppressed(void)
+    {
+        InterlockedIncrement(&m_NativePagingResetSuppressedCount);
+    }
+    DWORD ReadNativePagingResetSuppressedCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativePagingResetSuppressedCount, 0, 0));
     }
     /* Every ResetDevice() path reaches FailNativeContextAtAnyIrql through the
      * same frame, so the failure provenance above always resolves to
