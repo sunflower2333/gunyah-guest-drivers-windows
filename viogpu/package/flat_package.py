@@ -24,7 +24,7 @@ MANIFEST = "flat-runtime.json"
 RECEIPT = "viogpu-flat-package.json"
 CANDIDATE_MANIFEST = "candidate-sources.json"
 CANDIDATE_SOURCES = {
-    "dxvk": "a9fe3eb7a23804bf2bee014021e73ed6f84aefd9",
+    "dxvk": "a047e40c601ac41d2310ae7cb8eacc22a18b4161",
     "vkd3d": "376e716e4acdf7a9ded138b0099f2ee8a8863f91",
 }
 CANDIDATE_UMDS = {
