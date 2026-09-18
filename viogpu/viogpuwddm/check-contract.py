@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58540",
+        "$minor = 58541",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58540",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58541",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -9607,6 +9607,33 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         fail("failed blob creation must attempt exactly one GEM_NEW resource rollback")
     if "rollback==VioGpuHostContextRejected" in create_host:
         fail("INVALID_RESOURCE_ID cannot prove that an unattached GEM_NEW blob object was released")
+
+    # A stale context generation is one context's problem.  Both currency checks
+    # carried a comment saying so while still calling FailNativeContextAtAnyIrql;
+    # on 58539 the post-blob one latched the adapter from RVA 0x45718 after a
+    # fully successful allocation and cost every process its device.  Pin the
+    # behaviour, not the comment: the only adapter-wide escalation left in this
+    # function is the unknowable-transport path after failed blob creation.
+    for fragment in (
+        "RecordNativeContextGenerationStaleAtAnyIrql(VioGpuNativeGenerationStalePreBlob);"
+        "VioGpuQuarantineNativeContextOwner(snapshot->Owner);"
+        "returnVioGpuHostContextUnknown;",
+        "RecordNativeContextGenerationStaleAtAnyIrql(VioGpuNativeGenerationStalePostBlob);"
+        "VioGpuQuarantineNativeContextOwner(snapshot->Owner);"
+        "returnVioGpuHostContextUnknown;",
+    ):
+        if create_host.count(fragment) != 1:
+            fail(f"a stale context generation must quarantine its own context, not the adapter: {fragment}")
+    # Four: two in the pre-GEM_NEW admission condition, then the pre-blob and
+    # post-blob checks pinned above.  Counted so a check cannot be deleted to
+    # make the two fragments above vacuously true.
+    if create_host.count("IsNativeContextGenerationCurrent(snapshot->Generation,snapshot->ResetGeneration)") != 4:
+        fail("guest-backed BO creation must keep all four generation-currency checks")
+    if create_host.count("FailNativeContextAtAnyIrql();") != 1:
+        fail(
+            "guest-backed BO creation may latch the adapter only for an unknowable transport "
+            "after failed blob creation"
+        )
     destroy_host = canonical_code(function_body("VioGpuAdapter::DestroyNativeGuestAllocation", VIOGPU_CODE))
     if "result==VioGpuHostContextConfirmed||result==VioGpuHostContextRejected" in destroy_host:
         fail("guest allocation teardown cannot treat INVALID_RESOURCE_ID as released ownership")

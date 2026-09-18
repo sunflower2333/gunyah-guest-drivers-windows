@@ -515,6 +515,16 @@ enum VIOGPU_NATIVE_CONTEXT_OWNER_STATE : LONG
     VioGpuNativeContextOwnerDestroying,
 };
 
+/* Which generation-currency check quarantined a context.  Zero is "never", so
+ * the first-writer claim in RecordNativeContextGenerationStale can use the same
+ * compare-against-zero discipline as the caller RVA beside it. */
+enum VIOGPU_NATIVE_GENERATION_STALE_SITE : LONG
+{
+    VioGpuNativeGenerationStaleNone = 0,
+    VioGpuNativeGenerationStalePreBlob = 1,
+    VioGpuNativeGenerationStalePostBlob = 2,
+};
+
 struct VIOGPU_NATIVE_CONTEXT_OWNER
 {
     LIST_ENTRY AdapterLink;
@@ -658,6 +668,10 @@ class VioGpuAdapter : IVioGpuPCI
     NTSTATUS Escape(_In_ CONST DXGKARG_ESCAPE *pEscap);
     /* May be called by the display-only transport completion path at any IRQL. */
     __declspec(noinline) void FailNativeContextAtAnyIrql(void);
+    /* Records a generation-currency escalation without failing the adapter.
+     * Noinline so _ReturnAddress() names the checking site rather than this
+     * helper, exactly as FailNativeContextAtAnyIrql does. */
+    __declspec(noinline) void RecordNativeContextGenerationStaleAtAnyIrql(_In_ LONG site);
     CPciResources *GetPciResources(void)
     {
         return &m_PciResources;
@@ -1148,6 +1162,21 @@ class VioGpuDod
     volatile LONG m_HardwareResetFirstCallerRva;
     volatile LONG m_NativeContextFailFirstCallerRva;
     volatile LONG m_NativeContextFailCount;
+    /* Generation-currency escalations in CreateNativeGuestAllocation.  These no
+     * longer reach FailNativeContextAtAnyIrql, so they no longer appear in
+     * NativeContextFailFirstCallerRva, and without a dedicated latch a
+     * stale-generation kill is invisible in a diagnostics read: the GEM_NEW
+     * telemetry reads clean because the allocation genuinely succeeded, and the
+     * fail provenance is empty because the context was quarantined rather than
+     * failed.  On 58539 that combination cost three hours and a disassembly to
+     * name the site -- NativeContextFailFirstCallerRva=0x45718 resolved to the
+     * post-blob check only after llvm-symbolizer against the PAGE section, which
+     * a .map walk had mis-resolved.  Site is 1 for the pre-blob check and 2 for
+     * the post-blob check, so the two stay distinguishable when line numbers
+     * move; the RVA is kept beside it so the site survives a refactor. */
+    volatile LONG m_NativeContextGenerationStaleCount;
+    volatile LONG m_NativeContextGenerationStaleFirstSite;
+    volatile LONG m_NativeContextGenerationStaleFirstCallerRva;
     /* GEM_NEW submit telemetry.  This used to live in m_DisplayCounters, and on
      * 58535 that cost us the diagnosis: one publish carried a post-failure
      * NativeContextFailFirstCallerRva=0x441FC while NativeGuestAllocUnanswered
@@ -1763,6 +1792,22 @@ class VioGpuDod
             InterlockedCompareExchange(&m_NativeContextFailFirstCallerRva, static_cast<LONG>(callerRva), 0);
         }
     }
+    /* First-writer, so a later stale generation cannot erase the one that
+     * started the episode; the count stays monotonic beside it.  Site is
+     * claimed with the same compare-exchange discipline as the RVA, because a
+     * reader that trusted a last-writer site could attribute the first
+     * escalation to whichever check ran most recently. */
+    VOID RecordNativeContextGenerationStale(_In_ ULONG_PTR callerRva, _In_ LONG site)
+    {
+        InterlockedIncrement(&m_NativeContextGenerationStaleCount);
+        if (callerRva != 0 && callerRva <= MAXULONG)
+        {
+            InterlockedCompareExchange(&m_NativeContextGenerationStaleFirstCallerRva,
+                                       static_cast<LONG>(callerRva),
+                                       0);
+        }
+        InterlockedCompareExchange(&m_NativeContextGenerationStaleFirstSite, site, 0);
+    }
     /* Record one GEM_NEW submit outcome.  Called on every submit, confirmed or
      * not, so m_NativeGuestAllocRecordCount witnesses that this ran at all. */
     VOID RecordNativeGuestAllocSubmit(_In_ LONG result,
@@ -1928,6 +1973,19 @@ class VioGpuDod
     DWORD ReadNativeContextFailCount(void)
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextFailCount, 0, 0));
+    }
+    DWORD ReadNativeContextGenerationStaleCount(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextGenerationStaleCount, 0, 0));
+    }
+    DWORD ReadNativeContextGenerationStaleFirstSite(void)
+    {
+        return static_cast<DWORD>(InterlockedCompareExchange(&m_NativeContextGenerationStaleFirstSite, 0, 0));
+    }
+    DWORD ReadNativeContextGenerationStaleFirstCallerRva(void)
+    {
+        return static_cast<DWORD>(
+            InterlockedCompareExchange(&m_NativeContextGenerationStaleFirstCallerRva, 0, 0));
     }
     VOID RecordNativeContextLifecycleTimeout(void)
     {

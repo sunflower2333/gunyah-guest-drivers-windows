@@ -214,6 +214,9 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_HardwareResetFirstCallerRva = 0;
     m_NativeContextFailFirstCallerRva = 0;
     m_NativeContextFailCount = 0;
+    m_NativeContextGenerationStaleCount = 0;
+    m_NativeContextGenerationStaleFirstSite = VioGpuNativeGenerationStaleNone;
+    m_NativeContextGenerationStaleFirstCallerRva = 0;
     m_NativeGuestAllocRecordCount = 0;
     m_NativeGuestAllocUnansweredCount = 0;
     m_NativeGuestAllocRejectedCount = 0;
@@ -5979,8 +5982,12 @@ __declspec(noinline) void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
          * state, and UnwindFailedStart reaches CompleteSynchronousRequestTeardown
          * without a quiesce -- the shared teardown helper asserts that an epoch it
          * retires had already left Enabled, so the two must move together.
-         * Per-context faults do not come through here any more: the unanswered and
-         * rejected GEM_NEW paths quarantine their own context instead. */
+         * Per-context faults do not come through here any more: the unanswered
+         * and rejected GEM_NEW paths, and since 58541 both generation-currency
+         * checks in CreateNativeGuestAllocation, quarantine their own context
+         * instead.  That claim was false between 58537 and 58540 -- the two
+         * generation checks still called this function, and one of them latched
+         * the adapter on 58539 from RVA 0x45718. */
         m_CtrlQueue.PoisonNativeSynchronousRequests();
         m_CtrlQueue.PoisonSynchronousRequests();
     }
@@ -5988,6 +5995,27 @@ __declspec(noinline) void VioGpuAdapter::FailNativeContextAtAnyIrql(void)
     {
         m_pVioGpuDod->RequestHardwareResetAtAnyIrql();
     }
+}
+
+/* A context whose generation went stale is quarantined, not failed, so this
+ * never touches the adapter epoch, the reset generation or the reset latch.  It
+ * exists only so the escalation is nameable in one diagnostics read: without it
+ * a quarantine leaves no trace at all, because the GEM_NEW submit record is
+ * Confirmed and NativeContextFailFirstCallerRva is only written by
+ * FailNativeContextAtAnyIrql. */
+__declspec(noinline) void VioGpuAdapter::RecordNativeContextGenerationStaleAtAnyIrql(_In_ LONG site)
+{
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    ULONG_PTR staleImageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    ULONG_PTR staleReturnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
+    ULONG_PTR staleCallerRva = staleReturnAddress >= staleImageBase ? staleReturnAddress - staleImageBase : 0;
+    if (m_pVioGpuDod != NULL)
+    {
+        m_pVioGpuDod->RecordNativeContextGenerationStale(staleCallerRva, site);
+    }
+#else
+    UNREFERENCED_PARAMETER(site);
+#endif
 }
 
 __declspec(noinline) VOID VioGpuDod::RequestHardwareResetAtAnyIrql(void)
@@ -6787,6 +6815,9 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD hardwareResetFirstCallerRva = ReadHardwareResetFirstCallerRva();
     DWORD nativeContextFailFirstCallerRva = ReadNativeContextFailFirstCallerRva();
     DWORD nativeContextFailCount = ReadNativeContextFailCount();
+    DWORD nativeGenerationStaleCount = ReadNativeContextGenerationStaleCount();
+    DWORD nativeGenerationStaleFirstSite = ReadNativeContextGenerationStaleFirstSite();
+    DWORD nativeGenerationStaleFirstCallerRva = ReadNativeContextGenerationStaleFirstCallerRva();
     DWORD lifecycleTimeoutCount = ReadNativeContextLifecycleTimeoutCount();
     DWORD lifecycleGaveUpCount = ReadNativeContextLifecycleGaveUpCount();
     DWORD lifecycleHolderRva = ReadNativeContextLifecycleHolderRva();
@@ -7157,6 +7188,22 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"v"
                                                                                                          L"a",
                                                                                                          &nativeContextFailCallerRva},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGenerationS"
+                                                                                                         L"t"
+                                                                                                         L"aleCount",
+                                                                                                         &nativeGenerationStaleCount},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGenerationS"
+                                                                                                         L"t"
+                                                                                                         L"aleFirstSite",
+                                                                                                         &nativeGenerationStaleFirstSite},
+                                                                                                        {L"NativeContex"
+                                                                                                         L"tGenerationS"
+                                                                                                         L"t"
+                                                                                                         L"aleFirstCall"
+                                                                                                         L"erRva",
+                                                                                                         &nativeGenerationStaleFirstCallerRva},
                                                                                                         {L"NativeFenceR"
                                                                                                          L"etireMissCou"
                                                                                                          L"n"
@@ -11451,10 +11498,15 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
      * that context's GPU work, not to the shared transport: complete the blob so
      * the allocation stays consistent, and let the admission check above refuse
      * the context's next allocation. Latching the adapter here turned one
-     * application's GPU fault into a boot-long loss of every device. */
+     * application's GPU fault into a boot-long loss of every device.  Until
+     * 58541 this comment described the intent while the code below still called
+     * FailNativeContextAtAnyIrql, so the intent was never actually in force --
+     * and the Unknown path above claimed this site "already does" quarantine,
+     * which is why nobody re-read it. */
     if (!IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration))
     {
-        FailNativeContextAtAnyIrql();
+        RecordNativeContextGenerationStaleAtAnyIrql(VioGpuNativeGenerationStalePreBlob);
+        VioGpuQuarantineNativeContextOwner(snapshot->Owner);
         return VioGpuHostContextUnknown;
     }
 
@@ -11489,9 +11541,18 @@ VioGpuAdapter::CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAP
         return VioGpuHostContextUnknown;
     }
 
+    /* The blob exists and the Host answered Confirmed: the allocation fully
+     * succeeded and the only thing that went stale is this one context's
+     * generation.  Measured on 58539 at RVA 0x45718 -- this site latched the
+     * adapter after a completely successful allocation, which is exactly why the
+     * GEM_NEW telemetry read clean (Submitted, Confirmed, Unanswered=0,
+     * FirstFailValid=0) while NativeHardwareResetState went to 1 and every other
+     * process lost its device.  A clean submit record beside a dead adapter is
+     * the signature of this branch, not of a broken allocation path. */
     if (!IsNativeContextGenerationCurrent(snapshot->Generation, snapshot->ResetGeneration))
     {
-        FailNativeContextAtAnyIrql();
+        RecordNativeContextGenerationStaleAtAnyIrql(VioGpuNativeGenerationStalePostBlob);
+        VioGpuQuarantineNativeContextOwner(snapshot->Owner);
         return VioGpuHostContextUnknown;
     }
     return VioGpuHostContextConfirmed;
