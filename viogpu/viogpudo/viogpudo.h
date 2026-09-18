@@ -116,6 +116,9 @@ typedef struct
     UINT UsePresentProgress : 1;
     UINT RenderOnly : 1;
     UINT GuestBlobScanout : 1;
+    /* Scan out the creator's shared native texture instead of the primary's
+     * own allocation, so the compositor need not copy its frame there. */
+    UINT ZeroCopyScanout : 1;
     UINT Unused : 23;
 } DRIVER_STATUS_FLAG;
 
@@ -716,7 +719,8 @@ class VioGpuAdapter : IVioGpuPCI
      * then draws into that memory, so the binding has to be republished on the
      * display's cadence for anything to reach the host. */
     VOID RequestScanoutRefresh(void);
-    VOID RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height, _In_ BOOLEAN guestBlob = FALSE);
+    VOID RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height, _In_ BOOLEAN guestBlob = FALSE,
+                             _In_ BOOLEAN nativeResource = FALSE);
     /* A flip publishes a finished primary that the compositor does not write
      * again while it is scanned out, so the vsync republish stands down for
      * it exactly as it does after a completed Present of the binding. */
@@ -741,7 +745,11 @@ class VioGpuAdapter : IVioGpuPCI
                                             _In_ UINT width,
                                             _In_ UINT height,
                                             _Out_ UINT *previousResourceId,
-                                            _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout = NULL);
+                                            _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout = NULL,
+                                            _In_ BOOLEAN nativeResource = FALSE);
+    /* Flush a native scanout: its pixels are written by the owning context's
+     * GPU work, so there is nothing to transfer first. */
+    VIOGPU_HOST_CONTEXT_RESULT FlushNativeScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
     VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached);
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
@@ -1035,6 +1043,9 @@ class VioGpuAdapter : IVioGpuPCI
     volatile LONG m_ActiveScanoutHeight;
     KSPIN_LOCK m_ActiveScanoutLock;
     BOOLEAN m_ActiveScanoutGuestBlob;
+    /* The active scanout is a native context's allocation, so a refresh flushes
+     * it without a transfer: nothing copies into it. */
+    BOOLEAN m_ActiveScanoutNative;
     volatile LONG m_ScanoutRefreshRequested;
     VioGpuObj *m_pCursorBuf;
     VioGpuMemSegment m_CursorSegment;
@@ -1230,6 +1241,10 @@ class VioGpuDod
     BOOLEAN IsGuestBlobScanoutEnabled() const
     {
         return m_Flags.GuestBlobScanout && !IsRenderOnly();
+    }
+    BOOLEAN IsZeroCopyScanoutEnabled() const
+    {
+        return m_Flags.ZeroCopyScanout && !IsRenderOnly();
     }
     void SetPersistentDispMode0Width(USHORT res)
     {

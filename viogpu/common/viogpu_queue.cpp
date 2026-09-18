@@ -368,6 +368,11 @@ static BOOLEAN IsStandard2DResourceId(UINT resourceId)
     return resourceId != 0 && resourceId < VIOGPU_NATIVE_RESOURCE_ID_START;
 }
 
+static BOOLEAN IsNativeResourceId(UINT resourceId)
+{
+    return resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START && resourceId != MAXUINT;
+}
+
 static BOOLEAN IsSupported2DResourceFormat(UINT format)
 {
     switch (format)
@@ -800,10 +805,14 @@ BOOLEAN CtrlQueue::CreateResource(UINT res_id, UINT format, UINT width, UINT hei
     return TRUE;
 }
 
-BOOLEAN CtrlQueue::ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y)
+BOOLEAN CtrlQueue::ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y, BOOLEAN nativeResource)
 {
     PAGED_CODE();
 
+    if (!(nativeResource ? IsNativeResourceId(res_id) : IsStandard2DResourceId(res_id)))
+    {
+        return FALSE;
+    }
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     PGPU_RES_FLUSH cmd;
     PGPU_VBUFFER vbuf;
@@ -1256,9 +1265,12 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetScanoutSynchronous(UINT scanout_id,
 
 VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetScanoutBlobSynchronous(UINT scanout_id,
                                                                 UINT resource_id,
-                                                                const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout)
+                                                                const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout,
+                                                                BOOLEAN nativeResource)
 {
-    if (layout == NULL || scanout_id >= VIRTIO_GPU_MAX_SCANOUTS || !IsStandard2DResourceId(resource_id) ||
+    const BOOLEAN resourceIdValid = nativeResource ? IsNativeResourceId(resource_id)
+                                                   : IsStandard2DResourceId(resource_id);
+    if (layout == NULL || scanout_id >= VIRTIO_GPU_MAX_SCANOUTS || !resourceIdValid ||
         (layout->Format != VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM && layout->Format != VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM &&
          layout->Format != VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM) ||
         !VioGpuGuestScanoutBoundsValid(layout->Width, layout->Height, layout->Stride, layout->BackingSize) ||
@@ -1327,11 +1339,14 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::FlushResourceSynchronous(UINT resource_id,
                                                                UINT width,
                                                                UINT height,
                                                                UINT x,
-                                                               UINT y)
+                                                               UINT y,
+                                                               BOOLEAN nativeResource)
 {
     PAGED_CODE();
 
-    if (!IsStandard2DResourceId(resource_id) || !IsValid2DRectangle(width, height, x, y) || !BeginSynchronousRequest())
+    const BOOLEAN resourceIdValid = nativeResource ? IsNativeResourceId(resource_id)
+                                                   : IsStandard2DResourceId(resource_id);
+    if (!resourceIdValid || !IsValid2DRectangle(width, height, x, y) || !BeginSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }

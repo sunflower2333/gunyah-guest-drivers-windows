@@ -9419,6 +9419,8 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
     value = 0;
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"GuestBlobScanout", &value);
     m_Flags.GuestBlobScanout = NT_SUCCESS(StatusOptional) && value == 1 && !IsRenderOnly();
+    StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"ZeroCopyScanout", &value);
+    m_Flags.ZeroCopyScanout = NT_SUCCESS(StatusOptional) && value == 1 && !IsRenderOnly();
     /* A render-only adapter owns no VidPn target, so it must never service the
      * pointer DDIs.  SetPointerShape() reaches UpdateCursor() -> CreateCursor(),
      * which builds a cursor resource against CURRENT_MODE and shares
@@ -9480,6 +9482,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_ActiveScanoutHeight = 0;
     KeInitializeSpinLock(&m_ActiveScanoutLock);
     m_ActiveScanoutGuestBlob = FALSE;
+    m_ActiveScanoutNative = FALSE;
     m_ScanoutRefreshRequested = 0;
     m_pCursorBuf = NULL;
     m_PendingWorks = 0;
@@ -10319,6 +10322,22 @@ void VioGpuAdapter::Reconcile2DScanoutAfterResetLocked(void)
     }
 }
 
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::FlushNativeScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height)
+{
+    PAGED_CODE();
+
+    if (resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || resourceId == MAXUINT || width == 0 || height == 0 ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    if (static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0)) == 0)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    return m_CtrlQueue.FlushResourceSynchronous(resourceId, width, height, 0, 0, TRUE);
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Flush2DResource(_In_ UINT resourceId,
                                                           _In_ UINT width,
                                                           _In_ UINT height,
@@ -10578,13 +10597,19 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
                                                        _In_ UINT width,
                                                        _In_ UINT height,
                                                        _Out_ UINT *previousResourceId,
-                                                       _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout)
+                                                       _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout,
+                                                       _In_ BOOLEAN nativeResource)
 {
+    /* A native scanout names the owning context's own allocation, which lives
+     * above the 2D id range and always carries a blob layout. */
+    const BOOLEAN resourceIdValid = resourceId == 0 ? !nativeResource && width == 0 && height == 0
+                                    : nativeResource
+                                        ? resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START && resourceId != MAXUINT &&
+                                              layout != NULL && width != 0 && height != 0
+                                        : resourceId < VIOGPU_NATIVE_RESOURCE_ID_START && width != 0 && height != 0;
     if (previousResourceId == NULL || scanoutId >= VIRTIO_GPU_MAX_SCANOUTS ||
         (layout != NULL && (resourceId == 0 || layout->Width != width || layout->Height != height)) ||
-        (resourceId == 0 ? width != 0 || height != 0
-                         : resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || width == 0 || height == 0) ||
-        KeGetCurrentIrql() != PASSIVE_LEVEL)
+        !resourceIdValid || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -10615,7 +10640,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
     m_PublishedScanoutResourceId = 0;
     VIOGPU_HOST_CONTEXT_RESULT result = layout != NULL ? m_CtrlQueue.SetScanoutBlobSynchronous(scanoutId,
                                                                                                resourceId,
-                                                                                               layout)
+                                                                                               layout,
+                                                                                               nativeResource)
                                                        : m_CtrlQueue.SetScanoutSynchronous(scanoutId,
                                                                                            resourceId,
                                                                                            width,
@@ -10624,7 +10650,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
                                                                                            0);
     if (result == VioGpuHostContextConfirmed)
     {
-        RecordActiveScanout(resourceId, width, height, layout != NULL);
+        RecordActiveScanout(resourceId, width, height, layout != NULL, nativeResource);
         m_2DScanoutResourceId = resourceId;
         m_2DScanoutResetGeneration = resourceId == 0 ? 0 : operationGeneration;
     }
@@ -14950,12 +14976,17 @@ void VioGpuAdapter::ThreadWork(_In_ PVOID Context)
     pdev->ThreadWorkRoutine();
 }
 
-VOID VioGpuAdapter::RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height, _In_ BOOLEAN guestBlob)
+VOID VioGpuAdapter::RecordActiveScanout(_In_ UINT resourceId,
+                                        _In_ UINT width,
+                                        _In_ UINT height,
+                                        _In_ BOOLEAN guestBlob,
+                                        _In_ BOOLEAN nativeResource)
 {
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_ActiveScanoutLock, &oldIrql);
     InterlockedExchange(&m_ExplicitPresentResourceId, 0);
     m_ActiveScanoutGuestBlob = guestBlob;
+    m_ActiveScanoutNative = nativeResource;
     InterlockedExchange(&m_ActiveScanoutWidth, static_cast<LONG>(width));
     InterlockedExchange(&m_ActiveScanoutHeight, static_cast<LONG>(height));
     InterlockedExchange(&m_ActiveScanoutResourceId, static_cast<LONG>(resourceId));
@@ -15015,6 +15046,7 @@ void VioGpuAdapter::RefreshActiveScanout(void)
     const UINT width = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutWidth, 0, 0));
     const UINT height = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutHeight, 0, 0));
     const BOOLEAN guestBlob = m_ActiveScanoutGuestBlob;
+    const BOOLEAN nativeScanout = m_ActiveScanoutNative;
     KeReleaseSpinLock(&m_ActiveScanoutLock, oldIrql);
     if (resourceId == 0 || width == 0 || height == 0 || m_pVioGpuDod == NULL || !m_pVioGpuDod->IsDriverActive() ||
         static_cast<UINT>(InterlockedCompareExchange(&m_ExplicitPresentResourceId, 0, 0)) == resourceId)
@@ -15024,8 +15056,8 @@ void VioGpuAdapter::RefreshActiveScanout(void)
 
     /* The compositor writes the primary in place and never tells us again, so
      * move what is there now. Both commands are queued, not waited on. */
-    if ((guestBlob || m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0)) &&
-        m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0))
+    if ((guestBlob || nativeScanout || m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0)) &&
+        m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0, nativeScanout))
     {
         m_pVioGpuDod->CountDisplayEvent(48);
     }

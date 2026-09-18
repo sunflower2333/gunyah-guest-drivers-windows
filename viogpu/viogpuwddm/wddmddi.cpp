@@ -4368,6 +4368,30 @@ VOID RemoveNativeImportsForContext(_In_ VIOGPU_WDDM_CONTEXT *context)
     ReleaseNativeShareRegistry();
 }
 
+/* Resolve a zero-copy share key to the native resource holding its pixels. */
+static BOOLEAN LookupNativeShareResource(_In_ VioGpuDod *adapter,
+                                         _In_ ULONGLONG shareKey,
+                                         _Out_ UINT *resourceId,
+                                         _Out_ ULONGLONG *size)
+{
+    PAGED_CODE();
+
+    *resourceId = 0;
+    *size = 0;
+    if (adapter == NULL || shareKey == 0 || !AcquireNativeShareRegistry(FALSE))
+    {
+        return FALSE;
+    }
+    VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = FindNativeShareByKeyLocked(adapter, shareKey);
+    if (share != NULL)
+    {
+        *resourceId = share->ResourceId;
+        *size = share->Size;
+    }
+    ReleaseNativeShareRegistry();
+    return share != NULL;
+}
+
 /* A shared native allocation is being destroyed: its pages go back to VidMm,
  * so every other context must lose the mapping first, and the key dies. */
 VOID RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
@@ -4450,6 +4474,33 @@ static VOID FindNativeAllocationRangeByIova(_In_ VIOGPU_WDDM_CONTEXT *context,
     KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
 }
 
+/* Runs under the context's binding spin lock, so it must not be paged. */
+__declspec(code_seg(".text"))
+static VOID FindNativeAllocationRangeByResourceId(_In_ VIOGPU_WDDM_CONTEXT *context,
+                                                  _In_ UINT resourceId,
+                                                  _In_ UINT contextId,
+                                                  _Out_ ULONGLONG *iova,
+                                                  _Out_ ULONGLONG *length)
+{
+    *iova = 0;
+    *length = 0;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->NativeContext.BindingLock, &oldIrql);
+    for (PLIST_ENTRY link = context->NativeContext.AllocationRanges.Flink;
+         link != &context->NativeContext.AllocationRanges;
+         link = link->Flink)
+    {
+        VIOGPU_WDDM_ALLOCATION_RANGE *range = CONTAINING_RECORD(link, VIOGPU_WDDM_ALLOCATION_RANGE, Link);
+        if (range->Linked && range->ResourceId == resourceId && range->ContextId == contextId)
+        {
+            *iova = range->Iova;
+            *length = range->Length;
+            break;
+        }
+    }
+    KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
+}
+
 static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
                                         _In_ VIOGPU_WDDM_CONTEXT *context,
                                         _In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
@@ -4516,6 +4567,24 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
     *shareSize = share != NULL ? share->Size : 0;
     *ownerContextId = share != NULL ? share->OwnerContextId : 0;
     *resourceId = share != NULL ? share->ResourceId : 0;
+    if (share != NULL && share->Size == request->Size && share->OwnerContextId == snapshot->ContextId &&
+        (request->Flags & VIOGPU_WDDM_ESCAPE_FLAGS_ALIAS_OWNER) != 0)
+    {
+        /* This context owns the share: it is already mapped here, so map
+         * nothing and answer with the address it is mapped at. There is no
+         * import to record and nothing for RELEASE_NATIVE to undo. */
+        ULONGLONG ownerIova = 0;
+        ULONGLONG ownerLength = 0;
+        FindNativeAllocationRangeByResourceId(context, share->ResourceId, snapshot->ContextId, &ownerIova, &ownerLength);
+        if (ownerIova == 0 || ownerLength < request->Size)
+        {
+            *stage = 39;
+            return STATUS_INVALID_PARAMETER;
+        }
+        request->Iova = ownerIova;
+        request->Size = ownerLength;
+        return STATUS_SUCCESS;
+    }
     if (share == NULL || share->Size != request->Size || share->OwnerContextId == snapshot->ContextId)
     {
         *stage = share == NULL ? 31 : share->Size != request->Size ? 32 : 33;
@@ -4638,7 +4707,10 @@ static NTSTATUS HandleNativeShareEscapeLocked(_In_ VioGpuDod *adapter,
         *stage = 3;
         return STATUS_GRAPHICS_DRIVER_MISMATCH;
     }
-    BOOLEAN valid = request->Flags == VIOGPU_WDDM_ESCAPE_FLAGS_NONE && request->ExpectedResetGeneration != 0 &&
+    const VIOGPU_WDDM_UINT32 allowedFlags = request->Opcode == VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE
+                                               ? VIOGPU_WDDM_ESCAPE_FLAGS_ALIAS_OWNER
+                                               : VIOGPU_WDDM_ESCAPE_FLAGS_NONE;
+    BOOLEAN valid = (request->Flags & ~allowedFlags) == 0 && request->ExpectedResetGeneration != 0 &&
                     request->Reserved == 0 && request->Reserved2[0] == 0 && request->Reserved2[1] == 0 &&
                     request->Reserved2[2] == 0 && request->ContextId == 0 && request->Iova != 0 &&
                     (request->Iova & (PAGE_SIZE - 1)) == 0;
@@ -5977,6 +6049,19 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
     const BOOLEAN resourceShareValid = createAllocation != NULL &&
                                        IsValidResourceSharePrivateData(createAllocation->pPrivateDriverData,
                                                                        createAllocation->PrivateDriverDataSize);
+    VIOGPU_WDDM_RESOURCE_SHARE resourceShare = {};
+    if (resourceShareValid && createAllocation->pPrivateDriverData != NULL &&
+        createAllocation->PrivateDriverDataSize == sizeof(resourceShare))
+    {
+        __try
+        {
+            RtlCopyMemory(&resourceShare, createAllocation->pPrivateDriverData, sizeof(resourceShare));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            RtlZeroMemory(&resourceShare, sizeof(resourceShare));
+        }
+    }
     if (adapter == NULL || createAllocation == NULL || createAllocation->NumAllocations == 0 ||
         createAllocation->pAllocationInfo == NULL || (createAllocation->Flags.Value & ~1U) != 0 ||
         !resourceShareValid)
@@ -6139,6 +6224,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
         allocation->Resource2DState = VioGpu2DResourceNone;
         allocation->Resource2DResetGeneration = 0;
         allocation->HostState = VioGpuWddmAllocationHostNone;
+        allocation->ShareKey = resourceShare.ShareKey;
+        allocation->ShareStride = resourceShare.Stride;
         allocation->Pitch = privateData.Pitch;
         allocation->Width = privateData.Width;
         allocation->Height = privateData.Height;
@@ -11507,8 +11594,34 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
                                                            scanoutFormat,
                                                            allocation->Pitch,
                                                            allocation->BackingSize};
+        /* Zero-copy scanout: the compositor rendered this frame into its own
+         * native texture and shared the key with us, so scan that allocation
+         * out instead of the copy it would otherwise publish here. */
+        UINT nativeResourceId = 0;
+        ULONGLONG nativeSize = 0;
+        UINT nativeFormat = 0;
+        const BOOLEAN nativeScanout = adapter->IsZeroCopyScanoutEnabled() && allocation->ShareKey != 0 &&
+                                      allocation->ShareStride >= allocation->Width * 4 &&
+                                      ResolveStandard2DFormat(allocation->Format, &nativeFormat) &&
+                                      LookupNativeShareResource(adapter, allocation->ShareKey, &nativeResourceId,
+                                                                &nativeSize) &&
+                                      nativeResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START &&
+                                      nativeSize >= (ULONGLONG)allocation->ShareStride * allocation->Height;
+        const VIOGPU_PRIMARY_SCANOUT_LAYOUT nativeLayout = {allocation->Width,
+                                                            allocation->Height,
+                                                            nativeFormat,
+                                                            allocation->ShareStride,
+                                                            (SIZE_T)nativeSize};
+        const UINT scanoutResourceId = nativeScanout ? nativeResourceId : allocation->ResourceId;
         VIOGPU_HOST_CONTEXT_RESULT result = !layoutValid         ? VioGpuHostContextNotSubmitted
                                             : keepPublishedFrame ? VioGpuHostContextConfirmed
+                                            : nativeScanout      ? adapter->Set2DScanout(0,
+                                                                                         nativeResourceId,
+                                                                                         allocation->Width,
+                                                                                         allocation->Height,
+                                                                                         &previousResourceId,
+                                                                                         &nativeLayout,
+                                                                                         TRUE)
                                                                  : adapter->Set2DScanout(0,
                                                                                          allocation->ResourceId,
                                                                                          allocation->Width,
@@ -11532,6 +11645,9 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
              * stuck at 1 against a scanout that stayed black.  Publish the
              * newly bound primary. */
             VIOGPU_HOST_CONTEXT_RESULT flush = keepPublishedFrame ? VioGpuHostContextConfirmed
+                                               : nativeScanout    ? adapter->FlushNativeScanout(nativeResourceId,
+                                                                                                allocation->Width,
+                                                                                                allocation->Height)
                                                                   : adapter->Flush2DResource(allocation->ResourceId,
                                                                                              allocation->Width,
                                                                                              allocation->Height,
@@ -11541,9 +11657,9 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
              * programs its primary once draws into it in place. A flipped
              * primary is final until the next flip replaces it. An empty one
              * (never bound over a published frame) keeps the refresh. */
-            if (!modeChange && primaryNonZero != 0 && flush == VioGpuHostContextConfirmed)
+            if (!modeChange && (primaryNonZero != 0 || nativeScanout) && flush == VioGpuHostContextConfirmed)
             {
-                adapter->LatchFlippedScanout(allocation->ResourceId, allocation->Width, allocation->Height);
+                adapter->LatchFlippedScanout(scanoutResourceId, allocation->Width, allocation->Height);
             }
 #if defined(VIOGPU_NATIVE_CONTEXT)
             adapter->CountDisplayEvent(18);

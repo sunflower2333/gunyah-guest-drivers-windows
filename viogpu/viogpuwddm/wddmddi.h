@@ -195,6 +195,11 @@ struct VIOGPU_WDDM_ALLOCATION
     UINT Flags;
     UINT RefreshRateNumerator;
     UINT RefreshRateDenominator;
+    /* Zero-copy share key of the creator's native texture (0 when the resource
+     * carries no share). The pixels a scanout needs live in that native
+     * allocation, not in this one. */
+    ULONGLONG ShareKey;
+    UINT ShareStride;
 };
 
 enum VIOGPU_WDDM_PAGING_TRANSACTION_STATE : LONG

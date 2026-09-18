@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58533",
+        "$minor = 58534",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58533",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58534",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -8274,10 +8274,14 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     for fragment in (
         "InterlockedExchange(&m_ScanoutRefreshRequested,0)==0",
         "m_CtrlQueue.TransferToHost2D(resourceId,0,width,height,0,0)",
-        "m_CtrlQueue.ResFlush(resourceId,width,height,0,0)",
+        "m_CtrlQueue.ResFlush(resourceId,width,height,0,0,nativeScanout)",
     ):
         if refresh.count(fragment) != 1:
             fail(f"the periodic scanout refresh must move the bound surface: {fragment}")
+    # A native scanout is written by the owning context's GPU work, so the
+    # refresh flushes it without a transfer.
+    if "guestBlob||nativeScanout||m_CtrlQueue.TransferToHost2D(" not in refresh:
+        fail("the periodic scanout refresh must skip the transfer for a guest blob or a native scanout")
     if canonical_code(function_body("VioGpuDod::DeliverCrtcVsync", VIOGPU_SOURCE)).count(
             "adapter->RequestScanoutRefresh();") != 1:
         fail("the scanout refresh must run on the display's own cadence")

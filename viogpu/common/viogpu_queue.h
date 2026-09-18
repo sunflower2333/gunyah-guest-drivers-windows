@@ -532,9 +532,13 @@ class CtrlQueue : public VioGpuQueue
                                                           ULONGLONG size,
                                                           const GPU_MEM_ENTRY *entries,
                                                           UINT entry_count);
+    /* nativeResource scans out a native context's own allocation: the pixels a
+     * compositor rendered live there, so nothing has to be copied into a 2D
+     * resource first. */
     VIOGPU_HOST_CONTEXT_RESULT SetScanoutBlobSynchronous(UINT scanout_id,
                                                          UINT resource_id,
-                                                         const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout);
+                                                         const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout,
+                                                         BOOLEAN nativeResource = FALSE);
     VIOGPU_HOST_CONTEXT_RESULT AttachBackingSynchronous(UINT resource_id,
                                                         const GPU_MEM_ENTRY *entries,
                                                         UINT entry_count);
@@ -555,7 +559,8 @@ class CtrlQueue : public VioGpuQueue
                                                            UINT height,
                                                            UINT x,
                                                            UINT y);
-    VIOGPU_HOST_CONTEXT_RESULT FlushResourceSynchronous(UINT resource_id, UINT width, UINT height, UINT x, UINT y);
+    VIOGPU_HOST_CONTEXT_RESULT FlushResourceSynchronous(UINT resource_id, UINT width, UINT height, UINT x, UINT y,
+                                                        BOOLEAN nativeResource = FALSE);
     BOOLEAN EnableSynchronousRequests(void);
     BOOLEAN IsSynchronousRequestsHealthy(void);
     NTSTATUS QuiesceSynchronousRequests(void);
@@ -575,7 +580,7 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN CreateResource(UINT res_id, UINT format, UINT width, UINT height);
     BOOLEAN DestroyResource(UINT id);
     BOOLEAN SetScanout(UINT scan_id, UINT res_id, UINT width, UINT height, UINT x, UINT y);
-    BOOLEAN ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y);
+    BOOLEAN ResFlush(UINT res_id, UINT width, UINT height, UINT x, UINT y, BOOLEAN nativeResource = FALSE);
     BOOLEAN TransferToHost2D(UINT res_id, ULONG offset, UINT width, UINT height, UINT x, UINT y);
     BOOLEAN AttachBacking(UINT res_id, PGPU_MEM_ENTRY ents, UINT nents);
     BOOLEAN DetachBacking(UINT id);
