@@ -42,6 +42,7 @@ jobs:
         run: |
           python viogpu/tests/native-share-release/run.py
           python viogpu/tests/native-share-release/import_failure_test.py
+          python viogpu/tests/mmio-flip/refresh_lifetime_test.py
 
   opencl-icd:
     uses: ./.github/workflows/opencl-system-icd.yml

@@ -15412,6 +15412,28 @@ void VioGpuAdapter::RefreshActiveScanout(void)
         return;
     }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    // Keep reset/transport teardown out, then serialize snapshot and enqueue
+    // with scanout replacement/detach. The state spin lock alone only protects
+    // the copied ID, not the resource that a later command will reference.
+    if (m_pVioGpuDod == NULL || !m_pVioGpuDod->AcquireNativeSubmissionOperation())
+    {
+        return;
+    }
+    if (WaitScanoutLifecycle() != STATUS_SUCCESS)
+    {
+        m_pVioGpuDod->ReleaseNativeSubmissionOperation();
+        return;
+    }
+    Reconcile2DScanoutAfterResetLocked();
+    if (m_2DScanoutUnknown)
+    {
+        KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+        m_pVioGpuDod->ReleaseNativeSubmissionOperation();
+        return;
+    }
+#endif
+
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_ActiveScanoutLock, &oldIrql);
     const UINT resourceId = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutResourceId, 0, 0));
@@ -15423,6 +15445,10 @@ void VioGpuAdapter::RefreshActiveScanout(void)
     if (resourceId == 0 || width == 0 || height == 0 || m_pVioGpuDod == NULL || !m_pVioGpuDod->IsDriverActive() ||
         static_cast<UINT>(InterlockedCompareExchange(&m_ExplicitPresentResourceId, 0, 0)) == resourceId)
     {
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+        m_pVioGpuDod->ReleaseNativeSubmissionOperation();
+#endif
         return;
     }
 
@@ -15433,6 +15459,10 @@ void VioGpuAdapter::RefreshActiveScanout(void)
     {
         m_pVioGpuDod->CountDisplayEvent(48);
     }
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    KeReleaseMutex(&m_2DScanoutMutex, FALSE);
+    m_pVioGpuDod->ReleaseNativeSubmissionOperation();
+#endif
 }
 
 void VioGpuAdapter::ThreadWorkRoutine(void)
