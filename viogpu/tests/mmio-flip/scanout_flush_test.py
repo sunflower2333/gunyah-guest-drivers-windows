@@ -14,6 +14,7 @@ body = source[start:end]
 PREFIX = r'''
 #include <cstdint>
 #include <cstdio>
+#include <cassert>
 #define _In_
 #define VIOGPU_NATIVE_CONTEXT 1
 #define DXGKDDI_INTERFACE_VERSION 0
@@ -30,6 +31,7 @@ constexpr int VioGpu2DResourceGuestBlobBackingAttached=2;
 enum VIOGPU_HOST_CONTEXT_RESULT { VioGpuHostContextConfirmed,
     VioGpuHostContextNotSubmitted, VioGpuHostContextRejected, VioGpuHostContextUnknown };
 struct VIOGPU_PRIMARY_SCANOUT_LAYOUT { UINT Width,Height,Format,Pitch; SIZE_T Size; };
+static int shareHeld=0;
 struct VioGpuDod {
     bool native=false, hasFrame=false;
     int binds=0, flushes=0, latches=0, addresses=0;
@@ -39,12 +41,13 @@ struct VioGpuDod {
     void CountDisplayEvent(int) {}
     void RecordDisplayValue(int,LONG) {}
     void SetCrtcVsyncPrimaryAddress(ULONGLONG) { ++addresses; }
-    void LatchFlippedScanout(UINT,UINT,UINT) { ++latches; }
+    void LatchFlippedScanout(UINT,UINT,UINT) { if(native)assert(shareHeld==1); ++latches; }
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(UINT,UINT,UINT,UINT,UINT*,
                                            const VIOGPU_PRIMARY_SCANOUT_LAYOUT*,BOOLEAN=false) {
+        if(native) { assert(shareHeld==1); }
         ++binds; return bind;
     }
-    VIOGPU_HOST_CONTEXT_RESULT FlushNativeScanout(UINT,UINT,UINT) { ++flushes; return flush; }
+    VIOGPU_HOST_CONTEXT_RESULT FlushNativeScanout(UINT,UINT,UINT) { assert(shareHeld==1); ++flushes; return flush; }
     VIOGPU_HOST_CONTEXT_RESULT Flush2DResource(UINT,UINT,UINT,int*,ULONGLONG*) {
         ++flushes; return flush;
     }
@@ -65,10 +68,12 @@ bool IsStandardPrimaryAllocation(VIOGPU_WDDM_ALLOCATION*) { return true; }
 bool EnsureStandard2DAllocationBacking(VIOGPU_WDDM_ALLOCATION*) { return true; }
 bool VioGpuResourceBackingAttached(int) { return true; }
 bool ResolveStandard2DFormat(int,UINT *out) { *out=1; return true; }
-bool LookupNativeShareResource(VioGpuDod*,ULONGLONG,UINT *id,ULONGLONG *size) {
+bool AcquireNativeScanoutShare(VioGpuDod*,ULONGLONG,UINT *id,ULONGLONG *size) {
+    assert(!shareHeld); ++shareHeld;
     *id=VIOGPU_NATIVE_RESOURCE_ID_START; *size=4096; return true;
 }
-void KeReleaseMutex(int*,bool) { ++releases; }
+void ReleaseNativeShareRegistry() { assert(shareHeld==1); --shareHeld; }
+void KeReleaseMutex(int*,bool) { assert(!shareHeld); ++releases; }
 '''
 SUFFIX = r'''
 int main() {
@@ -107,6 +112,11 @@ int main() {
     releases=0;
     if (BindStandardPrimaryScanout(&adapter,&allocation,4096,true)!=STATUS_SUCCESS ||
         adapter.binds || adapter.flushes || adapter.addresses!=1 || releases!=1) ++failures;
+    ++cases;
+    // The same black CPU shadow must not suppress a live native texture.
+    adapter.native=true;adapter.addresses=0;releases=0;
+    if (BindStandardPrimaryScanout(&adapter,&allocation,4096,true)!=STATUS_SUCCESS ||
+        adapter.binds!=1 || adapter.flushes!=1 || adapter.addresses!=1 || releases!=1 || shareHeld) ++failures;
     printf("cases=%d failures=%d\n",++cases,failures);
     return failures?1:0;
 }
@@ -130,3 +140,6 @@ with tempfile.TemporaryDirectory(prefix="viogpu-scanout-flush-") as tmp:
     if run(body.replace("result = flush;", "/* lost flush outcome */"), "negative", directory) == 0:
         raise SystemExit("Lost-flush-status negative was not detected")
     print("PASS: production publication cases and lost-status negative control")
+    if run(body.replace('!nativeScanout && !guestBlob', '!guestBlob'), "native-black-shadow", directory) == 0:
+        raise SystemExit("Native black CPU shadow negative was not detected")
+    print("PASS: native publication is independent of the unused CPU shadow")

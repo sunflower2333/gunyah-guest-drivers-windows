@@ -4479,6 +4479,7 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
     UINT ResourceId;
     UINT OwnerContextId;
     ULONGLONG Size;
+    BOOLEAN ScanoutReferenced;
 };
 
 struct VIOGPU_WDDM_NATIVE_IMPORT_ENTRY
@@ -4631,8 +4632,10 @@ NTSTATUS RemoveNativeImportsForContext(_In_ VIOGPU_WDDM_CONTEXT *context)
     return STATUS_SUCCESS;
 }
 
-/* Resolve a zero-copy share key to the native resource holding its pixels. */
-static BOOLEAN LookupNativeShareResource(_In_ VioGpuDod *adapter,
+/* Resolve a zero-copy share key and retain the registry through bind/flush/latch.
+ * On success the caller owns the registry lock. Revocation must
+ * subsequently confirm scanout detach before releasing the exporter pages. */
+static BOOLEAN AcquireNativeScanoutShare(_In_ VioGpuDod *adapter,
                                          _In_ ULONGLONG shareKey,
                                          _Out_ UINT *resourceId,
                                          _Out_ ULONGLONG *size)
@@ -4650,9 +4653,11 @@ static BOOLEAN LookupNativeShareResource(_In_ VioGpuDod *adapter,
     {
         *resourceId = share->ResourceId;
         *size = share->Size;
+        share->ScanoutReferenced = TRUE;
+        return TRUE;
     }
     ReleaseNativeShareRegistry();
-    return share != NULL;
+    return FALSE;
 }
 
 /* A shared native allocation is being destroyed: its pages go back to VidMm,
@@ -4677,6 +4682,17 @@ NTSTATUS RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
     }
     if (share != NULL)
     {
+        if (share->ScanoutReferenced)
+        {
+            BOOLEAN detached = FALSE;
+            VIOGPU_HOST_CONTEXT_RESULT result = adapter->Detach2DScanoutResource(resourceId, &detached, TRUE);
+            if (result != VioGpuHostContextConfirmed || !detached)
+            {
+                ReleaseNativeShareRegistry();
+                return STATUS_DEVICE_BUSY;
+            }
+            share->ScanoutReferenced = FALSE;
+        }
         PLIST_ENTRY link = g_VioGpuNativeImports.Flink;
         while (link != &g_VioGpuNativeImports)
         {
@@ -11988,7 +12004,6 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
         }
         /* Guest-backed primaries receive scheduled writes into these pages.
          * Bind even an initially black buffer so later flushes reach the target. */
-        const BOOLEAN keepPublishedFrame = !guestBlob && primaryNonZero == 0 && adapter->HasPublishedFrame();
         UINT scanoutFormat = 0;
         const BOOLEAN layoutValid = !guestBlob || ResolveStandard2DFormat(allocation->Format, &scanoutFormat);
         const VIOGPU_PRIMARY_SCANOUT_LAYOUT guestLayout = {allocation->Width,
@@ -12002,13 +12017,17 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
         UINT nativeResourceId = 0;
         ULONGLONG nativeSize = 0;
         UINT nativeFormat = 0;
-        const BOOLEAN nativeScanout = adapter->IsZeroCopyScanoutEnabled() && allocation->ShareKey != 0 &&
+        const BOOLEAN nativeShareHeld = adapter->IsZeroCopyScanoutEnabled() && allocation->ShareKey != 0 &&
                                       allocation->ShareStride >= allocation->Width * 4 &&
                                       ResolveStandard2DFormat(allocation->Format, &nativeFormat) &&
-                                      LookupNativeShareResource(adapter, allocation->ShareKey, &nativeResourceId,
-                                                                &nativeSize) &&
+                                      AcquireNativeScanoutShare(adapter, allocation->ShareKey, &nativeResourceId,
+                                                               &nativeSize);
+        const BOOLEAN nativeScanout = nativeShareHeld &&
                                       nativeResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START &&
                                       nativeSize >= (ULONGLONG)allocation->ShareStride * allocation->Height;
+        // A native texture is authoritative even when its unused CPU shadow
+        // is black. Apply the old empty-primary fallback only to copied pixels.
+        const BOOLEAN keepPublishedFrame = !nativeScanout && !guestBlob && primaryNonZero == 0 && adapter->HasPublishedFrame();
         const VIOGPU_PRIMARY_SCANOUT_LAYOUT nativeLayout = {allocation->Width,
                                                             allocation->Height,
                                                             nativeFormat,
@@ -12081,6 +12100,10 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
 #else
             UNREFERENCED_PARAMETER(flush);
 #endif
+        }
+        if (nativeShareHeld)
+        {
+            ReleaseNativeShareRegistry();
         }
         status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
     }

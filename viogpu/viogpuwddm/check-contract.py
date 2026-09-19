@@ -5112,7 +5112,7 @@ def check_wddm_standard_primary_scanout() -> None:
     for fragment in (
         "*detached=FALSE;",
         "AcquireNativeSubmissionOperation()",
-        "adapter->Detach2DScanoutResource(resourceId,detached)",
+        "adapter->Detach2DScanoutResource(resourceId,detached,nativeResource)",
         "ReleaseNativeSubmissionOperation();",
     ):
         if fragment not in detach_dod:
@@ -5137,6 +5137,31 @@ def check_wddm_standard_primary_scanout() -> None:
 
     set_ddi = canonical_code(function_body("VioGpuWddmSetVidPnSourceAddress", WDDM_DDI_CODE))
     bind_primary = canonical_code(function_body("BindStandardPrimaryScanout", WDDM_DDI_CODE))
+    require_order(
+        bind_primary,
+        ("AcquireNativeScanoutShare(adapter,allocation->ShareKey,&nativeResourceId,&nativeSize)",
+         "adapter->Set2DScanout(0,nativeResourceId,",
+         "adapter->FlushNativeScanout(nativeResourceId,",
+         "adapter->LatchFlippedScanout(scanoutResourceId,",
+         "if(nativeShareHeld){ReleaseNativeShareRegistry();}"),
+        "native scanout must hold the share registry through bind, flush and latch",
+    )
+    protected_flip = bind_primary.split("AcquireNativeScanoutShare(", 1)[1].split("ReleaseNativeShareRegistry();", 1)[0]
+    if "return" in protected_flip:
+        fail("native share ownership cannot leak through an early bind return")
+    if "keepPublishedFrame=!nativeScanout&&!guestBlob" not in bind_primary:
+        fail("native publication must not be suppressed by an empty CPU shadow")
+    share_revoke = canonical_code(function_body("RevokeNativeShares", WDDM_DDI_CODE))
+    require_order(
+        share_revoke,
+        ("if(share->ScanoutReferenced)",
+         "adapter->Detach2DScanoutResource(resourceId,&detached,TRUE)",
+         "if(result!=VioGpuHostContextConfirmed||!detached)",
+         "returnSTATUS_DEVICE_BUSY;",
+         "share->ScanoutReferenced=FALSE;",
+         "RemoveEntryList(&share->Link);"),
+        "native exporter backing must survive unconfirmed scanout detach",
+    )
     for fragment in (
         "KeGetCurrentIrql()!=PASSIVE_LEVEL",
         "setVidPnSourceAddress->VidPnSourceId!=0",

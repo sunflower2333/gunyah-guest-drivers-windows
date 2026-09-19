@@ -28,6 +28,11 @@ struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT;
 struct VioGpuDod {
  bool admitted=true; int acquired=0,released=0,calls=0;
  bool retired=false;
+ bool detached=true; int detachCalls=0;
+ VIOGPU_HOST_CONTEXT_RESULT detachResult=VioGpuHostContextConfirmed;
+ VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(unsigned id,bool *out,bool native) {
+  assert(id==99 && native);++detachCalls;*out=detached;return detachResult;
+ }
  int resets=0;
  void RequestHardwareResetAtAnyIrql() { ++resets; }
  bool IsNativeContextResetRetired(unsigned generation) { return retired && generation==7; }
@@ -119,13 +124,15 @@ prefix = prefix.replace('calls=0;', 'calls=0,failOnCall=0;').replace(
     '++calls; return result;',
     '++calls; return calls==failOnCall?VioGpuHostContextUnknown:result;')
 revoke_fixture = prefix + r'''
-using UINT=unsigned;
+using UINT=unsigned;using BOOLEAN=bool;
+constexpr bool TRUE=true;
 constexpr int STATUS_DEVICE_BUSY=-3, VIOGPU_NATIVE_RESOURCE_ID_START=90;
 constexpr int VIOGPU_WDDM_CONTEXT_SIGNATURE=123;
 #define PAGED_CODE() ((void)0)
 #define FALSE false
 struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY {
  LIST_ENTRY Link; VioGpuDod *Adapter; unsigned Key,ResourceId,Size;
+ bool ScanoutReferenced=false;
 };
 LIST_ENTRY g_VioGpuNativeShares;
 bool registry=true,rundown=true,snapshotOK=true;
@@ -222,6 +229,69 @@ with tempfile.TemporaryDirectory(prefix='native-share-revoke-') as tmp:
         else:
             assert result.returncode != 0 and 'STATUS_DEVICE_BUSY' in result.stderr, result.stderr
             print('negative control: unconfirmed exporter revocation detected')
+
+lookup_start = source.index('static BOOLEAN AcquireNativeScanoutShare(')
+lookup_end = source.index('/* A shared native allocation', lookup_start)
+lookup = source[lookup_start:lookup_end]
+scanout_fixture = revoke_fixture.split('FUNCTION')[0] + r'''
+using ULONGLONG=unsigned long long;
+VIOGPU_WDDM_NATIVE_SHARE_ENTRY *FindNativeShareByKeyLocked(VioGpuDod *adapter,ULONGLONG key) {
+ assert(registryHeld==1);
+ for(auto *link=g_VioGpuNativeShares.Flink;link!=&g_VioGpuNativeShares;link=link->Flink) {
+  auto *share=CONTAINING_RECORD(link,VIOGPU_WDDM_NATIVE_SHARE_ENTRY,Link);
+  if(share->Adapter==adapter&&share->Key==key)return share;
+ }
+ return nullptr;
+}
+LOOKUP
+FUNCTION
+int main() {
+ int cases=0;
+ for(int failure=0;failure<3;++failure) {
+  VioGpuDod adapter;
+  auto *share=new VIOGPU_WDDM_NATIVE_SHARE_ENTRY{{},&adapter,11,99,4096};
+  g_VioGpuNativeShares={&share->Link,&share->Link};
+  share->Link={&g_VioGpuNativeShares,&g_VioGpuNativeShares};
+  g_VioGpuNativeImports={&g_VioGpuNativeImports,&g_VioGpuNativeImports};
+  UINT id=0;ULONGLONG size=0;
+  assert(!AcquireNativeScanoutShare(&adapter,12,&id,&size)&&registryHeld==0);++cases;
+  assert(AcquireNativeScanoutShare(&adapter,11,&id,&size));
+  assert(registryHeld==1&&id==99&&size==4096&&share->ScanoutReferenced);++cases;
+  // The real flip caller releases only after bind/flush/latch.
+  ReleaseNativeShareRegistry();
+  if(failure==0)adapter.detachResult=VioGpuHostContextUnknown;
+  if(failure==1)adapter.detachResult=VioGpuHostContextNotSubmitted;
+  if(failure==2)adapter.detached=false;
+  for(int attempt=0;attempt<2;++attempt) {
+   assert(RevokeNativeShares(&adapter,99)==STATUS_DEVICE_BUSY);
+   assert(registryHeld==0&&g_VioGpuNativeShares.Flink==&share->Link&&share->ScanoutReferenced);++cases;
+  }
+  adapter.detachResult=VioGpuHostContextConfirmed;adapter.detached=true;
+  assert(RevokeNativeShares(&adapter,99)==0&&registryHeld==0);
+  assert(adapter.detachCalls==3&&g_VioGpuNativeShares.Flink==&g_VioGpuNativeShares);++cases;
+ }
+ printf("production native scanout share ownership: %d cases PASS\n",cases);
+}
+'''
+with tempfile.TemporaryDirectory(prefix='native-scanout-share-') as tmp:
+    tmp = Path(tmp)
+    for name, lookup_code, revoke_code in [
+        ('production', lookup, revoke),
+        ('early-unlock', lookup.replace('return TRUE;', 'ReleaseNativeShareRegistry(); return TRUE;'), revoke),
+        ('skip-detach', lookup, revoke.replace('if (share->ScanoutReferenced)', 'if (false)')),
+    ]:
+        cpp, exe = tmp / (name + '.cpp'), tmp / name
+        cpp.write_text(scanout_fixture.replace('LOOKUP', lookup_code).replace('FUNCTION', revoke_code))
+        subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                        '-fsanitize=address,undefined', str(cpp), '-o', str(exe)], check=True)
+        result = subprocess.run([str(exe)], capture_output=True, text=True)
+        if name == 'production':
+            assert result.returncode == 0, result.stderr
+            print(result.stdout.strip())
+        else:
+            expected = 'registryHeld==1' if name == 'early-unlock' else 'STATUS_DEVICE_BUSY'
+            assert result.returncode != 0 and expected in result.stderr, result.stderr
+            print('negative control detected: ' + name)
 
 cleanup_start = source.index('NTSTATUS RemoveNativeImportsForContext(')
 cleanup_end = source.index('/* Resolve a zero-copy share key', cleanup_start)

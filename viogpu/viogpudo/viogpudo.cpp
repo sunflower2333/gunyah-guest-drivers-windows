@@ -2642,7 +2642,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
     return result;
 }
 
-VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached)
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached,
+                                                            _In_ BOOLEAN nativeResource)
 {
     if (detached == NULL)
     {
@@ -2655,7 +2656,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Detach2DScanoutResource(_In_ UINT resource
     }
 
     VioGpuAdapter *adapter = m_pHWDevice;
-    VIOGPU_HOST_CONTEXT_RESULT result = adapter != NULL ? adapter->Detach2DScanoutResource(resourceId, detached)
+    VIOGPU_HOST_CONTEXT_RESULT result = adapter != NULL ? adapter->Detach2DScanoutResource(resourceId, detached, nativeResource)
                                                         : VioGpuHostContextNotSubmitted;
     ReleaseNativeSubmissionOperation();
     return result;
@@ -10947,9 +10948,12 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
     return result;
 }
 
-VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached)
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached,
+                                                                _In_ BOOLEAN nativeResource)
 {
-    if (detached == NULL || resourceId == 0 || resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START ||
+    if (detached == NULL || resourceId == 0 || resourceId == MAXUINT ||
+        (nativeResource ? resourceId < VIOGPU_NATIVE_RESOURCE_ID_START
+                        : resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START) ||
         KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         return VioGpuHostContextNotSubmitted;

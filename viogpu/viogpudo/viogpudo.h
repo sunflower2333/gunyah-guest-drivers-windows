@@ -971,7 +971,8 @@ class VioGpuAdapter : IVioGpuPCI
     /* Flush a native scanout: its pixels are written by the owning context's
      * GPU work, so there is nothing to transfer first. */
     VIOGPU_HOST_CONTEXT_RESULT FlushNativeScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
-    VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached);
+    VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached,
+                                                     _In_ BOOLEAN nativeResource = FALSE);
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     UINT AllocateNativeResourceId(_In_ ULONGLONG expectedResetGeneration);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeGuestAllocation(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
@@ -1857,7 +1858,8 @@ class VioGpuDod
                                             _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout = NULL,
                                             _In_ BOOLEAN nativeResource = FALSE);
     VIOGPU_HOST_CONTEXT_RESULT FlushNativeScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
-    VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached);
+    VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached,
+                                                     _In_ BOOLEAN nativeResource = FALSE);
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
     BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize);
