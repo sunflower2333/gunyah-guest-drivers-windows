@@ -2291,6 +2291,14 @@ class VioGpuDod
             InterlockedExchange(&m_DisplayCounters[index], value);
         }
     }
+    VOID AddDisplayValue(_In_ ULONG index, _In_ ULONG value)
+    {
+        if (index < ARRAYSIZE(m_DisplayCounters))
+        {
+            // Interlocked addition preserves the low 32 bits on rollover.
+            InterlockedExchangeAdd(&m_DisplayCounters[index], static_cast<LONG>(value));
+        }
+    }
     VOID RecordDisplayMaximum(_In_ ULONG index, _In_ LONG value)
     {
         if (index >= ARRAYSIZE(m_DisplayCounters))

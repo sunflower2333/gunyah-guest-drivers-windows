@@ -3385,6 +3385,23 @@ VOID ProbePresentCopy(_In_ const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     }
 }
 
+static ULONGLONG CopyPhaseClock100ns(void)
+{
+    ULONGLONG qpc;
+    // KeQueryInterruptTime's tick resolution cannot distinguish these phases.
+    return KeQueryInterruptTimePrecise(&qpc);
+}
+
+static ULONGLONG RecordCopyPhase(VioGpuDod *adapter, ULONG counter, ULONGLONG start)
+{
+    const ULONGLONG end = CopyPhaseClock100ns();
+    if (end >= start)
+    {
+        adapter->AddDisplayValue(counter, static_cast<ULONG>((end - start) / 10));
+    }
+    return end;
+}
+
 NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                                    VIOGPU_WDDM_PRESENT_EXECUTION_STAGE *failureStage,
                                    DWORD *failureDetail,
@@ -3425,6 +3442,15 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                                              *failureDetail,
                                              executionDiagnostic);
         return STATUS_DEVICE_NOT_READY;
+    }
+    ULONGLONG phaseStart = transaction->CopyOnly ? CopyPhaseClock100ns() : 0;
+    BOOLEAN copyMeasured = FALSE;
+    ULONGLONG copiedBytes = 0;
+    if (transaction->CopyOnly && transaction->CopyQueuedTime100ns != 0 &&
+        phaseStart >= transaction->CopyQueuedTime100ns)
+    {
+        transaction->Adapter->AddDisplayValue(VioGpuCopyQueueUsec,
+            static_cast<ULONG>((phaseStart - transaction->CopyQueuedTime100ns) / 10));
     }
     BOOLEAN sourceLocked = FALSE;
     BOOLEAN destinationLocked = FALSE;
@@ -3580,6 +3606,11 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                 }
             }
 #endif
+            if (transaction->CopyOnly)
+            {
+                phaseStart = RecordCopyPhase(transaction->Adapter, VioGpuCopyPrepareUsec, phaseStart);
+                copyMeasured = TRUE;
+            }
             for (UINT index = 0; index < transaction->RectCount; ++index)
             {
                 const RECT *destinationRect = &transaction->DestinationSubRects[index];
@@ -3590,6 +3621,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                 UINT copyWidth = static_cast<UINT>(destinationRect->right - destinationRect->left);
                 UINT copyHeight = static_cast<UINT>(destinationRect->bottom - destinationRect->top);
                 SIZE_T rowBytes = static_cast<SIZE_T>(copyWidth) * 4;
+                copiedBytes += static_cast<ULONGLONG>(rowBytes) * copyHeight;
                 for (UINT row = 0; row < copyHeight; ++row)
                 {
                     SIZE_T sourceOffset = (sourceTop + row) * source->Pitch + sourceLeft * 4;
@@ -3602,8 +3634,16 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                                    destination->Format);
                 }
             }
+            if (transaction->CopyOnly)
+            {
+                phaseStart = RecordCopyPhase(transaction->Adapter, VioGpuCopyRowsUsec, phaseStart);
+            }
             KeMemoryBarrier();
             KeFlushIoBuffers(destination->ApertureMdl, FALSE, TRUE);
+            if (transaction->CopyOnly)
+            {
+                phaseStart = RecordCopyPhase(transaction->Adapter, VioGpuCopyFlushUsec, phaseStart);
+            }
             ProbePresentCopy(transaction, &copyProbe);
         }
     }
@@ -3667,6 +3707,16 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     if (sourceLocked)
     {
         KeReleaseMutex(&source->LifecycleMutex, FALSE);
+    }
+    if (transaction->CopyOnly)
+    {
+        RecordCopyPhase(transaction->Adapter, copyMeasured ? VioGpuCopyTailUsec : VioGpuCopyPrepareUsec, phaseStart);
+        transaction->Adapter->AddDisplayValue(VioGpuCopyKiB, static_cast<ULONG>(copiedBytes / 1024));
+        if (!NT_SUCCESS(status))
+        {
+            transaction->Adapter->CountDisplayEvent(VioGpuCopyFailures);
+        }
+        transaction->Adapter->CountDisplayEvent(VioGpuCopyCalls);
     }
     return status;
 }
@@ -10775,6 +10825,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                                        VioGpuWddmPresentPatched);
             if (previous == VioGpuWddmPresentPatched)
             {
+                if (transaction->CopyOnly)
+                {
+                    transaction->CopyQueuedTime100ns = CopyPhaseClock100ns();
+                }
                 queued = adapter->QueueNativePassiveWork(&transaction->Work, submitCommand->SubmissionFenceId);
                 if (queued)
                 {

@@ -442,6 +442,7 @@ struct VIOGPU_WDDM_PRESENT_TRANSACTION
     UINT FenceId;
     BOOLEAN FullyPrepatched;
     BOOLEAN CopyOnly;
+    ULONGLONG CopyQueuedTime100ns;
 };
 
 struct VIOGPU_WDDM_SUBMISSION_REFERENCE

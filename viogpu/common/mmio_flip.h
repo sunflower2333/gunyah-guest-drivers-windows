@@ -189,5 +189,15 @@ enum : unsigned
      * one is a host stall that was waited out rather than turned into a
      * boot-long loss of the native transport. */
     VioGpuSynchronousLongestWaitSlices = 91,
-    VioGpuDisplayCounterCount = 92,
+    /* Scheduled UMD allocation copies only (not ordinary blt presents).
+     * Cumulative microseconds/KiB wrap modulo 2^32; sample with short deltas. */
+    VioGpuCopyCalls = 92,
+    VioGpuCopyFailures = 93,
+    VioGpuCopyQueueUsec = 94,
+    VioGpuCopyPrepareUsec = 95,
+    VioGpuCopyRowsUsec = 96,
+    VioGpuCopyFlushUsec = 97,
+    VioGpuCopyTailUsec = 98,
+    VioGpuCopyKiB = 99,
+    VioGpuDisplayCounterCount = 100,
 };

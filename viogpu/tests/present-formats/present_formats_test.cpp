@@ -68,7 +68,9 @@ static void ExecuteCopy(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
     auto *destination = transaction->Destination;
     auto *sourceBase = static_cast<PUCHAR>(source->ApertureAddress);
     auto *destinationBase = static_cast<PUCHAR>(destination->ApertureAddress);
+    ULONGLONG copiedBytes = 0;
     // INSERT_COPY
+    (void)copiedBytes;
 }
 
 static unsigned failures, cases;

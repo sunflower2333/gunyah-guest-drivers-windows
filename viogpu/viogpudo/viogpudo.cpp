@@ -7007,6 +7007,14 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayMmioFlipLastApplyStatus = ReadDisplayCounter(VioGpuDisplayMmioFlipLastApplyStatus);
     DWORD displayFlipPresentCalls = ReadDisplayCounter(VioGpuDisplayFlipPresentCalls);
     DWORD displayFlipPresentRejects = ReadDisplayCounter(VioGpuDisplayFlipPresentRejects);
+    DWORD copyCalls = ReadDisplayCounter(VioGpuCopyCalls);
+    DWORD copyFailures = ReadDisplayCounter(VioGpuCopyFailures);
+    DWORD copyQueueUsec = ReadDisplayCounter(VioGpuCopyQueueUsec);
+    DWORD copyPrepareUsec = ReadDisplayCounter(VioGpuCopyPrepareUsec);
+    DWORD copyRowsUsec = ReadDisplayCounter(VioGpuCopyRowsUsec);
+    DWORD copyFlushUsec = ReadDisplayCounter(VioGpuCopyFlushUsec);
+    DWORD copyTailUsec = ReadDisplayCounter(VioGpuCopyTailUsec);
+    DWORD copyKiB = ReadDisplayCounter(VioGpuCopyKiB);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -7022,6 +7030,14 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
         PCWSTR Name;
         PDWORD Value;
     } writes[] = {
+        {L"NativeCopyCalls", &copyCalls},
+        {L"NativeCopyFailures", &copyFailures},
+        {L"NativeCopyQueueUsec", &copyQueueUsec},
+        {L"NativeCopyPrepareUsec", &copyPrepareUsec},
+        {L"NativeCopyRowsUsec", &copyRowsUsec},
+        {L"NativeCopyFlushUsec", &copyFlushUsec},
+        {L"NativeCopyTailUsec", &copyTailUsec},
+        {L"NativeCopyKiB", &copyKiB},
                                                                                                         {L"NativeUnansw"
                                                                                                          L"eredPresentR"
                                                                                                          L"oundTrips",

@@ -51,7 +51,8 @@ int main()
                       VioGpuOverlayFlipRejects == VioGpuOverlayFlipCalls + 1U &&
                       VioGpuOverlayFlipAccepts == VioGpuOverlayFlipRejects + 1U &&
                       VioGpuSynchronousLongestWaitSlices == VioGpuOverlayFlipAccepts + 1U &&
-                      VioGpuDisplayCounterCount == VioGpuSynchronousLongestWaitSlices + 1U,
+                      VioGpuCopyCalls == VioGpuSynchronousLongestWaitSlices + 1U &&
+                      VioGpuDisplayCounterCount == VioGpuCopyKiB + 1U,
                   "new display counters follow the 64 historical slots");
     // Every slot is distinct and inside the published array.
     {
@@ -68,7 +69,11 @@ int main()
                             VioGpuMonitorLinkLastValue,       VioGpuMonitorLinkClaims,
                             VioGpuTimingPathCalls,            VioGpuTimingPathLastStatus,
                             VioGpuTimingPathWireFormat,       VioGpuTimingPathColorSpace,
-                            VioGpuTimingPathRejects,          VioGpuOverlayCapsQueries};
+                            VioGpuTimingPathRejects,          VioGpuOverlayCapsQueries,
+                            VioGpuSynchronousLongestWaitSlices,
+                            VioGpuCopyCalls, VioGpuCopyFailures, VioGpuCopyQueueUsec,
+                            VioGpuCopyPrepareUsec, VioGpuCopyRowsUsec, VioGpuCopyFlushUsec,
+                            VioGpuCopyTailUsec, VioGpuCopyKiB};
         for (unsigned i = 0; i < sizeof(slots) / sizeof(slots[0]); ++i)
         {
             CHECK(slots[i] < VioGpuDisplayCounterCount);

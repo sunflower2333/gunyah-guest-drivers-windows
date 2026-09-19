@@ -49,7 +49,11 @@ if not args.baseline:
     parts.append(function('CopyPresentRow'))
 execute = function('ExecutePresentTransaction')
 start = execute.index('for (UINT index = 0; index < transaction->RectCount; ++index)')
-end = execute.index('            KeMemoryBarrier();', start)
+brace = execute.index('{', start)
+end, depth = brace + 1, 1
+while depth:
+    depth += (execute[end] == '{') - (execute[end] == '}')
+    end += 1
 copy = execute[start:end]
 if args.negative_control_raw_copy:
     # Match exactly the reviewed call tokens, not its clang-format line wrapping.
