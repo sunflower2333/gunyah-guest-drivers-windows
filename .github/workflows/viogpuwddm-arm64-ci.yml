@@ -227,6 +227,15 @@ jobs:
       - name: Execute Render prepatch and final residency regression
         shell: pwsh
         run: python viogpu/tests/render-prepatch/run.py
+      - name: Execute retained runtime queue allocation domains
+        shell: pwsh
+        run: |
+          python viogpu/tests/runtime-domain/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($fault in @('unretained', 'wrong-generation', 'early-close')) {
+            python viogpu/tests/runtime-domain/run.py --negative-control $fault
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
       - name: Execute native adapter identity and reply compatibility regression
         shell: pwsh
         run: python viogpu/tests/adapter-identity/run.py

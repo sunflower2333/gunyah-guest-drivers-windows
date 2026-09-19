@@ -51,7 +51,9 @@ struct VIOGPU_WDDM_DEVICE
 struct VIOGPU_WDDM_CONTEXT
 {
     Registration NativeContext;
+    VIOGPU_WDDM_CONTEXT *DomainOwner = nullptr;
 };
+using VIOGPU_NATIVE_CONTEXT_REGISTRATION = Registration;
 struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT
 {
     struct Registration *Registration;
@@ -234,6 +236,17 @@ int main()
         check(f.render() == STATUS_SUCCESS && f.fully, "resident Render");
         check(f.bo->Handle == f.allocation.ResourceId && f.bo->Presumed == 0x4400000010ULL, "translated addresses");
         check(f.dispatch() == STATUS_SUCCESS, "prepatched dispatch without Patch");
+    }
+    {
+        Fixture f;
+        VIOGPU_WDDM_CONTEXT child;
+        child.DomainOwner = &f.context;
+        f.submission.Context = &child;
+        check(f.render() == STATUS_SUCCESS && f.fully, "shared domain translates original allocation");
+        check(f.dispatch() == STATUS_SUCCESS, "child scheduler dispatch accepts retained domain allocation");
+        VIOGPU_WDDM_CONTEXT foreign;
+        child.DomainOwner = &foreign;
+        check(f.dispatch() != STATUS_SUCCESS, "child scheduler rejects foreign domain allocation");
     }
     {
         Fixture f;
