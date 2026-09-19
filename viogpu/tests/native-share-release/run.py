@@ -27,6 +27,10 @@ struct VIOGPU_WDDM_CONTEXT {};
 struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT;
 struct VioGpuDod {
  bool admitted=true; int acquired=0,released=0,calls=0;
+ bool retired=false;
+ int resets=0;
+ void RequestHardwareResetAtAnyIrql() { ++resets; }
+ bool IsNativeContextResetRetired(unsigned generation) { return retired && generation==7; }
  VIOGPU_HOST_CONTEXT_RESULT result=VioGpuHostContextConfirmed;
  bool AcquireNativeSubmissionOperation() { if(admitted) ++acquired; return admitted; }
  void ReleaseNativeSubmissionOperation() { ++released; }
@@ -34,12 +38,14 @@ struct VioGpuDod {
   assert(id==99); ++calls; return result;
  }
 };
-struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT { VioGpuDod *Adapter; };
+struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT { VioGpuDod *Adapter; unsigned ResetGeneration=7; };
 struct VIOGPU_WDDM_NATIVE_SHARE { unsigned ShareKey,Iova; };
 int deleted;
 struct VIOGPU_WDDM_NATIVE_IMPORT_ENTRY {
  LIST_ENTRY Link; VIOGPU_WDDM_CONTEXT *Context; VioGpuDod *Adapter;
  unsigned Key,Iova,ResourceId;
+ unsigned ResetGeneration=7;
+ unsigned Size=4096;
  ~VIOGPU_WDDM_NATIVE_IMPORT_ENTRY() { ++deleted; }
 };
 FUNCTION
@@ -108,7 +114,7 @@ revoke_end = source.index('/* Runs under the context', revoke_start)
 revoke = source[revoke_start:revoke_end]
 prefix = fixture.split('FUNCTION')[0].replace(
     'struct VIOGPU_WDDM_CONTEXT {};',
-    'struct VIOGPU_WDDM_CONTEXT { int Signature=123, Operations=0; };')
+    'struct VIOGPU_WDDM_CONTEXT { int Signature=123, Operations=0, Type=1; VIOGPU_WDDM_CONTEXT *DomainOwner=nullptr; };')
 prefix = prefix.replace('calls=0;', 'calls=0,failOnCall=0;').replace(
     '++calls; return result;',
     '++calls; return calls==failOnCall?VioGpuHostContextUnknown:result;')
@@ -124,15 +130,18 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY {
 LIST_ENTRY g_VioGpuNativeShares;
 bool registry=true,rundown=true,snapshotOK=true;
 int registryHeld=0,rundownHeld=0,snapshotHeld=0;
+unsigned snapshotGeneration=7;
+VIOGPU_WDDM_CONTEXT *lastRegistration=nullptr;
 VioGpuDod *activeAdapter;
 bool AcquireNativeShareRegistry(bool) { if(registry) ++registryHeld; return registry; }
 void ReleaseNativeShareRegistry() { --registryHeld; }
 bool ExAcquireRundownProtection(int*) { if(rundown) ++rundownHeld; return rundown; }
 void ExReleaseRundownProtection(int*) { --rundownHeld; }
-VIOGPU_WDDM_CONTEXT* NativeRegistration(VIOGPU_WDDM_CONTEXT *c) { return c; }
+VIOGPU_WDDM_CONTEXT* NativeRegistration(VIOGPU_WDDM_CONTEXT *c) { return c->DomainOwner?c->DomainOwner:c; }
 struct VioGpuAdapter {
- static bool AcquireNativeContextSnapshot(VIOGPU_WDDM_CONTEXT*,VIOGPU_NATIVE_CONTEXT_SNAPSHOT *s) {
-  if(snapshotOK) {++snapshotHeld;s->Adapter=activeAdapter;} return snapshotOK;
+ static bool AcquireNativeContextSnapshot(VIOGPU_WDDM_CONTEXT *c,VIOGPU_NATIVE_CONTEXT_SNAPSHOT *s) {
+  lastRegistration=c;
+  if(snapshotOK) {++snapshotHeld;s->Adapter=activeAdapter;s->ResetGeneration=snapshotGeneration;} return snapshotOK;
  }
  static void ReleaseNativeContextSnapshot(VIOGPU_NATIVE_CONTEXT_SNAPSHOT*) {--snapshotHeld;}
 };
@@ -213,3 +222,133 @@ with tempfile.TemporaryDirectory(prefix='native-share-revoke-') as tmp:
         else:
             assert result.returncode != 0 and 'STATUS_DEVICE_BUSY' in result.stderr, result.stderr
             print('negative control: unconfirmed exporter revocation detected')
+
+cleanup_start = source.index('NTSTATUS RemoveNativeImportsForContext(')
+cleanup_end = source.index('/* Resolve a zero-copy share key', cleanup_start)
+cleanup = source[cleanup_start:cleanup_end]
+caller_mid = source.index('NTSTATUS importStatus = RemoveNativeImportsForContext(context);')
+caller_start = source.rfind('    if (context->Type == VioGpuWddmContextNative)', 0, caller_mid)
+caller_end = source.index('    if (context->DomainOwner != NULL)', caller_mid)
+caller = source[caller_start:caller_end]
+cleanup_fixture = revoke_fixture.split('FUNCTION')[0] + r'''
+FUNCTION
+#define NT_SUCCESS(x) ((x)>=0)
+constexpr int VioGpuWddmContextNative=1;
+int destroyPrefix(VIOGPU_WDDM_CONTEXT *context,VioGpuDod *adapter) {
+CALLER
+ return STATUS_SUCCESS;
+}
+int main() {
+ int cases=0;
+ for(bool domain: {false,true}) for(int failure=0;failure<5;++failure) {
+  VioGpuDod adapter; activeAdapter=&adapter;
+  VIOGPU_WDDM_CONTEXT context,owner;
+  if(domain) context.DomainOwner=&owner;
+  auto *entry=new VIOGPU_WDDM_NATIVE_IMPORT_ENTRY{{},&context,&adapter,11,4096,99};
+  g_VioGpuNativeImports={&entry->Link,&entry->Link};
+  entry->Link={&g_VioGpuNativeImports,&g_VioGpuNativeImports};
+  registry=true; rundown=false; snapshotOK=true; snapshotGeneration=7; deleted=0;
+  if(failure==0) snapshotOK=false;
+  if(failure==1) snapshotGeneration=8;
+  if(failure==2) adapter.admitted=false;
+  if(failure==3) adapter.result=VioGpuHostContextNotSubmitted;
+  if(failure==4) adapter.result=VioGpuHostContextUnknown;
+  assert(destroyPrefix(&context,&adapter)==STATUS_DEVICE_BUSY && adapter.resets==1);
+  assert(deleted==0 && g_VioGpuNativeImports.Flink==&entry->Link);
+  assert(lastRegistration==(domain?&owner:&context));
+  assert(registryHeld==0 && rundownHeld==0 && snapshotHeld==0); ++cases;
+  // A reset request alone is not retirement: another retry still retains it.
+  assert(RemoveNativeImportsForContext(&context)==STATUS_DEVICE_BUSY);
+  assert(deleted==0); ++cases;
+  int calls=adapter.calls;
+  adapter.retired=true; // Exact old-generation retirement is now confirmed.
+  assert(destroyPrefix(&context,&adapter)==STATUS_SUCCESS && adapter.resets==1);
+  assert(deleted==1 && adapter.calls==calls);
+  assert(g_VioGpuNativeImports.Flink==&g_VioGpuNativeImports);
+  assert(registryHeld==0 && rundownHeld==0 && snapshotHeld==0); ++cases;
+ }
+ // Normal teardown sends an actual detach before deleting its record.
+ {
+  VioGpuDod adapter; activeAdapter=&adapter; VIOGPU_WDDM_CONTEXT context,other;
+  auto *entry=new VIOGPU_WDDM_NATIVE_IMPORT_ENTRY{{},&context,&adapter,11,4096,99};
+  g_VioGpuNativeImports={&entry->Link,&entry->Link};
+  entry->Link={&g_VioGpuNativeImports,&g_VioGpuNativeImports};
+  snapshotOK=true; snapshotGeneration=7; deleted=0;
+  assert(RemoveNativeImportsForContext(&other)==STATUS_SUCCESS && deleted==0); ++cases;
+  assert(RemoveNativeImportsForContext(&context)==STATUS_SUCCESS);
+  assert(deleted==1 && adapter.calls==1 && adapter.acquired==adapter.released); ++cases;
+ }
+ std::printf("production context import cleanup: %d cases PASS\n",cases);
+}
+'''
+with tempfile.TemporaryDirectory(prefix='native-import-cleanup-') as tmp:
+    tmp = Path(tmp)
+    variants = [('production', cleanup, caller), ('ignore-detach-failure', cleanup.replace(
+        guard, 'if ((void)result, false)', 1), caller),
+        ('ignore-caller-failure', cleanup, caller.replace('if (!NT_SUCCESS(importStatus))',
+         'if ((void)importStatus, false)', 1))]
+    for name, code, caller_code in variants:
+        cpp, exe = tmp / (name + '.cpp'), tmp / name
+        cpp.write_text('#include <initializer_list>\n' + cleanup_fixture.replace('FUNCTION', code).replace('CALLER', caller_code))
+        subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                        '-fsanitize=address,undefined', str(cpp), '-o', str(exe)], check=True)
+        result = subprocess.run([str(exe)], capture_output=True, text=True)
+        if name == 'production':
+            assert result.returncode == 0, result.stderr
+            print(result.stdout.strip())
+        else:
+            assert result.returncode != 0 and 'STATUS_DEVICE_BUSY' in result.stderr, result.stderr
+            print('negative control: premature context cleanup detected')
+
+import_start = source.index('static NTSTATUS ImportNativeShareLocked(')
+loop_start = source.index('    for (PLIST_ENTRY link = g_VioGpuNativeImports.Flink;', import_start)
+loop_end = source.index('    VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *entry = new', loop_start)
+admission = source[loop_start:loop_end]
+domain_fixture = revoke_fixture.split('FUNCTION')[0] + r'''
+using ULONGLONG=unsigned long long;
+int admission(VIOGPU_WDDM_CONTEXT *context,const VIOGPU_WDDM_NATIVE_SHARE *request,
+              ULONGLONG requestEnd,ULONG *stage) {
+FUNCTION
+ return STATUS_SUCCESS;
+}
+int main() {
+ VioGpuDod adapter; VIOGPU_WDDM_CONTEXT owner,child,sibling,independent;
+ child.DomainOwner=sibling.DomainOwner=&owner;
+ auto *entry=new VIOGPU_WDDM_NATIVE_IMPORT_ENTRY{{},&child,&adapter,11,4096,99};
+ g_VioGpuNativeImports={&entry->Link,&entry->Link};
+ entry->Link={&g_VioGpuNativeImports,&g_VioGpuNativeImports};
+ int cases=0;
+ for(auto *context: {&owner,&child,&sibling,&independent}) {
+  bool shared=context!=&independent;
+  ULONG stage=999; VIOGPU_WDDM_NATIVE_SHARE request{11,16384};
+  int result=admission(context,&request,20479,&stage);
+  assert(result==(shared?STATUS_INVALID_PARAMETER:STATUS_SUCCESS));
+  assert(stage==(shared?34u:999u)); ++cases;
+  request={12,6144}; stage=999;
+  result=admission(context,&request,10239,&stage);
+  assert(result==(shared?STATUS_INVALID_PARAMETER:STATUS_SUCCESS));
+  assert(stage==(shared?35u:999u)); ++cases;
+  request={12,8192}; stage=999;
+  assert(admission(context,&request,12287,&stage)==STATUS_SUCCESS && stage==999); ++cases;
+ }
+ RemoveEntryList(&entry->Link); delete entry;
+ std::printf("production native domain import admission: %d cases PASS\n",cases);
+}
+'''
+anchor = 'NativeRegistration(existing->Context) != NativeRegistration(context)'
+assert anchor in admission
+with tempfile.TemporaryDirectory(prefix='native-domain-import-') as tmp:
+    tmp = Path(tmp)
+    for name, code in [('production', admission), ('child-only', admission.replace(
+            anchor, 'existing->Context != context', 1))]:
+        cpp, exe = tmp / (name + '.cpp'), tmp / name
+        cpp.write_text('#include <initializer_list>\n' + domain_fixture.replace('FUNCTION', code))
+        subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                        '-fsanitize=address,undefined', str(cpp), '-o', str(exe)], check=True)
+        result = subprocess.run([str(exe)], capture_output=True, text=True)
+        if name == 'production':
+            assert result.returncode == 0, result.stderr
+            print(result.stdout.strip())
+        else:
+            assert result.returncode != 0 and 'result==' in result.stderr, result.stderr
+            print('negative control: cross-child duplicate import detected')

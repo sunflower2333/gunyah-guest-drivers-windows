@@ -4447,6 +4447,7 @@ struct VIOGPU_WDDM_NATIVE_IMPORT_ENTRY
     UINT ResourceId;
     ULONGLONG Iova;
     ULONGLONG Size;
+    ULONGLONG ResetGeneration;
 };
 
 static KMUTEX g_VioGpuNativeShareMutex;
@@ -4537,15 +4538,16 @@ static ULONGLONG NewNativeShareKeyLocked(_In_ VioGpuDod *adapter)
     }
 }
 
-/* Drop every import record of a context that is being destroyed. The host
- * context destroy releases the imported objects themselves. */
-VOID RemoveNativeImportsForContext(_In_ VIOGPU_WDDM_CONTEXT *context)
+/* A domain child or deferred context can disappear before its host context.
+ * Confirm each detach first, or retain the record until a confirmed reset
+ * retires its host generation. The caller has drained context operations. */
+NTSTATUS RemoveNativeImportsForContext(_In_ VIOGPU_WDDM_CONTEXT *context)
 {
     PAGED_CODE();
 
     if (context == NULL || !AcquireNativeShareRegistry(FALSE))
     {
-        return;
+        return STATUS_SUCCESS;
     }
     PLIST_ENTRY link = g_VioGpuNativeImports.Flink;
     while (link != &g_VioGpuNativeImports)
@@ -4554,11 +4556,36 @@ VOID RemoveNativeImportsForContext(_In_ VIOGPU_WDDM_CONTEXT *context)
         link = link->Flink;
         if (entry->Context == context)
         {
+            VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
+            if (entry->Adapter->IsNativeContextResetRetired(entry->ResetGeneration))
+            {
+                result = VioGpuHostContextConfirmed;
+            }
+            else
+            {
+                VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+                if (VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context), &snapshot))
+                {
+                    if (snapshot.ResetGeneration == entry->ResetGeneration &&
+                        entry->Adapter->AcquireNativeSubmissionOperation())
+                    {
+                        result = snapshot.Adapter->ReleaseNativeSharedResource(&snapshot, entry->ResourceId);
+                        entry->Adapter->ReleaseNativeSubmissionOperation();
+                    }
+                    VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+                }
+            }
+            if (result != VioGpuHostContextConfirmed)
+            {
+                ReleaseNativeShareRegistry();
+                return STATUS_DEVICE_BUSY;
+            }
             RemoveEntryList(&entry->Link);
             delete entry;
         }
     }
     ReleaseNativeShareRegistry();
+    return STATUS_SUCCESS;
 }
 
 /* Resolve a zero-copy share key to the native resource holding its pixels. */
@@ -4618,12 +4645,16 @@ NTSTATUS RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
             }
             VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
             VIOGPU_WDDM_CONTEXT *context = entry->Context;
-            if (context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE && ExAcquireRundownProtection(&context->Operations))
+            if (adapter->IsNativeContextResetRetired(entry->ResetGeneration))
+            {
+                result = VioGpuHostContextConfirmed;
+            }
+            else if (context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE && ExAcquireRundownProtection(&context->Operations))
             {
                 VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
                 if (VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context), &snapshot))
                 {
-                    if (adapter->AcquireNativeSubmissionOperation())
+                    if (snapshot.ResetGeneration == entry->ResetGeneration && adapter->AcquireNativeSubmissionOperation())
                     {
                         result = snapshot.Adapter->ReleaseNativeSharedResource(&snapshot, entry->ResourceId);
                         adapter->ReleaseNativeSubmissionOperation();
@@ -4799,7 +4830,10 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
     for (PLIST_ENTRY link = g_VioGpuNativeImports.Flink; link != &g_VioGpuNativeImports; link = link->Flink)
     {
         VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *existing = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_IMPORT_ENTRY, Link);
-        if (existing->Context != context)
+        // Domain children share one host address space and attachment set.
+        // A duplicate attachment would let one child's teardown detach another
+        // child's live resource; reserve keys and VA ranges per native domain.
+        if (NativeRegistration(existing->Context) != NativeRegistration(context))
         {
             continue;
         }
@@ -4824,6 +4858,7 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
     entry->ResourceId = share->ResourceId;
     entry->Iova = request->Iova;
     entry->Size = request->Size;
+    entry->ResetGeneration = snapshot->ResetGeneration;
 
     if (!adapter->AcquireNativeSubmissionOperation())
     {
@@ -7542,7 +7577,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
 
     if (context->Type == VioGpuWddmContextNative)
     {
-        RemoveNativeImportsForContext(context);
+        NTSTATUS importStatus = RemoveNativeImportsForContext(context);
+        if (!NT_SUCCESS(importStatus))
+        {
+            // A quarantined host context may no longer accept detach commands.
+            // Keep the records and let reset retirement resolve them on retry.
+            adapter->RequestHardwareResetAtAnyIrql();
+            return importStatus;
+        }
     }
 
     if (context->DomainOwner != NULL)

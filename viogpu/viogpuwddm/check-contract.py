@@ -10524,11 +10524,24 @@ def check_wddm_context_lifetime() -> None:
     defer_reset = destroy.find("adapter->RequestHardwareResetAtAnyIrql();", defer_busy)
     defer_return = destroy.find("returndeferStatus;", defer_reset)
     if (
-        destroy.count("adapter->RequestHardwareResetAtAnyIrql();") != 3
+        destroy.count("adapter->RequestHardwareResetAtAnyIrql();") != 4
         or min(defer_failure, defer_busy, defer_reset, defer_return) < 0
         or not owner_busy < defer_failure < defer_busy < defer_reset < defer_return
     ):
         fail("DestroyContext must preserve retryable in-flight allocation close without requesting reset")
+
+    require_order(
+        destroy[destroy.find("importStatus=RemoveNativeImportsForContext(context);"):],
+        (
+            "importStatus=RemoveNativeImportsForContext(context);",
+            "if(!NT_SUCCESS(importStatus))",
+            "adapter->RequestHardwareResetAtAnyIrql();",
+            "returnimportStatus;",
+            "DetachNativeDomain(context);",
+            "DeferNativeContextDestroy(context,adapter,&deferred);",
+        ),
+        "DestroyContext must recover unconfirmed import cleanup before releasing domain or context ownership",
+    )
 
     deferred_destroy = canonical_code(function_body("DeferNativeContextDestroy", WDDM_DDI_CODE))
     require_order(
