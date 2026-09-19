@@ -5375,7 +5375,7 @@ def check_shared_allocation_copy_contract() -> None:
             fail("scheduled Present and copies must accept CPU-visible redirection destinations through Patch and Execute")
     require_order(execute, (
         "AcquirePresentAllocationLifecycles(", "source->ApertureAddress==NULL",
-        "CopyPresentRow(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes,source->Format,destination->Format);",
+        "copiedBytes+=CopyPresentRows(transaction,sourceBase);",
         "KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);",
         "if(NT_SUCCESS(status)&&!transaction->CopyOnly&&IsStandardPrimaryAllocation(destination))",
         "transaction->Adapter->Present2DResource(",
@@ -6204,7 +6204,7 @@ def check_wddm_present_contract() -> None:
         "ReconcileGdiSourcePlacementAfterReset(source)",
         "HasLiveGdiPresentIdentity(source,transaction->Context,transaction->Adapter)",
         "source->ApertureAddress==NULL||destination->ApertureAddress==NULL",
-        "CopyPresentRow(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes,source->Format,destination->Format);",
+        "copiedBytes+=CopyPresentRows(transaction,sourceBase);",
         "ProbePresentCopy(transaction,&copyProbe);",
         "transaction->Adapter->Present2DResource(destination->ResourceId,0,destination->Width,"
         "destination->Height,0,0,",
@@ -6233,7 +6233,7 @@ def check_wddm_present_contract() -> None:
         source_acquire,
         source_release,
         source_clear,
-        execute.find("CopyPresentRow(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes,source->Format,destination->Format);", source_clear),
+        execute.find("copiedBytes+=CopyPresentRows(transaction,sourceBase);", source_clear),
         execute.find("KeMemoryBarrier();", source_clear),
         execute.find("KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);", source_clear),
         execute.find("ProbePresentCopy(transaction,&copyProbe);", source_clear),

@@ -7,7 +7,14 @@ allocation contract forbids `Cached` on primary surfaces and rejects UMD
 The KMD can retain a private cached copy of pixels after a full Present/copy
 overwrite. The existing scheduled transaction and both allocation lifecycle
 mutexes still govern reads and writes. Host scanout continues to use the real
-primary backing, which receives every write before completion as before.
+primary backing, which contains the published pixels before completion as before.
+For an already valid private mirror, equal raw-format rows need no repeated
+backing write. Every byte of the requested row is compared; converted rows and
+invalid/external-writer surfaces are never elided. Changed rows update the mirror
+first, then copy those final bytes into backing, reading/converting the source
+only once. Fences, scheduling, cache flushes and Host publication are unchanged.
+`NativeCopyKiB` counts bytes actually written to the destination, so an unchanged
+copy may complete successfully with zero copied bytes.
 
 Writer and invalidation inventory in `wddmddi.cpp`:
 
@@ -42,11 +49,12 @@ Run `python3 viogpu/tests/primary-read-cache/run.py` on Linux. The harness
 compiles the actual production helpers and actual Present rectangle loop under
 ASan/UBSan. It checks colors against an independent byte oracle, padding,
 partial-write coherence, readback, reset/paging/fill invalidation, allocation
-failure, CPU-visible exclusion and pool accounting. Three semantic negative
+failure, CPU-visible exclusion and pool accounting, unchanged rows, last-byte
+changes and publication after reset. Five semantic negative
 controls must fail. Existing Present format tests still exercise both WDDM
 interfaces and the row conversion matrix.
 
 This is a CPU-copy optimization candidate, not native zero-copy scanout.
 Windows compilation, signed package identity and device functional/FPS tests
-are required before runtime acceptance. Do not reuse the base 58555 version
-for a deployable cache candidate.
+are required before runtime acceptance. Do not reuse the base 58557 version
+for a deployable unchanged-row candidate.

@@ -54,20 +54,22 @@ void *ExAllocatePoolUninitialized(int, SIZE_T size, int) {
 }
 void ExFreePoolWithTag(void *p, int) { std::free(p); }
 void RtlCopyMemory(void *d, const void *s, SIZE_T n) { std::memcpy(d, s, n); }
+SIZE_T RtlCompareMemory(const void *a, const void *b, SIZE_T n) {
+    const auto *x=static_cast<const UCHAR *>(a), *y=static_cast<const UCHAR *>(b);
+    SIZE_T i=0; while (i<n && x[i]==y[i]) ++i; return i;
+}
 void KeMemoryBarrier() {}
 bool IsStandardPrimaryAllocation(const VIOGPU_WDDM_ALLOCATION *a) { return a->primary; }
 void check(bool value, const char *name) {
     if (!value) { ++failures; std::printf("FAIL %s\n", name); }
 }
 // PRODUCTION_HELPERS
-void present(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction) {
+ULONGLONG present(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction) {
     auto *source = transaction->Source;
-    auto *destination = transaction->Destination;
     PUCHAR sourceBase = static_cast<PUCHAR>(source->ApertureAddress);
-    PUCHAR destinationBase = static_cast<PUCHAR>(destination->ApertureAddress);
     ULONGLONG copiedBytes = 0;
     // PRODUCTION_COPY
-    check(copiedBytes != 0, "copy executed");
+    return copiedBytes;
 }
 int main() {
     std::vector<UCHAR> input(48), backing(60, 0x99), output(48);
@@ -147,6 +149,31 @@ int main() {
     tx.RectCount=2; tx.DestinationSubRects=split; present(&tx);
     for (UINT y=0; y<4; ++y)
         check(std::memcmp(cache+y*24,shiftedBacking.data()+y*24,20)==0, "disjoint partial writes");
+    ReleasePrimaryReadCache(&dst);
+    // Repeated full publication must still synchronize, but identical rows
+    // need no backing/cache write. Change a byte at the end of a row to catch
+    // prefix-only comparisons, then invalidate an otherwise identical mirror.
+    src={}; dst={};
+    src.ApertureAddress=input.data(); src.BackingSize=48; src.Pitch=16; src.Width=3; src.Height=3;
+    dst.ApertureAddress=backing.data(); dst.BackingSize=60; dst.Pitch=20; dst.Width=3; dst.Height=3; dst.primary=true;
+    tx={&src,&dst,1,&full,full,full};
+    check(present(&tx)==36, "initial full write cannot elide uninitialized mirror");
+    check(present(&tx)==0, "identical rows elide all backing writes");
+    input[16+11]^=0x80;
+    check(present(&tx)==12, "one changed row writes exactly that row");
+    check(std::memcmp(backing.data()+20,input.data()+16,12)==0, "changed last byte published");
+    ++dst.Resource2DResetGeneration;
+    std::memset(backing.data(),0,backing.size());
+    check(present(&tx)==36, "reset requires full publication even if mirror matches");
+    check(std::memcmp(backing.data()+20,input.data()+16,12)==0, "reset backing rebuilt");
+    dst.Flags=VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE;
+    std::memset(backing.data(),0,backing.size());
+    check(present(&tx)==36, "external writer excludes row elision with existing mirror");
+    check(std::memcmp(backing.data()+20,input.data()+16,12)==0, "external backing restored");
+    dst.Flags=0;
+    src.Format=D3DDDIFMT_X8R8G8B8;
+    input[3]=0;
+    check(present(&tx)==36 && backing[3]==255, "opaque alpha conversion never raw-elided");
     ReleasePrimaryReadCache(&dst);
     std::printf("primary-cache failures=%d\n", failures);
     return failures ? 1 : 0;

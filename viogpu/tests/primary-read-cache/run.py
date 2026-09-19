@@ -19,12 +19,12 @@ def function(name):
 
 names = ['InvalidatePrimaryReadCache', 'ReleasePrimaryReadCache',
          'CopyAperturePlacement', 'FillAperturePlacement', 'CopyPresentRow',
-         'PresentReadAddress', 'UpdatePrimaryReadCache']
+         'PresentReadAddress', 'PreparePrimaryWriteCache', 'CopyPresentRows']
 parts = '\n\n'.join(function(name) for name in names)
 execute = function('ExecutePresentTransaction')
 start = execute.index('sourceBase = PresentReadAddress(source);')
-end = execute.index('UpdatePrimaryReadCache(transaction, sourceBase);', start)
-end += len('UpdatePrimaryReadCache(transaction, sourceBase);')
+end = execute.index('copiedBytes += CopyPresentRows(transaction, sourceBase);', start)
+end += len('copiedBytes += CopyPresentRows(transaction, sourceBase);')
 copy = execute[start:end]
 # Cache validity must not survive replacement/unmapping of the backing pages.
 assert 'ReleasePrimaryReadCache(allocation);' in function('ReleaseApertureCpuMapping')
@@ -41,6 +41,10 @@ controls = {
         'for (SIZE_T offset'),
     'missing-reset-check': fixture.replace(
         'allocation->PrimaryReadCacheGeneration == allocation->Resource2DResetGeneration', 'true'),
+    'blind-row-elision': fixture.replace(
+        'RtlCompareMemory(cache + offset, input, rowBytes) == rowBytes', 'true'),
+    'missing-row-elision': fixture.replace(
+        'RtlCompareMemory(cache + offset, input, rowBytes) == rowBytes', 'false'),
 }
 for label, unit in controls.items():
     if label != 'current':

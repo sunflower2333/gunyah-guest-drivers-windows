@@ -3074,15 +3074,14 @@ PUCHAR PresentReadAddress(VIOGPU_WDDM_ALLOCATION *allocation)
     return static_cast<PUCHAR>(allocation->ApertureAddress);
 }
 
-VOID UpdatePrimaryReadCache(const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction, const UCHAR *sourceBase)
+PUCHAR PreparePrimaryWriteCache(const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
 {
     VIOGPU_WDDM_ALLOCATION *destination = transaction->Destination;
-    const VIOGPU_WDDM_ALLOCATION *source = transaction->Source;
     if (!IsStandardPrimaryAllocation(destination) ||
         (destination->Flags & VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE) != 0 ||
         destination->Resource2DResetGeneration == 0)
     {
-        return;
+        return NULL;
     }
     const RECT *first = &transaction->DestinationSubRects[0];
     const BOOLEAN fullWrite = transaction->RectCount == 1 && first->left == 0 && first->top == 0 &&
@@ -3094,29 +3093,45 @@ VOID UpdatePrimaryReadCache(const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction, 
     // overwrite establishes validity; subsequent partial writes maintain it.
     if (!valid && !fullWrite)
     {
-        return;
+        return NULL;
     }
     if (destination->PrimaryReadCache == NULL)
     {
         const ULONGLONG span = static_cast<ULONGLONG>(destination->Pitch) * destination->Height;
         if (span == 0 || span > 32ULL * 1024 * 1024 || span > destination->BackingSize)
         {
-            return;
+            return NULL;
         }
         if (InterlockedIncrement(&g_PrimaryReadCacheCount) > 4)
         {
             InterlockedDecrement(&g_PrimaryReadCacheCount);
-            return;
+            return NULL;
         }
         destination->PrimaryReadCache = ExAllocatePoolUninitialized(NonPagedPoolNx,
                                                                     static_cast<SIZE_T>(span), 'cPGV');
         if (destination->PrimaryReadCache == NULL)
         {
             InterlockedDecrement(&g_PrimaryReadCacheCount);
-            return;
+            return NULL;
         }
     }
-    PUCHAR cache = static_cast<PUCHAR>(destination->PrimaryReadCache);
+    return static_cast<PUCHAR>(destination->PrimaryReadCache);
+}
+
+ULONGLONG CopyPresentRows(const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction, const UCHAR *sourceBase)
+{
+    VIOGPU_WDDM_ALLOCATION *destination = transaction->Destination;
+    const VIOGPU_WDDM_ALLOCATION *source = transaction->Source;
+    // Only this private, generation-checked mirror may justify eliding writes.
+    // Native/GDI/CPU-visible backing has external writers and never qualifies.
+    const BOOLEAN cacheValid = PresentReadAddress(destination) != destination->ApertureAddress;
+    PUCHAR cache = PreparePrimaryWriteCache(transaction);
+    PUCHAR backing = static_cast<PUCHAR>(destination->ApertureAddress);
+    const BOOLEAN raw = ((source->Format == D3DDDIFMT_A8B8G8R8) ==
+                         (destination->Format == D3DDDIFMT_A8B8G8R8)) &&
+                        !(source->Format == D3DDDIFMT_X8R8G8B8 &&
+                          destination->Format != D3DDDIFMT_X8R8G8B8);
+    ULONGLONG copiedBytes = 0;
     for (UINT index = 0; index < transaction->RectCount; ++index)
     {
         const RECT *rect = &transaction->DestinationSubRects[index];
@@ -3127,13 +3142,31 @@ VOID UpdatePrimaryReadCache(const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction, 
         const SIZE_T rowBytes = static_cast<SIZE_T>(rect->right - rect->left) * 4;
         for (UINT row = 0; row < static_cast<UINT>(rect->bottom - rect->top); ++row)
         {
-            CopyPresentRow(cache + static_cast<SIZE_T>(rect->top + row) * destination->Pitch +
-                               static_cast<SIZE_T>(rect->left) * 4,
-                           sourceBase + (sourceTop + row) * source->Pitch + sourceLeft * 4,
-                           rowBytes, source->Format, destination->Format);
+            const SIZE_T offset = static_cast<SIZE_T>(rect->top + row) * destination->Pitch +
+                                  static_cast<SIZE_T>(rect->left) * 4;
+            const UCHAR *input = sourceBase + (sourceTop + row) * source->Pitch + sourceLeft * 4;
+            if (cache != NULL)
+            {
+                if (cacheValid && raw && RtlCompareMemory(cache + offset, input, rowBytes) == rowBytes)
+                {
+                    continue;
+                }
+                // Convert/read the source once, then publish the cached bytes.
+                CopyPresentRow(cache + offset, input, rowBytes, source->Format, destination->Format);
+                RtlCopyMemory(backing + offset, cache + offset, rowBytes);
+            }
+            else
+            {
+                CopyPresentRow(backing + offset, input, rowBytes, source->Format, destination->Format);
+            }
+            copiedBytes += rowBytes;
         }
     }
-    destination->PrimaryReadCacheGeneration = destination->Resource2DResetGeneration;
+    if (cache != NULL)
+    {
+        destination->PrimaryReadCacheGeneration = destination->Resource2DResetGeneration;
+    }
+    return copiedBytes;
 }
 
 BOOLEAN ReferencePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
@@ -3690,7 +3723,6 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
         if (NT_SUCCESS(status))
         {
             PUCHAR sourceBase = static_cast<PUCHAR>(source->ApertureAddress);
-            PUCHAR destinationBase = static_cast<PUCHAR>(destination->ApertureAddress);
 #if defined(VIOGPU_NATIVE_CONTEXT)
             /* The one-shot copy probe saw a standard source with zero pixels.
              * DWM's steady-state source may be a native guest-alloc blob whose
@@ -3732,30 +3764,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
             {
                 transaction->Adapter->CountDisplayEvent(VioGpuPrimaryCacheReads);
             }
-            for (UINT index = 0; index < transaction->RectCount; ++index)
-            {
-                const RECT *destinationRect = &transaction->DestinationSubRects[index];
-                SIZE_T sourceLeft = static_cast<SIZE_T>(transaction->SourceRect.left) +
-                                    static_cast<SIZE_T>(destinationRect->left - transaction->DestinationRect.left);
-                SIZE_T sourceTop = static_cast<SIZE_T>(transaction->SourceRect.top) +
-                                   static_cast<SIZE_T>(destinationRect->top - transaction->DestinationRect.top);
-                UINT copyWidth = static_cast<UINT>(destinationRect->right - destinationRect->left);
-                UINT copyHeight = static_cast<UINT>(destinationRect->bottom - destinationRect->top);
-                SIZE_T rowBytes = static_cast<SIZE_T>(copyWidth) * 4;
-                copiedBytes += static_cast<ULONGLONG>(rowBytes) * copyHeight;
-                for (UINT row = 0; row < copyHeight; ++row)
-                {
-                    SIZE_T sourceOffset = (sourceTop + row) * source->Pitch + sourceLeft * 4;
-                    SIZE_T destinationOffset = static_cast<SIZE_T>(destinationRect->top + row) * destination->Pitch +
-                                               static_cast<SIZE_T>(destinationRect->left) * 4;
-                    CopyPresentRow(destinationBase + destinationOffset,
-                                   sourceBase + sourceOffset,
-                                   rowBytes,
-                                   source->Format,
-                                   destination->Format);
-                }
-            }
-            UpdatePrimaryReadCache(transaction, sourceBase);
+            copiedBytes += CopyPresentRows(transaction, sourceBase);
             if (PresentReadAddress(destination) != destination->ApertureAddress)
             {
                 transaction->Adapter->CountDisplayEvent(VioGpuPrimaryCacheWrites);

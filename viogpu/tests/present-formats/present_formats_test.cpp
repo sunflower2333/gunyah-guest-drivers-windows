@@ -18,6 +18,7 @@ using ULONGLONG = uint64_t;
 using LONGLONG = int64_t;
 using SIZE_T = size_t;
 using PUCHAR = unsigned char *;
+using UCHAR = unsigned char;
 using VOID = void;
 constexpr bool FALSE = false, TRUE = true;
 enum D3DDDIFORMAT
@@ -58,6 +59,11 @@ struct VIOGPU_WDDM_PRESENT_TRANSACTION
 static void RtlCopyMemory(void *dst, const void *src, SIZE_T size)
 {
     std::memcpy(dst, src, size);
+}
+inline SIZE_T RtlCompareMemory(const void *a, const void *b, SIZE_T n)
+{
+    const auto *x=static_cast<const UCHAR *>(a), *y=static_cast<const UCHAR *>(b);
+    SIZE_T i=0; while (i<n && x[i]==y[i]) ++i; return i;
 }
 
 // INSERT_PRODUCTION

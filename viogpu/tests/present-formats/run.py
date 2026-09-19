@@ -47,7 +47,7 @@ if args.negative_control_high_precision_pair:
         old, '!IsSupportedSurfaceFormat(source->Format) || !IsSupportedSurfaceFormat(destination->Format) ||')
 if not args.baseline:
     parts.append(function('CopyPresentRow'))
-execute = function('ExecutePresentTransaction')
+execute = function('ExecutePresentTransaction' if args.baseline else 'CopyPresentRows')
 start = execute.index('for (UINT index = 0; index < transaction->RectCount; ++index)')
 brace = execute.index('{', start)
 end, depth = brace + 1, 1
@@ -55,14 +55,16 @@ while depth:
     depth += (execute[end] == '{') - (execute[end] == '}')
     end += 1
 copy = execute[start:end]
+if not args.baseline:
+    copy = 'PUCHAR cache=nullptr, backing=destinationBase; const bool cacheValid=false, raw=false;\n' + copy
 if args.negative_control_raw_copy:
     # Match exactly the reviewed call tokens, not its clang-format line wrapping.
     # Missing, duplicate, or semantically changed anchors must still fail closed.
-    pattern = (r'\bCopyPresentRow\s*\(\s*destinationBase\s*\+\s*destinationOffset\s*,\s*'
-               r'sourceBase\s*\+\s*sourceOffset\s*,\s*rowBytes\s*,\s*'
+    pattern = (r'\bCopyPresentRow\s*\(\s*backing\s*\+\s*offset\s*,\s*'
+               r'input\s*,\s*rowBytes\s*,\s*'
                r'source\s*->\s*Format\s*,\s*destination\s*->\s*Format\s*\)\s*;')
     copy, count = re.subn(
-        pattern, 'RtlCopyMemory(destinationBase + destinationOffset, sourceBase + sourceOffset, rowBytes);', copy)
+        pattern, 'RtlCopyMemory(backing + offset, input, rowBytes);', copy)
     if count != 1:
         raise SystemExit(f'Expected one reviewed CopyPresentRow call, found {count}')
 fixture = (here / 'present_formats_test.cpp').read_text()
