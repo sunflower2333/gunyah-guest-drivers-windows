@@ -11757,10 +11757,12 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ImportNativeSharedResource(_In_ const 
     }
     /* The binding never happened: take the import back out again. */
     VIOGPU_HOST_CONTEXT_RESULT rollback = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE);
-    if (rollback == VioGpuHostContextUnknown)
+    if (rollback != VioGpuHostContextConfirmed)
     {
         VioGpuQuarantineNativeContextOwner(importer->Owner, VioGpuNativeQuarantineImportRollback);
-        return rollback;
+        // Attach was confirmed. Even a rejected/not-submitted detach leaves
+        // host ownership unresolved; retain the caller's import reservation.
+        return VioGpuHostContextUnknown;
     }
     return result;
 }

@@ -4873,7 +4873,17 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
     *hostResult = static_cast<ULONG>(result);
     if (result != VioGpuHostContextConfirmed)
     {
-        delete entry;
+        // Unknown includes an unconfirmed rollback: the host may still own
+        // this attachment and VA. Preserve its reservation until confirmed
+        // detach or reset retirement, even though import reports failure.
+        if (result == VioGpuHostContextUnknown)
+        {
+            InsertTailList(&g_VioGpuNativeImports, &entry->Link);
+        }
+        else
+        {
+            delete entry;
+        }
         *stage = 38;
         return STATUS_DEVICE_NOT_READY;
     }

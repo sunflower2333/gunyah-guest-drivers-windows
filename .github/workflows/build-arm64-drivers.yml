@@ -39,7 +39,9 @@ jobs:
       - name: Reject destroy requests without changing live shares or flips
         run: python viogpu/tests/destroy-preflight/run.py
       - name: Retain native import reservations after unconfirmed release
-        run: python viogpu/tests/native-share-release/run.py
+        run: |
+          python viogpu/tests/native-share-release/run.py
+          python viogpu/tests/native-share-release/import_failure_test.py
 
   opencl-icd:
     uses: ./.github/workflows/opencl-system-icd.yml
