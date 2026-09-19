@@ -39,6 +39,8 @@ const ULONGLONG VIOGPU_WDDM_CONTEXT_DESTROY_STALL_TIMEOUT_100NS = 10ULL * 1000 *
 const ULONG VIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_MAX_ATTEMPTS = 64;
 const LONGLONG VIOGPU_WDDM_DEFERRED_CONTEXT_DESTROY_RETRY_DELAY_100NS = 10LL * 1000 * 10;
 
+#include "wddm_runtime_domain.inc"
+
 enum VIOGPU_WDDM_APERTURE_PAGE_STATE : UCHAR
 {
     VioGpuWddmAperturePageUnknown = 0,
@@ -666,7 +668,7 @@ BOOLEAN HasLiveNativePresentIdentity(_In_ const VIOGPU_WDDM_ALLOCATION *allocati
     return allocation != NULL && context != NULL && adapter != NULL &&
            allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE && allocation->Adapter == adapter &&
            context->Type == VioGpuWddmContextNative && IsNativeAllocation(allocation) &&
-           allocation->NativeContext == &context->NativeContext &&
+           allocation->NativeContext == NativeRegistration(context) &&
            allocation->HostState == VioGpuWddmAllocationHostLive &&
            allocation->ResourceId >= VIOGPU_NATIVE_RESOURCE_ID_START && allocation->BlobId == allocation->ResourceId &&
            allocation->ContextId != 0 && allocation->ContextGeneration > 0 && allocation->ContextResetGeneration != 0 &&
@@ -2181,7 +2183,7 @@ NTSTATUS ValidateNativeRenderBindings(VIOGPU_WDDM_SUBMISSION *submission)
         }
         BOOLEAN valid = allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
                         allocation->Adapter == submission->Adapter && IsNativeAllocation(allocation) &&
-                        !allocation->Destroying && allocation->NativeContext == &submission->Context->NativeContext &&
+                        !allocation->Destroying && allocation->NativeContext == NativeRegistration(submission->Context) &&
                         allocation->ContextId == submission->ContextId &&
                         allocation->ContextGeneration == submission->Generation &&
                         allocation->ContextResetGeneration == submission->ResetGeneration &&
@@ -4230,7 +4232,7 @@ NTSTATUS QueryContextInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
     {
         status = STATUS_DEVICE_NOT_READY;
     }
-    else if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+    else if (!VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context), &snapshot))
     {
         status = STATUS_DEVICE_NOT_READY;
     }
@@ -4478,7 +4480,7 @@ VOID RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
             if (context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE && ExAcquireRundownProtection(&context->Operations))
             {
                 VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
-                if (VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+                if (VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context), &snapshot))
                 {
                     if (adapter->AcquireNativeSubmissionOperation())
                     {
@@ -4507,10 +4509,11 @@ static VOID FindNativeAllocationRangeByIova(_In_ VIOGPU_WDDM_CONTEXT *context,
 {
     *resourceId = 0;
     *length = 0;
+    VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration = NativeRegistration(context);
     KIRQL oldIrql;
-    KeAcquireSpinLock(&context->NativeContext.BindingLock, &oldIrql);
-    for (PLIST_ENTRY link = context->NativeContext.AllocationRanges.Flink;
-         link != &context->NativeContext.AllocationRanges;
+    KeAcquireSpinLock(&registration->BindingLock, &oldIrql);
+    for (PLIST_ENTRY link = registration->AllocationRanges.Flink;
+         link != &registration->AllocationRanges;
          link = link->Flink)
     {
         VIOGPU_WDDM_ALLOCATION_RANGE *range = CONTAINING_RECORD(link, VIOGPU_WDDM_ALLOCATION_RANGE, Link);
@@ -4521,7 +4524,7 @@ static VOID FindNativeAllocationRangeByIova(_In_ VIOGPU_WDDM_CONTEXT *context,
             break;
         }
     }
-    KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
+    KeReleaseSpinLock(&registration->BindingLock, oldIrql);
 }
 
 /* Runs under the context's binding spin lock, so it must not be paged. */
@@ -4534,10 +4537,11 @@ static VOID FindNativeAllocationRangeByResourceId(_In_ VIOGPU_WDDM_CONTEXT *cont
 {
     *iova = 0;
     *length = 0;
+    VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration = NativeRegistration(context);
     KIRQL oldIrql;
-    KeAcquireSpinLock(&context->NativeContext.BindingLock, &oldIrql);
-    for (PLIST_ENTRY link = context->NativeContext.AllocationRanges.Flink;
-         link != &context->NativeContext.AllocationRanges;
+    KeAcquireSpinLock(&registration->BindingLock, &oldIrql);
+    for (PLIST_ENTRY link = registration->AllocationRanges.Flink;
+         link != &registration->AllocationRanges;
          link = link->Flink)
     {
         VIOGPU_WDDM_ALLOCATION_RANGE *range = CONTAINING_RECORD(link, VIOGPU_WDDM_ALLOCATION_RANGE, Link);
@@ -4548,7 +4552,7 @@ static VOID FindNativeAllocationRangeByResourceId(_In_ VIOGPU_WDDM_CONTEXT *cont
             break;
         }
     }
-    KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
+    KeReleaseSpinLock(&registration->BindingLock, oldIrql);
 }
 
 static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
@@ -4805,7 +4809,7 @@ static NTSTATUS HandleNativeShareEscapeLocked(_In_ VioGpuDod *adapter,
         *stage = 7;
         status = STATUS_DEVICE_NOT_READY;
     }
-    else if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+    else if (!VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context), &snapshot))
     {
         *stage = 8;
         status = STATUS_DEVICE_NOT_READY;
@@ -4949,7 +4953,7 @@ NTSTATUS QueryGpuTimestampInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
         status = STATUS_INVALID_HANDLE;
     }
     else if (adapter->IsDriverActive() &&
-             VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+             VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context), &snapshot))
     {
         snapshotAcquired = TRUE;
         if (snapshot.ResetGeneration == request.ExpectedResetGeneration && snapshot.ContextId != 0)
@@ -5039,7 +5043,7 @@ NTSTATUS QueryCompletedFenceInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escap
     {
         status = STATUS_DEVICE_NOT_READY;
     }
-    else if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+    else if (!VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context), &snapshot))
     {
         status = STATUS_DEVICE_NOT_READY;
     }
@@ -6783,6 +6787,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateDevice(CONST HANDLE hAd
     device->Adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
     device->RuntimeDevice = createDevice->hDevice;
     device->ReferenceState = 0;
+    KeInitializeSpinLock(&device->DomainLock);
+    InitializeListHead(&device->NativeDomains);
     createDevice->hDevice = device;
     return STATUS_SUCCESS;
 }
@@ -6877,23 +6883,34 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
     }
 
     VIOGPU_WDDM_CONTEXT_CREATE privateData = {};
+    VIOGPU_WDDM_CONTEXT_CREATE_SHARED sharedData = {};
+    BOOLEAN sharedDomain = FALSE;
     if (contextType == VioGpuWddmContextNative)
     {
         if (createContext->pPrivateDriverData == NULL ||
-            createContext->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_CONTEXT_CREATE))
+            (createContext->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_CONTEXT_CREATE) &&
+             createContext->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_CONTEXT_CREATE_SHARED)))
         {
             return STATUS_INVALID_PARAMETER;
         }
         __try
         {
             RtlCopyMemory(&privateData, createContext->pPrivateDriverData, sizeof(privateData));
+            sharedDomain = createContext->PrivateDriverDataSize == sizeof(sharedData);
+            if (sharedDomain)
+            {
+                RtlCopyMemory(&sharedData, createContext->pPrivateDriverData, sizeof(sharedData));
+                privateData = sharedData.Base;
+            }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             return STATUS_INVALID_USER_BUFFER;
         }
-        if (!IsCurrentAbiHeader(&privateData.Header, sizeof(privateData)) || privateData.ExpectedResetGeneration == 0 ||
-            privateData.Flags != VIOGPU_WDDM_CONTEXT_FLAGS_NONE || privateData.Reserved != 0)
+        if (!IsCurrentAbiHeader(&privateData.Header, sharedDomain ? sizeof(sharedData) : sizeof(privateData)) ||
+            privateData.ExpectedResetGeneration == 0 || privateData.Reserved != 0 ||
+            privateData.Flags != (sharedDomain ? VIOGPU_WDDM_CONTEXT_SHARED_DOMAIN : VIOGPU_WDDM_CONTEXT_FLAGS_NONE) ||
+            (sharedDomain && (sharedData.AllocationContextId == 0 || sharedData.Reserved != 0)))
         {
             return STATUS_GRAPHICS_DRIVER_MISMATCH;
         }
@@ -6935,15 +6952,47 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
     context->DeferredAdapter = NULL;
     context->NodeOrdinal = createContext->NodeOrdinal;
     context->EngineAffinity = createContext->EngineAffinity;
+    InitializeListHead(&context->DomainLink);
     KeInitializeSpinLock(&context->NativeContext.BindingLock);
     InitializeListHead(&context->NativeContext.AllocationRanges);
     InitializeListHead(&context->PendingSubmissions);
     context->NativeContext.State = contextType == VioGpuWddmContextNative ? VioGpuNativeContextAllocated
                                                                           : VioGpuNativeContextDead;
 
-    NTSTATUS status = contextType == VioGpuWddmContextNative ? device->Adapter->CreateNativeContext(&context->NativeContext,
-                                                                                                    privateData.ExpectedResetGeneration)
-                                                             : STATUS_SUCCESS;
+    NTSTATUS status = STATUS_SUCCESS;
+    if (contextType == VioGpuWddmContextNative)
+    {
+        if (sharedDomain)
+        {
+            status = AttachNativeDomain(context, sharedData.AllocationContextId, privateData.ExpectedResetGeneration);
+            if (NT_SUCCESS(status))
+            {
+                VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+                BOOLEAN acquired = VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context), &snapshot);
+                if (!acquired || snapshot.ResetGeneration != privateData.ExpectedResetGeneration ||
+                    snapshot.ContextId != sharedData.AllocationContextId)
+                {
+                    status = STATUS_DEVICE_NOT_READY;
+                }
+                if (acquired)
+                {
+                    VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+                }
+                if (status != STATUS_SUCCESS)
+                {
+                    DetachNativeDomain(context);
+                }
+            }
+        }
+        else
+        {
+            status = device->Adapter->CreateNativeContext(&context->NativeContext, privateData.ExpectedResetGeneration);
+            if (NT_SUCCESS(status))
+            {
+                PublishNativeDomain(context);
+            }
+        }
+    }
     if (!NT_SUCCESS(status))
     {
         context->Signature = 0;
@@ -7101,6 +7150,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
     if (context == NULL || context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         return STATUS_INVALID_HANDLE;
+    }
+
+    /* Children must keep their allocation domain live through OS completion.
+     * Refuse owner rundown before touching its operations or import registry. */
+    NTSTATUS domainStatus = CloseNativeDomain(context);
+    if (domainStatus != STATUS_SUCCESS)
+    {
+        return domainStatus;
     }
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
@@ -7325,6 +7382,16 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyContext(CONST HANDLE h
     if (context->Type == VioGpuWddmContextNative)
     {
         RemoveNativeImportsForContext(context);
+    }
+
+    if (context->DomainOwner != NULL)
+    {
+        VIOGPU_WDDM_DEVICE *device = context->Device;
+        DetachNativeDomain(context);
+        context->Signature = 0;
+        delete context;
+        DereferenceDevice(device);
+        return STATUS_SUCCESS;
     }
 
     if (context->Type == VioGpuWddmContextNative)
@@ -9080,7 +9147,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmRender(CONST HANDLE hContext,
         return STATUS_DEVICE_NOT_READY;
     }
     VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
-    if (!VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext, &snapshot))
+    if (!VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context), &snapshot))
     {
         ExReleaseRundownProtection(&context->Operations);
         return STATUS_DEVICE_NOT_READY;

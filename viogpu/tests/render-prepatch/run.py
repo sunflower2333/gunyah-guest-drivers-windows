@@ -29,6 +29,8 @@ def function(text, signature):
     return text[start:end]
 
 production = '\n'.join([
+    function((root / 'viogpu/viogpuwddm/wddm_runtime_domain.inc').read_text(),
+             'static VIOGPU_NATIVE_CONTEXT_REGISTRATION *NativeRegistration('),
     function(previous, 'NTSTATUS ApplyRenderPrepatches('),
     function(current, 'NTSTATUS ValidateNativeRenderBindings('),
 ])

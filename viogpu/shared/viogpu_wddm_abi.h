@@ -16,6 +16,7 @@
 #define VIOGPU_WDDM_ALLOCATION_GPU_READ_ONLY 0x00000008U
 
 #define VIOGPU_WDDM_CONTEXT_FLAGS_NONE       0U
+#define VIOGPU_WDDM_CONTEXT_SHARED_DOMAIN    0x00000001U
 #define VIOGPU_WDDM_ESCAPE_FLAGS_NONE        0U
 /* IMPORT_NATIVE: when the calling context already owns the share, map nothing
  * and answer with the owner's existing address instead of refusing. A context
@@ -115,6 +116,16 @@ typedef struct VIOGPU_WDDM_CONTEXT_CREATE
     VIOGPU_WDDM_UINT32 Flags;
     VIOGPU_WDDM_UINT32 Reserved;
 } VIOGPU_WDDM_CONTEXT_CREATE;
+
+/* Optional exact-size extension. The OS scheduling context is new, while its
+ * allocations and Host submit queue belong to the named same-device domain.
+ * No UMD pointer or OS context handle is accepted as domain identity. */
+typedef struct VIOGPU_WDDM_CONTEXT_CREATE_SHARED
+{
+    VIOGPU_WDDM_CONTEXT_CREATE Base;
+    VIOGPU_WDDM_UINT32 AllocationContextId;
+    VIOGPU_WDDM_UINT32 Reserved;
+} VIOGPU_WDDM_CONTEXT_CREATE_SHARED;
 
 typedef struct VIOGPU_WDDM_CONTEXT_INFO
 {

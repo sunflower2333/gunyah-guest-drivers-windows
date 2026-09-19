@@ -70,6 +70,11 @@ ABI_OFFSET(offset.context_create.expected_reset_generation, VIOGPU_WDDM_CONTEXT_
 ABI_OFFSET(offset.context_create.flags, VIOGPU_WDDM_CONTEXT_CREATE, Flags, 24);
 ABI_OFFSET(offset.context_create.reserved, VIOGPU_WDDM_CONTEXT_CREATE, Reserved, 28);
 
+ABI_SIZE(size.context_create_shared, VIOGPU_WDDM_CONTEXT_CREATE_SHARED, 40);
+ABI_OFFSET(offset.context_create_shared.base, VIOGPU_WDDM_CONTEXT_CREATE_SHARED, Base, 0);
+ABI_OFFSET(offset.context_create_shared.allocation_context_id, VIOGPU_WDDM_CONTEXT_CREATE_SHARED, AllocationContextId, 32);
+ABI_OFFSET(offset.context_create_shared.reserved, VIOGPU_WDDM_CONTEXT_CREATE_SHARED, Reserved, 36);
+
 ABI_SIZE(size.context_info, VIOGPU_WDDM_CONTEXT_INFO, 64);
 ABI_OFFSET(offset.context_info.header, VIOGPU_WDDM_CONTEXT_INFO, Header, 0);
 ABI_OFFSET(offset.context_info.opcode, VIOGPU_WDDM_CONTEXT_INFO, Opcode, 16);

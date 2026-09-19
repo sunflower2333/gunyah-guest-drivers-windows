@@ -274,6 +274,8 @@ struct VIOGPU_WDDM_DEVICE
     VioGpuDod *Adapter;
     HANDLE RuntimeDevice;
     volatile LONG ReferenceState;
+    KSPIN_LOCK DomainLock;
+    LIST_ENTRY NativeDomains;
 };
 
 enum VIOGPU_WDDM_CONTEXT_TYPE : LONG
@@ -316,6 +318,16 @@ struct VIOGPU_WDDM_CONTEXT
     VioGpuDod *DeferredAdapter;
     UINT NodeOrdinal;
     UINT EngineAffinity;
+    /* DomainLink/Children/Closing/identity are protected by Device->DomainLock.
+     * A child owns one reference until all of its scheduler work has drained.
+     * The owner's inline registration preserves allocation-deferred teardown. */
+    LIST_ENTRY DomainLink;
+    VIOGPU_WDDM_CONTEXT *DomainOwner;
+    ULONG DomainChildren;
+    BOOLEAN DomainClosing;
+    BOOLEAN DomainPublished;
+    UINT DomainContextId;
+    ULONGLONG DomainResetGeneration;
     VIOGPU_NATIVE_CONTEXT_REGISTRATION NativeContext;
 };
 

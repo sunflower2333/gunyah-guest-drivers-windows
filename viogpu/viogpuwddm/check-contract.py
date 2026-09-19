@@ -5506,7 +5506,7 @@ def check_wddm_present_contract() -> None:
     for fragment in (
         "context->Type==VioGpuWddmContextNative",
         "IsNativeAllocation(allocation)",
-        "allocation->NativeContext==&context->NativeContext",
+        "allocation->NativeContext==NativeRegistration(context)",
         "allocation->HostState==VioGpuWddmAllocationHostLive",
         "allocation->BlobId==allocation->ResourceId",
         "allocation->BoundContextId==allocation->ContextId",
@@ -8167,6 +8167,11 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT32 RefreshRateDenominator;
             VIOGPU_WDDM_UINT32 ContextId;
         """,
+        "VIOGPU_WDDM_CONTEXT_CREATE_SHARED": """
+            VIOGPU_WDDM_CONTEXT_CREATE Base;
+            VIOGPU_WDDM_UINT32 AllocationContextId;
+            VIOGPU_WDDM_UINT32 Reserved;
+        """,
         "VIOGPU_WDDM_CONTEXT_CREATE": """
             VIOGPU_WDDM_ABI_HEADER Header;
             VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
@@ -8636,7 +8641,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "!ExAcquireRundownProtection(&context->Operations)",
         "context->Device!=device",
         "!adapter->IsDriverActive()",
-        "VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext,&snapshot)",
+        "VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context),&snapshot)",
         "snapshot.ResetGeneration!=request.ExpectedResetGeneration",
         "response.CompletedFence=QueryContextCompletedUmdFence(context);",
         "RtlCopyMemory(escape->pPrivateDriverData,&response,sizeof(response));",
@@ -8647,7 +8652,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             fail(f"completed-fence Escape must keep its exact context/generation contract: {fragment}")
     completion_order = (
         "ExAcquireRundownProtection(&context->Operations)",
-        "VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext,&snapshot)",
+        "VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context),&snapshot)",
         "response.CompletedFence=QueryContextCompletedUmdFence(context);",
         "RtlCopyMemory(escape->pPrivateDriverData,&response,sizeof(response));",
         "VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);",
@@ -8703,7 +8708,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     acquire_context = context_query.find("if(!ExAcquireRundownProtection(&context->Operations))")
     validate_identity = context_query.find("context->Signature!=VIOGPU_WDDM_CONTEXT_SIGNATURE")
     acquire_snapshot = context_query.find(
-        "VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext,&snapshot)"
+        "VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context),&snapshot)"
     )
     validate_va = context_query.find("snapshot.ResetGeneration!=request.ExpectedResetGeneration")
     publish = context_query.find("RtlCopyMemory(escape->pPrivateDriverData,&response,sizeof(response));")
@@ -8757,13 +8762,16 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "contextType=VioGpuWddmContextSystem;",
         "contextType=VioGpuWddmContextGdi;",
         "contextType=hasPrivateData?VioGpuWddmContextNative:VioGpuWddmContextGdi;",
-        "if(contextType==VioGpuWddmContextNative)",
         "createContext->pPrivateDriverData==NULL",
         "createContext->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_CONTEXT_CREATE)",
         "RtlCopyMemory(&privateData,createContext->pPrivateDriverData,sizeof(privateData));",
-        "!IsCurrentAbiHeader(&privateData.Header,sizeof(privateData))",
+        "!IsCurrentAbiHeader(&privateData.Header,sharedDomain?sizeof(sharedData):sizeof(privateData))",
         "privateData.ExpectedResetGeneration==0",
-        "privateData.Flags!=VIOGPU_WDDM_CONTEXT_FLAGS_NONE",
+        "privateData.Flags!=(sharedDomain?VIOGPU_WDDM_CONTEXT_SHARED_DOMAIN:VIOGPU_WDDM_CONTEXT_FLAGS_NONE)",
+        "createContext->PrivateDriverDataSize!=sizeof(VIOGPU_WDDM_CONTEXT_CREATE_SHARED)",
+        "sharedData.AllocationContextId==0||sharedData.Reserved!=0",
+        "AttachNativeDomain(context,sharedData.AllocationContextId,privateData.ExpectedResetGeneration)",
+        "PublishNativeDomain(context);",
         "privateData.Reserved!=0",
         "elseif(createContext->pPrivateDriverData!=NULL||createContext->PrivateDriverDataSize!=0)",
         "context->RuntimeContext=NULL;",
@@ -8784,9 +8792,16 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if "ProbeForRead(" in create:
         fail("CreateContext must snapshot dxgkrnl-owned private data without probing it as a user address")
     create_snapshot = create.find("RtlCopyMemory(&privateData,createContext->pPrivateDriverData,sizeof(privateData));")
-    create_validation = create.find("!IsCurrentAbiHeader(&privateData.Header,sizeof(privateData))")
+    create_validation = create.find("!IsCurrentAbiHeader(&privateData.Header,sharedDomain?sizeof(sharedData):sizeof(privateData))")
     if create_snapshot < 0 or create_validation < 0 or create_snapshot > create_validation:
         fail("CreateContext must snapshot its private data before validating the current pre-v1 contract")
+    domain_destroy = canonical_code(function_body("VioGpuWddmDestroyContext", WDDM_DDI_CODE))
+    if not 0 <= domain_destroy.find("CloseNativeDomain(context)") < domain_destroy.find("BeginContextSubmissionRundown(context)"):
+        fail("owner domain references must gate destruction before scheduler rundown")
+    if not (domain_destroy.find("RemoveNativeImportsForContext(context);") <
+            domain_destroy.find("DetachNativeDomain(context);") <
+            domain_destroy.find("DeferNativeContextDestroy(context,adapter,&deferred)")):
+        fail("child drain/import teardown must precede detach and bypass owner domain destruction")
 
     allocation_header = canonical_code(WDDM_DDI_HEADER_CODE)
     if allocation_header.count("VIOGPU_WDDM_ALLOCATION_INFOPrivateData;") != 1:
@@ -10373,9 +10388,7 @@ def check_wddm_context_lifetime() -> None:
         "VioGpuNativeContextAllocated:VioGpuNativeContextDead;"
     )
     host_create = create.find(
-        "NTSTATUSstatus=contextType==VioGpuWddmContextNative?"
-        "device->Adapter->CreateNativeContext(&context->NativeContext,privateData.ExpectedResetGeneration):"
-        "STATUS_SUCCESS;"
+        "status=device->Adapter->CreateNativeContext(&context->NativeContext,privateData.ExpectedResetGeneration);"
     )
     publish = create.find("createContext->hContext=context;")
     if min(
@@ -10645,7 +10658,7 @@ def check_wddm_context_lifetime() -> None:
         "context->Signature!=VIOGPU_WDDM_CONTEXT_SIGNATURE||context->Type!=VioGpuWddmContextNative"
     )
     signature_check = render.find(f"if({render_context_gate})")
-    acquire = render.find("VioGpuAdapter::AcquireNativeContextSnapshot(&context->NativeContext,&snapshot)")
+    acquire = render.find("VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context),&snapshot)")
     if min(acquire_rundown, signature_check, acquire) < 0 or not acquire_rundown < signature_check < acquire:
         fail("Render must acquire context operations before signature validation and native snapshot use")
     if (
@@ -11330,7 +11343,7 @@ def check_wddm_submission_lifetime() -> None:
 
     render_bindings = canonical_code(function_body("ValidateNativeRenderBindings", WDDM_DDI_CODE))
     for fragment in (
-        "allocation->NativeContext==&submission->Context->NativeContext",
+        "allocation->NativeContext==NativeRegistration(submission->Context)",
         "allocation->ContextResetGeneration==submission->ResetGeneration",
         "allocation->PrivateData.ExpectedResetGeneration==submission->ResetGeneration",
         "allocation->HostState==VioGpuWddmAllocationHostLive",
