@@ -57,8 +57,10 @@ class BundleTests(unittest.TestCase):
         self.assertIn("viogpu-install-native.cs", receipt["installer_files"])
 
     def test_d3d10_mesa_gitlink_matches_optimized_branch(self):
+        # Check the candidate index too: before a commit HEAD still names the
+        # previous gitlink and can falsely pass a stale packaging pin locally.
         actual = subprocess.check_output(
-            ["git", "rev-parse", "HEAD:external/mesa"],
+            ["git", "rev-parse", ":external/mesa"],
             text=True,
         ).strip()
         self.assertEqual(actual, bundle.D3D10_MESA)
