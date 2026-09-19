@@ -3002,7 +3002,23 @@ VOID CopyPresentRow(_Out_writes_bytes_(rowBytes) VOID *destination,
     }
     PUCHAR destinationBytes = static_cast<PUCHAR>(destination);
     const unsigned char *sourceBytes = static_cast<const unsigned char *>(source);
-    for (SIZE_T offset = 0; offset < rowBytes; offset += sizeof(DWORD))
+    // Integer lanes avoid touching kernel SIMD state. Each 32-bit pixel stays
+    // in its own lane, including its alpha byte. memcpy permits unaligned
+    // starts/pitches; never read beyond the last complete pair.
+    const ULONGLONG keepMask = swapRedBlue ? 0xFF00FF00FF00FF00ULL : ~0ULL;
+    const ULONGLONG redMask = swapRedBlue ? 0x000000FF000000FFULL : 0;
+    const ULONGLONG blueMask = swapRedBlue ? 0x00FF000000FF0000ULL : 0;
+    const ULONGLONG alphaMask = opaqueAlpha ? 0xFF000000FF000000ULL : 0;
+    SIZE_T offset = 0;
+    for (; rowBytes - offset >= sizeof(ULONGLONG); offset += sizeof(ULONGLONG))
+    {
+        ULONGLONG pixels;
+        RtlCopyMemory(&pixels, sourceBytes + offset, sizeof(pixels));
+        pixels = (pixels & keepMask) | ((pixels & redMask) << 16) |
+                 ((pixels & blueMask) >> 16) | alphaMask;
+        RtlCopyMemory(destinationBytes + offset, &pixels, sizeof(pixels));
+    }
+    for (; offset < rowBytes; offset += sizeof(DWORD))
     {
         DWORD pixel;
         // Use byte copies because an otherwise valid surface pitch can make
@@ -3636,7 +3652,15 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
             }
             if (transaction->CopyOnly)
             {
+                const ULONGLONG rowsStart = phaseStart;
                 phaseStart = RecordCopyPhase(transaction->Adapter, VioGpuCopyRowsUsec, phaseStart);
+                const BOOLEAN conversion =
+                    ((source->Format == D3DDDIFMT_A8B8G8R8) !=
+                     (destination->Format == D3DDDIFMT_A8B8G8R8)) ||
+                    (source->Format == D3DDDIFMT_X8R8G8B8 && destination->Format != D3DDDIFMT_X8R8G8B8);
+                transaction->Adapter->CountDisplayEvent(conversion ? VioGpuCopyConvertCalls : VioGpuCopyRawCalls);
+                transaction->Adapter->AddDisplayValue(conversion ? VioGpuCopyConvertUsec : VioGpuCopyRawUsec,
+                    static_cast<ULONG>((phaseStart - rowsStart) / 10));
             }
             KeMemoryBarrier();
             KeFlushIoBuffers(destination->ApertureMdl, FALSE, TRUE);

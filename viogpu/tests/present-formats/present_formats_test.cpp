@@ -194,6 +194,50 @@ static bool ten_bit_copy(D3DDDIFORMAT format)
     return true;
 }
 
+static bool row_boundaries(D3DDDIFORMAT sourceFormat, D3DDDIFORMAT destinationFormat)
+{
+    // Exercise pair boundaries, odd tails, all byte alignments and a real
+    // desktop row. The byte oracle is independent of packed-word masks.
+    for (UINT width : {1U, 2U, 3U, 7U, 16U, 17U, 31U, 32U, 33U, 3040U})
+    {
+        for (UINT alignment = 0; alignment < 8; ++alignment)
+        {
+            const UINT bytes = width * 4;
+            std::vector<unsigned char> src(alignment + bytes), dst(7 - alignment + bytes + 16, 0x9d);
+            auto *s = src.data() + alignment;
+            auto *d = dst.data() + 7 - alignment;
+            for (UINT i = 0; i < bytes; ++i)
+                s[i] = static_cast<unsigned char>((i * 37 + i / 4 * 13 + 11) & 255);
+            const auto original = src;
+            auto expected = dst;
+            for (UINT x = 0; x < width; ++x)
+            {
+                for (UINT lane = 0; lane < 4; ++lane)
+                {
+                    UINT input = lane;
+                    if (lane == 0 || lane == 2)
+                        if ((sourceFormat == D3DDDIFMT_A8B8G8R8) !=
+                            (destinationFormat == D3DDDIFMT_A8B8G8R8))
+                            input = 2 - lane;
+                    expected[7 - alignment + x * 4 + lane] =
+                        lane == 3 && sourceFormat == D3DDDIFMT_X8R8G8B8 &&
+                        destinationFormat != D3DDDIFMT_X8R8G8B8 ? static_cast<unsigned char>(255) : s[x * 4 + input];
+                }
+            }
+            VIOGPU_WDDM_ALLOCATION source{sourceFormat, width, 1, bytes, bytes, s};
+            VIOGPU_WDDM_ALLOCATION destination{destinationFormat, width, 1, bytes, bytes, d};
+            RECT clip{0, 0, static_cast<int32_t>(width), 1};
+            VIOGPU_WDDM_PRESENT_TRANSACTION tx{&source, &destination, clip, clip, &clip, 1};
+            if (!ValidatePresentGeometry(&source, &destination, &clip, &clip, &clip, 1))
+                return false;
+            ExecuteCopy(&tx);
+            if (src != original || dst != expected)
+                return false;
+        }
+    }
+    return true;
+}
+
 int main()
 {
     const D3DDDIFORMAT formats[]{D3DDDIFMT_A8R8G8B8, D3DDDIFMT_X8R8G8B8, D3DDDIFMT_A8B8G8R8};
@@ -205,6 +249,8 @@ int main()
             char name[64];
             std::snprintf(name, sizeof(name), "%s to %s", names[source], names[destination]);
             check(color_copy(formats[source], formats[destination]), name);
+            std::snprintf(name, sizeof(name), "%s to %s row boundaries", names[source], names[destination]);
+            check(row_boundaries(formats[source], formats[destination]), name);
         }
     }
     VIOGPU_WDDM_ALLOCATION source{D3DDDIFMT_A8R8G8B8, 4, 4, 16, 64, nullptr};

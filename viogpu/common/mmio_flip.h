@@ -199,5 +199,9 @@ enum : unsigned
     VioGpuCopyFlushUsec = 97,
     VioGpuCopyTailUsec = 98,
     VioGpuCopyKiB = 99,
-    VioGpuDisplayCounterCount = 100,
+    VioGpuCopyRawCalls = 100,
+    VioGpuCopyRawUsec = 101,
+    VioGpuCopyConvertCalls = 102,
+    VioGpuCopyConvertUsec = 103,
+    VioGpuDisplayCounterCount = 104,
 };
