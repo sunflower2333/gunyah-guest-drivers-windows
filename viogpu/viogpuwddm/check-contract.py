@@ -5143,15 +5143,34 @@ def check_wddm_standard_primary_scanout() -> None:
          "adapter->Set2DScanout(0,nativeResourceId,",
          "adapter->FlushNativeScanout(nativeResourceId,",
          "adapter->LatchFlippedScanout(scanoutResourceId,",
-         "if(nativeShareHeld){ReleaseNativeShareRegistry();}"),
+         "if(nativeShareHeld){ReleaseNativeScanoutShare(adapter);}"),
         "native scanout must hold the share registry through bind, flush and latch",
     )
-    protected_flip = bind_primary.split("AcquireNativeScanoutShare(", 1)[1].split("ReleaseNativeShareRegistry();", 1)[0]
+    protected_flip = bind_primary.split("AcquireNativeScanoutShare(", 1)[1].split("ReleaseNativeScanoutShare(adapter);", 1)[0]
     if "return" in protected_flip:
         fail("native share ownership cannot leak through an early bind return")
     if "keepPublishedFrame=!nativeScanout&&!guestBlob" not in bind_primary:
         fail("native publication must not be suppressed by an empty CPU shadow")
     share_revoke = canonical_code(function_body("RevokeNativeShares", WDDM_DDI_CODE))
+    scanout_share = canonical_code(function_body("AcquireNativeScanoutShare", WDDM_DDI_CODE))
+    require_order(
+        scanout_share,
+        ("AcquireNativeShareRegistry(FALSE)", "adapter->AcquireNativeSubmissionOperation()",
+         "adapter->IsNativeContextGenerationCurrent(share->Generation,share->ResetGeneration)",
+         "share->ScanoutReferenced=TRUE;", "returnTRUE;",
+         "adapter->ReleaseNativeSubmissionOperation();", "ReleaseNativeShareRegistry();"),
+        "scanout acquisition must validate share generation under retained transport rundown",
+    )
+    release_scanout_share = canonical_code(function_body("ReleaseNativeScanoutShare", WDDM_DDI_CODE))
+    require_order(release_scanout_share,
+                  ("ReleaseNativeShareRegistry();", "adapter->ReleaseNativeSubmissionOperation();"),
+                  "scanout share release must balance registry and transport ownership")
+    import_share = canonical_code(function_body("ImportNativeShareLocked", WDDM_DDI_CODE))
+    require_order(import_share,
+                  ("share->Generation!=snapshot->Generation||share->ResetGeneration!=snapshot->ResetGeneration",
+                   "*stage=30;", "returnSTATUS_DEVICE_NOT_READY;",
+                   "VIOGPU_WDDM_ESCAPE_FLAGS_ALIAS_OWNER"),
+                  "native imports must refuse cross-generation keys before owner alias or host attach")
     require_order(
         share_revoke,
         ("if(share->ScanoutReferenced)",

@@ -27,7 +27,10 @@ struct VIOGPU_WDDM_CONTEXT {};
 struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT;
 struct VioGpuDod {
  bool admitted=true; int acquired=0,released=0,calls=0;
- bool retired=false;
+ bool retired=false,current=true;
+ bool IsNativeContextGenerationCurrent(int generation,unsigned reset) {
+  return current && !retired && generation==1 && reset==7;
+ }
  bool detached=true; int detachCalls=0;
  VIOGPU_HOST_CONTEXT_RESULT detachResult=VioGpuHostContextConfirmed;
  VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(unsigned id,bool *out,bool native) {
@@ -43,8 +46,8 @@ struct VioGpuDod {
   assert(id==99); ++calls; return result;
  }
 };
-struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT { VioGpuDod *Adapter; unsigned ResetGeneration=7; };
-struct VIOGPU_WDDM_NATIVE_SHARE { unsigned ShareKey,Iova; };
+struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT { VioGpuDod *Adapter; unsigned ResetGeneration=7; int Generation=1; unsigned ContextId=2; };
+struct VIOGPU_WDDM_NATIVE_SHARE { unsigned ShareKey,Iova,Size=0; };
 int deleted;
 struct VIOGPU_WDDM_NATIVE_IMPORT_ENTRY {
  LIST_ENTRY Link; VIOGPU_WDDM_CONTEXT *Context; VioGpuDod *Adapter;
@@ -133,6 +136,7 @@ constexpr int VIOGPU_WDDM_CONTEXT_SIGNATURE=123;
 struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY {
  LIST_ENTRY Link; VioGpuDod *Adapter; unsigned Key,ResourceId,Size;
  bool ScanoutReferenced=false;
+ int Generation=1;unsigned ResetGeneration=7,OwnerContextId=2;
 };
 LIST_ENTRY g_VioGpuNativeShares;
 bool registry=true,rundown=true,snapshotOK=true;
@@ -234,7 +238,7 @@ lookup_start = source.index('static BOOLEAN AcquireNativeScanoutShare(')
 lookup_end = source.index('/* A shared native allocation', lookup_start)
 lookup = source[lookup_start:lookup_end]
 scanout_fixture = revoke_fixture.split('FUNCTION')[0] + r'''
-using ULONGLONG=unsigned long long;
+using ULONGLONG=unsigned long long;using VOID=void;
 VIOGPU_WDDM_NATIVE_SHARE_ENTRY *FindNativeShareByKeyLocked(VioGpuDod *adapter,ULONGLONG key) {
  assert(registryHeld==1);
  for(auto *link=g_VioGpuNativeShares.Flink;link!=&g_VioGpuNativeShares;link=link->Flink) {
@@ -257,8 +261,10 @@ int main() {
   assert(!AcquireNativeScanoutShare(&adapter,12,&id,&size)&&registryHeld==0);++cases;
   assert(AcquireNativeScanoutShare(&adapter,11,&id,&size));
   assert(registryHeld==1&&id==99&&size==4096&&share->ScanoutReferenced);++cases;
+  assert(adapter.acquired==adapter.released+1);
   // The real flip caller releases only after bind/flush/latch.
-  ReleaseNativeShareRegistry();
+  ReleaseNativeScanoutShare(&adapter);
+  assert(adapter.acquired==adapter.released);
   if(failure==0)adapter.detachResult=VioGpuHostContextUnknown;
   if(failure==1)adapter.detachResult=VioGpuHostContextNotSubmitted;
   if(failure==2)adapter.detached=false;
@@ -270,6 +276,29 @@ int main() {
   assert(RevokeNativeShares(&adapter,99)==0&&registryHeld==0);
   assert(adapter.detachCalls==3&&g_VioGpuNativeShares.Flink==&g_VioGpuNativeShares);++cases;
  }
+ for(int failure=0;failure<3;++failure) {
+  VioGpuDod adapter;
+  auto *share=new VIOGPU_WDDM_NATIVE_SHARE_ENTRY{{},&adapter,11,99,4096};
+  g_VioGpuNativeShares={&share->Link,&share->Link};
+  share->Link={&g_VioGpuNativeShares,&g_VioGpuNativeShares};
+  g_VioGpuNativeImports={&g_VioGpuNativeImports,&g_VioGpuNativeImports};
+  if(failure==0)adapter.admitted=false;
+  if(failure==1)adapter.current=false;
+  if(failure==2)adapter.retired=true;
+  UINT id=123;ULONGLONG size=123;
+  assert(!AcquireNativeScanoutShare(&adapter,11,&id,&size));
+  assert(!registryHeld&&id==0&&size==0&&!share->ScanoutReferenced);
+  assert(adapter.acquired==adapter.released);++cases;
+  share->ScanoutReferenced=true;
+  if(failure!=2) {
+   assert(RevokeNativeShares(&adapter,99)==STATUS_DEVICE_BUSY);
+   assert(g_VioGpuNativeShares.Flink==&share->Link&&adapter.detachCalls==0);++cases;
+  }
+  // Confirmed old-generation retirement must never unbind a new generation.
+  adapter.retired=true;
+  assert(RevokeNativeShares(&adapter,99)==0&&adapter.detachCalls==0);
+  assert(!registryHeld&&adapter.acquired==adapter.released);++cases;
+ }
  printf("production native scanout share ownership: %d cases PASS\n",cases);
 }
 '''
@@ -278,6 +307,8 @@ with tempfile.TemporaryDirectory(prefix='native-scanout-share-') as tmp:
     for name, lookup_code, revoke_code in [
         ('production', lookup, revoke),
         ('early-unlock', lookup.replace('return TRUE;', 'ReleaseNativeShareRegistry(); return TRUE;'), revoke),
+        ('early-rundown', lookup.replace('return TRUE;', 'adapter->ReleaseNativeSubmissionOperation(); return TRUE;'), revoke),
+        ('stale-generation', lookup.replace('if (adapter->IsNativeContextGenerationCurrent(share->Generation, share->ResetGeneration))', 'if (true)'), revoke),
         ('skip-detach', lookup, revoke.replace('if (share->ScanoutReferenced)', 'if (false)')),
     ]:
         cpp, exe = tmp / (name + '.cpp'), tmp / name
@@ -289,9 +320,115 @@ with tempfile.TemporaryDirectory(prefix='native-scanout-share-') as tmp:
             assert result.returncode == 0, result.stderr
             print(result.stdout.strip())
         else:
-            expected = 'registryHeld==1' if name == 'early-unlock' else 'STATUS_DEVICE_BUSY'
+            expected = {'early-unlock':'registryHeld==1', 'early-rundown':'adapter.acquired==adapter.released+1',
+                        'stale-generation':'!AcquireNativeScanoutShare', 'skip-detach':'STATUS_DEVICE_BUSY'}[name]
             assert result.returncode != 0 and expected in result.stderr, result.stderr
             print('negative control detected: ' + name)
+
+export_start = source.index('static NTSTATUS ExportNativeShareLocked(')
+export_end = source.index('\nstatic NTSTATUS ImportNativeShareLocked(', export_start)
+export = source[export_start:export_end]
+export_fixture = revoke_fixture.split('FUNCTION')[0] + r'''
+#include <cstring>
+#include <new>
+using ULONGLONG=unsigned long long;
+#define _Inout_
+constexpr UINT MAXUINT=~0u;
+constexpr int NonPagedPoolNx=1,STATUS_NO_MEMORY=-10;
+void *operator new(std::size_t size,int) {return ::operator new(size);}
+void RtlZeroMemory(void *p,std::size_t size) {std::memset(p,0,size);}
+void InsertTailList(LIST_ENTRY *head,LIST_ENTRY *entry) {
+ entry->Flink=head;entry->Blink=head->Blink;head->Blink->Flink=entry;head->Blink=entry;
+}
+void FindNativeAllocationRangeByIova(VIOGPU_WDDM_CONTEXT*,unsigned,unsigned,UINT *id,ULONGLONG *size) {
+ *id=99;*size=4096;
+}
+unsigned NewNativeShareKeyLocked(VioGpuDod*) {return 11;}
+FUNCTION
+int main() {
+ int cases=0;
+ for(int changed=0;changed<4;++changed) {
+  VioGpuDod adapter;VIOGPU_WDDM_CONTEXT context;
+  VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot{&adapter};
+  VIOGPU_WDDM_NATIVE_SHARE request{0,4096};ULONG stage=0;
+  g_VioGpuNativeShares={&g_VioGpuNativeShares,&g_VioGpuNativeShares};
+  assert(ExportNativeShareLocked(&adapter,&context,&snapshot,&request,&stage)==0);
+  auto *share=CONTAINING_RECORD(g_VioGpuNativeShares.Flink,VIOGPU_WDDM_NATIVE_SHARE_ENTRY,Link);
+  assert(request.ShareKey==11&&request.Size==4096&&share->Generation==1&&share->ResetGeneration==7);
+  if(changed==1)++snapshot.Generation;
+  if(changed==2)++snapshot.ResetGeneration;
+  if(changed==3)++snapshot.ContextId;
+  request.ShareKey=0;
+  int result=ExportNativeShareLocked(&adapter,&context,&snapshot,&request,&stage);
+  assert((result==0)==(changed==0));
+  assert(share->Generation==1&&share->ResetGeneration==7&&share->OwnerContextId==2);
+  assert(request.ShareKey==(changed==0?11u:0u));
+  if(changed)assert(stage==23);
+  RemoveEntryList(&share->Link);delete share;++cases;
+ }
+ printf("production native export identity: %d cases PASS\n",cases);
+}
+'''
+guard_start = export.index('    else if (share->Generation')
+guard_end = export.index('\n    {', guard_start)
+unguarded_export = export[:guard_start] + '    else if (false)' + export[guard_end:]
+with tempfile.TemporaryDirectory(prefix='native-export-identity-') as tmp:
+    tmp = Path(tmp)
+    for name, code in [('production', export), ('retarget-key', unguarded_export)]:
+        cpp, exe = tmp / (name + '.cpp'), tmp / name
+        cpp.write_text(export_fixture.replace('FUNCTION', code))
+        subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                        '-fsanitize=address,undefined', str(cpp), '-o', str(exe)], check=True)
+        result = subprocess.run([str(exe)], capture_output=True, text=True)
+        if name == 'production':
+            assert result.returncode == 0, result.stderr
+            print(result.stdout.strip())
+        else:
+            assert result.returncode != 0 and '(result==0)==(changed==0)' in result.stderr, result.stderr
+            print('negative control detected: retargeted native share key')
+
+import_start = source.index('static NTSTATUS ImportNativeShareLocked(')
+import_end = source.index('    if (share != NULL && share->Size == request->Size', import_start)
+import_prefix = source[import_start:import_end] + '\n    return STATUS_SUCCESS;\n}\n'
+import_fixture = scanout_fixture.split('LOOKUP')[0] + r'''
+#define _Inout_
+FUNCTION
+int main() {
+ VioGpuDod adapter;VIOGPU_WDDM_CONTEXT context;
+ VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot{&adapter};
+ VIOGPU_WDDM_NATIVE_SHARE request{11,4096};
+ VIOGPU_WDDM_NATIVE_SHARE_ENTRY share{{},&adapter,11,99,4096};
+ g_VioGpuNativeShares={&share.Link,&share.Link};
+ share.Link={&g_VioGpuNativeShares,&g_VioGpuNativeShares};registryHeld=1;
+ for(int changed=0;changed<3;++changed) {
+  share.Generation=changed==1?2:1;share.ResetGeneration=changed==2?8:7;
+  ULONG stage=0,host=0,owner=0,id=0;ULONGLONG size=0;
+  int status=ImportNativeShareLocked(&adapter,&context,&snapshot,&request,&stage,&size,&host,&owner,&id);
+  assert((status==STATUS_SUCCESS)==(changed==0));
+  if(changed)assert(stage==30);
+ }
+ puts("production import generation admission: 3 cases PASS (before alias/attach)");
+}
+'''
+# The fixture stops at the actual pre-alias gate; silence parameters consumed
+# by the unextracted attachment path, not compiler warnings in production.
+import_prefix = import_prefix.replace('    return STATUS_SUCCESS;',
+    '    (void)context; (void)hostResult; (void)snapshot; return STATUS_SUCCESS;')
+with tempfile.TemporaryDirectory(prefix='native-import-generation-') as tmp:
+    tmp = Path(tmp)
+    for name, code in [('production', import_prefix),
+                       ('stale-import', import_prefix.replace('share->Generation != snapshot->Generation || share->ResetGeneration != snapshot->ResetGeneration', 'false'))]:
+        cpp, exe = tmp / (name + '.cpp'), tmp / name
+        cpp.write_text(import_fixture.replace('FUNCTION', code))
+        subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                        str(cpp), '-o', str(exe)], check=True)
+        result = subprocess.run([str(exe)], capture_output=True, text=True)
+        if name == 'production':
+            assert result.returncode == 0, result.stderr
+            print(result.stdout.strip())
+        else:
+            assert result.returncode != 0 and '(status==STATUS_SUCCESS)==(changed==0)' in result.stderr, result.stderr
+            print('negative control detected: cross-generation import')
 
 cleanup_start = source.index('NTSTATUS RemoveNativeImportsForContext(')
 cleanup_end = source.index('/* Resolve a zero-copy share key', cleanup_start)

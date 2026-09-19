@@ -4480,6 +4480,8 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
     UINT OwnerContextId;
     ULONGLONG Size;
     BOOLEAN ScanoutReferenced;
+    LONG Generation;
+    ULONGLONG ResetGeneration;
 };
 
 struct VIOGPU_WDDM_NATIVE_IMPORT_ENTRY
@@ -4633,7 +4635,7 @@ NTSTATUS RemoveNativeImportsForContext(_In_ VIOGPU_WDDM_CONTEXT *context)
 }
 
 /* Resolve a zero-copy share key and retain the registry through bind/flush/latch.
- * On success the caller owns the registry lock. Revocation must
+ * On success the caller owns the registry lock and transport rundown. Revocation must
  * subsequently confirm scanout detach before releasing the exporter pages. */
 static BOOLEAN AcquireNativeScanoutShare(_In_ VioGpuDod *adapter,
                                          _In_ ULONGLONG shareKey,
@@ -4649,15 +4651,27 @@ static BOOLEAN AcquireNativeScanoutShare(_In_ VioGpuDod *adapter,
         return FALSE;
     }
     VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = FindNativeShareByKeyLocked(adapter, shareKey);
-    if (share != NULL)
+    if (share != NULL && adapter->AcquireNativeSubmissionOperation())
     {
-        *resourceId = share->ResourceId;
-        *size = share->Size;
-        share->ScanoutReferenced = TRUE;
-        return TRUE;
+        if (adapter->IsNativeContextGenerationCurrent(share->Generation, share->ResetGeneration))
+        {
+            *resourceId = share->ResourceId;
+            *size = share->Size;
+            share->ScanoutReferenced = TRUE;
+            return TRUE;
+        }
+        adapter->ReleaseNativeSubmissionOperation();
     }
     ReleaseNativeShareRegistry();
     return FALSE;
+}
+
+static VOID ReleaseNativeScanoutShare(_In_ VioGpuDod *adapter)
+{
+    // Match the successful acquisition: exclude actual transport retirement
+    // for the whole bind/flush interval, not just each individual host call.
+    ReleaseNativeShareRegistry();
+    adapter->ReleaseNativeSubmissionOperation();
 }
 
 /* A shared native allocation is being destroyed: its pages go back to VidMm,
@@ -4685,7 +4699,20 @@ NTSTATUS RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
         if (share->ScanoutReferenced)
         {
             BOOLEAN detached = FALSE;
-            VIOGPU_HOST_CONTEXT_RESULT result = adapter->Detach2DScanoutResource(resourceId, &detached, TRUE);
+            VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
+            if (adapter->IsNativeContextResetRetired(share->ResetGeneration))
+            {
+                detached = TRUE;
+                result = VioGpuHostContextConfirmed;
+            }
+            else if (adapter->AcquireNativeSubmissionOperation())
+            {
+                if (adapter->IsNativeContextGenerationCurrent(share->Generation, share->ResetGeneration))
+                {
+                    result = adapter->Detach2DScanoutResource(resourceId, &detached, TRUE);
+                }
+                adapter->ReleaseNativeSubmissionOperation();
+            }
             if (result != VioGpuHostContextConfirmed || !detached)
             {
                 ReleaseNativeShareRegistry();
@@ -4835,12 +4862,18 @@ static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
         share->ResourceId = resourceId;
         share->OwnerContextId = snapshot->ContextId;
         share->Size = length;
+        share->Generation = snapshot->Generation;
+        share->ResetGeneration = snapshot->ResetGeneration;
         InsertTailList(&g_VioGpuNativeShares, &share->Link);
     }
-    /* A host resource id outlives its share entry only until the allocation is
-     * destroyed, but ids are recycled: re-exporting one rebinds the entry to
-     * the context that owns it now, so an importer is never compared against a
-     * previous owner. */
+    else if (share->Generation != snapshot->Generation || share->ResetGeneration != snapshot->ResetGeneration ||
+             share->OwnerContextId != snapshot->ContextId)
+    {
+        // Never retarget an existing key at a recycled resource/context ID.
+        // The old allocation must finish revocation before a new export.
+        *stage = 23;
+        return STATUS_DEVICE_NOT_READY;
+    }
     share->OwnerContextId = snapshot->ContextId;
     share->Size = length;
     request->ShareKey = share->Key;
@@ -4862,6 +4895,11 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
     *shareSize = share != NULL ? share->Size : 0;
     *ownerContextId = share != NULL ? share->OwnerContextId : 0;
     *resourceId = share != NULL ? share->ResourceId : 0;
+    if (share != NULL && (share->Generation != snapshot->Generation || share->ResetGeneration != snapshot->ResetGeneration))
+    {
+        *stage = 30;
+        return STATUS_DEVICE_NOT_READY;
+    }
     if (share != NULL && share->Size == request->Size && share->OwnerContextId == snapshot->ContextId &&
         (request->Flags & VIOGPU_WDDM_ESCAPE_FLAGS_ALIAS_OWNER) != 0)
     {
@@ -12103,7 +12141,7 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
         }
         if (nativeShareHeld)
         {
-            ReleaseNativeShareRegistry();
+            ReleaseNativeScanoutShare(adapter);
         }
         status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
     }

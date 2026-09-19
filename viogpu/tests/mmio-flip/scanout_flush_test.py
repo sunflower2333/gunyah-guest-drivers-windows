@@ -72,7 +72,7 @@ bool AcquireNativeScanoutShare(VioGpuDod*,ULONGLONG,UINT *id,ULONGLONG *size) {
     assert(!shareHeld); ++shareHeld;
     *id=VIOGPU_NATIVE_RESOURCE_ID_START; *size=4096; return true;
 }
-void ReleaseNativeShareRegistry() { assert(shareHeld==1); --shareHeld; }
+void ReleaseNativeScanoutShare(VioGpuDod*) { assert(shareHeld==1); --shareHeld; }
 void KeReleaseMutex(int*,bool) { assert(!shareHeld); ++releases; }
 '''
 SUFFIX = r'''
