@@ -422,7 +422,7 @@ with tempfile.TemporaryDirectory(prefix='native-import-generation-') as tmp:
         cpp.write_text(import_fixture.replace('FUNCTION', code))
         subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
                         str(cpp), '-o', str(exe)], check=True)
-        result = subprocess.run([str(exe)], capture_output=True, text=True)
+        result = subprocess.run([str(exe)], capture_output=True, text=True, cwd=tmp)
         if name == 'production':
             assert result.returncode == 0, result.stderr
             print(result.stdout.strip())
