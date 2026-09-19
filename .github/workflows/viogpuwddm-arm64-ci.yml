@@ -82,6 +82,8 @@ jobs:
         run: python viogpu/tests/primary-read-cache/run.py
       - name: Reject destroy requests without changing live shares or flips
         run: python viogpu/tests/destroy-preflight/run.py
+      - name: Retain native import reservations after unconfirmed release
+        run: python viogpu/tests/native-share-release/run.py
 
   contract-check:
     runs-on: windows-11-arm

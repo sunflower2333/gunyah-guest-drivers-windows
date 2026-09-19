@@ -4850,15 +4850,21 @@ static NTSTATUS ReleaseNativeShareLocked(_In_ VioGpuDod *adapter,
         {
             continue;
         }
-        RemoveEntryList(&entry->Link);
         VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
         if (adapter->AcquireNativeSubmissionOperation())
         {
             result = snapshot->Adapter->ReleaseNativeSharedResource(snapshot, entry->ResourceId);
             adapter->ReleaseNativeSubmissionOperation();
         }
-        delete entry;
         *stage = result == VioGpuHostContextConfirmed ? 0 : 42;
+        // An unconfirmed detach still owns this key/IOVA reservation. Keep it
+        // discoverable for retry and overlap checks until release is confirmed
+        // or context teardown takes responsibility for its host attachments.
+        if (result == VioGpuHostContextConfirmed)
+        {
+            RemoveEntryList(&entry->Link);
+            delete entry;
+        }
         return result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
     }
     *stage = 41;
