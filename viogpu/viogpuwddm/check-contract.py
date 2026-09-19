@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58552",
+        "$minor = 58553",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58552",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58553",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -5293,8 +5293,10 @@ def check_mmio_flip_contract(native_caps: str) -> None:
         fail("the flip worker must take and bind the mailbox under the flip-apply mutex at PASSIVE_LEVEL")
 
     bind = canonical_code(function_body("BindStandardPrimaryScanout", WDDM_DDI_CODE))
-    if "if(modeChange){adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));}" not in bind:
-        fail("only a mode change may republish the vsync address from the PASSIVE bind")
+    if "if(modeChange&&flush==VioGpuHostContextConfirmed){adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));}" not in bind:
+        fail("only a successfully published mode change may republish the vsync address from the PASSIVE bind")
+    if "result=flush;" not in bind:
+        fail("primary binding must propagate the publication result to flip completion")
 
     destroy = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
     cancel = destroy.find("adapter->CancelPendingFlip(allocation);")

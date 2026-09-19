@@ -11650,12 +11650,6 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
                                                                                                    : NULL);
         if (result == VioGpuHostContextConfirmed)
         {
-            /* The vsync report carries the primary dxgkrnl programmed here. */
-            if (modeChange)
-            {
-                adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));
-            }
-
             /* SET_SCANOUT only binds the resource: virtio-gpu has no autonomous
              * scanout of guest memory, so the host keeps showing whatever that
              * resource last received.  DWM flips through SetVidPnSourceAddress
@@ -11672,6 +11666,14 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
                                                                                              allocation->Height,
                                                                                              &allocation->Resource2DState,
                                                                                              &allocation->Resource2DResetGeneration);
+            /* Binding is not publication. Propagate a failed transfer/flush to
+             * the flip worker instead of counting an unapplied frame as applied.
+             * Likewise, do not report a mode-change primary before it is ready. */
+            result = flush;
+            if (modeChange && flush == VioGpuHostContextConfirmed)
+            {
+                adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));
+            }
             /* A mode change keeps the vsync republish: a compositor that
              * programs its primary once draws into it in place. A flipped
              * primary is final until the next flip replaces it. An empty one
