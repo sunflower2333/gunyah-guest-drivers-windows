@@ -17,8 +17,10 @@ BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
 BOOLEAN VioGpuWddmIsMpo3Registration();
 BOOLEAN VioGpuWddmIsDirectFlipTrial();
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
 NTSTATUS APIENTRY VioGpuWddmGetMultiPlaneOverlayCaps(CONST HANDLE hAdapter,
                                                      DXGKARG_GETMULTIPLANEOVERLAYCAPS *args);
+#endif
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 
 struct VIOGPU_WDDM_KMD_DMA_PRIVATE

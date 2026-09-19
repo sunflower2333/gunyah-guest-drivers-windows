@@ -1744,6 +1744,15 @@ class VioGpuDod
                                                     UINT width,
                                                     UINT height,
                                                     ULONGLONG resetGeneration);
+    // Legacy VidPn enumeration uses these scalar policy settings too.
+    ULONG MonitorColorRange() const
+    {
+        return m_MonitorColorRange;
+    }
+    BOOLEAN SourceColorBasisPerFormat() const
+    {
+        return m_SourceColorBasisMode == VIOGPU_SOURCE_COLOR_BASIS_PER_FORMAT;
+    }
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     // Slot and event are changed under the same lock. A configuration owns the
     // same slot as a queued present, so an older worker cannot restore old modes.
@@ -1793,14 +1802,6 @@ class VioGpuDod
     BOOLEAN HdrTrialTransformCaps() const
     {
         return (m_HdrTrialMask & VIOGPU_HDR_TRIAL_TRANSFORM_CAPS) != 0;
-    }
-    ULONG MonitorColorRange() const
-    {
-        return m_MonitorColorRange;
-    }
-    BOOLEAN SourceColorBasisPerFormat() const
-    {
-        return m_SourceColorBasisMode == VIOGPU_SOURCE_COLOR_BASIS_PER_FORMAT;
     }
     BOOLEAN IsNativeHdrModeAvailable() const
     {
