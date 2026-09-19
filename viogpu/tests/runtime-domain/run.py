@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--negative-control', choices=['unretained', 'wrong-generation', 'early-close'])
@@ -35,6 +36,16 @@ with tempfile.TemporaryDirectory(prefix='viogpu-runtime-domain-') as output:
                    '-fsanitize=address,undefined', '-fno-omit-frame-pointer', f'-I{root}', str(unit), '-o', str(exe)]
     subprocess.run(command, cwd=directory, check=True)
     result = subprocess.run([str(exe)], cwd=directory).returncode
+    # Windows image scanners can keep a just-exited PE mapped briefly. Remove
+    # this exact disposable executable with a bound before directory cleanup.
+    for attempt in range(100):
+        try:
+            exe.unlink()
+            break
+        except PermissionError:
+            if attempt == 99:
+                raise
+            time.sleep(0.1)
     if args.negative_control:
         if result == 0:
             raise SystemExit('negative control incorrectly passed')
