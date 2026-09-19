@@ -56,7 +56,10 @@ while depth:
     end += 1
 copy = execute[start:end]
 if not args.baseline:
-    copy = 'PUCHAR cache=nullptr, backing=destinationBase; const bool cacheValid=false, raw=false;\n' + copy
+    # Mutable fixture inputs keep MSVC /W4 from diagnosing the extracted
+    # production branch as a constant condition. Cache behavior is exercised
+    # separately by primary-read-cache using the actual production helpers.
+    copy = 'PUCHAR cache=nullptr, backing=destinationBase; bool cacheValid=false, raw=false;\n' + copy
 if args.negative_control_raw_copy:
     # Match exactly the reviewed call tokens, not its clang-format line wrapping.
     # Missing, duplicate, or semantically changed anchors must still fail closed.
