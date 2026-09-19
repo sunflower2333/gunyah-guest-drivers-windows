@@ -182,6 +182,10 @@ struct VIOGPU_WDDM_ALLOCATION
     SIZE_T ApertureBasePage;
     PMDL ApertureMdl;
     PVOID ApertureAddress;
+    // Private cached pixels, never mapped as the primary's VidMm backing.
+    // Access and validity changes require LifecycleMutex at PASSIVE_LEVEL.
+    PVOID PrimaryReadCache;
+    ULONGLONG PrimaryReadCacheGeneration;
     VIOGPU_WDDM_ALLOCATION_HOST_STATE HostState;
     LONG BoundGeneration;
     ULONGLONG BoundResetGeneration;

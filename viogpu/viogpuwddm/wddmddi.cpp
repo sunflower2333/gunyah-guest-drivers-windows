@@ -2494,6 +2494,26 @@ NTSTATUS ResolveTransferMdlAddress(PMDL mdl, UINT mdlOffset, SIZE_T transferSize
     return STATUS_SUCCESS;
 }
 
+// Bound optional cached primary pixels to four allocations of at most 32 MiB.
+// Exhaustion leaves the existing copy path intact, without failing a Present.
+static volatile LONG g_PrimaryReadCacheCount;
+
+VOID InvalidatePrimaryReadCache(VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    allocation->PrimaryReadCacheGeneration = 0;
+}
+
+VOID ReleasePrimaryReadCache(VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    InvalidatePrimaryReadCache(allocation);
+    if (allocation->PrimaryReadCache != NULL)
+    {
+        ExFreePoolWithTag(allocation->PrimaryReadCache, 'cPGV');
+        allocation->PrimaryReadCache = NULL;
+        InterlockedDecrement(&g_PrimaryReadCacheCount);
+    }
+}
+
 NTSTATUS CopyAperturePlacement(VIOGPU_WDDM_ALLOCATION *allocation,
                                SIZE_T allocationOffset,
                                SIZE_T transferSize,
@@ -2509,6 +2529,7 @@ NTSTATUS CopyAperturePlacement(VIOGPU_WDDM_ALLOCATION *allocation,
     PVOID apertureAddress = static_cast<PUCHAR>(allocation->ApertureAddress) + allocationOffset;
     if (toSegment)
     {
+        InvalidatePrimaryReadCache(allocation);
         RtlCopyMemory(apertureAddress, systemAddress, transferSize);
         KeMemoryBarrier();
     }
@@ -2527,6 +2548,7 @@ NTSTATUS FillAperturePlacement(VIOGPU_WDDM_ALLOCATION *allocation, SIZE_T fillSi
     {
         return STATUS_INVALID_PARAMETER;
     }
+    InvalidatePrimaryReadCache(allocation);
     for (SIZE_T offset = 0; offset < fillSize; offset += sizeof(pattern))
     {
         RtlCopyMemory(static_cast<PUCHAR>(allocation->ApertureAddress) + offset, &pattern, sizeof(pattern));
@@ -3034,6 +3056,82 @@ VOID CopyPresentRow(_Out_writes_bytes_(rowBytes) VOID *destination,
         }
         RtlCopyMemory(destinationBytes + offset, &pixel, sizeof(pixel));
     }
+}
+
+PUCHAR PresentReadAddress(VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    // Native/GDI allocations can have writers outside this CPU-copy path.
+    // Standard primaries reject CpuVisible and cannot be locked by a UMD.
+    if (IsStandardPrimaryAllocation(allocation) &&
+        (allocation->Flags & VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE) == 0 &&
+        allocation->PrimaryReadCache != NULL && allocation->Resource2DResetGeneration != 0 &&
+        allocation->PrimaryReadCacheGeneration == allocation->Resource2DResetGeneration)
+    {
+        return static_cast<PUCHAR>(allocation->PrimaryReadCache);
+    }
+    return static_cast<PUCHAR>(allocation->ApertureAddress);
+}
+
+VOID UpdatePrimaryReadCache(const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction, const UCHAR *sourceBase)
+{
+    VIOGPU_WDDM_ALLOCATION *destination = transaction->Destination;
+    const VIOGPU_WDDM_ALLOCATION *source = transaction->Source;
+    if (!IsStandardPrimaryAllocation(destination) ||
+        (destination->Flags & VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE) != 0 ||
+        destination->Resource2DResetGeneration == 0)
+    {
+        return;
+    }
+    const RECT *first = &transaction->DestinationSubRects[0];
+    const BOOLEAN fullWrite = transaction->RectCount == 1 && first->left == 0 && first->top == 0 &&
+                              static_cast<UINT>(first->right) == destination->Width &&
+                              static_cast<UINT>(first->bottom) == destination->Height;
+    const BOOLEAN valid = destination->PrimaryReadCache != NULL &&
+                          destination->PrimaryReadCacheGeneration == destination->Resource2DResetGeneration;
+    // Never populate a cache by reading the slow backing. Only a full pixel
+    // overwrite establishes validity; subsequent partial writes maintain it.
+    if (!valid && !fullWrite)
+    {
+        return;
+    }
+    if (destination->PrimaryReadCache == NULL)
+    {
+        const ULONGLONG span = static_cast<ULONGLONG>(destination->Pitch) * destination->Height;
+        if (span == 0 || span > 32ULL * 1024 * 1024 || span > destination->BackingSize)
+        {
+            return;
+        }
+        if (InterlockedIncrement(&g_PrimaryReadCacheCount) > 4)
+        {
+            InterlockedDecrement(&g_PrimaryReadCacheCount);
+            return;
+        }
+        destination->PrimaryReadCache = ExAllocatePoolUninitialized(NonPagedPoolNx,
+                                                                    static_cast<SIZE_T>(span), 'cPGV');
+        if (destination->PrimaryReadCache == NULL)
+        {
+            InterlockedDecrement(&g_PrimaryReadCacheCount);
+            return;
+        }
+    }
+    PUCHAR cache = static_cast<PUCHAR>(destination->PrimaryReadCache);
+    for (UINT index = 0; index < transaction->RectCount; ++index)
+    {
+        const RECT *rect = &transaction->DestinationSubRects[index];
+        const SIZE_T sourceLeft = static_cast<SIZE_T>(transaction->SourceRect.left) +
+                                  static_cast<SIZE_T>(rect->left - transaction->DestinationRect.left);
+        const SIZE_T sourceTop = static_cast<SIZE_T>(transaction->SourceRect.top) +
+                                 static_cast<SIZE_T>(rect->top - transaction->DestinationRect.top);
+        const SIZE_T rowBytes = static_cast<SIZE_T>(rect->right - rect->left) * 4;
+        for (UINT row = 0; row < static_cast<UINT>(rect->bottom - rect->top); ++row)
+        {
+            CopyPresentRow(cache + static_cast<SIZE_T>(rect->top + row) * destination->Pitch +
+                               static_cast<SIZE_T>(rect->left) * 4,
+                           sourceBase + (sourceTop + row) * source->Pitch + sourceLeft * 4,
+                           rowBytes, source->Format, destination->Format);
+        }
+    }
+    destination->PrimaryReadCacheGeneration = destination->Resource2DResetGeneration;
 }
 
 BOOLEAN ReferencePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction)
@@ -3627,6 +3725,11 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                 phaseStart = RecordCopyPhase(transaction->Adapter, VioGpuCopyPrepareUsec, phaseStart);
                 copyMeasured = TRUE;
             }
+            sourceBase = PresentReadAddress(source);
+            if (sourceBase != source->ApertureAddress)
+            {
+                transaction->Adapter->CountDisplayEvent(VioGpuPrimaryCacheReads);
+            }
             for (UINT index = 0; index < transaction->RectCount; ++index)
             {
                 const RECT *destinationRect = &transaction->DestinationSubRects[index];
@@ -3649,6 +3752,11 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                                    source->Format,
                                    destination->Format);
                 }
+            }
+            UpdatePrimaryReadCache(transaction, sourceBase);
+            if (PresentReadAddress(destination) != destination->ApertureAddress)
+            {
+                transaction->Adapter->CountDisplayEvent(VioGpuPrimaryCacheWrites);
             }
             if (transaction->CopyOnly)
             {
@@ -7675,6 +7783,7 @@ VOID ReleaseApertureCpuMapping(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation)
     {
         return;
     }
+    ReleasePrimaryReadCache(allocation);
     if (allocation->ApertureAddress != NULL && allocation->ApertureMdl != NULL)
     {
         MmUnmapLockedPages(allocation->ApertureAddress, allocation->ApertureMdl);

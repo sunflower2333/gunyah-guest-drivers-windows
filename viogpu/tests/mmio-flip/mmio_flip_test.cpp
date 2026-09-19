@@ -53,11 +53,14 @@ int main()
                       VioGpuSynchronousLongestWaitSlices == VioGpuOverlayFlipAccepts + 1U &&
                       VioGpuCopyCalls == VioGpuSynchronousLongestWaitSlices + 1U &&
                       VioGpuCopyRawCalls == VioGpuCopyKiB + 1U &&
-                      VioGpuDisplayCounterCount == VioGpuCopyConvertUsec + 1U,
+                      VioGpuPrimaryCacheReads == VioGpuCopyConvertUsec + 1U &&
+                      VioGpuPrimaryCacheWrites == VioGpuPrimaryCacheReads + 1U &&
+                      VioGpuDisplayCounterCount == VioGpuPrimaryCacheWrites + 1U,
                   "new display counters follow the 64 historical slots");
     // Every slot is distinct and inside the published array.
     {
-        unsigned slots[] = {VioGpuOverlayCheckQueries,        VioGpuOverlayCheckAccepts,
+        unsigned slots[] = {VioGpuPrimaryCacheReads, VioGpuPrimaryCacheWrites,
+                            VioGpuOverlayCheckQueries,        VioGpuOverlayCheckAccepts,
                             VioGpuOverlayFlipCalls,           VioGpuOverlayFlipRejects,
                             VioGpuOverlayFlipAccepts,
                             VioGpuDisplayMmioFlipCalls,       VioGpuDisplayMmioFlipRejects,

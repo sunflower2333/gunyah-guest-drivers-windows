@@ -203,5 +203,7 @@ enum : unsigned
     VioGpuCopyRawUsec = 101,
     VioGpuCopyConvertCalls = 102,
     VioGpuCopyConvertUsec = 103,
-    VioGpuDisplayCounterCount = 104,
+    VioGpuPrimaryCacheReads = 104,
+    VioGpuPrimaryCacheWrites = 105,
+    VioGpuDisplayCounterCount = 106,
 };

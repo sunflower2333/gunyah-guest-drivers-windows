@@ -7019,6 +7019,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD copyRawUsec = ReadDisplayCounter(VioGpuCopyRawUsec);
     DWORD copyConvertCalls = ReadDisplayCounter(VioGpuCopyConvertCalls);
     DWORD copyConvertUsec = ReadDisplayCounter(VioGpuCopyConvertUsec);
+    DWORD primaryCacheReads = ReadDisplayCounter(VioGpuPrimaryCacheReads);
+    DWORD primaryCacheWrites = ReadDisplayCounter(VioGpuPrimaryCacheWrites);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -7046,6 +7048,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
         {L"NativeCopyRawUsec", &copyRawUsec},
         {L"NativeCopyConvertCalls", &copyConvertCalls},
         {L"NativeCopyConvertUsec", &copyConvertUsec},
+        {L"NativePrimaryCacheReads", &primaryCacheReads},
+        {L"NativePrimaryCacheWrites", &primaryCacheWrites},
                                                                                                         {L"NativeUnansw"
                                                                                                          L"eredPresentR"
                                                                                                          L"oundTrips",
