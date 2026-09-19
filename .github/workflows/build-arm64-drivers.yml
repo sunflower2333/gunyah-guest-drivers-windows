@@ -100,6 +100,16 @@ jobs:
       - name: Execute large command-buffer submission regression
         shell: pwsh
         run: python external/mesa/src/freedreno/vulkan/tests/tu_queue_batch_test.py
+      - name: Execute runtime queue ownership and software enqueue ordering
+        shell: pwsh
+        run: |
+          $test = 'external/mesa/src/freedreno/vulkan/tests/tu_wddm_runtime_queue_test.py'
+          python $test
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($control in @('reread-token', 'double-release', 'skip-drain')) {
+            python $test --negative-control $control
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
       - name: Execute suballocator mapping failure regression
         shell: pwsh
         run: python external/mesa/src/freedreno/vulkan/tests/tu_suballoc_failure_test.py
@@ -141,6 +151,15 @@ jobs:
       - name: Execute Render prepatch and final residency regression
         shell: pwsh
         run: python viogpu/tests/render-prepatch/run.py
+      - name: Execute retained native runtime domain regressions
+        shell: pwsh
+        run: |
+          python viogpu/tests/runtime-domain/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($fault in @('unretained', 'wrong-generation', 'early-close')) {
+            python viogpu/tests/runtime-domain/run.py --negative-control $fault
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
       - name: Execute native adapter identity and reply compatibility regression
         shell: pwsh
         run: python viogpu/tests/adapter-identity/run.py
@@ -809,7 +828,7 @@ jobs:
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
           # Unified flat API installation atop frozen 58473. All API files
           # share the display INF and the same signed catalog as the KMD/UMD.
-          $minor = 58556
+          $minor = 58557
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -893,8 +912,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58556) {
-            throw "Unified flat candidate requires reserved version 100.6.101.58556"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58557) {
+            throw "Unified flat candidate requires reserved version 100.6.101.58557"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -1161,7 +1180,7 @@ jobs:
             if ($d.n -eq 'viogpu') {
               python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
                 --d3d10 d3d10-payload --d3d10-mesa (git rev-parse HEAD:external/mesa).Trim() `
-                --mesa c84e3d1676f5fc6f45421ec507d2a775e81560b6 --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
+                --mesa 709ac5ef875a50c1793d5741eec5025b43c88d2c --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
               if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
               if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
@@ -1248,8 +1267,8 @@ jobs:
         shell: pwsh
         run: |
           python viogpu/package/verify_bundle.py --output out `
-            --mesa c84e3d1676f5fc6f45421ec507d2a775e81560b6 --mesa-run 35437943323 `
-            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58556
+            --mesa 709ac5ef875a50c1793d5741eec5025b43c88d2c --mesa-run 35454133031 `
+            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58557
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact
