@@ -1,0 +1,78 @@
+name: Build Vulkan validation layer ARM64
+on:
+  workflow_dispatch:
+  push:
+    branches: [work/vulkan-validation-layer-20260919]
+    paths:
+      - '.github/workflows/build-vulkan-validation-layer-arm64.yml'
+      - '.github/scripts/vulkan-validation-shallow-deps.py'
+permissions:
+  contents: read
+jobs:
+  layer:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: KhronosGroup/Vulkan-ValidationLayers
+          ref: 9f127c3d8e751d86355f8a5a5fe990f50890a96b
+          path: VVL
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build known-good dependencies with depth one
+        shell: pwsh
+        run: |
+          python .github/scripts/vulkan-validation-shallow-deps.py VVL --known_good_dir VVL/scripts --dir deps --arch arm64 --config release --optional tests
+          if ($LASTEXITCODE) { throw 'Dependency build failed' }
+      - name: Build native validation layer
+        shell: pwsh
+        run: |
+          cmake -S VVL -B layer-build -A ARM64 -C deps/helper.cmake -DUPDATE_DEPS=OFF -DBUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE) { throw 'Layer configure failed' }
+          cmake --build layer-build --config Release --parallel 4
+          if ($LASTEXITCODE) { throw 'Layer build failed' }
+      - name: Verify architecture and loadable layer exports
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $dlls=@(Get-ChildItem layer-build -Recurse -Filter VkLayer_khronos_validation.dll)
+          if ($dlls.Count -ne 1) { throw 'Expected exactly one validation DLL' }
+          $dll=$dlls[0]
+          $json=Join-Path $dll.DirectoryName 'VkLayer_khronos_validation.json'
+          $manifest=Get-Content $json -Raw | ConvertFrom-Json
+          if ($manifest.layer.name -cne 'VK_LAYER_KHRONOS_validation' -or
+              $manifest.layer.library_path -cne '.\VkLayer_khronos_validation.dll') { throw 'Unexpected layer manifest' }
+          $bytes=[IO.File]::ReadAllBytes($dll.FullName)
+          $pe=[BitConverter]::ToInt32($bytes,0x3c)
+          if ([BitConverter]::ToUInt32($bytes,$pe) -ne 0x4550 -or
+              [BitConverter]::ToUInt16($bytes,$pe+4) -ne 0xaa64) { throw 'Layer must be native ARM64' }
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class LayerLoad {
+              [DllImport("kernel32",CharSet=CharSet.Unicode,SetLastError=true)] public static extern IntPtr LoadLibraryW(string path);
+              [DllImport("kernel32",CharSet=CharSet.Ansi,ExactSpelling=true)] public static extern IntPtr GetProcAddress(IntPtr module,string name);
+              [DllImport("kernel32")] public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+          $module=[LayerLoad]::LoadLibraryW($dll.FullName)
+          if ($module -eq [IntPtr]::Zero) { throw ('LoadLibrary failed: '+[Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
+          try {
+              if ([LayerLoad]::GetProcAddress($module,'vkNegotiateLoaderLayerInterfaceVersion') -eq [IntPtr]::Zero) { throw 'Missing layer negotiation export' }
+          } finally { [void][LayerLoad]::FreeLibrary($module) }
+          New-Item -ItemType Directory out | Out-Null
+          Copy-Item $dll.FullName,$json out/
+          $receipt=[ordered]@{source='9f127c3d8e751d86355f8a5a5fe990f50890a96b'; architecture='ARM64'; api=$manifest.layer.api_version; files=@{}}
+          foreach ($file in Get-ChildItem out -File) { $receipt.files[$file.Name]=(Get-FileHash $file.FullName).Hash.ToLowerInvariant() }
+          $receipt | ConvertTo-Json -Depth 4 | Set-Content out/validation-layer-receipt.json
+          'LAYER_LOAD_PASS; Vulkan driver runtime validation still required'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-validation-layer-arm64
+          path: out/
+          if-no-files-found: error
