@@ -11074,12 +11074,40 @@ def check_wddm_submission_lifetime() -> None:
         "CloseAllocation must release allocation ownership before device ownership",
     )
     destroy_allocation = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
+    close_exports = canonical_code(function_body("CloseNativeAllocationExports", WDDM_DDI_CODE))
+    require_order(
+        close_exports,
+        (
+            "status=AcquireAllocationLifecycleForDestroy(allocation);",
+            "if(status!=STATUS_SUCCESS){returnSTATUS_DEVICE_BUSY;}",
+            "ValidateNativeAllocationDestroyState(allocation)",
+            "status=BeginAllocationDestroy(allocation);",
+            "if(status==STATUS_SUCCESS&&allocation->NativeContext!=NULL)",
+            "KeAcquireSpinLock(&registration->BindingLock,&oldIrql);",
+            "range->ExportRetired=TRUE;",
+            "KeReleaseSpinLock(&registration->BindingLock,oldIrql);",
+            "KeReleaseMutex(&allocation->LifecycleMutex,FALSE);",
+        ),
+        "export retirement must close range admission under lifecycle and binding locks",
+    )
+    require_order(
+        destroy_allocation,
+        ("closeStatus=CloseNativeAllocationExports(allocation);",
+         "if(closeStatus!=STATUS_SUCCESS){returncloseStatus;}",
+         "RevokeNativeShares(adapter,allocation->ResourceId)",
+         "status=ReleaseAllocationHostOwnership(allocation,"),
+        "native destruction must retire export admission before revocation and backing release",
+    )
+    export_lookup = canonical_code(function_body("FindNativeAllocationRangeByIova", WDDM_DDI_CODE))
+    if "range->Linked&&!range->ExportRetired&&range->Iova==iova" not in export_lookup:
+        fail("native export lookup must refuse retired allocation ranges")
     if (
-        wddm_ddi.count("AcquireAllocationLifecycleForDestroy(") != 3
+        wddm_ddi.count("AcquireAllocationLifecycleForDestroy(") != 4
         or acquire_lifecycle.count("AcquireAllocationLifecycleForDestroy(allocation)") != 1
         or destroy_allocation.count("AcquireAllocationLifecycleForDestroy(allocation)") != 1
+        or close_exports.count("AcquireAllocationLifecycleForDestroy(allocation)") != 1
     ):
-        fail("the raw destroy-retry lifecycle acquisition must only serve the gated wrapper and DestroyAllocation")
+        fail("raw destroy-retry acquisition must only serve the gated wrapper, export retirement and DestroyAllocation")
     require_order(
         destroy_allocation,
         (

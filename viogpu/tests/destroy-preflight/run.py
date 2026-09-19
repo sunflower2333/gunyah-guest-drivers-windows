@@ -45,6 +45,8 @@ bool IsNativeAllocation(VIOGPU_WDDM_ALLOCATION *a) { return a->native; }
 bool IsStandardPrimaryAllocation(VIOGPU_WDDM_ALLOCATION *a) { return a->primary; }
 LONG ReadResourceAllocationCount(VIOGPU_WDDM_RESOURCE *r) { return r->count; }
 int revokeResult=0;
+int closeResult=0;
+int CloseNativeAllocationExports(VIOGPU_WDDM_ALLOCATION*) { return closeResult; }
 int RevokeNativeShares(VioGpuDod *a,UINT) { ++a->revoked; return revokeResult; }
 // PRODUCTION
     return STATUS_SUCCESS; // Stop at the real lifecycle boundary; no simulated teardown.
@@ -63,6 +65,9 @@ int main() {
  VIOGPU_WDDM_ALLOCATION n{123,&a,&r,100,true,false}, p{123,&a,&r,101,false,true};
  HANDLE list[]={&n,&p}; DXGKARG_DESTROYALLOCATION arg{2,list,&r,{1}};
  check("valid-resource",a,arg,0,1,1);
+ closeResult=STATUS_DEVICE_BUSY;
+ check("busy-export-retirement",a,arg,STATUS_DEVICE_BUSY,0,0);
+ closeResult=0;
  revokeResult=STATUS_DEVICE_BUSY;
  check("unconfirmed-revoke",a,arg,STATUS_DEVICE_BUSY,1,0);
  revokeResult=0;

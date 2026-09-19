@@ -679,7 +679,8 @@ BOOLEAN HasLiveNativePresentIdentity(_In_ const VIOGPU_WDDM_ALLOCATION *allocati
 
 NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
 {
-    if (!IsNativeAllocation(allocation) || allocation->NativeContext == NULL || allocation->ContextRange != NULL ||
+    if (!IsNativeAllocation(allocation) || allocation->Destroying ||
+        allocation->NativeContext == NULL || allocation->ContextRange != NULL ||
         allocation->PrivateData.RequestedIova == 0 || allocation->BackingSize == 0 ||
         allocation->PrivateData.RequestedIova > MAXULONGLONG - (allocation->BackingSize - 1))
     {
@@ -1550,6 +1551,48 @@ NTSTATUS BeginAllocationDestroy(VIOGPU_WDDM_ALLOCATION *allocation)
         }
     }
     KeReleaseSpinLock(&allocation->SubmissionLock, oldIrql);
+    return status;
+}
+
+// Close export admission before revoking the old keys. Merely deleting a key
+// leaves its range discoverable until the later host/allocation teardown, so
+// an escape could otherwise recreate it and attach a new importer in between.
+static NTSTATUS CloseNativeAllocationExports(VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    NTSTATUS status = AcquireAllocationLifecycleForDestroy(allocation);
+    if (status != STATUS_SUCCESS)
+    {
+        return STATUS_DEVICE_BUSY;
+    }
+    BOOLEAN destroyStateValid = ValidateNativeAllocationDestroyState(allocation);
+    if (!destroyStateValid)
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else
+    {
+        status = BeginAllocationDestroy(allocation);
+        if (status == STATUS_SUCCESS && allocation->NativeContext != NULL)
+        {
+            VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration = allocation->NativeContext;
+            KIRQL oldIrql;
+            KeAcquireSpinLock(&registration->BindingLock, &oldIrql);
+            VIOGPU_WDDM_ALLOCATION_RANGE *range = allocation->ContextRange;
+            if (range == NULL || !range->Linked || range->Registration != registration)
+            {
+                status = STATUS_DEVICE_NOT_READY;
+            }
+            else
+            {
+                range->ExportRetired = TRUE;
+            }
+            KeReleaseSpinLock(&registration->BindingLock, oldIrql);
+        }
+    }
+    KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+    // Keep Destroying/ExportRetired set on retry, just like host teardown.
+    // Exports that already held BindingLock finish before RevokeNativeShares
+    // acquires the share registry; all later lookups refuse this range.
     return status;
 }
 
@@ -4699,7 +4742,7 @@ static VOID FindNativeAllocationRangeByIova(_In_ VIOGPU_WDDM_CONTEXT *context,
          link = link->Flink)
     {
         VIOGPU_WDDM_ALLOCATION_RANGE *range = CONTAINING_RECORD(link, VIOGPU_WDDM_ALLOCATION_RANGE, Link);
-        if (range->Linked && range->Iova == iova && range->ContextId == contextId)
+        if (range->Linked && !range->ExportRetired && range->Iova == iova && range->ContextId == contextId)
         {
             *resourceId = range->ResourceId;
             *length = range->Length;
@@ -6590,6 +6633,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
         VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
         if (IsNativeAllocation(allocation))
         {
+            NTSTATUS closeStatus = CloseNativeAllocationExports(allocation);
+            if (closeStatus != STATUS_SUCCESS)
+            {
+                return closeStatus;
+            }
             NTSTATUS revokeStatus = RevokeNativeShares(adapter, allocation->ResourceId);
             if (!NT_SUCCESS(revokeStatus))
             {

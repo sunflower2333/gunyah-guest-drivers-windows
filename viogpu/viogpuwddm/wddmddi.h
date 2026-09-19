@@ -138,6 +138,8 @@ struct VIOGPU_WDDM_ALLOCATION_RANGE
     UINT ResourceId;
     UINT ContextId;
     BOOLEAN Linked;
+    // BindingLock protects export admission independently of range lifetime.
+    BOOLEAN ExportRetired;
 };
 
 struct VIOGPU_WDDM_CONTEXT;
