@@ -25,6 +25,7 @@ using UINT = unsigned; using LONG = long; using HANDLE = void*; using NTSTATUS =
 #define CONST const
 constexpr int PASSIVE_LEVEL=0, STATUS_SUCCESS=0, STATUS_INVALID_PARAMETER=-1,
  STATUS_INVALID_HANDLE=-2, STATUS_DEVICE_BUSY=-3;
+#define NT_SUCCESS(x) ((x)>=0)
 constexpr int VIOGPU_WDDM_ALLOCATION_SIGNATURE=123, VIOGPU_WDDM_RESOURCE_SIGNATURE=456;
 struct VIOGPU_WDDM_ALLOCATION;
 struct VioGpuDod { int revoked=0, cancelled=0; void CancelPendingFlip(VIOGPU_WDDM_ALLOCATION*) { ++cancelled; } };
@@ -43,7 +44,8 @@ bool IsOwnedAllocation(VIOGPU_WDDM_ALLOCATION *a,VioGpuDod*) { return a->owned; 
 bool IsNativeAllocation(VIOGPU_WDDM_ALLOCATION *a) { return a->native; }
 bool IsStandardPrimaryAllocation(VIOGPU_WDDM_ALLOCATION *a) { return a->primary; }
 LONG ReadResourceAllocationCount(VIOGPU_WDDM_RESOURCE *r) { return r->count; }
-void RevokeNativeShares(VioGpuDod *a,UINT) { ++a->revoked; }
+int revokeResult=0;
+int RevokeNativeShares(VioGpuDod *a,UINT) { ++a->revoked; return revokeResult; }
 // PRODUCTION
     return STATUS_SUCCESS; // Stop at the real lifecycle boundary; no simulated teardown.
 }
@@ -61,6 +63,9 @@ int main() {
  VIOGPU_WDDM_ALLOCATION n{123,&a,&r,100,true,false}, p{123,&a,&r,101,false,true};
  HANDLE list[]={&n,&p}; DXGKARG_DESTROYALLOCATION arg{2,list,&r,{1}};
  check("valid-resource",a,arg,0,1,1);
+ revokeResult=STATUS_DEVICE_BUSY;
+ check("unconfirmed-revoke",a,arg,STATUS_DEVICE_BUSY,1,0);
+ revokeResult=0;
  arg.hResource=nullptr; check("null-resource",a,arg,-2,0,0); arg.hResource=&r;
  r.Signature=0; check("bad-resource-signature",a,arg,-2,0,0); r.Signature=456;
  r.Adapter=&other; check("foreign-resource",a,arg,-2,0,0); r.Adapter=&a;

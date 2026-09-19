@@ -4587,13 +4587,13 @@ static BOOLEAN LookupNativeShareResource(_In_ VioGpuDod *adapter,
 
 /* A shared native allocation is being destroyed: its pages go back to VidMm,
  * so every other context must lose the mapping first, and the key dies. */
-VOID RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
+NTSTATUS RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
 {
     PAGED_CODE();
 
     if (adapter == NULL || resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || !AcquireNativeShareRegistry(FALSE))
     {
-        return;
+        return STATUS_SUCCESS;
     }
     VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = NULL;
     for (PLIST_ENTRY link = g_VioGpuNativeShares.Flink; link != &g_VioGpuNativeShares; link = link->Flink)
@@ -4616,7 +4616,7 @@ VOID RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
             {
                 continue;
             }
-            RemoveEntryList(&entry->Link);
+            VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
             VIOGPU_WDDM_CONTEXT *context = entry->Context;
             if (context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE && ExAcquireRundownProtection(&context->Operations))
             {
@@ -4625,19 +4625,29 @@ VOID RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
                 {
                     if (adapter->AcquireNativeSubmissionOperation())
                     {
-                        (VOID) snapshot.Adapter->ReleaseNativeSharedResource(&snapshot, entry->ResourceId);
+                        result = snapshot.Adapter->ReleaseNativeSharedResource(&snapshot, entry->ResourceId);
                         adapter->ReleaseNativeSubmissionOperation();
                     }
                     VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
                 }
                 ExReleaseRundownProtection(&context->Operations);
             }
+            if (result != VioGpuHostContextConfirmed)
+            {
+                // Preserve both the import reservation and exporter backing.
+                // A later retry or context retirement must resolve the host
+                // attachment before these pages can be returned to VidMm.
+                ReleaseNativeShareRegistry();
+                return STATUS_DEVICE_BUSY;
+            }
+            RemoveEntryList(&entry->Link);
             delete entry;
         }
         RemoveEntryList(&share->Link);
         delete share;
     }
     ReleaseNativeShareRegistry();
+    return STATUS_SUCCESS;
 }
 
 /* Runs under the context's binding spin lock, so it must not be paged. */
@@ -6535,7 +6545,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
         VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
         if (IsNativeAllocation(allocation))
         {
-            RevokeNativeShares(adapter, allocation->ResourceId);
+            NTSTATUS revokeStatus = RevokeNativeShares(adapter, allocation->ResourceId);
+            if (!NT_SUCCESS(revokeStatus))
+            {
+                return revokeStatus;
+            }
         }
     }
 
