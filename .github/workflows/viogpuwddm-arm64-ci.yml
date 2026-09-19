@@ -80,6 +80,8 @@ jobs:
           python-version: '3.x'
       - name: Exercise production cache and stale-content negative controls
         run: python viogpu/tests/primary-read-cache/run.py
+      - name: Reject destroy requests without changing live shares or flips
+        run: python viogpu/tests/destroy-preflight/run.py
 
   contract-check:
     runs-on: windows-11-arm

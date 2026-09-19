@@ -6483,29 +6483,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
             }
         }
     }
-
-    /* Other contexts may still map a shared native allocation. Unmap them
-     * before VidMm can hand these pages to anyone else. */
-    for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
-    {
-        VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
-        if (IsNativeAllocation(allocation))
-        {
-            RevokeNativeShares(adapter, allocation->ResourceId);
-        }
-    }
-
-    /* A primary may still sit in the MMIO flip mailbox, or be bound by the
-     * display worker right now. Drain it before anything is torn down. */
-    for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
-    {
-        VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
-        if (IsStandardPrimaryAllocation(allocation))
-        {
-            adapter->CancelPendingFlip(allocation);
-        }
-    }
-
+    // Reject invalid/incomplete resource requests before altering live shares or flips.
     VIOGPU_WDDM_RESOURCE *resource = NULL;
     if (destroyAllocation->Flags.DestroyResource)
     {
@@ -6528,6 +6506,28 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
         if (ReadResourceAllocationCount(resource) != listedResourceAllocations)
         {
             return STATUS_DEVICE_BUSY;
+        }
+    }
+
+    /* Other contexts may still map a shared native allocation. Unmap them
+     * before VidMm can hand these pages to anyone else. */
+    for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
+    {
+        VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
+        if (IsNativeAllocation(allocation))
+        {
+            RevokeNativeShares(adapter, allocation->ResourceId);
+        }
+    }
+
+    /* A primary may still sit in the MMIO flip mailbox, or be bound by the
+     * display worker right now. Drain it before anything is torn down. */
+    for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
+    {
+        VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
+        if (IsStandardPrimaryAllocation(allocation))
+        {
+            adapter->CancelPendingFlip(allocation);
         }
     }
 

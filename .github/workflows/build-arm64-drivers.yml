@@ -36,6 +36,8 @@ jobs:
         run: python viogpu/tests/mmio-flip/scanout_flush_test.py
       - name: Exercise primary read cache and stale-content negative controls
         run: python viogpu/tests/primary-read-cache/run.py
+      - name: Reject destroy requests without changing live shares or flips
+        run: python viogpu/tests/destroy-preflight/run.py
 
   opencl-icd:
     uses: ./.github/workflows/opencl-system-icd.yml
