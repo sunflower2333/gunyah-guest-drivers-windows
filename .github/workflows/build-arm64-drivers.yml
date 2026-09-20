@@ -842,7 +842,7 @@ jobs:
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
           # Unified flat API installation atop frozen 58473. All API files
           # share the display INF and the same signed catalog as the KMD/UMD.
-          $minor = 58564
+          $minor = 58565
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -926,8 +926,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58564) {
-            throw "Unified flat candidate requires reserved version 100.6.101.58564"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58565) {
+            throw "Unified flat candidate requires reserved version 100.6.101.58565"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -1194,7 +1194,7 @@ jobs:
             if ($d.n -eq 'viogpu') {
               python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
                 --d3d10 d3d10-payload --d3d10-mesa (git rev-parse HEAD:external/mesa).Trim() `
-                --mesa 709ac5ef875a50c1793d5741eec5025b43c88d2c --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
+                --mesa b703581920f9010cdfc34f90fb26b35aea53d530 --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
               if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
               if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
@@ -1281,8 +1281,8 @@ jobs:
         shell: pwsh
         run: |
           python viogpu/package/verify_bundle.py --output out `
-            --mesa 709ac5ef875a50c1793d5741eec5025b43c88d2c --mesa-run 35454133031 `
-            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58564
+            --mesa b703581920f9010cdfc34f90fb26b35aea53d530 --mesa-run 35482091013 `
+            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58565
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact
