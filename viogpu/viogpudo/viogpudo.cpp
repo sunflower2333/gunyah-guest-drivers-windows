@@ -5107,6 +5107,20 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
 #endif
         m_pHWDevice->SetCurrentModeIndex(selected);
         Status = SetCrtcTiming(m_pHWDevice->GetModeTiming(selected));
+        if (NT_SUCCESS(Status) &&
+            InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0) == 0)
+        {
+            // Some ANGLE/D3D paths never issue ControlInterrupt(CRTC_VSYNC),
+            // although the native display still needs a vblank source for
+            // Present/flip pacing. Keep the timer scoped to an active mode;
+            // an explicit ControlInterrupt(false) still disarms it.
+            InterlockedExchange(&m_CrtcVsyncEnabled, 1);
+            Status = ArmCrtcVsyncTimer();
+            if (!NT_SUCCESS(Status))
+            {
+                InterlockedExchange(&m_CrtcVsyncEnabled, 0);
+            }
+        }
     }
     else if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0))
         ArmCrtcVsyncTimer();
