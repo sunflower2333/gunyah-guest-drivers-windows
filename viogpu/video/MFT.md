@@ -68,8 +68,24 @@ deploying a new crosvm; this branch never changes a VM or deployment script.
 review directory containing `viogpuvideo_mft.dll` and `mft-probe.exe`.
 The dedicated MFT workflow builds those files and runs actual `IMFTransform`
 methods against a deterministic device API fixture. The existing video CI
-separately compiles the companion and integrated UMD with WDK. Review artifacts
-are unsigned and do not replace the signed driver deployment workflow.
+separately compiles the companion and integrated UMD with WDK. These review
+artifacts are unsigned.
+
+`viogpu-video-signed-ci.yml` separately builds and signs the installable ARM64
+VPU package with the existing fixed DroidVM certificate. No display binary or
+binding is replaced. The independent INF version is `0.2.0.1` and its sole
+hardware ID is `PCI\VEN_1AF4&DEV_1070`. Its driver artifact contains exactly five
+flat files: `viogpuvideo.inf`, `viogpuvideo.sys`, `viogpuvideo_mft.dll`,
+`viogpuvideo-package.json` and `viogpuvideo.cat`. The catalog covers the other
+four files; the authenticated manifest records source/parent and final signed
+binary SHA-256 values. The SYS and DLL also have embedded signatures.
+
+The tools artifact separately contains signed verification/installation/test
+scripts and a signed probe, documentation and the public certificate. It
+never contains private key material. The fixture is a third artifact. Package
+CI executes the production catalog verifier and requires corruption of code
+or inventory, missing DLL, extra file and nested-directory cases to fail for
+their intended reasons. Signing/CI does not establish target kernel acceptance.
 
 Linux tests compile the production decoder state machine with ASan/UBSan.
 Six semantic mutations must be rejected: duplicate input return, truncated
@@ -81,24 +97,45 @@ FFmpeg to derive an independent exact NV12 SHA-256. Use the fixture and its
 manifest from the same CI run; encoder versions can produce different clips.
 Never copy a reference hash from a different fixture.
 
-Once the primary deployment owner has verified the backend and signed
-companion, run the following in the guest (all files are local-to-guest uploads):
+Once the primary deployment owner has verified the backend, upload the three
+artifacts local-to-guest and run from native elevated ARM64 PowerShell. The
+existing fixed certificate must already be trusted; these scripts never
+import certificates, change signing policy, reboot or change VM configuration.
 
 ```powershell
-./test-mft-device.ps1 -PackageDirectory C:\DroidVMTests\mft-package `
-    -FixtureDirectory C:\DroidVMTests\mft-fixture -DecoderIndex 0
+C:\DroidVMTests\vpu-tools\verify-video-package.ps1 `
+    -PackageDirectory C:\DroidVMTests\vpu-driver
+C:\DroidVMTests\vpu-tools\install-video-package.ps1 `
+    -PackageDirectory C:\DroidVMTests\vpu-driver
 ```
 
-This runs two independent short sessions and requires exactly 12 frames and
-the reference SHA-256 in each. It does not install, configure, reboot, or
-register anything. Capture Android's selected hardware codec and decoded-frame
-counter for the same interval. Only both guest pixel evidence and matching
-host codec evidence can establish hardware decoding. Keep logs/output remote.
+The installer requires a present media PCI function before calling `pnputil`.
+Check that the device starts successfully; a staged package does not prove
+binding. The INF puts the SYS and MFT side-by-side in its Driver Store directory,
+but does not register the MFT. For the explicit application-local decode test:
+
+```powershell
+C:\DroidVMTests\vpu-tools\test-mft-device.ps1 `
+    -PackageDirectory C:\DroidVMTests\vpu-driver `
+    -ProbeDirectory C:\DroidVMTests\vpu-tools `
+    -FixtureDirectory C:\DroidVMTests\vpu-fixture -DecoderIndex 0
+```
+
+This verifies the signed package and tools, stages just the MFT and probe
+together in the test-output directory for DLL resolution, then runs two
+independent short sessions requiring exactly 12 frames and the reference
+SHA-256 each. It does not install, configure, reboot or register anything.
+Capture Android's actual codec name with `(hardware, vendor) started`, paired
+with the same decoder session's `frames out` on EOS/stop, for the same interval.
+Only both guest pixel evidence and matching host codec evidence can establish
+hardware decoding. Keep logs/output remote. The older unsigned review artifact
+can still use `PackageDirectory` alone, but that is not signed installation.
 
 Further target acceptance remains: resolution changes, tail-drain latency,
 seek/flush, malformed streams, helper loss, process exit and reset. Standard
 application auto-discovery, async registration, DXVA/D3D video integration,
-GPU texture/fence sharing and full packaging/signing are subsequent work.
+GPU texture/fence sharing and integration into the main display-driver build
+are subsequent work.
 
 References: Microsoft [Basic MFT Processing Model](https://learn.microsoft.com/windows/win32/medfound/basic-mft-processing-model)
 and [MFT_MESSAGE_COMMAND_DRAIN](https://learn.microsoft.com/windows/win32/medfound/mft-message-command-drain).

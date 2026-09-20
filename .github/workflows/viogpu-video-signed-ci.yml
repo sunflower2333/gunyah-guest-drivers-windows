@@ -1,0 +1,90 @@
+name: Signed VioGPU VPU companion and MFT
+on:
+  workflow_dispatch:
+  push:
+    branches: [work/vpu-windows-integration-20260920]
+    paths:
+      - 'viogpu/video/**'
+      - 'viogpu/viogpuvideo/**'
+      - 'viogpu/tests/video/**'
+      - '.github/scripts/package-video-signed.ps1'
+      - '.github/workflows/viogpu-video-signed-ci.yml'
+permissions:
+  contents: read
+concurrency:
+  group: video-signed-${{ github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  decoder-and-fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - run: python3 viogpu/tests/video/decoder_test.py
+      - name: Generate independent twelve-frame reference
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          python3 viogpu/tests/video/make_fixture.py artifacts/video-fixture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-video-canonical-fixture
+          path: artifacts/video-fixture/*
+          if-no-files-found: error
+  signed-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Locate complete ARM64 WDK and packaging tools
+        shell: pwsh
+        run: ./.github/scripts/locate-windows-kit.ps1 -RequirePackagingTools
+      - uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: arm64
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Compile companion and real MFT; execute transform fixture
+        shell: pwsh
+        run: |
+          ./viogpu/video/build-video.ps1
+          ./viogpu/video/build-mft.ps1
+      - name: Sign flat VPU package with existing fixed certificate and test catalog failures
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.DROIDVM_PFX_BASE64 }}
+          PFX_PW_SECRET: ${{ secrets.DROIDVM_PFX_PW }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (!$env:PFX_B64) { throw 'Configured fixed signing certificate is required' }
+          $pfx = Join-Path $env:RUNNER_TEMP 'viogpu-video-signing.pfx'
+          $public = Join-Path $env:RUNNER_TEMP 'viogpu-video-signing.cer'
+          try {
+            # Same existing secret contract as the main driver workflow.
+            # Only the public fixed thumbprint is passed to the package script.
+            $password = if ($env:PFX_PW_SECRET) { $env:PFX_PW_SECRET } else { 'droidvm' }
+            $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
+            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
+            if ($cert.Thumbprint -cne '8705CD4DDD6DA49685EB34430106FA543FB59D53') { throw 'Unexpected public signer' }
+            Export-Certificate -Cert $cert -FilePath $public | Out-Null
+            Import-Certificate -FilePath $public -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+            ./.github/scripts/package-video-signed.ps1 -CertificateThumbprint $cert.Thumbprint
+            ./viogpu/tests/video/signed-package-contract.ps1 -PackageDirectory artifacts/video-signed -ToolsDirectory artifacts/video-signed-tools
+          } finally {
+            if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx -Force }
+            if (Test-Path -LiteralPath $public) { Remove-Item -LiteralPath $public -Force }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-video-arm64-signed-driver
+          path: artifacts/video-signed/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-video-arm64-signed-tools
+          path: artifacts/video-signed-tools/*
+          if-no-files-found: error
