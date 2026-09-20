@@ -13,6 +13,7 @@
 using Microsoft::WRL::ComPtr;
 static std::deque<VGPU_VIDEO_EVENT> events;
 static unsigned opens = 0, closes = 0, requeues = 0, drains = 0;
+static unsigned timeoutsBeforeDrain = 0;
 #define CHECK(x)                                                                                                       \
     do                                                                                                                 \
     {                                                                                                                  \
@@ -58,6 +59,7 @@ extern "C" HRESULT WINAPI VioGpuVideoControl(HANDLE, VGPU_VIDEO_CONTROL *c)
     if (c->Code == 96)
     {
         ++drains;
+        timeoutsBeforeDrain = 2;
         VGPU_VIDEO_EVENT e = {};
         e.Event = VMEDIA_EVT_DQBUF;
         e.Type = VMEDIA_CAPTURE;
@@ -96,6 +98,11 @@ extern "C" HRESULT WINAPI VioGpuVideoQueue(HANDLE, const VGPU_VIDEO_BUFFER *b, c
 }
 extern "C" HRESULT WINAPI VioGpuVideoDequeue(HANDLE, VGPU_VIDEO_EVENT *e)
 {
+    if (timeoutsBeforeDrain)
+    {
+        --timeoutsBeforeDrain;
+        return S_FALSE;
+    }
     if (events.empty())
     {
         return S_FALSE;

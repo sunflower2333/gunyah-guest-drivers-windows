@@ -20,7 +20,7 @@ struct Mock final : Transport
     std::deque<VGPU_VIDEO_EVENT> events;
     bool opened = false, encoder = false, substitute = false, brokenCopy = false, closeFail = false;
     uint32_t width = 64, height = 48, stride = 80, minimum = 3, copies = 0, returns = 0, stops = 0, drains = 0;
-    uint32_t captureCount = 0, capturedBytes = 0;
+    uint32_t captureCount = 0, capturedBytes = 0, copyFlags = 0;
     bool Open(uint32_t) override
     {
         opened = true;
@@ -105,6 +105,7 @@ struct Mock final : Transport
         CHECK(size >= capturedBytes);
         memset(data, 0x5a, capturedBytes);
         b.BytesUsed = capturedBytes;
+        b.Flags = copyFlags;
         b.TimestampUs = -1234;
         ++copies;
         return !brokenCopy;
@@ -200,6 +201,23 @@ int main()
         CHECK(d.Format().Width == 96 && d.Format().Stride == 112);
         CHECK(!d.CanInput());
         CHECK(d.AcknowledgeFormat() == Result::Ok && d.CanInput());
+    }
+    {
+        Mock m;
+        DecoderSession d(m);
+        Ready(m, d);
+        m.Source();
+        m.Done(VMEDIA_CAPTURE, 0, m.capturedBytes, VMEDIA_FLAG_LAST);
+        m.width = 96;
+        m.height = 64;
+        m.stride = 112;
+        m.copyFlags = VMEDIA_FLAG_LAST;
+        CHECK(d.Poll() == Result::Frame && d.Format().Width == 64 && m.stops == 0);
+        uint8_t raw[32768];
+        int64_t pts = 0;
+        CHECK(d.CopyFrame(raw, sizeof(raw), pts) == Result::Ok && m.stops == 0);
+        CHECK(d.ReleaseFrame() == Result::FormatChanged && m.stops == 1);
+        CHECK(d.Format().Width == 96); // the nonempty old LAST is copied before renegotiation
     }
     {
         Mock m;
