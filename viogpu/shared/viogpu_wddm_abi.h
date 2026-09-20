@@ -56,6 +56,8 @@ typedef enum VIOGPU_WDDM_ESCAPE_OPCODE
     VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE = 5,
     VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE = 6,
     VIOGPU_WDDM_ESCAPE_RELEASE_NATIVE = 7,
+    VIOGPU_WDDM_ESCAPE_ARM_FENCE_EVENT = 8,
+    VIOGPU_WDDM_ESCAPE_CANCEL_FENCE_EVENT = 9,
 } VIOGPU_WDDM_ESCAPE_OPCODE;
 
 #pragma pack(push, 4)
@@ -153,6 +155,26 @@ typedef struct VIOGPU_WDDM_FENCE_INFO
     VIOGPU_WDDM_UINT32 ContextId;
     VIOGPU_WDDM_UINT32 Reserved;
 } VIOGPU_WDDM_FENCE_INFO;
+
+/* One-shot wake hints, not completion proofs. Register an initially unsignaled
+ * event, wait outside Escape, then requery completion/reset/execution status.
+ * Always cancel the returned cookie before closing/reusing the event. Cookie 0
+ * means completion was already published and the event was signaled inline.
+ * Cancellation is idempotent, including after completion or queue failure.
+ * ARM inputs: generation, nonzero 32-bit Fence, EventHandle, Cookie=0.
+ * CANCEL inputs: Cookie only; the remaining fields following Flags are zero.
+ * A distinct 72-byte buffer keeps old size-dispatched KMDs compatible. */
+typedef struct VIOGPU_WDDM_FENCE_EVENT
+{
+    VIOGPU_WDDM_ABI_HEADER Header;
+    VIOGPU_WDDM_UINT32 Opcode;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+    VIOGPU_WDDM_UINT64 Fence;
+    VIOGPU_WDDM_UINT64 EventHandle;
+    VIOGPU_WDDM_UINT64 Cookie;
+    VIOGPU_WDDM_UINT64 Reserved[2];
+} VIOGPU_WDDM_FENCE_EVENT;
 
 /* Additive context escape. Existing ABI v0 buffers and adapter capability bits
  * stay unchanged. A successful real read is the support probe; old KMDs reject

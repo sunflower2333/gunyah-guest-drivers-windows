@@ -319,6 +319,15 @@ struct VIOGPU_WDDM_CONTEXT
     VIOGPU_WDDM_CONTEXT_FENCE_ENTRY UmdFences[VioGpuWddmContextFenceTrackerCapacity];
     volatile LONG SubmittedUmdFence;
     volatile LONG CompletedUmdFence;
+    // SubmissionLock protects ownership of all referenced user events.
+    struct FenceWaiter
+    {
+        PKEVENT Event;
+        UINT Fence;
+        ULONGLONG Cookie;
+    } FenceWaiters[32];
+    ULONGLONG NextFenceWaitCookie;
+    BOOLEAN FenceWaitInvalidated;
     VIOGPU_WDDM_DEVICE *Device;
     HANDLE RuntimeContext;
     VIOGPU_WDDM_CONTEXT_TYPE Type;

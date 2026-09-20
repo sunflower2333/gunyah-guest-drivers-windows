@@ -8243,6 +8243,16 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT32 ContextId;
             VIOGPU_WDDM_UINT32 Reserved;
         """,
+        "VIOGPU_WDDM_FENCE_EVENT": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            VIOGPU_WDDM_UINT32 Opcode;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+            VIOGPU_WDDM_UINT64 Fence;
+            VIOGPU_WDDM_UINT64 EventHandle;
+            VIOGPU_WDDM_UINT64 Cookie;
+            VIOGPU_WDDM_UINT64 Reserved[2];
+        """,
         "VIOGPU_WDDM_TIMESTAMP_INFO": """
             VIOGPU_WDDM_ABI_HEADER Header;
             VIOGPU_WDDM_UINT32 Opcode;

@@ -1347,6 +1347,79 @@ BOOLEAN RetireContextUmdFence(VIOGPU_WDDM_CONTEXT *context, UINT fenceId, UINT *
     return match != NULL;
 }
 
+/* Caller holds SubmissionLock. Defer deletion because this may be the final
+ * object reference, released at DISPATCH_LEVEL. No pageable wait/cleanup here. */
+VOID NotifyContextFenceWaitersLocked(VIOGPU_WDDM_CONTEXT *context, BOOLEAN all)
+{
+    UINT completed = static_cast<UINT>(context->CompletedUmdFence);
+    for (auto &waiter : context->FenceWaiters)
+    {
+        if (waiter.Event != NULL &&
+            (all || (completed != 0 && static_cast<INT32>(completed - waiter.Fence) >= 0)))
+        {
+            PKEVENT event = waiter.Event;
+            waiter = {};
+            KeSetEvent(event, IO_NO_INCREMENT, FALSE);
+            ObDereferenceObjectDeferDelete(event);
+        }
+    }
+}
+
+/* Takes ownership of event only on success. The caller holds Operations
+ * rundown. Check+registration is atomic against publication and teardown. */
+NTSTATUS ArmContextFenceEvent(VIOGPU_WDDM_CONTEXT *context, PKEVENT event, UINT fence, ULONGLONG *cookie)
+{
+    *cookie = 0;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
+    NTSTATUS status = STATUS_INSUFFICIENT_RESOURCES;
+    if (context->SubmissionClosing || context->FenceWaitInvalidated)
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else if (context->CompletedUmdFence != 0 &&
+             static_cast<INT32>(static_cast<UINT>(context->CompletedUmdFence) - fence) >= 0)
+    {
+        KeSetEvent(event, IO_NO_INCREMENT, FALSE);
+        ObDereferenceObjectDeferDelete(event);
+        status = STATUS_SUCCESS;
+    }
+    else if (context->NextFenceWaitCookie != MAXULONGLONG)
+    {
+        for (auto &waiter : context->FenceWaiters)
+        {
+            if (waiter.Event == NULL)
+            {
+                *cookie = ++context->NextFenceWaitCookie;
+                waiter.Event = event;
+                waiter.Fence = fence;
+                waiter.Cookie = *cookie;
+                status = STATUS_SUCCESS;
+                break;
+            }
+        }
+    }
+    KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
+    return status;
+}
+
+VOID CancelContextFenceEvent(VIOGPU_WDDM_CONTEXT *context, ULONGLONG cookie)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&context->SubmissionLock, &oldIrql);
+    for (auto &waiter : context->FenceWaiters)
+    {
+        if (waiter.Event != NULL && waiter.Cookie == cookie)
+        {
+            PKEVENT event = waiter.Event;
+            waiter = {};
+            ObDereferenceObjectDeferDelete(event);
+            break;
+        }
+    }
+    KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
+}
+
 /* Publishes the completion endpoint the user-mode driver can observe.  Called
  * only after DXGK_INTERRUPT_DMA_COMPLETED has been reported, so that a UMD which
  * sees a fence as complete can rely on VidMm having already been told.
@@ -1369,6 +1442,7 @@ VOID PublishContextCompletedUmdFence(VIOGPU_WDDM_CONTEXT *context, UINT complete
         {
             InterlockedExchange(&context->CompletedUmdFence, static_cast<LONG>(completed));
         }
+        NotifyContextFenceWaitersLocked(context, FALSE);
     }
     KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
 }
@@ -1393,6 +1467,8 @@ VOID InvalidateContextUmdFenceTracker(VIOGPU_WDDM_CONTEXT *context)
         context->UmdFenceCount = 0;
         RtlZeroMemory(context->UmdFences, sizeof(context->UmdFences));
         InterlockedExchange(&context->SubmittedUmdFence, static_cast<LONG>(completed));
+        context->FenceWaitInvalidated = TRUE;
+        NotifyContextFenceWaitersLocked(context, TRUE);
     }
     KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
 }
@@ -1429,6 +1505,7 @@ NTSTATUS BeginContextSubmissionRundown(VIOGPU_WDDM_CONTEXT *context)
     else
     {
         context->SubmissionClosing = TRUE;
+        NotifyContextFenceWaitersLocked(context, TRUE);
         KeClearEvent(&context->SubmissionProgressEvent);
     }
     KeReleaseSpinLock(&context->SubmissionLock, oldIrql);
@@ -5291,6 +5368,104 @@ NTSTATUS QueryGpuTimestampInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
     return status;
 }
 
+NTSTATUS HandleFenceEventEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+    static_assert(sizeof(VIOGPU_WDDM_FENCE_EVENT) == 72, "fence event escape wire size");
+    if (adapter == NULL || escape == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        escape->hDevice == NULL || escape->hContext == NULL || escape->Flags.Value != 0 ||
+        escape->pPrivateDriverData == NULL || escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_FENCE_EVENT))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    VIOGPU_WDDM_FENCE_EVENT request = {};
+    __try
+    {
+        RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return STATUS_INVALID_USER_BUFFER;
+    }
+    const BOOLEAN arm = request.Opcode == VIOGPU_WDDM_ESCAPE_ARM_FENCE_EVENT;
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
+        (!arm && request.Opcode != VIOGPU_WDDM_ESCAPE_CANCEL_FENCE_EVENT))
+    {
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;
+    }
+    if (request.Flags != 0 || request.Reserved[0] != 0 || request.Reserved[1] != 0 ||
+        (arm ? request.ExpectedResetGeneration == 0 || request.Fence == 0 ||
+                   request.Fence > MAXULONG || request.EventHandle == 0 || request.Cookie != 0 ||
+                   static_cast<ULONGLONG>(static_cast<ULONG_PTR>(request.EventHandle)) != request.EventHandle
+             : request.ExpectedResetGeneration != 0 || request.Fence != 0 || request.EventHandle != 0))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    auto *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(escape->hContext);
+    auto *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(escape->hDevice);
+    if (!ExAcquireRundownProtection(&context->Operations))
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+    NTSTATUS status = STATUS_SUCCESS;
+    VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
+    BOOLEAN acquired = FALSE;
+    PKEVENT event = NULL;
+    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE || context->Type != VioGpuWddmContextNative ||
+        context->Device != device || device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE || device->Adapter != adapter)
+    {
+        status = STATUS_INVALID_HANDLE;
+    }
+    else if (!arm)
+    {
+        // Cancellation must remain available after reset, without a snapshot.
+        CancelContextFenceEvent(context, request.Cookie);
+    }
+    else if (!adapter->IsDriverActive() ||
+             !(acquired = VioGpuAdapter::AcquireNativeContextSnapshot(NativeRegistration(context), &snapshot)))
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else if (snapshot.ResetGeneration != request.ExpectedResetGeneration || snapshot.ContextId == 0)
+    {
+        status = STATUS_DEVICE_NOT_READY;
+    }
+    else
+    {
+        // Never trust a user-supplied pointer or resolve a kernel-only handle.
+        status = ObReferenceObjectByHandle(reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(request.EventHandle)),
+                                           EVENT_MODIFY_STATE, *ExEventObjectType, UserMode,
+                                           reinterpret_cast<PVOID *>(&event), NULL);
+        if (NT_SUCCESS(status))
+        {
+            status = ArmContextFenceEvent(context, event, static_cast<UINT>(request.Fence), &request.Cookie);
+            if (NT_SUCCESS(status))
+            {
+                event = NULL; // ownership transferred, including inline completion
+                __try
+                {
+                    RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request));
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    CancelContextFenceEvent(context, request.Cookie);
+                    status = STATUS_INVALID_USER_BUFFER;
+                }
+            }
+        }
+    }
+    if (event != NULL)
+    {
+        ObDereferenceObject(event);
+    }
+    if (acquired)
+    {
+        VioGpuAdapter::ReleaseNativeContextSnapshot(&snapshot);
+    }
+    ExReleaseRundownProtection(&context->Operations);
+    return status;
+}
+
 NTSTATUS QueryCompletedFenceInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
 {
     PAGED_CODE();
@@ -6207,6 +6382,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
     }
 
     reinterpret_cast<VioGpuDod *>(hAdapter)->CountDisplayEvent(32);
+
+    if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_FENCE_EVENT))
+    {
+        return HandleFenceEventEscape(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
+    }
 
     if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_TIMESTAMP_INFO))
     {

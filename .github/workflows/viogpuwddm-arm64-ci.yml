@@ -80,6 +80,8 @@ jobs:
           python-version: '3.x'
       - name: Exercise production cache and stale-content negative controls
         run: python viogpu/tests/primary-read-cache/run.py
+      - name: Exercise fence event ownership and completion races
+        run: python viogpu/tests/fence-events/run.py
       - name: Reject destroy requests without changing live shares or flips
         run: python viogpu/tests/destroy-preflight/run.py
       - name: Retain native import reservations after unconfirmed release
