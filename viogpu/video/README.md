@@ -1,5 +1,10 @@
 # VioGPU video: explicit MediaCodec transport (experimental)
 
+2026-09-20: an application-local synchronous Media Foundation decoder now wraps
+this transport; see [MFT.md](MFT.md) for its exact contract and acceptance.
+It does not register a system decoder or implement DXVA. The historical notes
+below describe the original explicit transport delivery.
+
 Base: `perf/droidvm-gpu-20260914`, commit
 `5ab27d4055887f14e97195079ef51716b7b707fb`.
 Development branch: `work/vpu-video-umd-perf-20260915`.

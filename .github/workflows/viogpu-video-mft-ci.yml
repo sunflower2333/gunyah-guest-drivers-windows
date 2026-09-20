@@ -41,4 +41,6 @@ jobs:
             artifacts/video-mft-arm64/*.dll
             artifacts/video-mft-arm64/*.exe
             artifacts/video-mft-arm64/*.lib
+            artifacts/video-mft-arm64/*.ps1
+            artifacts/video-mft-arm64/*.md
           if-no-files-found: error
