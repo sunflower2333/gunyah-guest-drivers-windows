@@ -144,6 +144,8 @@ int main()
     UINT32 async = 0;
     CHECK(FAILED(attributes->GetUINT32(MF_TRANSFORM_ASYNC, &async)));
     CHECK(transform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, 1) == E_NOTIMPL);
+    DWORD ready = 1;
+    CHECK(transform->GetOutputStatus(&ready) == E_NOTIMPL && !ready);
     ComPtr<IMFMediaType> input, output;
     CHECK(SUCCEEDED(transform->GetInputAvailableType(0, 0, &input)));
     CHECK(transform->SetInputType(0, input.Get(), MFT_SET_TYPE_TEST_ONLY) == MF_E_INVALIDMEDIATYPE);
@@ -160,6 +162,10 @@ int main()
     for (unsigned run = 0; run != 2; ++run)
     {
         auto inputSample = Input();
+        if (run)
+        {
+            CHECK(SUCCEEDED(inputSample->SetUINT32(MFSampleExtension_Discontinuity, TRUE)));
+        }
         CHECK(SUCCEEDED(transform->ProcessInput(0, inputSample.Get(), 0)));
         DWORD status = 0;
         MFT_OUTPUT_DATA_BUFFER out = {};
@@ -189,8 +195,13 @@ int main()
         CHECK(SUCCEEDED(transform->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0)));
         CHECK(transform->ProcessInput(0, inputSample.Get(), 0) == MF_E_NOTACCEPTING);
         CHECK(transform->ProcessOutput(0, 1, &out, &status) == MF_E_TRANSFORM_NEED_MORE_INPUT);
-        CHECK(SUCCEEDED(transform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0)));
         CHECK(closes == run + 1);
+        auto missingDiscontinuity = Input();
+        CHECK(transform->ProcessInput(0, missingDiscontinuity.Get(), 0) == MF_E_INVALIDREQUEST);
+        if (run)
+        {
+            CHECK(SUCCEEDED(transform->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0)));
+        }
     }
     CHECK(opens == 2 && drains == 2);
     transform.Reset();

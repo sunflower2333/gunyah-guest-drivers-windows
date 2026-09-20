@@ -122,6 +122,7 @@ class Decoder final : public IMFTransform
     ComPtr<IMFMediaType> input, output;
     UINT32 width = 0, height = 0, rateN = 0, rateD = 0;
     bool sequencePending = true, ended = false;
+    bool requireDiscontinuity = false, outputDiscontinuity = true;
     Result state = Result::NeedInput;
 
     HRESULT OutputType(IMFMediaType **out)
@@ -538,9 +539,10 @@ class Decoder final : public IMFTransform
         {
             return E_POINTER;
         }
-        std::lock_guard<std::mutex> lock(mutex);
-        *flags = session.HasFrame() ? MFT_OUTPUT_STATUS_SAMPLE_READY : 0;
-        return S_OK;
+        *flags = 0;
+        // Hardware completion and format changes arrive asynchronously. The
+        // optional readiness query cannot promise an immediately usable sample.
+        return E_NOTIMPL;
     }
     STDMETHODIMP SetOutputBounds(LONGLONG, LONGLONG) override
     {
@@ -562,6 +564,8 @@ class Decoder final : public IMFTransform
                     state = Result::NeedInput;
                     sequencePending = true;
                     ended = false;
+                    requireDiscontinuity = false;
+                    outputDiscontinuity = true;
                     return Status(result);
                 }
             case MFT_MESSAGE_COMMAND_DRAIN:
@@ -570,7 +574,7 @@ class Decoder final : public IMFTransform
             case MFT_MESSAGE_NOTIFY_START_OF_STREAM:
                 if (ended && session.IsOpen())
                 {
-                    return MF_E_INVALIDREQUEST; // flush/reopen ends old ownership.
+                    return MF_E_INVALIDREQUEST; // The prior drain still has output to return.
                 }
                 ended = false;
                 return S_OK;
@@ -606,6 +610,23 @@ class Decoder final : public IMFTransform
         if (ended)
         {
             return MF_E_NOTACCEPTING;
+        }
+        UINT32 discontinuity = FALSE;
+        (void)sample->GetUINT32(MFSampleExtension_Discontinuity, &discontinuity);
+        if (requireDiscontinuity && !discontinuity)
+        {
+            return MF_E_INVALIDREQUEST;
+        }
+        if (discontinuity)
+        {
+            // Explicit discontinuity ends all old buffer ownership before a new
+            // bitstream starts; partial prior decode data is discarded.
+            Result closed = session.Close();
+            if (closed != Result::Ok)
+            {
+                return Status(closed);
+            }
+            outputDiscontinuity = true;
         }
         HRESULT hr = EnsureSession();
         if (FAILED(hr))
@@ -686,6 +707,7 @@ class Decoder final : public IMFTransform
         if (SUCCEEDED(hr))
         {
             sequencePending = false;
+            requireDiscontinuity = false;
             hr = unlock;
         }
         return hr;
@@ -710,6 +732,7 @@ class Decoder final : public IMFTransform
         }
         if (!session.IsOpen())
         {
+            ended = false;
             return MF_E_TRANSFORM_NEED_MORE_INPUT;
         }
         Result result = Pump(100);
@@ -729,6 +752,19 @@ class Decoder final : public IMFTransform
         {
             buffers[0].dwStatus = MFT_OUTPUT_DATA_BUFFER_FORMAT_CHANGE;
             return MF_E_TRANSFORM_STREAM_CHANGE;
+        }
+        if (result == Result::Drained)
+        {
+            Result closed = session.Close();
+            if (closed != Result::Ok)
+            {
+                return Status(closed);
+            }
+            ended = false;
+            requireDiscontinuity = true;
+            outputDiscontinuity = true;
+            state = Result::NeedInput;
+            return MF_E_TRANSFORM_NEED_MORE_INPUT;
         }
         if (result != Result::Frame)
         {
@@ -789,6 +825,10 @@ class Decoder final : public IMFTransform
         {
             hr = sample->SetSampleTime(timestamp * 10);
         }
+        if (SUCCEEDED(hr) && outputDiscontinuity)
+        {
+            hr = sample->SetUINT32(MFSampleExtension_Discontinuity, TRUE);
+        }
         if (SUCCEEDED(hr) && rateN && rateD)
         {
             hr = sample->SetSampleDuration(LONGLONG(10000000ull * rateD / rateN));
@@ -807,6 +847,7 @@ class Decoder final : public IMFTransform
             state = result;
         }
         buffers[0].pSample = sample.Detach();
+        outputDiscontinuity = false;
         return S_OK;
     }
 };
