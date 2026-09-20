@@ -66,7 +66,6 @@ jobs:
           }
       - name: Execute UMD query and flush device-loss regression
         shell: pwsh
-        shell: pwsh
         run: |
           $test = 'external/mesa/src/gallium/frontends/d3d10umd/device_loss_test.py'
           if (Test-Path -LiteralPath $test) {
