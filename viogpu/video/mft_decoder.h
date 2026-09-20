@@ -5,5 +5,10 @@
 #include <mftransform.h>
 // Application-local synchronous transform. No global registration or software fallback.
 // Call MFStartup before creating it. The device index refers to a decoder media function.
-extern "C" HRESULT WINAPI VioGpuCreateVideoDecoder(UINT deviceIndex, IMFTransform **transform);
+#ifdef VIOGPU_MFT_BUILD
+#define VIOGPU_MFT_API __declspec(dllexport)
+#else
+#define VIOGPU_MFT_API
+#endif
+extern "C" VIOGPU_MFT_API HRESULT WINAPI VioGpuCreateVideoDecoder(UINT deviceIndex, IMFTransform **transform);
 #endif

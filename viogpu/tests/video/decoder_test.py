@@ -2,6 +2,7 @@
 """Compile the real decoder state machine, then prove semantic regressions fail."""
 from pathlib import Path
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,8 +12,8 @@ mutations = {
     "duplicate-input-return": (" || !inputBusy[event.Index]", ""),
     "truncated-frame": ("(event.BytesUsed && event.BytesUsed < layout.Bytes)", "false"),
     "codec-substitution": ("VmediaRead32(format.Data + 8) != VMEDIA_H264", "false"),
-    "early-capture-return": ("if (event.BytesUsed) return Result::Frame;", "if (event.BytesUsed) { CaptureQueue(event.Index); return Result::Frame; }"),
-    "timeout-is-eos": ("if (!received) return Result::NeedInput;", "if (!received) return Result::Drained;"),
+    "early-capture-return": (r"if\s*\(event.BytesUsed\)\s*\{\s*return Result::Frame;\s*\}", "if (event.BytesUsed) { CaptureQueue(event.Index); return Result::Frame; }"),
+    "timeout-is-eos": (r"if\s*\(!received\)\s*\{\s*return Result::NeedInput;\s*\}", "if (!received) return Result::Drained;"),
     "close-error-hidden": ("return success ? Result::Ok : Result::Failed;", "return success ? Result::Ok : Result::Ok;"),
 }
 with tempfile.TemporaryDirectory(prefix="viogpu-decoder-") as tmp:
@@ -25,9 +26,10 @@ with tempfile.TemporaryDirectory(prefix="viogpu-decoder-") as tmp:
     for name, mutation in [("production", None), *mutations.items()]:
         if mutation:
             before, after = mutation
-            if original.count(before) != 1:
+            pattern = before if name in {"early-capture-return", "timeout-is-eos"} else re.escape(before)
+            if len(re.findall(pattern, original)) != 1:
                 raise SystemExit(f"{name}: mutation anchor must occur exactly once")
-            header.write_text(original.replace(before, after))
+            header.write_text(re.sub(pattern, lambda _: after, original))
         else:
             header.write_text(original)
         binary = tree / name

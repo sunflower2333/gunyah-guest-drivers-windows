@@ -17,5 +17,7 @@ try {
         if ($LASTEXITCODE) { throw "MFT contract build failed: $LASTEXITCODE" }
         & ./mft-contract-test.exe
         if ($LASTEXITCODE) { throw "MFT contract test failed: $LASTEXITCODE" }
+        & cl @common "$root/viogpu/tests/video/mft_probe.cpp" viogpuvideo_mft.lib @libs bcrypt.lib /Fe:mft-probe.exe
+        if ($LASTEXITCODE) { throw "MFT probe build failed: $LASTEXITCODE" }
     } finally { Pop-Location }
 } finally { Pop-Location }

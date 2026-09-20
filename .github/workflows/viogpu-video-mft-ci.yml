@@ -15,6 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 viogpu/tests/video/decoder_test.py
+      - name: Generate twelve-frame independent reference fixture
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          python3 viogpu/tests/video/make_fixture.py artifacts/video-fixture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-video-canonical-fixture
+          path: artifacts/video-fixture/*
   arm64-mft:
     runs-on: windows-11-arm
     steps:
