@@ -8,6 +8,7 @@
 
 #define _In_
 #define _In_opt_
+#define _Inout_
 #define PAGED_CODE() ((void)0)
 using VOID = void;
 using PVOID = void *;
@@ -17,6 +18,8 @@ using ULONGLONG = unsigned long long;
 using ULONG64 = unsigned long long;
 using KIRQL = int;
 using NTSTATUS = int;
+using UINT = unsigned;
+struct DXGKARG_GETSCANLINE { unsigned VidPnTargetId = 0; bool InVerticalBlank = false; unsigned ScanLine = 0; };
 using FAST_MUTEX = std::mutex;
 using KSPIN_LOCK = std::mutex;
 struct LARGE_INTEGER { LONGLONG QuadPart; };
@@ -31,6 +34,7 @@ struct Timer {
 };
 constexpr bool TRUE = true;
 constexpr int STATUS_SUCCESS = 0, STATUS_INVALID_PARAMETER = -1, STATUS_INSUFFICIENT_RESOURCES = -2;
+constexpr int STATUS_DEVICE_NOT_READY = -3;
 constexpr unsigned EX_TIMER_HIGH_RESOLUTION = 4;
 static ULONGLONG now100ns = 10000000;
 static std::vector<std::unique_ptr<Timer>> timers;
@@ -87,6 +91,9 @@ static bool ExDeleteTimer(PEX_TIMER timer, bool cancel, bool wait, PVOID) {
     return true;
 }
 struct VioGpuDod {
+    struct { struct { bool FrameBufferIsActive = true, SourceNotVisible = false; } Flags; } m_CurrentMode;
+    bool IsDriverActive() { return true; }
+    bool IsHardwareInit() { return true; }
     PEX_TIMER m_CrtcVsyncTimer = nullptr;
     FAST_MUTEX m_CrtcTimerMutex;
     KSPIN_LOCK m_CrtcTimingLock;
@@ -98,12 +105,16 @@ struct VioGpuDod {
     ULONGLONG work100ns = 0;
     void DeliverCrtcVsync() {
         ++deliveries;
+        // Production delivery retains this QPC epoch for interrupt-disabled
+        // queries. Armed scanline queries must not inherit its callback delay.
+        m_CrtcEpoch = static_cast<LONGLONG>(now100ns);
         now100ns += work100ns;
         if (stopInDelivery) InterlockedExchange(&m_CrtcVsyncTimerArmed, 0);
     }
     VOID OnCrtcVsyncTimer(PEX_TIMER timer);
     NTSTATUS ArmCrtcVsyncTimer(void);
     VOID DisarmCrtcVsyncTimer(void);
+    NTSTATUS GetScanLine(DXGKARG_GETSCANLINE *pGetScanLine);
 };
 
 // PRODUCTION
@@ -123,6 +134,17 @@ int main() {
     Check(!VioGpuStartVblankClock(~0ULL, 1, clock), "start overflow");
     ULONGLONG delay = 0;
     Check(!VioGpuNextVblankDeadline(0, clock, delay), "uninitialized clock");
+    ULONGLONG position = 0;
+    Check(!VioGpuVblankPosition(0, clock, position), "uninitialized raster rejected");
+    Check(VioGpuStartVblankClock(100000, 60606, clock), "start raster");
+    Check(!VioGpuVblankPosition(99999, clock, position), "pre-start raster rejected");
+    Check(VioGpuVblankPosition(100000, clock, position) && position == 0, "initial blank edge");
+    for (unsigned i = 0; i < 10000; ++i) {
+        const ULONGLONG sample = 100000ULL + i * 60606ULL + 1234;
+        Check(VioGpuVblankPosition(sample, clock, position) && position == 1234, "late raster remains on grid");
+        Check(VioGpuNextVblankDeadline(sample, clock, delay), "rearm raster");
+        Check(VioGpuVblankPosition(sample, clock, position) && position == 1234, "rearm does not jump raster");
+    }
     for (unsigned hz : {24U, 60U, 97U, 120U, 144U, 165U, 240U}) {
         const ULONGLONG period = (10000000ULL + hz / 2) / hz;
         const ULONGLONG start = 10000000ULL;
@@ -152,6 +174,12 @@ int main() {
     for (unsigned i = 1; i <= 1650; ++i) {
         Fire(dod, 5000);
         Check(original->due == start + (i + 1) * period, "actual callback preserves cadence");
+        DXGKARG_GETSCANLINE scan;
+        Check(dod.GetScanLine(&scan) == STATUS_SUCCESS, "armed scanline succeeds");
+        const unsigned expected = static_cast<unsigned>((7000ULL * dod.m_CrtcTiming.TotalHeight) / period);
+        Check(scan.ScanLine == (expected + dod.m_CrtcTiming.Height) % dod.m_CrtcTiming.TotalHeight,
+              "callback latency cannot reset scanline phase");
+        Check(scan.InVerticalBlank == (scan.ScanLine >= dod.m_CrtcTiming.Height), "blank flag matches raster");
     }
     auto delivered = deliveries;
     now100ns = original->due - 1;
@@ -179,6 +207,10 @@ int main() {
     dod.m_CrtcVsyncTimerArmed = 1;
     dod.DisarmCrtcVsyncTimer();
     Check(original->deleted && !dod.m_CrtcVsyncTimer, "disarm drains and clears timer");
+    DXGKARG_GETSCANLINE scan;
+    Check(dod.GetScanLine(&scan) == STATUS_SUCCESS, "disabled interrupts preserve mode query");
+    scan.VidPnTargetId = 1;
+    Check(dod.GetScanLine(&scan) == STATUS_DEVICE_NOT_READY, "invalid target rejected");
     const auto deleted = deletions;
     dod.DisarmCrtcVsyncTimer();
     Check(deletions == deleted, "idempotent disarm");

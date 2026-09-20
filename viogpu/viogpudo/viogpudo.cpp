@@ -3329,15 +3329,31 @@ NTSTATUS VioGpuDod::GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine)
     const LONGLONG epoch = m_CrtcEpoch;
     const LONGLONG period = m_CrtcPeriodTicks;
     const LONGLONG now = KeQueryPerformanceCounter(NULL).QuadPart;
+    const bool armed = InterlockedCompareExchange(&m_CrtcVsyncTimerArmed, 0, 0) != 0;
+    const VIOGPU_VBLANK_CLOCK clock = m_CrtcVblankClock;
+    ULONG64 qpc;
+    const ULONGLONG interruptNow = KeQueryInterruptTimePrecise(&qpc);
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     if (period <= 0 || now < epoch)
     {
         return STATUS_DEVICE_NOT_READY;
     }
-    // The callback reports the START of blanking. Scanline uses that same
-    // software epoch, with active scan beginning after the blanking lines.
-    const ULONGLONG position = static_cast<ULONGLONG>(now - epoch) % period;
-    const UINT line = static_cast<UINT>((position * timing.TotalHeight) / period);
+    // While interrupts are armed, use the SAME fixed deadline grid as the
+    // timer. Resetting scanline phase to each delayed callback would extend
+    // one raster then truncate it at the next callback, even though timer
+    // deadlines no longer drift. Keep the existing free-running QPC raster
+    // when interrupts are disabled; mode queries still need a scanline then.
+    ULONGLONG position = static_cast<ULONGLONG>(now - epoch) % period;
+    ULONGLONG rasterPeriod = static_cast<ULONGLONG>(period);
+    if (armed)
+    {
+        if (!VioGpuVblankPosition(interruptNow, clock, position))
+        {
+            return STATUS_DEVICE_NOT_READY;
+        }
+        rasterPeriod = clock.Period100ns;
+    }
+    const UINT line = static_cast<UINT>((position * timing.TotalHeight) / rasterPeriod);
     const UINT scanLine = (line + timing.Height) % timing.TotalHeight;
     pGetScanLine->InVerticalBlank = scanLine >= timing.Height;
     pGetScanLine->ScanLine = scanLine;

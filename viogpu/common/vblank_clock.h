@@ -41,3 +41,32 @@ static inline bool VioGpuNextVblankDeadline(unsigned long long now,
     clock.Deadline100ns = now + delay;
     return true;
 }
+
+// Deadline remains on the same grid both before and after rearming. Derive
+// raster phase from that grid rather than from the delayed callback arrival.
+// This also works when a callback is several periods late, without inventing
+// any vblank notifications for those missed periods.
+static inline bool VioGpuVblankPosition(unsigned long long now,
+                                       const VIOGPU_VBLANK_CLOCK &clock,
+                                       unsigned long long &position)
+{
+    const unsigned long long period = clock.Period100ns;
+    if (period == 0 || period > 0x7fffffffULL || clock.Deadline100ns < period)
+    {
+        return false;
+    }
+    if (now >= clock.Deadline100ns)
+    {
+        position = (now - clock.Deadline100ns) % period;
+    }
+    else
+    {
+        const unsigned long long remaining = clock.Deadline100ns - now;
+        if (remaining > period)
+        {
+            return false;
+        }
+        position = (period - remaining) % period;
+    }
+    return true;
+}

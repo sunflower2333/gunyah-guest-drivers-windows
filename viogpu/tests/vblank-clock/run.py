@@ -26,7 +26,8 @@ def function(name):
 
 
 names = ['VioGpuCrtcVsyncDpcRoutine', 'VioGpuDod::OnCrtcVsyncTimer',
-         'VioGpuDod::ArmCrtcVsyncTimer', 'VioGpuDod::DisarmCrtcVsyncTimer']
+         'VioGpuDod::ArmCrtcVsyncTimer', 'VioGpuDod::DisarmCrtcVsyncTimer',
+         'VioGpuDod::GetScanLine']
 fixture = (here / 'test.cpp').read_text().replace('// PRODUCTION', '\n\n'.join(map(function, names)))
 clock = (gpu / 'common/vblank_clock.h').read_text().replace('#pragma once', '')
 fixture = fixture.replace('// CLOCK', clock)
@@ -38,6 +39,7 @@ controls = {
     'early-delivery': fixture.replace('if (due)', 'if (active)'),
     'rearm-after-stop': fixture.replace('InterlockedCompareExchange(&m_CrtcVsyncTimerArmed, 0, 0) != 0', 'true'),
     'foreign-timer': fixture.replace('timer == m_CrtcVsyncTimer', 'true'),
+    'scanline-callback-phase': fixture.replace('if (armed)', 'if (false && armed)'),
 }
 with tempfile.TemporaryDirectory(prefix='vblank-clock-') as temp:
     path = Path(temp)
