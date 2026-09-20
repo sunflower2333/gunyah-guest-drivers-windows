@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58565",
+        "$minor = 58566",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58565",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58566",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -3403,7 +3403,7 @@ def check_legacy_runtime_callback_contract() -> None:
     # The virtual scanout raises no hardware vblank.  Reporting none at all made
     # D3DKMTWaitForVerticalBlankEvent return STATUS_TIMEOUT on every call, and the
     # desktop compositor stopped presenting to this adapter after its first few
-    # frames.  A periodic timer has to stand in for the CRTC interrupt.
+    # frames. A phase-preserving timer stands in for the CRTC interrupt.
     deliver_vsync = canonical_code(function_body("VioGpuDod::DeliverCrtcVsync", VIOGPU_CODE))
     for fragment in (
         "InterlockedCompareExchange(&m_CrtcVsyncEnabled,0,0)==0||!IsHardwareInterruptDispatchAllowed()",
@@ -3419,9 +3419,18 @@ def check_legacy_runtime_callback_contract() -> None:
     if "InterlockedExchange(&m_CrtcVsyncTimerArmed,1)==1" not in arm_vsync:
         fail("arming the software vertical-blank source must be idempotent")
     for fragment in ("EX_TIMER_HIGH_RESOLUTION", "VioGpuTimingPeriod100ns(m_CrtcTiming)",
-                     "ExSetTimer(m_CrtcVsyncTimer,-period,period,NULL);"):
+                     "VioGpuStartVblankClock(KeQueryInterruptTimePrecise(&qpc),static_cast<ULONGLONG>(period),m_CrtcVblankClock)",
+                     "ExSetTimer(m_CrtcVsyncTimer,-period,0,NULL);"):
         if fragment not in arm_vsync:
             fail(f"vblank must use the selected timing at high resolution: {fragment}")
+
+    vsync_tick = canonical_code(function_body("VioGpuDod::OnCrtcVsyncTimer", VIOGPU_CODE))
+    for fragment in ("timer==m_CrtcVsyncTimer", "if(due){DeliverCrtcVsync();}",
+                     "InterlockedCompareExchange(&m_CrtcVsyncTimerArmed,0,0)!=0",
+                     "VioGpuNextVblankDeadline(KeQueryInterruptTimePrecise(&qpc),m_CrtcVblankClock,delay)",
+                     "ExSetTimer(timer,-static_cast<LONGLONG>(delay),0,NULL);"):
+        if fragment not in vsync_tick:
+            fail(f"vblank callback must preserve phase and stop admission without catch-up bursts: {fragment}")
 
     disarm_vsync = canonical_code(function_body("VioGpuDod::DisarmCrtcVsyncTimer", VIOGPU_CODE))
     for fragment in (

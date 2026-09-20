@@ -154,12 +154,10 @@ static BOOLEAN VioGpuNotifyNativeSchedulerAtDirql(_In_opt_ PVOID context)
 
 static VOID VioGpuCrtcVsyncDpcRoutine(_In_ PEX_TIMER timer, _In_opt_ PVOID context)
 {
-    UNREFERENCED_PARAMETER(timer);
-
     VioGpuDod *dod = static_cast<VioGpuDod *>(context);
     if (dod != NULL)
     {
-        dod->DeliverCrtcVsync();
+        dod->OnCrtcVsyncTimer(timer);
     }
 }
 
@@ -193,6 +191,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_CrtcTiming = VioGpuVirtualTiming(1024, 768, 60);
     m_CrtcEpoch = 0;
     m_CrtcPeriodTicks = 0;
+    m_CrtcVblankClock = {};
 #if defined(VIOGPU_NATIVE_CONTEXT)
     InterlockedExchange(&m_NativeContextFailCallerRva, 0);
     InterlockedExchange(&m_ResetDeviceCallerRva, 0);
@@ -1319,6 +1318,41 @@ BOOLEAN VioGpuDod::PublishColorPresentCompletion(ULONGLONG presentId, ULONGLONG 
     return epoch == QueryNativeFenceEpoch() && !IsHardwareResetRequested();
 }
 #endif
+
+VOID VioGpuDod::OnCrtcVsyncTimer(_In_ PEX_TIMER timer)
+{
+    ULONG64 qpc;
+    const ULONGLONG now = KeQueryInterruptTimePrecise(&qpc);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
+    const bool active = InterlockedCompareExchange(&m_CrtcVsyncTimerArmed, 0, 0) != 0 &&
+                        timer == m_CrtcVsyncTimer;
+    const bool due = active && m_CrtcVblankClock.Deadline100ns != 0 &&
+                     now >= m_CrtcVblankClock.Deadline100ns;
+    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
+    if (!active)
+    {
+        return;
+    }
+    if (due)
+    {
+        DeliverCrtcVsync();
+    }
+
+    // Account for both wake latency and work inside DeliverCrtcVsync. Rearm
+    // only after delivery, without catch-up bursts for missed periods.
+    // ExDeleteTimer disables subsequent ExSetTimer calls and waits for this
+    // callback; the callback's timer argument stays valid until it returns.
+    KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
+    ULONGLONG delay = 0;
+    if (InterlockedCompareExchange(&m_CrtcVsyncTimerArmed, 0, 0) != 0 &&
+        timer == m_CrtcVsyncTimer &&
+        VioGpuNextVblankDeadline(KeQueryInterruptTimePrecise(&qpc), m_CrtcVblankClock, delay))
+    {
+        ExSetTimer(timer, -static_cast<LONGLONG>(delay), 0, NULL);
+    }
+    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
+}
 
 VOID VioGpuDod::DeliverCrtcVsync(void)
 {
@@ -3401,21 +3435,22 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
     /* The division below is by m_CrtcTiming.PixelClock and the result is handed
      * to ExSetTimer, and this is reached directly from ControlInterrupt and
      * CommitVidPn -- not only through SetCrtcTiming -- so it cannot lean on the
-     * validation there. The stored timing is zeroed until the first successful
-     * mode set: a zero clock bugchecks here, and a zero period makes ExSetTimer
-     * arm a one-shot, so vsync fires once, never repeats, and this function
-     * still returns STATUS_SUCCESS. Refuse rather than arm a timer that looks
-     * armed and delivers no vertical blank. */
+     * validation there. Reject a zero clock before division and a zero period
+     * before initializing the deadline grid. An unusable timing must not leave
+     * the adapter reporting an armed timer with no vertical blank delivery. */
     const bool usableTiming = VioGpuTimingValid(m_CrtcTiming);
     const LONGLONG period = usableTiming ? static_cast<LONGLONG>(VioGpuTimingPeriod100ns(m_CrtcTiming)) : 0;
-    if (period > 0)
+    ULONG64 qpc;
+    const bool clockReady = period > 0 &&
+        VioGpuStartVblankClock(KeQueryInterruptTimePrecise(&qpc), static_cast<ULONGLONG>(period), m_CrtcVblankClock);
+    if (clockReady)
     {
         m_CrtcPeriodTicks = (frequency.QuadPart * m_CrtcTiming.TotalWidth * m_CrtcTiming.TotalHeight) /
                             m_CrtcTiming.PixelClock;
         m_CrtcEpoch = now.QuadPart;
     }
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
-    if (period <= 0)
+    if (!clockReady)
     {
         ExDeleteTimer(m_CrtcVsyncTimer, TRUE, TRUE, NULL);
         m_CrtcVsyncTimer = NULL;
@@ -3423,7 +3458,8 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
         ExReleaseFastMutex(&m_CrtcTimerMutex);
         return STATUS_INVALID_PARAMETER;
     }
-    ExSetTimer(m_CrtcVsyncTimer, -period, period, NULL);
+    // The callback schedules each subsequent deadline from the same grid.
+    ExSetTimer(m_CrtcVsyncTimer, -period, 0, NULL);
     ExReleaseFastMutex(&m_CrtcTimerMutex);
     return STATUS_SUCCESS;
 }

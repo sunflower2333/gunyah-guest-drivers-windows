@@ -31,6 +31,7 @@
 
 #include "viogpu.h"
 #include "display_timing.h"
+#include "vblank_clock.h"
 #include "fence_publication.h"
 #include "activation_trace.h"
 #include "child_descriptor.h"
@@ -1582,6 +1583,7 @@ class VioGpuDod
     VIOGPU_DISPLAY_TIMING m_CrtcTiming;
     LONGLONG m_CrtcEpoch;
     LONGLONG m_CrtcPeriodTicks;
+    VIOGPU_VBLANK_CLOCK m_CrtcVblankClock;
     volatile LONG m_CrtcVsyncTimerArmed;
     volatile LONG m_CrtcVsyncDeliveredCount;
     volatile LONG64 m_CrtcVsyncPrimaryAddress;
@@ -1622,6 +1624,7 @@ class VioGpuDod
     __declspec(noinline) __declspec(code_seg(".text")) NTSTATUS ArmCrtcVsyncTimer(void);
     VOID DisarmCrtcVsyncTimer(void);
     VOID DeliverCrtcVsync(void);
+    VOID OnCrtcVsyncTimer(_In_ PEX_TIMER timer);
     VOID SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     // Any IRQL up to DIRQL.

@@ -16,6 +16,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/display-timing/**"
+      - "viogpu/tests/vblank-clock/**"
       - "viogpu/tests/present-formats/**"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
@@ -46,6 +47,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/display-timing/**"
+      - "viogpu/tests/vblank-clock/**"
       - "viogpu/tests/present-formats/**"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
@@ -82,6 +84,8 @@ jobs:
         run: python viogpu/tests/primary-read-cache/run.py
       - name: Exercise fence event ownership and completion races
         run: python viogpu/tests/fence-events/run.py
+      - name: Exercise vblank cadence, late delivery and timer rundown
+        run: python viogpu/tests/vblank-clock/run.py
       - name: Reject destroy requests without changing live shares or flips
         run: python viogpu/tests/destroy-preflight/run.py
       - name: Retain native import reservations after unconfirmed release
