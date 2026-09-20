@@ -1,0 +1,35 @@
+name: VioGPU application-local video MFT
+on:
+  workflow_dispatch:
+  push:
+    branches: [work/vpu-windows-integration-20260920]
+    paths: ['viogpu/video/**', 'viogpu/tests/video/**', '.github/workflows/viogpu-video-mft-ci.yml']
+permissions:
+  contents: read
+concurrency:
+  group: video-mft-${{ github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  decoder-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 viogpu/tests/video/decoder_test.py
+  arm64-mft:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Build real MFT and execute its contract against device API fixture
+        shell: pwsh
+        run: ./viogpu/video/build-mft.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-video-mft-arm64-review
+          path: |
+            artifacts/video-mft-arm64/*.dll
+            artifacts/video-mft-arm64/*.exe
+            artifacts/video-mft-arm64/*.lib
+          if-no-files-found: error

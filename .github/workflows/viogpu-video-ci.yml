@@ -2,7 +2,7 @@ name: VioGPU video no-pool ARM64
 on:
   workflow_dispatch:
   push:
-    branches: [work/vpu-video-umd-perf-20260915, work/hdr-fp16-trial-20260915]
+    branches: [work/vpu-video-umd-perf-20260915, work/hdr-fp16-trial-20260915, work/vpu-windows-integration-20260920]
     paths: ['viogpu/video/**', 'viogpu/viogpuvideo/**', 'viogpu/viogpud3d/**', 'viogpu/tests/video/**', 'viogpu/viogpuwddm/check-contract.py', '.github/workflows/viogpuwddm-arm64-ci.yml', '.github/workflows/build-arm64-drivers.yml', '.github/workflows/viogpu-video-ci.yml']
   pull_request:
     paths: ['viogpu/video/**', 'viogpu/viogpuvideo/**', 'viogpu/viogpud3d/**', 'viogpu/tests/video/**', 'viogpu/viogpuwddm/check-contract.py', '.github/workflows/viogpuwddm-arm64-ci.yml', '.github/workflows/build-arm64-drivers.yml', '.github/workflows/viogpu-video-ci.yml']
