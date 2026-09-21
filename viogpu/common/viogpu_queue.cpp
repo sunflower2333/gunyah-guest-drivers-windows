@@ -2796,7 +2796,10 @@ BOOLEAN VioGpuBuf::Close(void)
 PGPU_VBUFFER VioGpuBuf::GetBuf(_In_ int size, _In_ int resp_size, _In_opt_ void *resp_buf)
 {
 
-    if (size <= 0 || size > MAX_INLINE_CMD_SIZE || resp_size <= 0 ||
+    // Commands such as UPDATE_CURSOR have no device response.  A zero-sized
+    // response is valid; only negative sizes and oversized external responses
+    // are invalid.
+    if (size <= 0 || size > MAX_INLINE_CMD_SIZE || resp_size < 0 ||
         (resp_size > MAX_INLINE_RESP_SIZE && resp_buf == NULL))
     {
         return NULL;
@@ -3358,9 +3361,14 @@ PVOID CrsrQueue::AllocCursor(PGPU_VBUFFER *buf)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
+    if (buf == NULL || m_pBuf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s invalid buffer pool\n", __FUNCTION__));
+        return NULL;
+    }
+
     PGPU_VBUFFER vbuf;
     vbuf = m_pBuf->GetBuf(sizeof(GPU_UPDATE_CURSOR), 0, NULL);
-    ASSERT(vbuf);
     *buf = vbuf;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s  vbuf = %p\n", __FUNCTION__, vbuf));
@@ -3376,7 +3384,12 @@ UINT CrsrQueue::QueueCursor(PGPU_VBUFFER buf)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
-    UINT res = 0;
+    if (buf == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s null cursor buffer\n", __FUNCTION__));
+        return 1;
+    }
+
     KIRQL SavedIrql;
 
     VirtIOBufferDescriptor sg[2];
@@ -3387,7 +3400,8 @@ UINT CrsrQueue::QueueCursor(PGPU_VBUFFER buf)
     if (outcnt == 0)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid cursor DMA address %p\n", __FUNCTION__, buf->buf));
-        return 0;
+        ReleaseBuffer(buf);
+        return 1;
     }
     Lock(&SavedIrql);
     ret = AddBuf(&sg[0], outcnt, 0, buf, NULL, 0);
@@ -3397,8 +3411,13 @@ UINT CrsrQueue::QueueCursor(PGPU_VBUFFER buf)
     }
     Unlock(SavedIrql);
 
+    if (ret < 0)
+    {
+        ReleaseBuffer(buf);
+    }
+
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s vbuf = %p outcnt = %d, ret = %d\n", __FUNCTION__, buf, outcnt, ret));
-    return res;
+    return ret >= 0 ? 0 : 1;
 }
 
 PGPU_VBUFFER CrsrQueue::DequeueCursor(_Out_ UINT *len)

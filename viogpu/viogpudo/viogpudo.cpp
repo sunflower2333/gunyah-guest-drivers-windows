@@ -5107,6 +5107,20 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
 #endif
         m_pHWDevice->SetCurrentModeIndex(selected);
         Status = SetCrtcTiming(m_pHWDevice->GetModeTiming(selected));
+        if (NT_SUCCESS(Status) &&
+            InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0) == 0)
+        {
+            // Some ANGLE/D3D paths never issue ControlInterrupt(CRTC_VSYNC),
+            // although the native display still needs a vblank source for
+            // Present/flip pacing.  Keep the timer scoped to an active mode;
+            // an explicit ControlInterrupt(false) still disarms it.
+            InterlockedExchange(&m_CrtcVsyncEnabled, 1);
+            Status = ArmCrtcVsyncTimer();
+            if (!NT_SUCCESS(Status))
+            {
+                InterlockedExchange(&m_CrtcVsyncEnabled, 0);
+            }
+        }
     }
     else if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0))
         ArmCrtcVsyncTimer();
@@ -13265,6 +13279,11 @@ NTSTATUS VioGpuAdapter::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSet
         PGPU_VBUFFER vbuf;
         UINT ret = 0;
         crsr = (PGPU_UPDATE_CURSOR)m_CursorQueue.AllocCursor(&vbuf);
+        if (crsr == NULL || vbuf == NULL || m_pCursorBuf == NULL)
+        {
+            DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s cursor command allocation failed\n", __FUNCTION__));
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
         RtlZeroMemory(crsr, sizeof(*crsr));
 
         crsr->hdr.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
@@ -13295,6 +13314,11 @@ NTSTATUS VioGpuAdapter::SetPointerPosition(_In_ CONST DXGKARG_SETPOINTERPOSITION
         PGPU_VBUFFER vbuf;
         UINT ret = 0;
         crsr = (PGPU_UPDATE_CURSOR)m_CursorQueue.AllocCursor(&vbuf);
+        if (crsr == NULL || vbuf == NULL)
+        {
+            DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s cursor command allocation failed\n", __FUNCTION__));
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
         RtlZeroMemory(crsr, sizeof(*crsr));
 
         crsr->hdr.type = VIRTIO_GPU_CMD_MOVE_CURSOR;

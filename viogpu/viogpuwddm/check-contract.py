@@ -3978,6 +3978,8 @@ def check_native_context_readiness(
         "terminal waiting must block only at PASSIVE_LEVEL and require a final Completed observation",
     )
     get_buffer = canonical_code(function_body("VioGpuBuf::GetBuf", QUEUE_CODE))
+    if "resp_size<0" not in get_buffer:
+        fail("GPU buffer allocation must permit zero-sized responses for cursor commands")
     require_order(
         get_buffer,
         (
@@ -4257,6 +4259,13 @@ def check_control_queue_dma_and_response_contract() -> None:
         fail("control descriptor sizing must use wide page counts and reject oversized packets")
 
     cursor = canonical_code(function_body("CrsrQueue::QueueCursor", QUEUE_CODE))
+    if (
+        "if(buf==NULL)" not in cursor
+        or "VirtIOBufferDescriptorsg[2];" not in cursor
+        or cursor.count("BuildSGElements(") != 1
+        or "returnret>=0?0:1;" not in cursor
+    ):
+        fail("cursor queue must reject missing buffers and propagate enqueue failure")
     if "VirtIOBufferDescriptorsg[2];" not in cursor or cursor.count("BuildSGElements(") != 1:
         fail("cursor queue must permit both page fragments of its at-most-one-page command")
     if re.search(r"\bBuildSGElement\s*\(", QUEUE_CODE):
