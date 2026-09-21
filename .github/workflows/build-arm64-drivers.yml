@@ -887,8 +887,9 @@ jobs:
               throw "$($d.n): $($d.inf) contains a duplicated TargetOSVersion decoration"
             }
             if ($d.n -eq 'viogpu') {
+              $mesaCommit = (git -C external/mesa rev-parse HEAD).Trim()
               python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
-                --mesa d31ed88f7a7d1ae9b1c2a88012d754975596b44d --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
+                --mesa $mesaCommit --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
               if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
               if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
@@ -973,8 +974,9 @@ jobs:
       - name: Verify and record the exact jointly signed package identity
         shell: pwsh
         run: |
+          $mesaCommit = (git -C external/mesa rev-parse HEAD).Trim()
           python viogpu/package/verify_bundle.py --output out `
-            --mesa d31ed88f7a7d1ae9b1c2a88012d754975596b44d --mesa-run 35482217586 `
+            --mesa $mesaCommit --mesa-run 0 `
             --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58491
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 

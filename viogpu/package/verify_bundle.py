@@ -12,7 +12,10 @@ from flat_package import CANDIDATE_SOURCES, CANDIDATE_UMDS
 from flat_package import LOADER_PROBES, MACHINES, RECEIPT, REGISTRATION
 from flat_package import flat_name, pe_machine, require, sha, source_files
 
-D3D10_MESA = "ebe4a6652a1e07e5a91d9b47d57ce30069d32136"
+# The D3D10 UMD and the OpenGL/GLES candidates are built from one Mesa
+# submodule revision.  Keep the identity here equal to the committed gitlink;
+# a separately downloaded Mesa artifact must not silently enter the package.
+D3D10_MESA = "985b7a202979de10a81ceb5b970f2ac3f3dda96c"
 
 INSTALLER_FILES = (
     "INSTALL.cmd", "install-drivers.ps1", "pvmpower-devnode.ps1",

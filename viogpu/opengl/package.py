@@ -4,13 +4,12 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
 import subprocess
 
-MESA_COMMIT = "3e50dd4ba4f941fcb4ddeb91d0cbd688cabfdb4a"
-MESA_RUN = 34757244563
 MACHINES = {"arm64": 0xAA64, "x64": 0x8664, "x86": 0x14C}
 DLL_STEMS = ("viogpu_gl", "viogpu_egl", "viogpu_gles1", "viogpu_gles2",
              "viogpu_gl_vk", "viogpu_gl_loader")
@@ -110,8 +109,20 @@ def pe_exports(path, machine):
         result[name] = string(address) if export_rva <= address < export_rva+export_size else None
     return result
 
-def verify_payload(root, arch):
-    assert (root/"source-commit.txt").read_text(encoding="utf-8-sig").strip() == MESA_COMMIT
+def submodule_commit():
+    """Return the exact Mesa gitlink checked out by this parent tree."""
+    return subprocess.check_output(
+        ["git", "-C", "external/mesa", "rev-parse", "HEAD"], text=True
+    ).strip()
+
+
+def mesa_run_id():
+    """Keep the legacy receipt field without inventing a foreign CI run."""
+    return int(os.environ.get("MESA_OPENGL_RUN", "0"))
+
+
+def verify_payload(root, arch, mesa_commit):
+    assert (root/"source-commit.txt").read_text(encoding="utf-8-sig").strip() == mesa_commit
     entries = (root/"SHA256SUMS.txt").read_text(encoding="utf-8-sig").splitlines()
     names = set()
     for line in entries:
@@ -131,16 +142,18 @@ def verify_payload(root, arch):
 def assemble(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    identity = {"mesa_commit": MESA_COMMIT, "mesa_run": MESA_RUN, "files": {}}
+    mesa_commit = submodule_commit()
+    run_id = mesa_run_id()
+    identity = {"mesa_commit": mesa_commit, "mesa_run": run_id, "files": {}}
     runtime = {"schema": 1, "family": "opengl", "sources": {
-        "mesa": MESA_COMMIT, "mesa_run": MESA_RUN,
+        "mesa": mesa_commit, "mesa_run": run_id,
         "parent": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
     }, "files": {}}
     def record(path, machine, role):
         runtime["files"][path.name] = {"sha256": digest(path), "machine": machine, "role": role}
     for arch, machine in MACHINES.items():
         source = args.payloads/f"opengl-zink-{arch}-candidate"
-        verify_payload(source, arch)
+        verify_payload(source, arch, mesa_commit)
         for dll in dlls(arch):
             shutil.copy2(source/dll, output/dll)
             identity["files"][dll] = digest(output/dll)
@@ -183,8 +196,9 @@ def main():
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
     if args.verify_only:
+        mesa_commit = submodule_commit()
         for arch in MACHINES:
-            verify_payload(args.payloads/f"opengl-zink-{arch}-candidate", arch)
+            verify_payload(args.payloads/f"opengl-zink-{arch}-candidate", arch, mesa_commit)
     else:
         assemble(args)
 

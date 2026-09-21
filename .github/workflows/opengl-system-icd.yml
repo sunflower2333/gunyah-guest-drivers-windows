@@ -8,7 +8,146 @@ permissions:
   contents: read
   actions: read
 jobs:
+  mesa-opengl:
+    name: Build Mesa OpenGL/GLES (${{ matrix.arch }}) from submodule
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            msvc: x64_arm64
+            triple: aarch64
+            family: aarch64
+            cmake: ARM64
+          - arch: x64
+            msvc: x64
+            triple: x86_64
+            family: x86_64
+            cmake: x64
+          - arch: x86
+            msvc: x64_x86
+            triple: i686
+            family: x86
+            cmake: Win32
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: true
+      # The build and staging scripts live in the Mesa submodule.  Keep the
+      # loader sources beside that checkout because the scripts record and
+      # verify this exact relative path.
+      - uses: actions/checkout@v4
+        with:
+          repository: KhronosGroup/Vulkan-Loader
+          ref: vulkan-sdk-1.4.304.0
+          path: external/mesa/external/vulkan-loader
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: KhronosGroup/Vulkan-Headers
+          ref: vulkan-sdk-1.4.304.0
+          path: external/mesa/external/vulkan-headers
+          fetch-depth: 1
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install Mesa build generators
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check 'meson==1.9.1' mako packaging pyyaml ninja
+          if ($LASTEXITCODE) { throw 'Mesa Python build tools failed' }
+          choco install winflexbison3 --yes --no-progress
+          if ($LASTEXITCODE) { throw 'WinFlexBison failed' }
+          $flex = Get-ChildItem C:\ProgramData\chocolatey\lib -Recurse -Filter win_flex.exe | Select-Object -First 1
+          if (!$flex) { throw 'Missing win_flex.exe' }
+          Add-Content $env:GITHUB_PATH $flex.DirectoryName
+      - name: Prepare host shader compiler
+        shell: pwsh
+        run: |
+          $version = '16.6.0'
+          $digest = '82bf434e69b9bb4829de7e2b4bc2c5e7a7861e53d66cf75e5cc70f5f694a8d9b'
+          $archive = Join-Path $env:RUNNER_TEMP 'glslang-host.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'glslang-host'
+          $url = "https://github.com/KhronosGroup/glslang/releases/download/$version/glslang-$version-windows-x86_64-release.zip"
+          curl.exe --fail --location --retry 2 --connect-timeout 20 --max-time 120 --output $archive $url
+          if ($LASTEXITCODE) { throw 'Host glslang download failed' }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $digest) {
+            throw 'Host glslang archive checksum mismatch'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $directory
+          $programs = @(Get-ChildItem -LiteralPath $directory -Recurse -File -Filter glslangValidator.exe)
+          if ($programs.Count -eq 0) {
+            $programs = @(Get-ChildItem -LiteralPath $directory -Recurse -File -Filter glslang.exe)
+            if ($programs.Count -ne 1) { throw 'Expected one host glslang executable' }
+            Copy-Item -LiteralPath $programs[0].FullName -Destination (Join-Path $programs[0].DirectoryName 'glslangValidator.exe')
+            $programs = @(Get-ChildItem -LiteralPath $directory -Recurse -File -Filter glslangValidator.exe)
+          }
+          if ($programs.Count -ne 1) { throw 'Expected one host glslangValidator.exe' }
+          $shaderPath = $programs[0].FullName
+          & $shaderPath --version
+          if ($LASTEXITCODE) { throw 'Host shader compiler execution failed' }
+          Add-Content $env:GITHUB_PATH (Split-Path -Parent $shaderPath)
+      - name: Build and stage Mesa candidate from the submodule
+        shell: pwsh
+        working-directory: external/mesa
+        run: |
+          $cross = Join-Path $env:RUNNER_TEMP 'opengl-cross.ini'
+          @(
+            '[binaries]'
+            "c = ['clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
+            "cpp = ['clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
+            "ar = 'llvm-lib'"
+            '[host_machine]'
+            "system = 'windows'"
+            "cpu_family = '${{ matrix.family }}'"
+            "cpu = '${{ matrix.family }}'"
+            "endian = 'little'"
+            '[properties]'
+            'needs_exe_wrapper = true'
+            '[built-in options]'
+            "c_link_args = ['/DEBUG']"
+            "cpp_link_args = ['/DEBUG']"
+          ) | Set-Content $cross -Encoding ascii
+          meson setup gl-build . --cross-file $cross --backend=ninja `
+            --buildtype=debugoptimized -Doptimization=3 -Db_ndebug=true `
+            -Dplatforms=windows -Dvulkan-drivers=freedreno -Dfreedreno-kmds=wddm `
+            -Dgallium-drivers=zink -Dopengl=true -Dgles1=enabled -Dgles2=enabled `
+            -Degl=enabled -Dglx=disabled -Dgbm=disabled -Dllvm=disabled `
+            -Dshader-cache=disabled -Dzlib=enabled -Dzlib:default_library=static -Dzstd=disabled `
+            -Dwindows-private-gl-arch='${{ matrix.arch }}' `
+            -Db_vscrt=static_from_buildtype '-Dtools=[]' -Dbuild-tests=false -Dwerror=false
+          if ($LASTEXITCODE) { throw 'Mesa submodule configuration failed' }
+          meson compile -C gl-build
+          if ($LASTEXITCODE) { throw 'Mesa submodule OpenGL/GLES compile failed' }
+          ./bin/configure-private-vulkan-loader.ps1 -Architecture '${{ matrix.arch }}' -Source external/vulkan-loader
+          if ($LASTEXITCODE) { throw 'Vulkan loader source configuration failed' }
+          cmake -S external/vulkan-headers -B loader-headers -DCMAKE_INSTALL_PREFIX="$env:RUNNER_TEMP/vulkan-headers"
+          if ($LASTEXITCODE) { throw 'Vulkan headers configuration failed' }
+          cmake --install loader-headers
+          if ($LASTEXITCODE) { throw 'Vulkan headers install failed' }
+          cmake -S external/vulkan-loader -B loader-build -A '${{ matrix.cmake }}' `
+            -DVULKAN_HEADERS_INSTALL_DIR="$env:RUNNER_TEMP/vulkan-headers" `
+            -DBUILD_TESTS=OFF -DUSE_MASM=OFF -DUSE_GAS=OFF `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          if ($LASTEXITCODE) { throw 'Vulkan loader configuration failed' }
+          cmake --build loader-build --config Release --parallel
+          if ($LASTEXITCODE) { throw 'Vulkan loader build failed' }
+          ./bin/stage-windows-opengl.ps1 -Architecture '${{ matrix.arch }}' -Build gl-build -LoaderBuild loader-build -Stage opengl-candidate
+          if ($LASTEXITCODE) { throw 'Mesa submodule candidate staging failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesa-opengl-${{ matrix.arch }}
+          path: external/mesa/opengl-candidate/
+          if-no-files-found: error
+
   package:
+    needs: mesa-opengl
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v4
@@ -27,20 +166,35 @@ jobs:
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors)
             if ($errors.Count) { throw "PowerShell parse failure: $script $errors" }
           }
-      - name: Download the exact successful three-architecture Mesa run
+      - uses: actions/download-artifact@v4
+        with:
+          name: mesa-opengl-arm64
+          path: mesa-opengl-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          name: mesa-opengl-x64
+          path: mesa-opengl-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: mesa-opengl-x86
+          path: mesa-opengl-x86
+      - name: Collect and verify Mesa candidates built from the checked-out submodule
         shell: pwsh
-        timeout-minutes: 40
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          gh run watch 35482217586 --repo sunflower2333/mesa --exit-status --interval 30
-          if ($LASTEXITCODE) { throw 'Pinned Mesa run did not complete successfully' }
-          $source = gh run view 35482217586 --repo sunflower2333/mesa --json headSha --jq .headSha
-          if ($LASTEXITCODE -or $source.Trim() -ne 'd31ed88f7a7d1ae9b1c2a88012d754975596b44d') { throw 'Pinned Mesa run source mismatch' }
-          gh run download 35482217586 --repo sunflower2333/mesa --dir mesa-opengl-artifacts
-          if ($LASTEXITCODE) { throw 'Pinned Mesa artifact download failed' }
+          $mesa = (git -C external/mesa rev-parse HEAD).Trim()
+          $gitlink = (git rev-parse HEAD:external/mesa).Trim()
+          if ($mesa -ne $gitlink) { throw "Mesa submodule checkout $mesa does not match parent gitlink $gitlink" }
+          New-Item -ItemType Directory -Force mesa-opengl-artifacts | Out-Null
+          foreach ($arch in @('arm64','x64','x86')) {
+            $source = "mesa-opengl-$arch"
+            $destination = "mesa-opengl-artifacts/opengl-zink-$arch-candidate"
+            New-Item -ItemType Directory -Force $destination | Out-Null
+            Copy-Item "$source/*" $destination -Recurse -Force
+            $recorded = (Get-Content "$destination/source-commit.txt" -Raw).Trim()
+            if ($recorded -ne $mesa) { throw "$arch Mesa candidate source $recorded does not match submodule $mesa" }
+          }
           python viogpu/opengl/package.py --payloads mesa-opengl-artifacts --verify-only
-          if ($LASTEXITCODE) { throw 'Pinned Mesa source/hash/PE/export verification failed' }
+          if ($LASTEXITCODE) { throw 'Mesa submodule source/hash/PE/export verification failed' }
       - name: Build real architecture proxies and ARM64X dual-view ICD
         shell: pwsh
         run: |
