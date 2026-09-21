@@ -70,9 +70,11 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Locate preinstalled Windows SDK and WDK
+      - name: Locate packaging toolchain
         shell: pwsh
-        run: ./.github/scripts/locate-windows-kit.ps1 -RequirePackagingTools
+        run: |
+          $locator = Join-Path (Join-Path $PWD '.github/scripts') 'locate-windows-kit.ps1'
+          & $locator -RequirePackagingTools
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
