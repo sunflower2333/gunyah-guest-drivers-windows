@@ -623,8 +623,9 @@ jobs:
           }
           $inf = 'stage\viogpu\viogpuwddm.inf'
           $text = Get-Content -LiteralPath $inf -Raw
+          $driverDate = Get-Date -Format 'MM/dd/yyyy'
           $text = [regex]::Replace($text, '(?m)^DriverVer\s*=.*$',
-                                   "DriverVer = 09/22/2026,$env:DRIVER_VERSION")
+                                   "DriverVer = $driverDate,$env:DRIVER_VERSION")
           Set-Content -LiteralPath $inf -Value $text -NoNewline -Encoding utf8
 
           $signtool = Get-Item -LiteralPath $env:SIGNTOOL_PATH
