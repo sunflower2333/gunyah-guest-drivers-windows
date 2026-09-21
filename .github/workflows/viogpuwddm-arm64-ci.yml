@@ -574,3 +574,91 @@ jobs:
             viogpu/viogpuwddm/objhdr_win11_arm64/arm64/viogpud3d.dll
             viogpu/viogpuwddm/objhdr_win11_arm64/arm64/candidate.json
           if-no-files-found: error
+
+  cursor-fix-package:
+    name: Sign cursor-fix package
+    needs: contract-check
+    if: ${{ needs.contract-check.result == 'success' }}
+    runs-on: windows-2025-vs2026
+    env:
+      DRIVER_VERSION: 100.6.101.58569
+      PFX_PW: droidvm
+    steps:
+      - name: Download validated ARM64 WDDM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: viogpuwddm-arm64-unsigned
+          path: input
+
+      - name: Stage and sign targeted cursor fix
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.DROIDVM_PFX_BASE64 }}
+          PFX_PW_SECRET: ${{ secrets.DROIDVM_PFX_PW }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:PFX_B64) { throw 'DROIDVM_PFX_BASE64 is not configured' }
+          $source = Get-ChildItem input -Recurse -Filter viogpuwddm.sys -File | Select-Object -First 1
+          if ($null -eq $source) { throw 'validated WDDM artifact is missing viogpuwddm.sys' }
+          $root = $source.Directory
+          New-Item -ItemType Directory -Force stage\viogpu | Out-Null
+          foreach ($name in @('viogpuwddm.sys', 'viogpud3d.dll', 'viogpuwddm.inf',
+                              'viogpuwddm.pdb', 'viogpuwddm.map')) {
+            $path = Join-Path $root.FullName $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "artifact is missing $name" }
+            Copy-Item -LiteralPath $path -Destination stage\viogpu -Force
+          }
+          $inf = 'stage\viogpu\viogpuwddm.inf'
+          $text = Get-Content -LiteralPath $inf -Raw
+          $text = [regex]::Replace($text, '(?m)^DriverVer\s*=.*$',
+                                   "DriverVer = 09/22/2026,$env:DRIVER_VERSION")
+          Set-Content -LiteralPath $inf -Value $text -NoNewline -Encoding utf8
+
+          $kitBin = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Directory |
+            Sort-Object Name -Descending | Select-Object -First 1
+          $signtool = Get-ChildItem $kitBin.FullName -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+          $inf2cat = Get-ChildItem $kitBin.FullName -Recurse -Filter Inf2Cat.exe |
+            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+          if ($null -eq $signtool -or $null -eq $inf2cat) { throw 'WDK signing tools were not found' }
+
+          $pfx = Join-Path $env:RUNNER_TEMP 'droidvm-test.pfx'
+          $pwText = if ($env:PFX_PW_SECRET) { $env:PFX_PW_SECRET } else { $env:PFX_PW }
+          $pw = ConvertTo-SecureString $pwText -AsPlainText -Force
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
+          try {
+            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+            if ($cert.Thumbprint -cne '8705CD4DDD6DA49685EB34430106FA543FB59D53') {
+              throw "Unexpected signing certificate $($cert.Thumbprint)"
+            }
+            Export-Certificate -Cert $cert -FilePath stage\DroidVM_Test.cer | Out-Null
+            Get-ChildItem stage\viogpu -File |
+              Where-Object { $_.Extension -in @('.sys', '.dll') } |
+              ForEach-Object {
+                & $signtool.FullName sign /fd SHA256 /f $pfx /p $pwText $_.FullName
+                if ($LASTEXITCODE -ne 0) { throw "signtool failed for $($_.Name)" }
+              }
+            $driverRoot = (Resolve-Path stage\viogpu).Path
+            & $inf2cat.FullName "/driver:$driverRoot" /os:Server10_ARM64
+            if ($LASTEXITCODE -ne 0) { throw 'Inf2Cat failed' }
+            $cat = Get-Item stage\viogpu\viogpuwddm.cat
+            & $signtool.FullName sign /fd SHA256 /f $pfx /p $pwText $cat.FullName
+            if ($LASTEXITCODE -ne 0) { throw 'catalog signing failed' }
+          }
+          finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+          @'
+          $ErrorActionPreference = 'Stop'
+          $inf = Join-Path $PSScriptRoot 'viogpu\viogpuwddm.inf'
+          pnputil.exe /add-driver $inf /install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          '@ | Set-Content -LiteralPath stage\install-cursor-fix.ps1 -Encoding utf8
+          Compress-Archive -Path stage\* -DestinationPath "viogpu-cursor-fix-$env:DRIVER_VERSION.zip" -Force
+
+      - name: Upload signed cursor-fix package
+        uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-cursor-fix-100.6.101.58569
+          path: viogpu-cursor-fix-100.6.101.58569.zip
+          if-no-files-found: error
