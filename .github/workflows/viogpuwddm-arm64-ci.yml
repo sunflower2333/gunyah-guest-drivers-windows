@@ -595,7 +595,7 @@ jobs:
 
       - name: Locate preinstalled Windows SDK and WDK
         shell: pwsh
-        run: ./.github/scripts/locate-windows-kit.ps1
+        run: ./.github/scripts/locate-windows-kit.ps1 -RequirePackagingTools
 
       - name: Download validated ARM64 WDDM artifact
         uses: actions/download-artifact@v4
