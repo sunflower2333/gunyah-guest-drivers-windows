@@ -584,7 +584,7 @@ jobs:
     # Keep packaging on the same ARM64 runner whose preinstalled Kit is
     # validated by build-arm64-drivers.yml. The generic VS2026 image does not
     # contain the ARM64 WDK libraries/packaging tools.
-    runs-on: windows-11-arm
+    runs-on: ${{ 'windows-11-arm' }}
     env:
       DRIVER_VERSION: 100.6.101.58569
       PFX_PW: droidvm
