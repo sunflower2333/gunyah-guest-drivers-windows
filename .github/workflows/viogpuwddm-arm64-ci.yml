@@ -72,7 +72,7 @@ jobs:
 
       - name: Locate preinstalled Windows SDK and WDK
         shell: pwsh
-        run: ./.github/scripts/locate-windows-kit.ps1
+        run: ./.github/scripts/locate-windows-kit.ps1 -RequirePackagingTools
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
@@ -584,6 +584,14 @@ jobs:
       DRIVER_VERSION: 100.6.101.58569
       PFX_PW: droidvm
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Locate preinstalled Windows SDK and WDK
+        shell: pwsh
+        run: ./.github/scripts/locate-windows-kit.ps1
+
       - name: Download validated ARM64 WDDM artifact
         uses: actions/download-artifact@v4
         with:
@@ -614,13 +622,8 @@ jobs:
                                    "DriverVer = 09/22/2026,$env:DRIVER_VERSION")
           Set-Content -LiteralPath $inf -Value $text -NoNewline -Encoding utf8
 
-          $kitBin = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Directory |
-            Sort-Object Name -Descending | Select-Object -First 1
-          $signtool = Get-ChildItem $kitBin.FullName -Recurse -Filter signtool.exe |
-            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
-          $inf2cat = Get-ChildItem $kitBin.FullName -Recurse -Filter Inf2Cat.exe |
-            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
-          if ($null -eq $signtool -or $null -eq $inf2cat) { throw 'WDK signing tools were not found' }
+          $signtool = Get-Item -LiteralPath $env:SIGNTOOL_PATH
+          $inf2cat = Get-Item -LiteralPath $env:INF2CAT_PATH
 
           $pfx = Join-Path $env:RUNNER_TEMP 'droidvm-test.pfx'
           $pwText = if ($env:PFX_PW_SECRET) { $env:PFX_PW_SECRET } else { $env:PFX_PW }
