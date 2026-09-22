@@ -15,6 +15,7 @@ using UINT = unsigned int;
 using u32 = uint32_t;
 using LONG = int;
 using LONG64 = int64_t;
+using ULONGLONG = unsigned long long;
 using BOOLEAN = bool;
 using VOID = void;
 using PVOID = void *;

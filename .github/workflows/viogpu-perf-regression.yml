@@ -51,6 +51,11 @@ jobs:
         run: python3 viogpu/viogpuwddm/check-contract.py
       - name: Run extracted production functions under ASan and UBSan
         run: python3 viogpu/tests/submit-perf/run.py
+      - name: Verify native AHB ownership and independent release transport
+        run: |
+          python3 viogpu/tests/native-ahb-release/run.py --negative-controls
+          python3 viogpu/tests/native-ahb-release/ownership.py
+          python3 viogpu/tests/native-surface/run.py --negative-controls
       - name: Prove the fixtures reject lifetime and ownership regressions
         run: |
           python3 viogpu/tests/submit-perf/run.py --negative-control-serial

@@ -1,0 +1,225 @@
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <new>
+#include <vector>
+#include "viogpu_native_ahb_access.h"
+#include "viogpu_native_surface_policy.h"
+
+#define _In_
+#define __declspec(x)
+#define PAGED_CODE() ((void)0)
+#define RtlZeroMemory(p,n) std::memset(p,0,n)
+#define RtlCopyMemory(p,q,n) std::memcpy(p,q,n)
+#define TRUE true
+#define FALSE false
+#define NT_SUCCESS(x) ((x)>=0)
+using UINT=unsigned; using ULONG=unsigned; using LONG=int; using ULONGLONG=unsigned long long;
+using BOOLEAN=bool; using VOID=void; using BYTE=unsigned char; using PVOID=void*;
+using PEPROCESS=void*; using NTSTATUS=int; using SIZE_T=std::size_t;
+using KIRQL=int; using KSPIN_LOCK=int; using KEVENT=bool;
+constexpr int STATUS_SUCCESS=0, STATUS_PENDING=1, STATUS_DEVICE_NOT_READY=-1,
+    STATUS_INVALID_PARAMETER=-2, STATUS_NO_MEMORY=-3, STATUS_INVALID_HANDLE=-4,
+    STATUS_GRAPHICS_ALLOCATION_BUSY=-5;
+constexpr int NonPagedPoolNx=0, IO_NO_INCREMENT=0;
+void *operator new[](std::size_t size,int) { return ::operator new[](size); }
+void KeAcquireSpinLock(KSPIN_LOCK*,KIRQL *irql) { *irql=0; }
+void KeReleaseSpinLock(KSPIN_LOCK*,KIRQL) {}
+void KeAcquireSpinLockAtDpcLevel(KSPIN_LOCK*) {}
+void KeReleaseSpinLockFromDpcLevel(KSPIN_LOCK*) {}
+void KeClearEvent(KEVENT *e) { *e=false; }
+void KeSetEvent(KEVENT *e,int,bool) { *e=true; }
+LONG InterlockedCompareExchange(volatile LONG *p,LONG value,LONG old) {
+    LONG before=*p; if(before==old) *p=value; return before;
+}
+LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }
+LONG InterlockedDecrement(volatile LONG *p) { return --*p; }
+LONG InterlockedExchange(volatile LONG *p,LONG v) { LONG old=*p; *p=v; return old; }
+struct LIST_ENTRY { LIST_ENTRY *Flink,*Blink; };
+using PLIST_ENTRY=LIST_ENTRY*;
+#define CONTAINING_RECORD(p,t,f) reinterpret_cast<t*>(reinterpret_cast<char*>(p)-offsetof(t,f))
+void InitializeListHead(LIST_ENTRY *l) { l->Flink=l->Blink=l; }
+bool IsListEmpty(LIST_ENTRY *l) { return l->Flink==l; }
+void InsertTailList(LIST_ENTRY *head,LIST_ENTRY *l) {
+    l->Blink=head->Blink; l->Flink=head; head->Blink->Flink=l; head->Blink=l;
+}
+void RemoveEntryList(LIST_ENTRY *l) { l->Blink->Flink=l->Flink; l->Flink->Blink=l->Blink; }
+enum VIOGPU_HOST_CONTEXT_RESULT { VioGpuHostContextNotSubmitted,VioGpuHostContextConfirmed,
+    VioGpuHostContextRejected,VioGpuHostContextUnknown };
+using VIOGPU_2D_RESOURCE_STATE=int;
+struct VIOGPU_NATIVE_PASSIVE_WORK {
+    LIST_ENTRY Link{}; bool PipelineEligible{}; volatile LONG DisplayReleaseWait{};
+};
+struct VIOGPU_WDDM_CONTEXT { KSPIN_LOCK SubmissionLock{}; LIST_ENTRY PendingSubmissions{}; };
+struct VIOGPU_WDDM_ALLOCATION {
+    struct { ULONGLONG RequestedIova{}; } PrivateData;
+    ULONGLONG ContextResetGeneration{}; int Pins{};
+};
+class VioGpuDod;
+struct VIOGPU_WDDM_CONTEXT_SUBMISSION_ENTRY { LIST_ENTRY Link; int Kind; PVOID Owner; };
+struct VIOGPU_WDDM_SUBMISSION_IMPORT {
+    VIOGPU_WDDM_IMPORTED_REFERENCE Reference; PVOID Share,Import;
+    VIOGPU_WDDM_ALLOCATION *OwnerAllocation;
+};
+struct VIOGPU_WDDM_SUBMISSION {
+    VioGpuDod *Adapter{}; VIOGPU_WDDM_CONTEXT *Context{};
+    UINT ContextId{},UmdFenceId{},ImportCount{}; ULONGLONG ResetGeneration{},FenceId{};
+    VIOGPU_WDDM_SUBMISSION_IMPORT *Imports{};
+    LIST_ENTRY ImportWaitLink{}; VIOGPU_WDDM_CONTEXT_SUBMISSION_ENTRY ContextEntry{};
+    bool ImportWaiting{},ImportsAdmitted{},ImportsHostIssued{};
+    volatile LONG State{},CancelRequested{};
+    VIOGPU_NATIVE_PASSIVE_WORK Work{}; int References{1};
+    PVOID CommandStream{},VirtioBuffer{}; UINT CommandStreamSize{},HostCommandStreamSize{};
+};
+constexpr int VioGpuWddmSubmissionHostIssued=5,VioGpuWddmSubmissionQuarantined=6;
+constexpr int VioGpuWddmContextSubmissionRender=1,VioGpuNativeShareRegistryReady=2;
+constexpr unsigned VIOGPU_NATIVE_PIPELINE_WINDOW=8;
+bool ReferenceRenderSubmission(VIOGPU_WDDM_SUBMISSION *s) { ++s->References; return true; }
+void DereferenceRenderSubmission(VIOGPU_WDDM_SUBMISSION *s) { assert(s->References>1); --s->References; }
+int AcquireAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a,VioGpuDod*) { ++a->Pins; return 0; }
+void ReleaseAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a) { assert(a->Pins>0); --a->Pins; }
+struct VIOGPU_WDDM_MSM_SUBMIT_BO { UINT Flags,Handle; ULONGLONG Presumed; };
+struct VIOGPU_WDDM_MSM_SUBMIT_CMD { UINT words[8]; };
+struct MSM_CCMD_GEM_SUBMIT_REQ {
+    struct { UINT cmd,len,seqno,rsp_off; } hdr;
+    UINT flags,queue_id,nr_bos,nr_cmds,fence,pad;
+    BYTE payload[0];
+};
+class VioGpuDod {
+public:
+    struct Wait { UINT resource; ULONGLONG sequence; PVOID context;
+        void (*callback)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG); };
+    std::vector<Wait> waits;
+    std::vector<BYTE> packet;
+    bool slots=true,queueOk=true,reset=false;
+    bool TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK*) { return slots; }
+    bool QueueNativeAhbOperation(UINT id,ULONGLONG,ULONGLONG sequence,bool present,
+        void (*cb)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG),PVOID context) {
+        assert(!present);
+        if(!queueOk) return false;
+        waits.push_back({id,sequence,context,cb}); return true;
+    }
+    bool RefreshNativeSubmit(PVOID,const void *data,UINT size,bool grow) {
+        assert(grow); packet.assign(static_cast<const BYTE*>(data),static_cast<const BYTE*>(data)+size); return true;
+    }
+    bool m_NativePassiveClosing{},m_NativePassiveWorkerRunning{},m_NativePassiveWorkerQueued{};
+    VIOGPU_NATIVE_PASSIVE_WORK *m_NativePassiveActiveWork{};
+    LIST_ENTRY m_NativePassiveHostPending{},m_NativePassiveQueue{};
+    bool IsHardwareResetRequested() { return reset; }
+    BOOLEAN NativePassiveDispatchReadyLocked(VIOGPU_NATIVE_PASSIVE_WORK *incoming=nullptr);
+};
+// INSERT_STRUCTS
+static LIST_ENTRY g_VioGpuNativeShares,g_VioGpuNativeImports,g_VioGpuNativeAccessWaiters;
+static LONG g_VioGpuNativeShareState=VioGpuNativeShareRegistryReady;
+static KSPIN_LOCK g_VioGpuNativeAccessLock;
+static unsigned wakeCount;
+bool AcquireNativeShareRegistry(bool) { return true; }
+void ReleaseNativeShareRegistry() {}
+void WakeNativeImportWaitersLocked(VioGpuDod*) { ++wakeCount; }
+// INSERT_PRODUCTION
+
+struct Packet {
+    VIOGPU_WDDM_RENDER_COMMAND header{};
+    VIOGPU_WDDM_IMPORTED_REFERENCE refs[2]{};
+};
+static Packet make_packet(UINT count=1) {
+    Packet p;
+    p.header.Flags=VIOGPU_WDDM_RENDER_IMPORTED_REFERENCES;
+    p.header.Reserved[0]=sizeof(p.header); p.header.Reserved[1]=count;
+    p.header.Reserved[2]=1;
+    p.header.CommandStreamOffset=sizeof(p.header)+count*sizeof(p.refs[0]);
+    p.refs[0]={11,0x10000,0x4000,7,2,0};
+    return p;
+}
+static VIOGPU_WDDM_SUBMISSION make_submit(VioGpuDod &a,VIOGPU_WDDM_CONTEXT &c,UINT fence) {
+    VIOGPU_WDDM_SUBMISSION s;
+    s.Adapter=&a; s.Context=&c; s.ContextId=4; s.ResetGeneration=7; s.FenceId=s.UmdFenceId=fence;
+    s.State=VioGpuWddmSubmissionHostIssued;
+    return s;
+}
+static void link_submit(VIOGPU_WDDM_SUBMISSION &s) {
+    InitializeListHead(&s.ImportWaitLink); s.ContextEntry.Kind=VioGpuWddmContextSubmissionRender;
+    s.ContextEntry.Owner=&s; InsertTailList(&s.Context->PendingSubmissions,&s.ContextEntry.Link);
+}
+static void finish(VIOGPU_WDDM_SUBMISSION &s,bool confirmed) {
+    RetireNativeSubmitImports(&s,confirmed); UnpinNativeSubmitImports(&s);
+    RemoveEntryList(&s.ContextEntry.Link); s.State=VioGpuWddmSubmissionQuarantined;
+}
+int main() {
+    static_assert(sizeof(VIOGPU_WDDM_IMPORTED_REFERENCE)==40);
+    InitializeListHead(&g_VioGpuNativeShares); InitializeListHead(&g_VioGpuNativeImports);
+    InitializeListHead(&g_VioGpuNativeAccessWaiters);
+    VioGpuDod adapter; VIOGPU_WDDM_CONTEXT context{},other{};
+    InitializeListHead(&context.PendingSubmissions); InitializeListHead(&other.PendingSubmissions);
+    InitializeListHead(&adapter.m_NativePassiveHostPending); InitializeListHead(&adapter.m_NativePassiveQueue);
+    VIOGPU_WDDM_NATIVE_SHARE_ENTRY share{};
+    share.Adapter=&adapter; share.Key=11; share.ResourceId=19; share.Size=0x4000;
+    share.HostSurface=true; share.SurfaceResetGeneration=7; share.ProducersIdle=true;
+    InsertTailList(&g_VioGpuNativeShares,&share.Link);
+    VIOGPU_WDDM_NATIVE_IMPORT_ENTRY entry{};
+    entry.Adapter=&adapter; entry.Context=&context; entry.Key=11; entry.Iova=0x10000;
+    entry.Size=0x4000; entry.ResetGeneration=7; entry.ResourceId=19; entry.HostSurface=true;
+    InsertTailList(&g_VioGpuNativeImports,&entry.Link);
+    Packet p=make_packet();
+    assert(VioGpuNativeImportTableValid(&p.header,64,104));
+    p.header.Reserved[1]=257; assert(!VioGpuNativeImportTableValid(&p.header,64,~0ULL)); p=make_packet();
+    auto first=make_submit(adapter,context,1); link_submit(first);
+    p.refs[0].Iova++; assert(PinNativeSubmitImports(&first,&p.header)==STATUS_INVALID_HANDLE);
+    UnpinNativeSubmitImports(&first); p=make_packet();
+    assert(PinNativeSubmitImports(&first,&p.header)==0);
+    assert(share.SubmissionReferences==1 && entry.SubmissionReferences==1);
+    assert(AdmitNativeSubmitImports(&first)==0 && share.Access.Writer && !share.ProducersIdle);
+    auto second=make_submit(adapter,context,2); link_submit(second);
+    assert(PinNativeSubmitImports(&second,&p.header)==0);
+    assert(AdmitNativeSubmitImports(&second)==STATUS_PENDING);
+    assert(second.ImportWaiting && second.Work.DisplayReleaseWait);
+    first.ImportsHostIssued=true; finish(first,true);
+    assert(share.RetiredProducerFence==1 && share.ProducersIdle && !share.Access.Writer);
+    // Android still holds this allocation: observing release is mandatory.
+    share.Access.Sequence=72; share.Access.ReleasedSequence=0;
+    assert(AdmitNativeSubmitImports(&second)==STATUS_PENDING && adapter.waits.size()==1);
+    assert(share.Access.WaitPending && !share.Access.Writer);
+    VIOGPU_NATIVE_PASSIVE_WORK present{};
+    second.Work.PipelineEligible=true;
+    InsertTailList(&adapter.m_NativePassiveHostPending,&second.Work.Link);
+    assert(adapter.NativePassiveDispatchReadyLocked(&present));
+    // A different context/buffer can progress; same-context timestamp cannot.
+    auto third=make_submit(adapter,context,3); link_submit(third);
+    assert(AdmitNativeSubmitImports(&third)==STATUS_PENDING && third.ImportWaiting);
+    auto independent=make_submit(adapter,other,4); link_submit(independent);
+    assert(AdmitNativeSubmitImports(&independent)==0);
+    finish(independent,true);
+    auto release=adapter.waits.back();
+    release.callback(release.context,VioGpuHostContextConfirmed,release.resource,release.sequence);
+    assert(share.ReleaseCount==1 && share.Access.ReleasedSequence==72 && share.AsyncReferences==0);
+    assert(AdmitNativeSubmitImports(&second)==0 && share.Access.Writer);
+    assert(!adapter.NativePassiveDispatchReadyLocked(&present));
+    second.ImportsHostIssued=true; finish(second,true); RemoveEntryList(&second.Work.Link);
+    assert(AdmitNativeSubmitImports(&third)==0); finish(third,true);
+    // Host errors or reset cancellation never grant another writer lease.
+    auto failed=make_submit(adapter,context,5); link_submit(failed);
+    assert(PinNativeSubmitImports(&failed,&p.header)==0);
+    assert(AdmitNativeSubmitImports(&failed)==0); failed.ImportsHostIssued=true;
+    finish(failed,false); assert(share.Access.Poisoned);
+    auto rejected=make_submit(adapter,context,6); link_submit(rejected);
+    assert(PinNativeSubmitImports(&rejected,&p.header)==0);
+    assert(AdmitNativeSubmitImports(&rejected)==STATUS_DEVICE_NOT_READY); finish(rejected,false);
+    assert(share.SubmissionReferences==0 && entry.SubmissionReferences==0);
+    // Repacking adds authenticated resources, preserves owned IB indices/data.
+    share.Access={}; auto packed=make_submit(adapter,context,7); link_submit(packed);
+    assert(PinNativeSubmitImports(&packed,&p.header)==0);
+    std::vector<BYTE> raw(sizeof(MSM_CCMD_GEM_SUBMIT_REQ)+sizeof(VIOGPU_WDDM_MSM_SUBMIT_BO)+32);
+    auto req=reinterpret_cast<MSM_CCMD_GEM_SUBMIT_REQ*>(raw.data());
+    req->nr_bos=1; req->nr_cmds=1; req->hdr.len=raw.size();
+    auto bo=reinterpret_cast<VIOGPU_WDDM_MSM_SUBMIT_BO*>(req->payload); bo->Handle=100; bo->Flags=1;
+    std::memset(req->payload+sizeof(*bo),0x5a,32);
+    packed.CommandStream=req; packed.CommandStreamSize=raw.size();
+    assert(RepackNativeSubmitImports(&packed));
+    auto out=reinterpret_cast<MSM_CCMD_GEM_SUBMIT_REQ*>(adapter.packet.data());
+    auto obs=reinterpret_cast<VIOGPU_WDDM_MSM_SUBMIT_BO*>(out->payload);
+    assert(out->nr_bos==2 && obs[0].Handle==100 && obs[1].Handle==19 && obs[1].Flags==2 && obs[1].Presumed==0x10000);
+    assert(out->payload[2*sizeof(*obs)]==0x5a && packed.HostCommandStreamSize==raw.size()+sizeof(*bo));
+    finish(packed,true);
+    assert(IsListEmpty(&g_VioGpuNativeAccessWaiters));
+}

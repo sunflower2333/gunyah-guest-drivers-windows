@@ -24,6 +24,9 @@
 #define VIOGPU_WDDM_ESCAPE_FLAGS_ALIAS_OWNER 0x00000001U
 #define VIOGPU_WDDM_RESOURCE_SHARE_NATIVE_SURFACE 0x00000001U
 #define VIOGPU_WDDM_RENDER_FLAGS_NONE        0U
+#define VIOGPU_WDDM_RENDER_IMPORTED_REFERENCES 0x00000001U
+#define VIOGPU_WDDM_IMPORTED_REFERENCES_VERSION 1U
+#define VIOGPU_WDDM_IMPORTED_REFERENCE_LIMIT 256U
 
 #define VIOGPU_WDDM_REFERENCE_READ           0x00000001U
 #define VIOGPU_WDDM_REFERENCE_WRITE          0x00000002U
@@ -280,6 +283,20 @@ typedef struct VIOGPU_WDDM_ALLOCATION_REFERENCE
     VIOGPU_WDDM_UINT32 PatchOffset;
     VIOGPU_WDDM_UINT32 Reserved;
 } VIOGPU_WDDM_ALLOCATION_REFERENCE;
+
+/* RENDER_IMPORTED_REFERENCES preserves the 64-byte render header. Reserved
+ * words name {table offset, count, extension version, zero}. This table follows
+ * the owned references and precedes the command stream. It carries exact image
+ * accesses, never all live imports. No runtime allocation handle is invented. */
+typedef struct VIOGPU_WDDM_IMPORTED_REFERENCE
+{
+    VIOGPU_WDDM_UINT64 ShareKey;
+    VIOGPU_WDDM_UINT64 Iova;
+    VIOGPU_WDDM_UINT64 Size;
+    VIOGPU_WDDM_UINT64 ResetGeneration;
+    VIOGPU_WDDM_UINT32 Access;
+    VIOGPU_WDDM_UINT32 Reserved;
+} VIOGPU_WDDM_IMPORTED_REFERENCE;
 
 #pragma pack(pop)
 

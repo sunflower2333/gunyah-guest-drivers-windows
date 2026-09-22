@@ -35,6 +35,9 @@ using NTSTATUS = int;
 #define NT_ASSERT     assert
 #define NT_SUCCESS(x) ((x) >= 0)
 constexpr int STATUS_DEVICE_NOT_READY = -1, STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE = -2;
+constexpr int STATUS_SUCCESS=0, STATUS_PENDING=0x103, Executive=0, KernelMode=0;
+void KeWaitForSingleObject(int *, int, int, bool, void *) {}
+void KeReleaseMutex(int *, bool) {}
 constexpr int PASSIVE_LEVEL = 0, DISPATCH_LEVEL = 2, IO_NO_INCREMENT = 0, DelayedWorkQueue = 0;
 constexpr int DPFLTR_DEFAULT_ID = 0, DPFLTR_INFO_LEVEL = 0;
 struct LIST_ENTRY
@@ -163,6 +166,7 @@ using PGPU_VBUFFER = GPU_VBUFFER *;
 struct VIOGPU_WDDM_CONTEXT
 {
     UINT NodeOrdinal = 0;
+    int ImportSubmitMutex=0;
 };
 struct VioGpuDod
 {
@@ -236,7 +240,8 @@ enum
 {
     VioGpuWddmSubmissionPrepared,
     VioGpuWddmSubmissionEngineQueued,
-    VioGpuWddmSubmissionHostIssued
+    VioGpuWddmSubmissionHostIssued,
+    VioGpuWddmSubmissionQuarantined
 };
 struct VIOGPU_WDDM_SUBMISSION
 {
@@ -251,6 +256,7 @@ struct VIOGPU_WDDM_SUBMISSION
     VIOGPU_NATIVE_PASSIVE_WORK Work{};
     int refs = 2;
     bool registry = true;
+    bool ImportsHostIssued=false;
 };
 std::unordered_set<VIOGPU_WDDM_SUBMISSION *> live;
 bool ReferenceRenderSubmission(VIOGPU_WDDM_SUBMISSION *s)
@@ -314,6 +320,10 @@ int VioGpuDod::QueueNativeSubmit(PGPU_VBUFFER b, UINT fence)
     }
     return 0;
 }
+void VioGpuWddmWakeNativeImportWaiters(VioGpuDod *) {}
+NTSTATUS AdmitNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *) { return STATUS_SUCCESS; }
+BOOLEAN RepackNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *) { return true; }
+VOID QueueAdmittedNativeSubmission(VIOGPU_WDDM_SUBMISSION *submission);
 // INSERT_PRODUCTION
 void pump()
 {

@@ -65,10 +65,11 @@ def main():
                'VOID VioGpuDod::ReportNativeSubmitPerf(']
     production = '\n\n'.join(extract(source, method) for method in methods)
     worker = extract(wddm, 'VOID NativeRenderDispatchWorker(PVOID callbackContext)')
+    worker += '\n' + extract(wddm, 'VOID QueueAdmittedNativeSubmission(VIOGPU_WDDM_SUBMISSION *submission)')
     worker += '\n' + extract(wddm, 'VOID NativeRenderDispatchCancelled(PVOID callbackContext)')
     if args.negative_control_serial:
         token = 'adapter->ReleaseNativePassiveDispatch(&submission->Work);'
-        assert worker.count(token) == 1
+        assert worker.count(token) == 2
         worker = worker.replace(token, '(void)0;')
     if args.negative_control_worker_reference:
         token = '!ReferenceRenderSubmission(submission)'

@@ -3,6 +3,7 @@
 #include <cstring>
 #include <new>
 #include "viogpu_native_surface_policy.h"
+#include "viogpu_native_ahb_access.h"
 
 #define _In_
 #define _Out_
@@ -17,6 +18,13 @@
 #define FALSE false
 using UINT = unsigned int;
 using ULONG = unsigned int;
+using LONG = int;
+using KEVENT = bool;
+constexpr int NotificationEvent = 0;
+void KeInitializeEvent(KEVENT *event, int, bool value) { *event=value; }
+LONG InterlockedCompareExchange(volatile LONG *p, LONG value, LONG expected) {
+    LONG old=*p; if(old==expected) *p=value; return old;
+}
 using ULONGLONG = unsigned long long;
 using BOOLEAN = bool;
 using VOID = void;
@@ -25,7 +33,8 @@ using PEPROCESS = int *;
 constexpr UINT VIOGPU_NATIVE_RESOURCE_ID_START = 0x80000000U;
 constexpr UINT MAXUINT = ~0U;
 constexpr int STATUS_SUCCESS = 0, STATUS_INVALID_PARAMETER = -1, STATUS_INVALID_USER_BUFFER = -2,
-    STATUS_DEVICE_NOT_READY = -3, STATUS_INVALID_HANDLE = -4, STATUS_INSUFFICIENT_RESOURCES = -5, STATUS_NO_MEMORY = -6;
+    STATUS_DEVICE_NOT_READY = -3, STATUS_INVALID_HANDLE = -4, STATUS_INSUFFICIENT_RESOURCES = -5, STATUS_NO_MEMORY = -6,
+    STATUS_GRAPHICS_ALLOCATION_BUSY = -7;
 constexpr int NonPagedPoolNx = 0;
 void *operator new(std::size_t size, int) { return ::operator new(size); }
 enum VIOGPU_HOST_CONTEXT_RESULT { VioGpuHostContextNotSubmitted, VioGpuHostContextConfirmed,

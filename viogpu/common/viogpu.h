@@ -179,6 +179,18 @@ typedef struct virtio_gpu_resource_create_native_ahb
 } GPU_CMD_RESOURCE_CREATE_NATIVE_AHB, *PGPU_CMD_RESOURCE_CREATE_NATIVE_AHB;
 #pragma pack()
 
+/* Feature 8: independent publication/release observation, never a renderer
+ * fence. WAIT may remain pending while other buffers are presented. */
+#pragma pack(1)
+typedef struct virtio_gpu_native_ahb_operation
+{
+    GPU_CTRL_HDR hdr;
+    ULONG resource_id;
+    ULONG reserved;
+    ULONGLONG sequence;
+} GPU_NATIVE_AHB_OPERATION, *PGPU_NATIVE_AHB_OPERATION;
+#pragma pack()
+
 /* VIRTIO_GPU_CMD_SET_SCANOUT_BLOB. Layout is independent of the crop rectangle. */
 #pragma pack(1)
 typedef struct virtio_gpu_set_scanout_blob
@@ -271,6 +283,12 @@ static_assert(sizeof(GPU_CMD_RESOURCE_MAP_BLOB) == 40, "virtio-gpu blob map wire
 static_assert(sizeof(GPU_RESP_MAP_INFO) == 32, "virtio-gpu blob map response wire size");
 static_assert(sizeof(GPU_RESP_NATIVE_AHB) == VIRTIO_GPU_NATIVE_AHB_RESPONSE_WIRE_SIZE,
               "virtio-gpu native AHB response wire size");
+static_assert(sizeof(GPU_NATIVE_AHB_OPERATION) == VIRTIO_GPU_NATIVE_AHB_OPERATION_WIRE_SIZE,
+              "virtio-gpu native AHB operation wire size");
+static_assert(FIELD_OFFSET(GPU_NATIVE_AHB_OPERATION, resource_id) == 24,
+              "virtio-gpu native AHB operation resource offset");
+static_assert(FIELD_OFFSET(GPU_NATIVE_AHB_OPERATION, sequence) == 32,
+              "virtio-gpu native AHB operation sequence offset");
 static_assert(sizeof(GPU_CMD_RESOURCE_UNMAP_BLOB) == 32, "virtio-gpu blob unmap wire size");
 
 #pragma pack(1)

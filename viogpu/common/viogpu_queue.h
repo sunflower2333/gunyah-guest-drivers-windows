@@ -90,6 +90,7 @@ typedef struct virtio_gpu_vbuffer
      * virtqueue has no free descriptor.  This link is owned by CtrlQueue,
      * not by VioGpuBuf's in-use/free lists. */
     LIST_ENTRY native_submit_link;
+    ULONGLONG native_submit_host_fence;
 
     bool auto_release;
     KEVENT completion_event;
@@ -159,6 +160,16 @@ enum VIOGPU_HOST_CONTEXT_RESULT : LONG
     VioGpuHostContextRejected,
     VioGpuHostContextUnknown,
 };
+
+/* Invoked once at <= DISPATCH_LEVEL for an accepted asynchronous operation.
+ * Confirmed PRESENT means accepted, not visible/reusable. Confirmed WAIT means
+ * observed display release, not ownership of an exclusive GPU writer lease.
+ * Unknown includes queue reset cancellation; it never grants reuse. Callbacks
+ * must be nonpaged and cannot synchronously initiate adapter teardown. */
+typedef VOID (*VIOGPU_NATIVE_AHB_COMPLETION)(_In_opt_ PVOID context,
+                                           _In_ VIOGPU_HOST_CONTEXT_RESULT result,
+                                           _In_ UINT resourceId,
+                                           _In_ ULONGLONG sequence);
 
 /* Captures the control-queue response before the reusable buffer is released.
  * This is diagnostic state only; it does not change the native-context wire
@@ -506,6 +517,7 @@ class CtrlQueue : public VioGpuQueue
         KeInitializeSpinLock(&m_NativeSubmitLock);
         InitializeListHead(&m_NativeSubmitBacklog);
         m_NativeSubmitBacklogPoisoned = 0;
+        m_NativeSubmitSequence = 0;
         RtlZeroMemory(&m_LastNativeContextResponseDiagnostic, sizeof(m_LastNativeContextResponseDiagnostic));
         RtlZeroMemory(&m_LastNativeMapResponseDiagnostic, sizeof(m_LastNativeMapResponseDiagnostic));
     };
@@ -517,7 +529,7 @@ class CtrlQueue : public VioGpuQueue
     PGPU_VBUFFER DequeueBuffer(_Out_ UINT *len);
 
     PGPU_VBUFFER PrepareNativeSubmit(UINT context_id, const void *command, UINT command_size);
-    BOOLEAN RefreshNativeSubmit(PGPU_VBUFFER buf, const void *command, UINT command_size);
+    BOOLEAN RefreshNativeSubmit(PGPU_VBUFFER buf, const void *command, UINT command_size, BOOLEAN resize = FALSE);
     int QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id);
     void DrainNativeSubmitBacklog(void);
     /* Close the current transport generation to new submitters and wait for
@@ -568,6 +580,11 @@ class CtrlQueue : public VioGpuQueue
                                                               UINT format,
                                                               BOOLEAN protocolV2,
                                                               _Out_ VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout);
+    /* Caller holds transport submission rundown only through enqueue. FALSE
+     * means nothing submitted and no callback. TRUE transfers callback-context
+     * ownership until completion/cancellation, possibly before this returns. */
+    BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, BOOLEAN present,
+                                    VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
     /* Standard-resource MAP_BLOB/UNMAP_BLOB used by the opt-in Native AHB
      * path.  These deliberately use the adapter synchronous channel; native
      * context resources use the separate MapNativeControlBlob APIs below. */
@@ -700,6 +717,8 @@ class CtrlQueue : public VioGpuQueue
     BOOLEAN QueryEdidInfo(UINT id, _Out_writes_bytes_(EDID_RAW_BLOCK_SIZE) PBYTE edid);
 
   private:
+    static VOID CompleteNativeAhbOperation(PVOID context);
+    static VOID CancelNativeAhbOperation(PVOID context);
     BOOLEAN BeginSynchronousRequest(void);
     void EndSynchronousRequest(void);
     BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer);
@@ -742,6 +761,7 @@ class CtrlQueue : public VioGpuQueue
     KSPIN_LOCK m_NativeSubmitLock;
     LIST_ENTRY m_NativeSubmitBacklog;
     volatile LONG m_NativeSubmitBacklogPoisoned;
+    ULONGLONG m_NativeSubmitSequence;
     VIOGPU_HOST_CONTEXT_RESPONSE_DIAGNOSTIC m_LastNativeContextResponseDiagnostic;
     VIOGPU_NATIVE_MAP_RESPONSE_DIAGNOSTIC m_LastNativeMapResponseDiagnostic;
 };

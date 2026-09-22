@@ -136,6 +136,7 @@ struct VIOGPU_WDDM_ALLOCATION_RANGE
     UINT ResourceId;
     UINT ContextId;
     BOOLEAN Linked;
+    struct VIOGPU_WDDM_ALLOCATION *Allocation;
 };
 
 struct VIOGPU_WDDM_CONTEXT;
@@ -311,6 +312,7 @@ struct VIOGPU_WDDM_CONTEXT
     EX_RUNDOWN_REF Operations;
     BOOLEAN OperationsRundownCompleted;
     KSPIN_LOCK SubmissionLock;
+    KMUTEX ImportSubmitMutex;
     volatile LONG SubmissionReferences;
     BOOLEAN SubmissionClosing;
     KEVENT SubmissionProgressEvent;
@@ -482,6 +484,7 @@ enum VIOGPU_WDDM_SUBMISSION_STATE : LONG
     VioGpuWddmSubmissionQuarantined,
 };
 
+struct VIOGPU_WDDM_SUBMISSION_IMPORT;
 struct VIOGPU_WDDM_SUBMISSION
 {
     ULONG Signature;
@@ -511,7 +514,26 @@ struct VIOGPU_WDDM_SUBMISSION
     BOOLEAN FullyPrepatched;
     UINT AllocationCount;
     VIOGPU_WDDM_SUBMISSION_REFERENCE *References;
+    UINT ImportCount;
+    VIOGPU_WDDM_SUBMISSION_IMPORT *Imports;
+    LIST_ENTRY ImportWaitLink;
+    BOOLEAN ImportWaiting;
+    BOOLEAN ImportsAdmitted;
+    BOOLEAN ImportsGpuRetired;
+    BOOLEAN ImportsHostIssued;
+    UINT HostCommandStreamSize;
 };
+
+struct VIOGPU_WDDM_SUBMISSION_IMPORT
+{
+    VIOGPU_WDDM_IMPORTED_REFERENCE Reference;
+    PVOID Share;
+    PVOID Import;
+    VIOGPU_WDDM_ALLOCATION *OwnerAllocation;
+};
+
+VOID VioGpuWddmWakeNativeImportWaiters(VioGpuDod *adapter);
+BOOLEAN VioGpuWddmDrainNativeImportWorkers(void);
 
 struct VIOGPU_WDDM_OPEN_ALLOCATION
 {

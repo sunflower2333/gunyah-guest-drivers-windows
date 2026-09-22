@@ -1,6 +1,7 @@
 #include "wddmddi.h"
 #include "../shared/viogpu_adapter_identity.h"
 #include "../common/viogpu_native_surface_policy.h"
+#include "../common/viogpu_native_ahb_access.h"
 
 #include "../common/baseobj.h"
 #include "../viogpudo/viogpudo.h"
@@ -18,6 +19,13 @@ namespace
 VOID ReleaseHostSurfaceAllocation(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation);
 NTSTATUS UnmapHostSurfaceAllocation(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation);
 VOID RemoveNativeImportsForContext(_In_ VIOGPU_WDDM_CONTEXT *context);
+NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU_WDDM_RENDER_COMMAND *header);
+VOID UnpinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission);
+NTSTATUS AdmitNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission);
+VOID RetireNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, BOOLEAN confirmed);
+VOID QueueAdmittedNativeSubmission(VIOGPU_WDDM_SUBMISSION *submission);
+BOOLEAN RepackNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission);
+NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocation);
 const ULONG VIOGPU_WDDM_RESOURCE_SIGNATURE = 'rWGV';
 const ULONG VIOGPU_WDDM_ALLOCATION_SIGNATURE = 'aWGV';
 const ULONG VIOGPU_WDDM_DEVICE_SIGNATURE = 'dWGV';
@@ -757,6 +765,7 @@ NTSTATUS RegisterNativeAllocationRange(VIOGPU_WDDM_ALLOCATION *allocation)
     range->Length = allocation->BackingSize;
     range->ResourceId = allocation->ResourceId;
     range->ContextId = allocation->ContextId;
+    range->Allocation = allocation;
 
     VIOGPU_NATIVE_CONTEXT_REGISTRATION *registration = allocation->NativeContext;
     KIRQL oldIrql;
@@ -1696,6 +1705,7 @@ VOID FreeRenderSubmissionStorage(_Inout_ VIOGPU_WDDM_SUBMISSION *submission)
 
     delete[] submission->References;
     submission->References = NULL;
+    UnpinNativeSubmitImports(submission);
 }
 
 NTSTATUS PublishPreparedSubmission(VIOGPU_WDDM_SUBMISSION *submission,
@@ -1767,10 +1777,12 @@ NTSTATUS PublishPreparedSubmission(VIOGPU_WDDM_SUBMISSION *submission,
     submission->Adapter = device->Adapter;
     submission->CommandStream = static_cast<BYTE *>(dmaBuffer) + header->CommandStreamOffset;
     submission->CommandStreamSize = header->CommandStreamSize;
+    submission->HostCommandStreamSize = header->CommandStreamSize;
     submission->CommandStreamOffset = header->CommandStreamOffset;
     submission->PatchApplied = FALSE;
     submission->FullyPrepatched = fullyPrepatched;
     submission->AllocationCount = 0;
+    InitializeListHead(&submission->ImportWaitLink);
     VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData = static_cast<VIOGPU_WDDM_KMD_DMA_PRIVATE *>(dmaPrivateData);
     if (privateData->Submission != NULL)
     {
@@ -1817,6 +1829,14 @@ NTSTATUS PublishPreparedSubmission(VIOGPU_WDDM_SUBMISSION *submission,
         submission->References[index].PatchOffset = reference->PatchOffset;
         submission->References[index].Reserved = 0;
         ++submission->AllocationCount;
+    }
+
+    NTSTATUS importStatus = PinNativeSubmitImports(submission, header);
+    if (!NT_SUCCESS(importStatus))
+    {
+        FreeRenderSubmissionStorage(submission);
+        submission->Signature = 0;
+        return importStatus;
     }
 
     KIRQL oldIrql;
@@ -1987,6 +2007,8 @@ BOOLEAN QuarantineSubmission(VIOGPU_WDDM_SUBMISSION *submission,
         return FALSE;
     }
 
+    RetireNativeSubmitImports(submission, submission->ImportsGpuRetired);
+
     if (submission->DmaPrivateData != NULL && submission->DmaPrivateDataSize >= sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE))
     {
         VIOGPU_WDDM_KMD_DMA_PRIVATE *privateData = static_cast<VIOGPU_WDDM_KMD_DMA_PRIVATE *>(submission->DmaPrivateData);
@@ -2076,15 +2098,16 @@ VOID NativeSubmissionComplete(_In_opt_ PVOID callbackContext)
                                                VioGpuWddmSubmissionHostIssued) == VioGpuWddmSubmissionHostIssued &&
                     submission->FenceId != 0 && submission->FenceId <= MAXUINT && nodeOrdinal == 0 &&
                     context->EngineAffinity == 1 && buffer->size == sizeof(GPU_CMD_SUBMIT_3D) &&
-                    buffer->data_buf != NULL && buffer->data_size == submission->CommandStreamSize &&
+                    buffer->data_buf != NULL && buffer->data_size == submission->HostCommandStreamSize &&
                     buffer->resp_size == sizeof(GPU_CTRL_HDR) && buffer->response_size == sizeof(GPU_CTRL_HDR) &&
                     command != NULL && command->hdr.type == VIRTIO_GPU_CMD_SUBMIT_3D &&
-                    command->hdr.flags == expectedFlags && command->hdr.fence_id == submission->FenceId &&
+                    command->hdr.flags == expectedFlags && buffer->native_submit_host_fence != 0 &&
+                    command->hdr.fence_id == buffer->native_submit_host_fence &&
                     command->hdr.ctx_id == submission->ContextId && command->hdr.ring_idx == 1 &&
                     command->hdr.padding[0] == 0 && command->hdr.padding[1] == 0 && command->hdr.padding[2] == 0 &&
-                    command->size == submission->CommandStreamSize && command->num_in_fences == 0 && response != NULL &&
+                    command->size == submission->HostCommandStreamSize && command->num_in_fences == 0 && response != NULL &&
                     response->type == VIRTIO_GPU_RESP_OK_NODATA && response->flags == expectedFlags &&
-                    response->fence_id == submission->FenceId && response->ctx_id == submission->ContextId &&
+                    response->fence_id == buffer->native_submit_host_fence && response->ctx_id == submission->ContextId &&
                     response->ring_idx == 1 && response->padding[0] == 0 && response->padding[1] == 0 &&
                     response->padding[2] == 0 &&
                     adapter->IsNativeContextGenerationCurrent(submission->Generation, submission->ResetGeneration);
@@ -2094,6 +2117,7 @@ VOID NativeSubmissionComplete(_In_opt_ PVOID callbackContext)
     {
         valid = RetireContextUmdFence(context, submission->UmdFenceId, &newlyCompletedUmdFence);
     }
+    submission->ImportsGpuRetired = valid;
 
     if (!QuarantineTerminalSubmission(submission, TRUE))
     {
@@ -2304,12 +2328,42 @@ _Use_decl_annotations_ VOID NativeRenderDispatchWorker(PVOID callbackContext)
         return;
     }
 
+    QueueAdmittedNativeSubmission(submission);
+    DereferenceRenderSubmission(submission);
+}
+
+VOID QueueAdmittedNativeSubmission(VIOGPU_WDDM_SUBMISSION *submission)
+{
+    KeWaitForSingleObject(&submission->Context->ImportSubmitMutex, Executive, KernelMode, FALSE, NULL);
     VioGpuDod *adapter = submission->Adapter;
     UINT fenceId = static_cast<UINT>(submission->FenceId);
     UINT nodeOrdinal = submission->Context->NodeOrdinal;
+    if (InterlockedCompareExchange(&submission->State, 0, 0) == VioGpuWddmSubmissionQuarantined)
+    {
+        KeReleaseMutex(&submission->Context->ImportSubmitMutex, FALSE);
+        return;
+    }
     BOOLEAN operationAcquired = adapter->AcquireNativeSubmissionOperation();
-    NTSTATUS bindingStatus = operationAcquired ? ValidateNativeRenderBindings(submission) : STATUS_DEVICE_NOT_READY;
-    int queueResult = NT_SUCCESS(bindingStatus) ? adapter->QueueNativeSubmit(submission->VirtioBuffer, fenceId) : -1;
+    NTSTATUS bindingStatus = operationAcquired && !submission->CancelRequested
+                                 ? ValidateNativeRenderBindings(submission) : STATUS_DEVICE_NOT_READY;
+    if (bindingStatus == STATUS_SUCCESS)
+        bindingStatus = AdmitNativeSubmitImports(submission);
+    if (bindingStatus == STATUS_PENDING)
+    {
+        if (operationAcquired)
+            adapter->ReleaseNativeSubmissionOperation();
+        adapter->ReleaseNativePassiveDispatch(&submission->Work);
+        KeReleaseMutex(&submission->Context->ImportSubmitMutex, FALSE);
+        return;
+    }
+    int queueResult = -1;
+    if (bindingStatus == STATUS_SUCCESS && RepackNativeSubmitImports(submission))
+    {
+        submission->ImportsHostIssued = TRUE;
+        queueResult = adapter->QueueNativeSubmit(submission->VirtioBuffer, fenceId);
+        if (queueResult < 0)
+            submission->ImportsHostIssued = FALSE;
+    }
     if (operationAcquired)
     {
         adapter->ReleaseNativeSubmissionOperation();
@@ -2317,7 +2371,7 @@ _Use_decl_annotations_ VOID NativeRenderDispatchWorker(PVOID callbackContext)
     if (queueResult >= 0)
     {
         adapter->ReleaseNativePassiveDispatch(&submission->Work);
-        DereferenceRenderSubmission(submission);
+        KeReleaseMutex(&submission->Context->ImportSubmitMutex, FALSE);
         return;
     }
 
@@ -2326,7 +2380,7 @@ _Use_decl_annotations_ VOID NativeRenderDispatchWorker(PVOID callbackContext)
     adapter->NotifyNativeSubmissionFault(fenceId, STATUS_GRAPHICS_GPU_EXCEPTION_ON_DEVICE, nodeOrdinal, 0, TRUE);
     adapter->CompleteNativePassiveWork(&submission->Work);
     ReleaseRenderWorkReference(submission);
-    DereferenceRenderSubmission(submission);
+    KeReleaseMutex(&submission->Context->ImportSubmitMutex, FALSE);
 }
 
 _Use_decl_annotations_ VOID NativeRenderDispatchCancelled(PVOID callbackContext)
@@ -2562,6 +2616,8 @@ NTSTATUS CopyAperturePlacement(VIOGPU_WDDM_ALLOCATION *allocation,
                                PVOID systemAddress,
                                BOOLEAN toSegment)
 {
+    if (allocation != NULL && allocation->HostSurface)
+        return STATUS_INVALID_PARAMETER;
     PVOID allocationAddress = AllocationBackingAddress(allocation);
     if (allocation == NULL || allocationAddress == NULL || systemAddress == NULL || transferSize == 0 ||
         allocationOffset > allocation->BackingSize || transferSize > allocation->BackingSize - allocationOffset)
@@ -2585,6 +2641,8 @@ NTSTATUS CopyAperturePlacement(VIOGPU_WDDM_ALLOCATION *allocation,
 
 NTSTATUS FillAperturePlacement(VIOGPU_WDDM_ALLOCATION *allocation, SIZE_T fillSize, UINT pattern)
 {
+    if (allocation != NULL && allocation->HostSurface)
+        return STATUS_INVALID_PARAMETER;
     PVOID allocationAddress = AllocationBackingAddress(allocation);
     if (allocation == NULL || allocationAddress == NULL || fillSize == 0 ||
         fillSize > allocation->BackingSize || (fillSize & (sizeof(ULONG) - 1)) != 0)
@@ -3502,13 +3560,28 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     VIOGPU_WDDM_ALLOCATION *destination = transaction->Destination;
     if (source->HostSurface || destination->HostSurface)
     {
-        /* This path is a scheduled CPU copy, never publication of a rendered
-         * host surface. Native surfaces require the per-buffer acquire/release
-         * protocol before scanout can be enabled. */
+        /* A full-frame host surface can be published directly. Partial blits
+         * and allocation-copy commands still require actual copy semantics. */
         *failureStage = VioGpuWddmPresentExecuteHostSurfaceProtocol;
-        InitializePresentExecutionDiagnostic(transaction, *failureStage, STATUS_DEVICE_NOT_READY,
+        NTSTATUS nativeStatus = STATUS_INVALID_PARAMETER;
+        if (source->HostSurface && !transaction->CopyOnly && transaction->RectCount == 1 &&
+            transaction->SourceRect.left == 0 && transaction->SourceRect.top == 0 &&
+            transaction->SourceRect.right == static_cast<LONG>(source->Width) &&
+            transaction->SourceRect.bottom == static_cast<LONG>(source->Height) &&
+            transaction->DestinationRect.left == 0 && transaction->DestinationRect.top == 0 &&
+            transaction->DestinationRect.right == static_cast<LONG>(source->Width) &&
+            transaction->DestinationRect.bottom == static_cast<LONG>(source->Height))
+        {
+            nativeStatus = AcquireAllocationLifecycle(source);
+            if (nativeStatus == STATUS_SUCCESS)
+            {
+                nativeStatus = PresentHostSurface(transaction->Adapter, source);
+                KeReleaseMutex(&source->LifecycleMutex, FALSE);
+            }
+        }
+        InitializePresentExecutionDiagnostic(transaction, *failureStage, nativeStatus,
                                              *failureDetail, executionDiagnostic);
-        return STATUS_DEVICE_NOT_READY;
+        return nativeStatus;
     }
     if (source == destination)
     {
@@ -4339,6 +4412,7 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
     ULONGLONG Key;
     UINT ResourceId;
     UINT OwnerContextId;
+    VIOGPU_WDDM_ALLOCATION *OwnerAllocation;
     ULONGLONG Size;
     PEPROCESS OwnerProcess;
     BOOLEAN HostSurface;
@@ -4348,6 +4422,13 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
     VIOGPU_2D_RESOURCE_STATE SurfaceState;
     ULONGLONG SurfaceResetGeneration;
     VIOGPU_WDDM_NATIVE_SURFACE Surface;
+    volatile LONG SubmissionReferences;
+    volatile LONG AsyncReferences;
+    VIOGPU_NATIVE_AHB_ACCESS Access;
+    KEVENT ProducersIdle;
+    ULONGLONG RetiredProducerFence;
+    ULONGLONG PresentCount;
+    ULONGLONG ReleaseCount;
 };
 
 struct VIOGPU_WDDM_NATIVE_IMPORT_ENTRY
@@ -4360,6 +4441,8 @@ struct VIOGPU_WDDM_NATIVE_IMPORT_ENTRY
     ULONGLONG Iova;
     ULONGLONG Size;
     BOOLEAN HostSurface;
+    ULONGLONG ResetGeneration;
+    volatile LONG SubmissionReferences;
 };
 
 static KMUTEX g_VioGpuNativeShareMutex;
@@ -4367,6 +4450,10 @@ static LIST_ENTRY g_VioGpuNativeShares;
 static LIST_ENTRY g_VioGpuNativeImports;
 static volatile LONG g_VioGpuNativeShareState;
 static ULONGLONG g_VioGpuNativeShareSeed;
+static KSPIN_LOCK g_VioGpuNativeAccessLock;
+static LIST_ENTRY g_VioGpuNativeAccessWaiters;
+static LONG g_VioGpuNativeImportWorkers;
+static KEVENT g_VioGpuNativeImportWorkersIdle;
 
 enum : LONG
 {
@@ -4394,6 +4481,9 @@ static BOOLEAN AcquireNativeShareRegistry(_In_ BOOLEAN createIfMissing)
             KeInitializeMutex(&g_VioGpuNativeShareMutex, 0);
             InitializeListHead(&g_VioGpuNativeShares);
             InitializeListHead(&g_VioGpuNativeImports);
+            KeInitializeSpinLock(&g_VioGpuNativeAccessLock);
+            InitializeListHead(&g_VioGpuNativeAccessWaiters);
+            KeInitializeEvent(&g_VioGpuNativeImportWorkersIdle, NotificationEvent, TRUE);
             LARGE_INTEGER counter = KeQueryPerformanceCounter(NULL);
             g_VioGpuNativeShareSeed = static_cast<ULONGLONG>(counter.QuadPart) ^ (KeQueryInterruptTime() << 17) ^
                                       0x9E3779B97F4A7C15ULL;
@@ -4450,6 +4540,464 @@ static ULONGLONG NewNativeShareKeyLocked(_In_ VioGpuDod *adapter)
     }
 }
 
+/* No registry mutex, control request slot or dispatcher is held while a
+ * display release is pending. Wait-list references also cover callbacks that
+ * run before QueueNativeAhbOperation returns. */
+struct VIOGPU_NATIVE_IMPORT_WORK
+{
+    WORK_QUEUE_ITEM Work;
+    VIOGPU_WDDM_SUBMISSION *Submission;
+};
+
+__declspec(code_seg(".text"))
+static VOID ResumeNativeImportWork(PVOID opaque)
+{
+    auto work = static_cast<VIOGPU_NATIVE_IMPORT_WORK *>(opaque);
+    auto submission = work->Submission;
+    QueueAdmittedNativeSubmission(submission);
+    DereferenceRenderSubmission(submission);
+    delete work;
+    KIRQL irql;
+    KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+    if (--g_VioGpuNativeImportWorkers == 0)
+        KeSetEvent(&g_VioGpuNativeImportWorkersIdle, IO_NO_INCREMENT, FALSE);
+    KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+}
+
+__declspec(code_seg(".text"))
+static VOID WakeNativeImportWaitersLocked(VioGpuDod *adapter)
+{
+    PLIST_ENTRY link = g_VioGpuNativeAccessWaiters.Flink;
+    while (link != &g_VioGpuNativeAccessWaiters)
+    {
+        auto submission = CONTAINING_RECORD(link, VIOGPU_WDDM_SUBMISSION, ImportWaitLink);
+        link = link->Flink;
+        if (adapter != NULL && submission->Adapter != adapter)
+            continue;
+        auto work = new (NonPagedPoolNx) VIOGPU_NATIVE_IMPORT_WORK;
+        if (work == NULL)
+        {
+            /* Retain the wait-list reference. Reset/close retries the wake;
+             * allocation failure can never fabricate GPU retirement. */
+            InterlockedExchange(&submission->CancelRequested, TRUE);
+            submission->Adapter->RequestHardwareResetAtAnyIrql();
+            continue;
+        }
+        work->Submission = submission;
+        RemoveEntryList(&submission->ImportWaitLink);
+        InitializeListHead(&submission->ImportWaitLink);
+        submission->ImportWaiting = FALSE;
+        ++g_VioGpuNativeImportWorkers;
+        KeClearEvent(&g_VioGpuNativeImportWorkersIdle);
+        ExInitializeWorkItem(&work->Work, ResumeNativeImportWork, work);
+        ExQueueWorkItem(&work->Work, DelayedWorkQueue);
+    }
+}
+
+__declspec(code_seg(".text"))
+static VOID NativeAhbReleaseObserved(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT result,
+                                    UINT resourceId, ULONGLONG sequence)
+{
+    auto share = static_cast<VIOGPU_WDDM_NATIVE_SHARE_ENTRY *>(opaque);
+    KIRQL irql;
+    KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+    if (result == VioGpuHostContextConfirmed && resourceId == share->ResourceId &&
+        sequence == share->Access.Sequence && share->Access.WaitPending)
+    {
+        share->Access.ReleasedSequence = sequence;
+        ++share->ReleaseCount;
+    }
+    else
+        share->Access.Poisoned = true;
+    share->Access.WaitPending = false;
+    WakeNativeImportWaitersLocked(share->Adapter);
+    KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+    InterlockedDecrement(&share->AsyncReferences);
+}
+
+NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU_WDDM_RENDER_COMMAND *header)
+{
+    PAGED_CODE();
+    if (header->Flags == VIOGPU_WDDM_RENDER_FLAGS_NONE)
+        return STATUS_SUCCESS;
+    const UINT count = header->Reserved[1];
+    if (count == 0 || count > VIOGPU_WDDM_IMPORTED_REFERENCE_LIMIT)
+        return STATUS_INVALID_PARAMETER;
+    auto refs = reinterpret_cast<const VIOGPU_WDDM_IMPORTED_REFERENCE *>(
+        reinterpret_cast<const BYTE *>(header) + header->Reserved[0]);
+    submission->Imports = new (NonPagedPoolNx) VIOGPU_WDDM_SUBMISSION_IMPORT[count];
+    if (submission->Imports == NULL)
+        return STATUS_NO_MEMORY;
+    RtlZeroMemory(submission->Imports, sizeof(*submission->Imports) * count);
+    if (!AcquireNativeShareRegistry(FALSE))
+        return STATUS_INVALID_HANDLE;
+    NTSTATUS status = STATUS_SUCCESS;
+    for (UINT i = 0; i < count; ++i)
+    {
+        const auto &ref = refs[i];
+        if (ref.ShareKey == 0 || ref.Iova == 0 || ref.Size == 0 || ref.Reserved != 0 ||
+            ref.ResetGeneration != submission->ResetGeneration || ref.Access == 0 ||
+            (ref.Access & ~(VIOGPU_WDDM_REFERENCE_READ | VIOGPU_WDDM_REFERENCE_WRITE)) != 0)
+        {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+        for (UINT j = 0; j < i; ++j)
+            if (refs[j].ShareKey == ref.ShareKey || refs[j].Iova == ref.Iova)
+                status = STATUS_INVALID_PARAMETER;
+        if (!NT_SUCCESS(status))
+            break;
+        auto share = FindNativeShareByKeyLocked(submission->Adapter, ref.ShareKey);
+        VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *entry = NULL;
+        for (PLIST_ENTRY link = g_VioGpuNativeImports.Flink; link != &g_VioGpuNativeImports; link = link->Flink)
+        {
+            auto candidate = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_IMPORT_ENTRY, Link);
+            if (candidate->Context == submission->Context && candidate->Key == ref.ShareKey &&
+                candidate->Adapter == submission->Adapter && candidate->Iova == ref.Iova &&
+                candidate->Size == ref.Size && candidate->ResetGeneration == ref.ResetGeneration)
+            {
+                entry = candidate;
+                break;
+            }
+        }
+        const BOOLEAN ownerAlias = share != NULL && !share->HostSurface && share->OwnerAllocation != NULL &&
+            share->OwnerContextId == submission->ContextId &&
+            share->OwnerAllocation->PrivateData.RequestedIova == ref.Iova &&
+            share->OwnerAllocation->ContextResetGeneration == ref.ResetGeneration;
+        if (share == NULL || (!ownerAlias && (entry == NULL || share->ResourceId != entry->ResourceId)) ||
+            share->Size != ref.Size ||
+            (share->HostSurface && share->SurfaceResetGeneration != ref.ResetGeneration))
+        {
+            status = STATUS_INVALID_HANDLE;
+            break;
+        }
+        if (!share->HostSurface &&
+            AcquireAllocationSubmissionReference(share->OwnerAllocation, submission->Adapter) != STATUS_SUCCESS)
+        {
+            status = STATUS_GRAPHICS_ALLOCATION_BUSY;
+            break;
+        }
+        if (entry != NULL)
+            InterlockedIncrement(&entry->SubmissionReferences);
+        InterlockedIncrement(&share->SubmissionReferences);
+        submission->Imports[i].Reference = ref;
+        submission->Imports[i].Share = share;
+        submission->Imports[i].Import = entry;
+        submission->Imports[i].OwnerAllocation = share->OwnerAllocation;
+        ++submission->ImportCount;
+    }
+    ReleaseNativeShareRegistry();
+    return status;
+}
+
+__declspec(code_seg(".text"))
+VOID UnpinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission)
+{
+    for (UINT i = 0; i < submission->ImportCount; ++i)
+    {
+        auto entry = static_cast<VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *>(submission->Imports[i].Import);
+        auto share = static_cast<VIOGPU_WDDM_NATIVE_SHARE_ENTRY *>(submission->Imports[i].Share);
+        if (entry != NULL)
+            InterlockedDecrement(&entry->SubmissionReferences);
+        InterlockedDecrement(&share->SubmissionReferences);
+        if (submission->Imports[i].OwnerAllocation != NULL)
+            ReleaseAllocationSubmissionReference(submission->Imports[i].OwnerAllocation);
+    }
+    delete[] submission->Imports;
+    submission->Imports = NULL;
+    submission->ImportCount = 0;
+}
+
+BOOLEAN RepackNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission)
+{
+    PAGED_CODE();
+    if (submission->ImportCount == 0)
+        return TRUE;
+    const auto source = static_cast<const MSM_CCMD_GEM_SUBMIT_REQ *>(submission->CommandStream);
+    const UINT ownedBytes = source->nr_bos * sizeof(VIOGPU_WDDM_MSM_SUBMIT_BO);
+    const UINT commandBytes = source->nr_cmds * sizeof(VIOGPU_WDDM_MSM_SUBMIT_CMD);
+    const UINT capacity = submission->CommandStreamSize + submission->ImportCount * sizeof(VIOGPU_WDDM_MSM_SUBMIT_BO);
+    BYTE *storage = new (NonPagedPoolNx) BYTE[capacity];
+    if (storage == NULL)
+        return FALSE;
+    auto packet = reinterpret_cast<MSM_CCMD_GEM_SUBMIT_REQ *>(storage);
+    RtlCopyMemory(packet, source, sizeof(*source) + ownedBytes);
+    auto bos = reinterpret_cast<VIOGPU_WDDM_MSM_SUBMIT_BO *>(packet->payload);
+    for (UINT i = 0; i < submission->ImportCount; ++i)
+    {
+        const auto &ref = submission->Imports[i];
+        auto share = static_cast<VIOGPU_WDDM_NATIVE_SHARE_ENTRY *>(ref.Share);
+        UINT index = 0;
+        while (index < packet->nr_bos && bos[index].Handle != share->ResourceId)
+            ++index;
+        if (index == packet->nr_bos)
+        {
+            ++packet->nr_bos;
+            RtlZeroMemory(&bos[index], sizeof(bos[index]));
+            bos[index].Handle = share->ResourceId;
+            bos[index].Presumed = ref.Reference.Iova;
+        }
+        bos[index].Flags |= ref.Reference.Access;
+    }
+    const UINT newBosBytes = packet->nr_bos * sizeof(*bos);
+    RtlCopyMemory(packet->payload + newBosBytes, source->payload + ownedBytes, commandBytes);
+    packet->hdr.len = sizeof(*packet) + newBosBytes + commandBytes;
+    const BOOLEAN refreshed = submission->Adapter->RefreshNativeSubmit(submission->VirtioBuffer, packet,
+                                                                       packet->hdr.len, TRUE);
+    if (refreshed)
+        submission->HostCommandStreamSize = packet->hdr.len;
+    delete[] storage;
+    return refreshed;
+}
+
+NTSTATUS AdmitNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission)
+{
+    PAGED_CODE();
+    if (InterlockedCompareExchange(&g_VioGpuNativeShareState, 0, 0) != VioGpuNativeShareRegistryReady)
+        return STATUS_SUCCESS;
+    VIOGPU_WDDM_NATIVE_SHARE_ENTRY *waits[VIOGPU_WDDM_IMPORTED_REFERENCE_LIMIT];
+    UINT waitCount = 0;
+    NTSTATUS status = STATUS_SUCCESS;
+    KIRQL irql;
+    KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+    /* MSM/KGSL's inner user timestamp is context-local. Keep that submission
+     * order even while another context can render and Present independently. */
+    KeAcquireSpinLockAtDpcLevel(&submission->Context->SubmissionLock);
+    for (PLIST_ENTRY link = submission->Context->PendingSubmissions.Flink;
+         link != &submission->Context->PendingSubmissions; link = link->Flink)
+    {
+        auto entry = CONTAINING_RECORD(link, VIOGPU_WDDM_CONTEXT_SUBMISSION_ENTRY, Link);
+        if (entry->Kind != VioGpuWddmContextSubmissionRender || entry->Owner == submission)
+            continue;
+        auto prior = static_cast<VIOGPU_WDDM_SUBMISSION *>(entry->Owner);
+        if (prior->FenceId != 0 && static_cast<LONG>(prior->UmdFenceId - submission->UmdFenceId) < 0 &&
+            !prior->ImportsHostIssued && prior->State != VioGpuWddmSubmissionQuarantined)
+            status = STATUS_PENDING;
+    }
+    KeReleaseSpinLockFromDpcLevel(&submission->Context->SubmissionLock);
+    if (InterlockedCompareExchange(&submission->CancelRequested, 0, 0) != 0 ||
+        InterlockedCompareExchange(&submission->State, 0, 0) != VioGpuWddmSubmissionHostIssued)
+        status = STATUS_DEVICE_NOT_READY;
+    for (UINT i = 0; NT_SUCCESS(status) && i < submission->ImportCount; ++i)
+    {
+        auto share = static_cast<VIOGPU_WDDM_NATIVE_SHARE_ENTRY *>(submission->Imports[i].Share);
+        const UINT access = submission->Imports[i].Reference.Access;
+        if (share->Access.Poisoned)
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            break;
+        }
+        if (!VioGpuNativeAhbCanAccess(&share->Access, access))
+            status = STATUS_PENDING;
+        if ((access & VIOGPU_WDDM_REFERENCE_WRITE) != 0 && share->HostSurface &&
+            !share->Access.PresentPending && share->Access.Sequence != share->Access.ReleasedSequence &&
+            !share->Access.WaitPending)
+        {
+            share->Access.WaitPending = true;
+            InterlockedIncrement(&share->AsyncReferences);
+            waits[waitCount++] = share;
+        }
+    }
+    if (status == STATUS_SUCCESS && !submission->Adapter->TryResumeNativePassiveDispatch(&submission->Work))
+        status = STATUS_PENDING;
+    if (status == STATUS_PENDING && !submission->ImportWaiting && ReferenceRenderSubmission(submission))
+    {
+        submission->ImportWaiting = TRUE;
+        InterlockedExchange(&submission->Work.DisplayReleaseWait, TRUE);
+        InsertTailList(&g_VioGpuNativeAccessWaiters, &submission->ImportWaitLink);
+    }
+    else if (status == STATUS_SUCCESS)
+    {
+        for (UINT i = 0; i < submission->ImportCount; ++i)
+        {
+            auto share = static_cast<VIOGPU_WDDM_NATIVE_SHARE_ENTRY *>(submission->Imports[i].Share);
+            if ((submission->Imports[i].Reference.Access & VIOGPU_WDDM_REFERENCE_WRITE) != 0)
+                share->Access.Writer = true;
+            else
+                ++share->Access.Readers;
+            if (share->HostSurface)
+                KeClearEvent(&share->ProducersIdle);
+        }
+        submission->ImportsAdmitted = TRUE;
+        InterlockedExchange(&submission->Work.DisplayReleaseWait, FALSE);
+    }
+    KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+    for (UINT i = 0; i < waitCount; ++i)
+    {
+        auto share = waits[i];
+        if (!share->Adapter->QueueNativeAhbOperation(share->ResourceId, share->SurfaceResetGeneration,
+                                                    share->Access.Sequence, FALSE, NativeAhbReleaseObserved, share))
+            NativeAhbReleaseObserved(share, VioGpuHostContextUnknown, share->ResourceId, share->Access.Sequence);
+    }
+    return status;
+}
+
+__declspec(code_seg(".text"))
+VOID RetireNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, BOOLEAN confirmed)
+{
+    if (InterlockedCompareExchange(&g_VioGpuNativeShareState, 0, 0) != VioGpuNativeShareRegistryReady)
+        return;
+    BOOLEAN releaseWaitReference = FALSE;
+    KIRQL irql;
+    KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+    if (submission->ImportWaiting)
+    {
+        RemoveEntryList(&submission->ImportWaitLink);
+        InitializeListHead(&submission->ImportWaitLink);
+        submission->ImportWaiting = FALSE;
+        releaseWaitReference = TRUE;
+    }
+    if (submission->ImportsAdmitted)
+    {
+        for (UINT i = 0; i < submission->ImportCount; ++i)
+        {
+            auto share = static_cast<VIOGPU_WDDM_NATIVE_SHARE_ENTRY *>(submission->Imports[i].Share);
+            if (submission->ImportsHostIssued && !confirmed)
+                share->Access.Poisoned = true;
+            if ((submission->Imports[i].Reference.Access & VIOGPU_WDDM_REFERENCE_WRITE) != 0)
+                share->Access.Writer = false;
+            else
+                --share->Access.Readers;
+            if (confirmed)
+                share->RetiredProducerFence = submission->FenceId;
+            if (share->HostSurface && !share->Access.Writer && share->Access.Readers == 0)
+                KeSetEvent(&share->ProducersIdle, IO_NO_INCREMENT, FALSE);
+        }
+        submission->ImportsAdmitted = FALSE;
+    }
+    WakeNativeImportWaitersLocked(submission->Adapter);
+    KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+    if (releaseWaitReference)
+        DereferenceRenderSubmission(submission);
+}
+
+struct VIOGPU_NATIVE_AHB_PRESENT_COMPLETION
+{
+    volatile LONG References;
+    KEVENT Event;
+    VIOGPU_HOST_CONTEXT_RESULT Result;
+    VIOGPU_WDDM_NATIVE_SHARE_ENTRY *Share;
+};
+
+__declspec(code_seg(".text"))
+static VOID NativeAhbPresentAccepted(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT result,
+                                     UINT resourceId, ULONGLONG sequence)
+{
+    auto pending = static_cast<VIOGPU_NATIVE_AHB_PRESENT_COMPLETION *>(opaque);
+    auto share = pending->Share;
+    KIRQL irql;
+    KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+    const BOOLEAN accepted = result == VioGpuHostContextConfirmed && share->ResourceId == resourceId &&
+        sequence != 0 && sequence != share->Access.Sequence && share->Access.PresentPending &&
+        !share->Access.Poisoned && !share->Access.Writer && share->Access.Readers == 0;
+    if (accepted)
+    {
+        share->Access.Sequence = sequence;
+        ++share->PresentCount;
+    }
+    else
+        share->Access.Poisoned = true;
+    share->Access.PresentPending = false;
+    pending->Result = accepted ? VioGpuHostContextConfirmed : VioGpuHostContextUnknown;
+    WakeNativeImportWaitersLocked(share->Adapter);
+    KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+    /* At most 64 records per resource across its lifetime. Host diagnostics
+     * map this resource/generation to the Android buffer identity. */
+    if (accepted && (share->PresentCount <= 4 || (share->PresentCount & (share->PresentCount - 1)) == 0))
+        DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_INFO_LEVEL,
+            "VIOGPU AHB key=%I64x resource=%u generation=%I64u producer=%I64u sequence=%I64u presents=%I64u releases=%I64u directBranch=1\n",
+            share->Key, resourceId, share->SurfaceResetGeneration, share->RetiredProducerFence,
+            sequence, share->PresentCount, share->ReleaseCount);
+    InterlockedDecrement(&share->AsyncReferences);
+    KeSetEvent(&pending->Event, IO_NO_INCREMENT, FALSE);
+    if (InterlockedDecrement(&pending->References) == 0)
+        delete pending;
+}
+
+NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    PAGED_CODE();
+    if (!allocation->HostSurface || !adapter->IsNativeAhbScanoutEnabled() ||
+        !AcquireNativeShareRegistry(FALSE))
+        return STATUS_DEVICE_NOT_READY;
+    auto share = FindNativeShareByKeyLocked(adapter, allocation->ShareKey);
+    if (share == NULL || !share->HostSurface || share->ResourceId != allocation->ResourceId ||
+        share->SurfaceResetGeneration != allocation->Resource2DResetGeneration ||
+        share->AllocationReferences == 0 || share->Surface.Width != allocation->Width ||
+        share->Surface.Height != allocation->Height || share->Surface.Stride != allocation->Pitch)
+    {
+        ReleaseNativeShareRegistry();
+        return STATUS_INVALID_HANDLE;
+    }
+    InterlockedIncrement(&share->AsyncReferences);
+    ReleaseNativeShareRegistry();
+    KIRQL irql;
+    KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+    BOOLEAN reserved = !share->Access.Poisoned && !share->Access.PresentPending && !share->Access.WaitPending;
+    if (reserved)
+        share->Access.PresentPending = true;
+    KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+    if (!reserved)
+    {
+        InterlockedDecrement(&share->AsyncReferences);
+        return STATUS_DEVICE_NOT_READY;
+    }
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -5LL * 1000 * 1000 * 10;
+    NTSTATUS status = KeWaitForSingleObject(&share->ProducersIdle, Executive, KernelMode, FALSE, &timeout);
+    UINT format = 0;
+    KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+    BOOLEAN idle = !share->Access.Poisoned && !share->Access.Writer && share->Access.Readers == 0;
+    KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+    if (status != STATUS_SUCCESS || !idle ||
+        !VioGpuNativeAhbFourccToVirtioFormat(share->Surface.Fourcc, &format))
+        status = STATUS_DEVICE_NOT_READY;
+    auto pending = status == STATUS_SUCCESS ? new (NonPagedPoolNx) VIOGPU_NATIVE_AHB_PRESENT_COMPLETION : NULL;
+    if (status == STATUS_SUCCESS && pending == NULL)
+        status = STATUS_NO_MEMORY;
+    if (status == STATUS_SUCCESS)
+    {
+        UINT previous = 0;
+        VIOGPU_PRIMARY_SCANOUT_LAYOUT layout = {share->Surface.Width, share->Surface.Height, format,
+                                               share->Surface.Stride, static_cast<SIZE_T>(share->Size)};
+        if (adapter->Set2DScanout(0, share->ResourceId, layout.Width, layout.Height, &previous,
+                                  &layout, FALSE, TRUE) != VioGpuHostContextConfirmed)
+            status = STATUS_DEVICE_NOT_READY;
+        else
+        {
+            /* Suppress periodic RESOURCE_FLUSH; only this sequence protocol
+             * may publish or observe release of a leased host surface. */
+            adapter->LatchFlippedScanout(share->ResourceId, layout.Width, layout.Height);
+            pending->References = 2;
+            pending->Result = VioGpuHostContextUnknown;
+            pending->Share = share;
+            KeInitializeEvent(&pending->Event, NotificationEvent, FALSE);
+            InterlockedIncrement(&share->AsyncReferences);
+            if (!adapter->QueueNativeAhbOperation(share->ResourceId, share->SurfaceResetGeneration, 0, TRUE,
+                                                  NativeAhbPresentAccepted, pending))
+                NativeAhbPresentAccepted(pending, VioGpuHostContextNotSubmitted, share->ResourceId, 0);
+            status = KeWaitForSingleObject(&pending->Event, Executive, KernelMode, FALSE, &timeout);
+            if (status != STATUS_SUCCESS || pending->Result != VioGpuHostContextConfirmed)
+                status = STATUS_DEVICE_NOT_READY;
+            if (InterlockedDecrement(&pending->References) == 0)
+                delete pending;
+            pending = NULL;
+        }
+    }
+    delete pending;
+    if (status != STATUS_SUCCESS)
+    {
+        KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+        share->Access.Poisoned = true;
+        share->Access.PresentPending = false;
+        WakeNativeImportWaitersLocked(adapter);
+        KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+        adapter->RequestHardwareResetAtAnyIrql();
+    }
+    InterlockedDecrement(&share->AsyncReferences);
+    return status;
+}
+
 /* Only the registry owns the host resource ID. A wrapper allocation and every
  * importer lease keep it alive after FREE. Host UNREF itself retains Android
  * readers until their release fences signal; refusal/timeout retains our
@@ -4462,6 +5010,8 @@ static VOID CollectNativeSurfacesLocked(_In_ VioGpuDod *adapter)
         VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_SHARE_ENTRY, Link);
         link = link->Flink;
         if (share->Adapter != adapter || !share->HostSurface ||
+            InterlockedCompareExchange(&share->SubmissionReferences, 0, 0) != 0 ||
+            InterlockedCompareExchange(&share->AsyncReferences, 0, 0) != 0 ||
             !VioGpuNativeSurfaceMayRetire(share->OwnerReleased != FALSE, share->ImportReferences,
                                          share->AllocationReferences))
         {
@@ -4559,6 +5109,7 @@ static NTSTATUS HandleNativeSurfaceEscape(_In_ VioGpuDod *adapter, _In_ const DX
                 RtlZeroMemory(share, sizeof(*share));
                 share->Adapter = adapter;
                 share->HostSurface = TRUE;
+                KeInitializeEvent(&share->ProducersIdle, NotificationEvent, TRUE);
                 share->OwnerProcess = PsGetCurrentProcess();
                 ObReferenceObject(share->OwnerProcess);
                 share->Key = NewNativeShareKeyLocked(adapter);
@@ -4813,10 +5364,12 @@ static VOID FindNativeAllocationRangeByIova(_In_ VIOGPU_WDDM_CONTEXT *context,
                                             _In_ ULONGLONG iova,
                                             _In_ UINT contextId,
                                             _Out_ UINT *resourceId,
-                                            _Out_ ULONGLONG *length)
+                                            _Out_ ULONGLONG *length,
+                                            _Out_ VIOGPU_WDDM_ALLOCATION **allocation)
 {
     *resourceId = 0;
     *length = 0;
+    *allocation = NULL;
     KIRQL oldIrql;
     KeAcquireSpinLock(&context->NativeContext.BindingLock, &oldIrql);
     for (PLIST_ENTRY link = context->NativeContext.AllocationRanges.Flink;
@@ -4828,6 +5381,7 @@ static VOID FindNativeAllocationRangeByIova(_In_ VIOGPU_WDDM_CONTEXT *context,
         {
             *resourceId = range->ResourceId;
             *length = range->Length;
+            *allocation = range->Allocation;
             break;
         }
     }
@@ -4869,7 +5423,8 @@ static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
 {
     UINT resourceId = 0;
     ULONGLONG length = 0;
-    FindNativeAllocationRangeByIova(context, request->Iova, snapshot->ContextId, &resourceId, &length);
+    VIOGPU_WDDM_ALLOCATION *ownerAllocation = NULL;
+    FindNativeAllocationRangeByIova(context, request->Iova, snapshot->ContextId, &resourceId, &length, &ownerAllocation);
     if (resourceId < VIOGPU_NATIVE_RESOURCE_ID_START || resourceId == MAXUINT || length == 0)
     {
         *stage = 21;
@@ -4907,6 +5462,7 @@ static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
      * the context that owns it now, so an importer is never compared against a
      * previous owner. */
     share->OwnerContextId = snapshot->ContextId;
+    share->OwnerAllocation = ownerAllocation;
     share->Size = length;
     request->ShareKey = share->Key;
     request->Size = share->Size;
@@ -4988,6 +5544,7 @@ static NTSTATUS ImportNativeShareLocked(_In_ VioGpuDod *adapter,
     entry->Iova = request->Iova;
     entry->Size = request->Size;
     entry->HostSurface = share->HostSurface;
+    entry->ResetGeneration = snapshot->ResetGeneration;
 
     if (!adapter->AcquireNativeSubmissionOperation())
     {
@@ -5040,6 +5597,11 @@ static NTSTATUS ReleaseNativeShareLocked(_In_ VioGpuDod *adapter,
             continue;
         }
         VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
+        if (InterlockedCompareExchange(&entry->SubmissionReferences, 0, 0) != 0)
+        {
+            *stage = 44;
+            return STATUS_GRAPHICS_ALLOCATION_BUSY;
+        }
         if (adapter->AcquireNativeSubmissionOperation())
         {
             result = snapshot->Adapter->ReleaseNativeSharedResource(snapshot, entry->ResourceId, entry->HostSurface);
@@ -5441,23 +6003,16 @@ NTSTATUS ValidateCommandHeader(const VIOGPU_WDDM_RENDER_COMMAND *header,
     ULONGLONG commandEnd = (ULONGLONG)header->CommandStreamOffset + header->CommandStreamSize;
 
     if (!IsCurrentAbiHeader(&header->Header, commandLength) || header->Opcode != VIOGPU_WDDM_RENDER_NATIVE_SUBMIT ||
-        header->Flags != VIOGPU_WDDM_RENDER_FLAGS_NONE || header->ExpectedResetGeneration != resetGeneration ||
+        header->ExpectedResetGeneration != resetGeneration ||
         resetGeneration == 0 || header->AllocationReferenceCount == 0 ||
         header->AllocationReferenceCount != patchListSize ||
         (header->AllocationReferenceCount != 0 && (allocationList == NULL || patchList == NULL)) ||
         header->AllocationReferencesOffset != sizeof(*header) || referencesEnd > commandLength ||
-        header->CommandStreamOffset != referencesEnd || header->CommandStreamSize < sizeof(ULONGLONG) ||
+        !VioGpuNativeImportTableValid(header, referencesEnd, commandLength) ||
+        header->CommandStreamSize < sizeof(ULONGLONG) ||
         commandEnd != commandLength)
     {
         return STATUS_ILLEGAL_INSTRUCTION;
-    }
-
-    for (UINT index = 0; index < ARRAYSIZE(header->Reserved); ++index)
-    {
-        if (header->Reserved[index] != 0)
-        {
-            return STATUS_INVALID_PARAMETER;
-        }
     }
 
     const VIOGPU_WDDM_ALLOCATION_REFERENCE *references = reinterpret_cast<const VIOGPU_WDDM_ALLOCATION_REFERENCE *>(
@@ -5831,6 +6386,26 @@ VOID VioGpuColorPresentWorker(_In_ PVOID context)
 }
 #endif
 } // namespace
+
+VOID VioGpuWddmWakeNativeImportWaiters(VioGpuDod *adapter)
+{
+    if (InterlockedCompareExchange(&g_VioGpuNativeShareState, 0, 0) != VioGpuNativeShareRegistryReady)
+        return;
+    KIRQL irql;
+    KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+    WakeNativeImportWaitersLocked(adapter);
+    KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+}
+
+BOOLEAN VioGpuWddmDrainNativeImportWorkers(void)
+{
+    PAGED_CODE();
+    if (InterlockedCompareExchange(&g_VioGpuNativeShareState, 0, 0) != VioGpuNativeShareRegistryReady)
+        return TRUE;
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -10LL * 1000 * 1000 * 10;
+    return KeWaitForSingleObject(&g_VioGpuNativeImportWorkersIdle, Executive, KernelMode, FALSE, &timeout) == STATUS_SUCCESS;
+}
 
 /* Successful HWClose has retired host contexts/resources and drained callers.
  * Do not retain keys across a new adapter incarnation (its generation may
@@ -7351,6 +7926,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateContext(CONST HANDLE hD
     ExInitializeRundownProtection(&context->Operations);
     context->OperationsRundownCompleted = FALSE;
     KeInitializeSpinLock(&context->SubmissionLock);
+    KeInitializeMutex(&context->ImportSubmitMutex, 0);
     context->SubmissionReferences = 0;
     context->SubmissionClosing = FALSE;
     KeInitializeEvent(&context->SubmissionProgressEvent, SynchronizationEvent, FALSE);
@@ -12247,11 +12823,18 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
     }
     if (allocation->HostSurface)
     {
-        /* Fail closed until per-buffer GPU-producer completion and Android
-         * release acquisition are connected. RESOURCE_FLUSH currently waits
-         * for the current front buffer's release; serializing all rendering
-         * behind that wait would prevent the next buffer from replacing it. */
-        return STATUS_DEVICE_NOT_READY;
+        NTSTATUS nativeStatus = AcquireAllocationLifecycle(allocation);
+        if (nativeStatus == STATUS_SUCCESS)
+        {
+            nativeStatus = allocation->PlacementValid &&
+                           static_cast<ULONGLONG>(primaryAddress) == allocation->PlacementOffset &&
+                           EnsureStandard2DAllocationBacking(allocation)
+                               ? PresentHostSurface(adapter, allocation) : STATUS_DEVICE_NOT_READY;
+            if (nativeStatus == STATUS_SUCCESS && modeChange)
+                adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));
+            KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+        }
+        return nativeStatus;
     }
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     // A high-precision primary carries no color space of its own. MPO3 would

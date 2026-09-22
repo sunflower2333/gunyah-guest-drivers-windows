@@ -774,7 +774,7 @@ def check_viogpudo_code_segment_contract() -> None:
     ):
         fail("viogpudo default-.text ranges must each close with the next code_seg(pop)")
 
-    first_declaration = VIOGPU_CODE.find("PGPU_VBUFFER VioGpuDod::PrepareNativeSubmit", first_open.end())
+    first_declaration = VIOGPU_CODE.find("BOOLEAN VioGpuDod::QueueNativeAhbOperation", first_open.end())
     _, _, first_last_end = function_body_span("VioGpuDod::AllocateNativeResourceId", VIOGPU_CODE)
     if (
         first_declaration < 0
@@ -3522,6 +3522,11 @@ def check_native_context_readiness(
     require_integer_define(wire_header_code, "VIRTIO_GPU_CMD_RESOURCE_CREATE_NATIVE_AHB", 0xD211, "wire header")
     require_integer_define(wire_header_code, "VIRTIO_GPU_NATIVE_AHB_REQUEST_BODY_SIZE", 24, "wire header")
     require_integer_define(wire_header_code, "VIRTIO_GPU_NATIVE_AHB_REQUEST_WIRE_SIZE", 52, "wire header")
+    require_integer_define(wire_header_code, "VIRTIO_GPU_F_NATIVE_AHB_RELEASE", 8, "wire header")
+    require_integer_define(wire_header_code, "VIRTIO_GPU_CMD_PRESENT_NATIVE_AHB", 0xD213, "wire header")
+    require_integer_define(wire_header_code, "VIRTIO_GPU_CMD_WAIT_NATIVE_AHB_RELEASE", 0xD214, "wire header")
+    require_integer_define(wire_header_code, "VIRTIO_GPU_RESP_OK_NATIVE_AHB_OPERATION", 0xD215, "wire header")
+    require_integer_define(wire_header_code, "VIRTIO_GPU_NATIVE_AHB_OPERATION_WIRE_SIZE", 40, "wire header")
     require_integer_define(wire_header_code, "VIRTGPU_CAP_BOOL_UNSUPPORTED_BY_HOST", 0, "wire header")
     require_integer_define(wire_header_code, "VIRTGPU_CAP_BOOL_FALSE", 0xFFFFFFFF, "wire header")
     require_integer_define(wire_header_code, "VIRTGPU_CAP_BOOL_TRUE", 1, "wire header")
@@ -3562,6 +3567,16 @@ def check_native_context_readiness(
     )
     if optional_native_ahb_v2 not in negotiation_compact:
         fail("Native AHB v2 must be acknowledged only when the host advertises it")
+    if ("if(virtio_is_feature_enabled(m_u64HostFeatures,VIRTIO_GPU_F_NATIVE_AHB_RELEASE)&&"
+        "!AckFeature(VIRTIO_GPU_F_NATIVE_AHB_RELEASE))") not in negotiation_compact:
+        fail("Native AHB release observation must be negotiated independently")
+    native_ahb_queue = function_body("CtrlQueue::QueueNativeAhbOperation", QUEUE_CODE)
+    for forbidden in ("BeginSynchronousRequest", "BeginNativeSynchronousRequest", "KeWaitForSingleObject",
+                      "SubmitSynchronousLocked", "SubmitNativeSynchronousLocked", "PoisonSynchronousRequests"):
+        if forbidden in native_ahb_queue:
+            fail(f"Native AHB release must not wait or serialize other buffers: {forbidden}")
+    for required in ("QueueBuffer", "VioGpuArmVbufferTerminalCallbacks"):
+        require_call_count(native_ahb_queue, required, 1, "asynchronous Native AHB operation")
     for feature in required_features:
         count = len(re.findall(rf"\b{re.escape(feature)}\b", negotiation))
         if count != 1:
@@ -8223,8 +8238,17 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if "if(!entry->HostSurface||result==VioGpuHostContextConfirmed)" not in release_share:
         fail("failed native surface detach must retain the importer lease")
     primary = canonical_code(function_body("BindStandardPrimaryScanout", WDDM_DDI_CODE))
-    if "if(allocation->HostSurface){returnSTATUS_DEVICE_NOT_READY;}" not in primary:
-        fail("native surface scanout must remain gated until per-buffer release acquisition exists")
+    if "PresentHostSurface(adapter,allocation)" not in primary:
+        fail("native surface scanout must use per-buffer producer and release ownership")
+    host_present = canonical_code(function_body("PresentHostSurface", WDDM_DDI_CODE))
+    require_order(host_present, (
+        "share->Access.PresentPending=TRUE;",
+        "KeWaitForSingleObject(&share->ProducersIdle",
+        "adapter->Set2DScanout(",
+        "adapter->QueueNativeAhbOperation(",
+    ), "native surface publication must reserve ownership, retire producers and bind before PRESENT")
+    if "Flush2DResource" in host_present or "CopyPresentRow" in host_present:
+        fail("native surface publication cannot copy pixels or wait for front-buffer release")
     present = canonical_code(function_body("ExecutePresentTransaction", WDDM_DDI_CODE))
     if "if(source->HostSurface||destination->HostSurface)" not in present or \
        present.find("if(source->HostSurface||destination->HostSurface)") > present.find("CopyPresentRow("):
@@ -8407,6 +8431,14 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT64 AllocationOffset;
             VIOGPU_WDDM_UINT64 Length;
             VIOGPU_WDDM_UINT32 PatchOffset;
+            VIOGPU_WDDM_UINT32 Reserved;
+        """,
+        "VIOGPU_WDDM_IMPORTED_REFERENCE": """
+            VIOGPU_WDDM_UINT64 ShareKey;
+            VIOGPU_WDDM_UINT64 Iova;
+            VIOGPU_WDDM_UINT64 Size;
+            VIOGPU_WDDM_UINT64 ResetGeneration;
+            VIOGPU_WDDM_UINT32 Access;
             VIOGPU_WDDM_UINT32 Reserved;
         """,
     }
@@ -9145,7 +9177,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "header->AllocationReferenceCount==0",
         "header->AllocationReferenceCount!=patchListSize",
         "header->AllocationReferencesOffset!=sizeof(*header)",
-        "header->CommandStreamOffset!=referencesEnd",
+        "!VioGpuNativeImportTableValid(header,referencesEnd,commandLength)",
         "header->CommandStreamSize<sizeof(ULONGLONG)",
         "reference->AllocationIndex>=allocationListSize",
         "reference->AllocationIndex!=patch->AllocationIndex",
@@ -11307,7 +11339,7 @@ def check_wddm_submission_lifetime() -> None:
         ),
         "Render submission variable storage must have one idempotent cleanup helper",
     )
-    if publish.count("FreeRenderSubmissionStorage(submission);") != 4:
+    if publish.count("FreeRenderSubmissionStorage(submission);") != 5:
         fail("prepared submission publication must release variable storage on every post-allocation failure")
     resolve_submission = canonical_code(
         function_body_with_parameters(
@@ -11838,7 +11870,7 @@ def check_wddm_submission_lifetime() -> None:
     for fragment in (
         "response->type==VIRTIO_GPU_RESP_OK_NODATA",
         "response->flags==expectedFlags",
-        "response->fence_id==submission->FenceId",
+        "response->fence_id==buffer->native_submit_host_fence",
         "response->ctx_id==submission->ContextId",
         "response->ring_idx==1",
         "adapter->IsNativeContextGenerationCurrent(submission->Generation,submission->ResetGeneration)",
@@ -11887,15 +11919,17 @@ def check_wddm_submission_lifetime() -> None:
         fail("native queue-failure callback must retain one temporary reference through every terminal path")
     render_worker_body = function_body("NativeRenderDispatchWorker", WDDM_DDI_CODE)
     render_worker = canonical_code(render_worker_body)
+    dispatch = canonical_code(function_body("QueueAdmittedNativeSubmission", WDDM_DDI_CODE))
     require_order(
-        render_worker,
+        dispatch,
         (
             "adapter->AcquireNativeSubmissionOperation();",
-            "operationAcquired?ValidateNativeRenderBindings(submission):STATUS_DEVICE_NOT_READY",
-            "NT_SUCCESS(bindingStatus)?adapter->QueueNativeSubmit(submission->VirtioBuffer,fenceId):-1",
-            "adapter->ReleaseNativeSubmissionOperation();",
+            "ValidateNativeRenderBindings(submission)",
+            "AdmitNativeSubmitImports(submission)",
+            "RepackNativeSubmitImports(submission)",
+            "adapter->QueueNativeSubmit(submission->VirtioBuffer,fenceId)",
         ),
-        "Render must check final residency before issuing either prepatched or patched packets",
+        "Render must authenticate residency, admit exact imports and repack before issuing GPU work",
     )
     render_issue_claim = (
         "InterlockedCompareExchange(&submission->State,VioGpuWddmSubmissionHostIssued,"
@@ -11923,20 +11957,25 @@ def check_wddm_submission_lifetime() -> None:
     for fragment in (
         "QuarantineSubmission(submission,VioGpuWddmSubmissionEngineQueued,TRUE);",
         "adapter->RequestHardwareResetAtAnyIrql();",
+        "QueueAdmittedNativeSubmission(submission);",
+    ):
+        if render_worker.count(fragment) != 1:
+            fail(f"the Render FIFO worker must retain one exact dispatch operation: {fragment}")
+    for fragment in (
         "adapter->AcquireNativeSubmissionOperation();",
         "adapter->QueueNativeSubmit(submission->VirtioBuffer,fenceId)",
-        "adapter->ReleaseNativeSubmissionOperation();",
-        "if(queueResult>=0){adapter->ReleaseNativePassiveDispatch(&submission->Work);DereferenceRenderSubmission(submission);return;}",
         "InvalidateContextUmdFenceTracker(submission->Context);",
         "QuarantineSubmission(submission,VioGpuWddmSubmissionHostIssued,TRUE);",
         "adapter->NotifyNativeSubmissionFault(",
     ):
-        if render_worker.count(fragment) != 1:
-            fail(f"the Render FIFO worker must retain one exact dispatch operation: {fragment}")
-    if render_worker.count("adapter->CompleteNativePassiveWork(&submission->Work);") != 2 or \
-       render_worker.count("ReleaseRenderWorkReference(submission);") != 2:
+        if dispatch.count(fragment) != 1:
+            fail(f"the admitted Render dispatcher must retain one exact operation: {fragment}")
+    if render_worker.count("adapter->CompleteNativePassiveWork(&submission->Work);") != 1 or \
+       render_worker.count("ReleaseRenderWorkReference(submission);") != 1 or \
+       dispatch.count("adapter->CompleteNativePassiveWork(&submission->Work);") != 1 or \
+       dispatch.count("ReleaseRenderWorkReference(submission);") != 1:
         fail("both Render dispatch failure paths must complete passive work and release the work reference")
-    dispatch_failure = render_worker[render_worker.find("InvalidateContextUmdFenceTracker(submission->Context);") :]
+    dispatch_failure = dispatch[dispatch.find("InvalidateContextUmdFenceTracker(submission->Context);") :]
     require_order(
         dispatch_failure,
         (
@@ -11949,14 +11988,15 @@ def check_wddm_submission_lifetime() -> None:
         "a failed Host enqueue must quarantine before fault publication and passive-work retirement",
     )
     if "!ReferenceRenderSubmission(submission)" not in render_worker or \
-       render_worker.count("DereferenceRenderSubmission(submission);") != 3:
+       render_worker.count("DereferenceRenderSubmission(submission);") != 2:
         fail("Render worker must hold a separate temporary owner through inline host completion and all exits")
     handoff = canonical_code(function_body("VioGpuDod::ReleaseNativePassiveDispatch", VIOGPU_CODE))
     admission = canonical_code(function_body("VioGpuDod::NativePassiveDispatchReadyLocked", VIOGPU_CODE))
     idle = canonical_code(function_body("VioGpuDod::NativePassiveIdleLocked", VIOGPU_CODE))
     retire = canonical_code(function_body("VioGpuDod::CompleteNativePassiveWork", VIOGPU_CODE))
-    for fragment in ("m_NativePassiveHostPendingCount>=VIOGPU_NATIVE_PIPELINE_WINDOW",
-                     "next->PipelineEligible||m_NativePassiveHostPendingCount==0"):
+    for fragment in ("gpuPending>=VIOGPU_NATIVE_PIPELINE_WINDOW",
+                     "next->PipelineEligible||gpuPending==0",
+                     "InterlockedCompareExchange(&work->DisplayReleaseWait,0,0)==0"):
         if fragment not in admission:
             fail(f"bounded Render admission and drain barriers must retain: {fragment}")
     require_order(handoff, (

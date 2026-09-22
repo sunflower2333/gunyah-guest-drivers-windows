@@ -49,6 +49,8 @@ extern "C" UCHAR __ImageBase;
 
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 VOID VioGpuWddmRetireNativeShares(_In_ VioGpuDod *adapter);
+VOID VioGpuWddmWakeNativeImportWaiters(VioGpuDod *adapter);
+BOOLEAN VioGpuWddmDrainNativeImportWorkers(void);
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
 BOOLEAN VioGpuWddmIsMpo3Registration();
@@ -745,6 +747,10 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
     if (m_pHWDevice != NULL)
     {
         status = m_pHWDevice->HWClose();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        if (NT_SUCCESS(status) && (!WaitForNativePassiveQueueIdle() || !VioGpuWddmDrainNativeImportWorkers()))
+            status = STATUS_DEVICE_NOT_READY;
+#endif
         if (NT_SUCCESS(status))
         {
             delete m_pHWDevice;
@@ -773,6 +779,22 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
 #if defined(VIOGPU_NATIVE_CONTEXT)
 #pragma code_seg(push)
 #pragma code_seg()
+BOOLEAN VioGpuDod::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
+                                         BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context)
+{
+    if (KeGetCurrentIrql() > DISPATCH_LEVEL || !AcquireNativeSubmissionOperation())
+    {
+        return FALSE;
+    }
+    VioGpuAdapter *adapter = m_pHWDevice;
+    BOOLEAN queued = adapter->QueueNativeAhbOperation(resourceId, expectedResetGeneration, sequence,
+                                                      present, completion, context);
+    // Never keep rundown until WAIT_RELEASE completes: reset must be able to
+    // cancel a descriptor whose front buffer Android continues to display.
+    ReleaseNativeSubmissionOperation();
+    return queued;
+}
+
 PGPU_VBUFFER VioGpuDod::PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize)
 {
     if (command == NULL || commandSize == 0 || !ExAcquireRundownProtection(&m_HardwareOperations))
@@ -789,7 +811,7 @@ PGPU_VBUFFER VioGpuDod::PrepareNativeSubmit(_In_ UINT contextId, _In_ const void
     return buffer;
 }
 
-BOOLEAN VioGpuDod::RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize)
+BOOLEAN VioGpuDod::RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize, BOOLEAN resize)
 {
     if (buffer == NULL || command == NULL || commandSize == 0 || !ExAcquireRundownProtection(&m_HardwareOperations))
     {
@@ -798,7 +820,7 @@ BOOLEAN VioGpuDod::RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void
 
     VioGpuAdapter *adapter = m_pHWDevice;
     BOOLEAN refreshed = !IsHardwareResetRequested() && adapter != NULL &&
-                        adapter->RefreshNativeSubmit(buffer, command, commandSize);
+                        adapter->RefreshNativeSubmit(buffer, command, commandSize, resize);
     ExReleaseRundownProtection(&m_HardwareOperations);
     return refreshed;
 }
@@ -1791,8 +1813,15 @@ BOOLEAN VioGpuDod::QueueNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *wo
 // Test FIFO admission without allowing Present or paging to pass in-flight Render.
 BOOLEAN VioGpuDod::NativePassiveDispatchReadyLocked(VIOGPU_NATIVE_PASSIVE_WORK *incoming)
 {
+    UINT gpuPending = 0;
+    for (PLIST_ENTRY entry = m_NativePassiveHostPending.Flink; entry != &m_NativePassiveHostPending; entry = entry->Flink)
+    {
+        auto work = CONTAINING_RECORD(entry, VIOGPU_NATIVE_PASSIVE_WORK, Link);
+        if (InterlockedCompareExchange(&work->DisplayReleaseWait, 0, 0) == 0)
+            ++gpuPending;
+    }
     if (m_NativePassiveClosing || IsHardwareResetRequested() || m_NativePassiveActiveWork != NULL ||
-        m_NativePassiveHostPendingCount >= VIOGPU_NATIVE_PIPELINE_WINDOW)
+        gpuPending >= VIOGPU_NATIVE_PIPELINE_WINDOW)
     {
         return FALSE;
     }
@@ -1800,7 +1829,7 @@ BOOLEAN VioGpuDod::NativePassiveDispatchReadyLocked(VIOGPU_NATIVE_PASSIVE_WORK *
                                                                           : CONTAINING_RECORD(m_NativePassiveQueue.Flink,
                                                                                               VIOGPU_NATIVE_PASSIVE_WORK,
                                                                                               Link);
-    return next != NULL && (next->PipelineEligible || m_NativePassiveHostPendingCount == 0);
+    return next != NULL && (next->PipelineEligible || gpuPending == 0);
 }
 
 // Include host-owned work and a running dispatcher in reset/close drain checks.
@@ -1819,7 +1848,6 @@ VOID VioGpuDod::ReleaseNativePassiveDispatch(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK 
         work->State == VioGpuNativePassiveWorkWorkerOwned)
     {
         NT_ASSERT(m_NativePassiveWorkerRunning);
-        NT_ASSERT(m_NativePassiveHostPendingCount < VIOGPU_NATIVE_PIPELINE_WINDOW);
         m_NativePassiveActiveWork = NULL;
         InterlockedExchange(&work->State, VioGpuNativePassiveWorkHostPending);
         InsertTailList(&m_NativePassiveHostPending, &work->Link);
@@ -1833,6 +1861,26 @@ VOID VioGpuDod::ReleaseNativePassiveDispatch(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK 
     KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
     /* RunNativePassiveWorker continues its loop; never free the Work reference
      * here or queue another dispatcher from inside the active dispatcher. */
+}
+
+BOOLEAN VioGpuDod::TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *work)
+{
+    KIRQL irql;
+    KeAcquireSpinLock(&m_NativePassiveLock, &irql);
+    UINT pending = 0;
+    for (PLIST_ENTRY link = m_NativePassiveHostPending.Flink; link != &m_NativePassiveHostPending; link = link->Flink)
+    {
+        auto entry = CONTAINING_RECORD(link, VIOGPU_NATIVE_PASSIVE_WORK, Link);
+        if (entry != work && InterlockedCompareExchange(&entry->DisplayReleaseWait, 0, 0) == 0)
+            ++pending;
+    }
+    const BOOLEAN allowed = !m_NativePassiveClosing && !IsHardwareResetRequested() &&
+        (m_NativePassiveActiveWork == work ||
+         (m_NativePassiveActiveWork == NULL && pending < VIOGPU_NATIVE_PIPELINE_WINDOW));
+    if (allowed)
+        InterlockedExchange(&work->DisplayReleaseWait, FALSE);
+    KeReleaseSpinLock(&m_NativePassiveLock, irql);
+    return allowed;
 }
 
 VOID VioGpuDod::CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work)
@@ -1899,6 +1947,8 @@ VOID VioGpuDod::CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *wo
     {
         ExQueueWorkItem(&m_NativePassiveWorkItem, DelayedWorkQueue);
     }
+    if (retired)
+        VioGpuWddmWakeNativeImportWaiters(this);
 }
 
 VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP VioGpuDod::CancelNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work)
@@ -2018,6 +2068,7 @@ VOID VioGpuDod::CloseNativePassiveQueue(void)
             cancelRoutine(context);
         }
     }
+    VioGpuWddmWakeNativeImportWaiters(this);
 }
 
 BOOLEAN VioGpuDod::WaitForNativePassiveQueueIdle(void)
@@ -10457,6 +10508,12 @@ NTSTATUS VioGpuAdapter::NegotiateNativeContextFeatures(void)
         return STATUS_NOT_SUPPORTED;
     }
 
+    if (virtio_is_feature_enabled(m_u64HostFeatures, VIRTIO_GPU_F_NATIVE_AHB_RELEASE) &&
+        !AckFeature(VIRTIO_GPU_F_NATIVE_AHB_RELEASE))
+    {
+        return STATUS_NOT_SUPPORTED;
+    }
+
     return STATUS_SUCCESS;
 }
 
@@ -10468,6 +10525,23 @@ NTSTATUS VioGpuAdapter::FailNativeContextInitialization(NTSTATUS status)
     KeReleaseMutex(&m_NativeContextLifecycleMutex, FALSE);
     return NT_SUCCESS(closeStatus) ? status : closeStatus;
 }
+
+#if defined(VIOGPU_NATIVE_CONTEXT)
+__declspec(code_seg(".text"))
+BOOLEAN VioGpuAdapter::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
+                                              BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context)
+{
+    if (expectedResetGeneration == 0 ||
+        expectedResetGeneration != static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration,
+                                                                                       0, 0)) ||
+        !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_V2) ||
+        !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_RELEASE))
+    {
+        return FALSE;
+    }
+    return m_CtrlQueue.QueueNativeAhbOperation(resourceId, sequence, present, completion, context);
+}
+#endif
 
 #pragma code_seg(push)
 #pragma code_seg()
@@ -11141,6 +11215,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
     if (nativeAhb)
     {
         if (guestBlob || nativeLayout == NULL || !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_RESOURCE_BLOB) ||
+            !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_RELEASE) ||
             (backingSize == 0 && !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_V2)))
         {
             return VioGpuHostContextNotSubmitted;

@@ -364,6 +364,136 @@ static BOOLEAN IsPlainControlErrorResponse(PGPU_CTRL_HDR response)
            response->padding[2] == 0;
 }
 
+struct VIOGPU_NATIVE_AHB_PENDING
+{
+    CtrlQueue *Queue;
+    PGPU_VBUFFER Buffer;
+    VIOGPU_NATIVE_AHB_COMPLETION Completion;
+    PVOID Context;
+    LONG64 Epoch;
+    UINT ResourceId;
+    ULONGLONG Sequence;
+    BOOLEAN Present;
+};
+
+VOID CtrlQueue::CompleteNativeAhbOperation(PVOID context)
+{
+    auto pending = static_cast<VIOGPU_NATIVE_AHB_PENDING *>(context);
+    CtrlQueue *queue = pending->Queue;
+    PGPU_VBUFFER buffer = pending->Buffer;
+    auto response = static_cast<PGPU_NATIVE_AHB_OPERATION>(buffer->resp_buf);
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
+    ULONGLONG sequence = pending->Sequence;
+    if (VioGpuReadSynchronousEpochState(&queue->m_SynchronousEpochState) == pending->Epoch)
+    {
+        if (buffer->response_size == sizeof(*response) && response != NULL &&
+            IsPlainControlResponse(&response->hdr, VIRTIO_GPU_RESP_OK_NATIVE_AHB_OPERATION) &&
+            response->resource_id == pending->ResourceId && response->reserved == 0 &&
+            (pending->Present ? response->sequence != 0 : response->sequence == pending->Sequence))
+        {
+            sequence = response->sequence;
+            result = VioGpuHostContextConfirmed;
+        }
+        else if (buffer->response_size == sizeof(GPU_CTRL_HDR) &&
+                 IsPlainControlErrorResponse(static_cast<PGPU_CTRL_HDR>(buffer->resp_buf)))
+        {
+            result = VioGpuHostContextRejected;
+        }
+    }
+    VIOGPU_NATIVE_AHB_COMPLETION completion = pending->Completion;
+    PVOID callerContext = pending->Context;
+    UINT resourceId = pending->ResourceId;
+    delete pending;
+    // Keep the terminal claim until the caller has finished. Reset teardown
+    // must not retire the buffer/adapter while its completion still runs.
+    completion(callerContext, result, resourceId, sequence);
+    queue->ReleaseBuffer(buffer);
+}
+
+VOID CtrlQueue::CancelNativeAhbOperation(PVOID context)
+{
+    auto pending = static_cast<VIOGPU_NATIVE_AHB_PENDING *>(context);
+    VIOGPU_NATIVE_AHB_COMPLETION completion = pending->Completion;
+    PVOID callerContext = pending->Context;
+    UINT resourceId = pending->ResourceId;
+    ULONGLONG sequence = pending->Sequence;
+    delete pending;
+    // The reclaim/close owner frees the descriptor after this callback.
+    completion(callerContext, VioGpuHostContextUnknown, resourceId, sequence);
+}
+
+BOOLEAN CtrlQueue::QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, BOOLEAN present,
+                                          VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context)
+{
+    if (KeGetCurrentIrql() > DISPATCH_LEVEL || !IsStandard2DResourceId(resourceId) ||
+        (present && sequence != 0) || completion == NULL || m_pBuf == NULL)
+    {
+        return FALSE;
+    }
+    LONG64 epoch = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
+    if (VioGpuSynchronousState(epoch) != VioGpuSynchronousEnabled)
+    {
+        return FALSE;
+    }
+    auto pending = new (NonPagedPoolNx) VIOGPU_NATIVE_AHB_PENDING;
+    if (pending == NULL)
+    {
+        return FALSE;
+    }
+    auto response = static_cast<PGPU_NATIVE_AHB_OPERATION>(m_pBuf->AllocateMemory(sizeof(GPU_NATIVE_AHB_OPERATION)));
+    if (response == NULL)
+    {
+        delete pending;
+        return FALSE;
+    }
+    PGPU_VBUFFER buffer = NULL;
+    auto command = static_cast<PGPU_NATIVE_AHB_OPERATION>(AllocCmdResp(&buffer, sizeof(*response), response,
+                                                                     sizeof(*response)));
+    if (command == NULL)
+    {
+        m_pBuf->FreeMemory(response);
+        delete pending;
+        return FALSE;
+    }
+    RtlZeroMemory(response, sizeof(*response));
+    RtlZeroMemory(command, sizeof(*command));
+    command->hdr.type = present ? VIRTIO_GPU_CMD_PRESENT_NATIVE_AHB : VIRTIO_GPU_CMD_WAIT_NATIVE_AHB_RELEASE;
+    command->resource_id = resourceId;
+    command->sequence = sequence;
+    pending->Queue = this;
+    pending->Buffer = buffer;
+    pending->Completion = completion;
+    pending->Context = context;
+    pending->Epoch = epoch;
+    pending->ResourceId = resourceId;
+    pending->Sequence = sequence;
+    pending->Present = present;
+    buffer->complete_cb = CompleteNativeAhbOperation;
+    buffer->complete_ctx = pending;
+    buffer->cancel_cb = CancelNativeAhbOperation;
+    buffer->cancel_ctx = pending;
+    buffer->auto_release = FALSE;
+    if (!VioGpuArmVbufferTerminalCallbacks(buffer))
+    {
+        VioGpuDetachVbufferTerminalCallbacks(buffer);
+        ReleaseBuffer(buffer);
+        delete pending;
+        return FALSE;
+    }
+    // Caller holds adapter submission rundown only through this enqueue.
+    // A WAIT has no idle deadline and owns neither synchronous queue mutex.
+    if (VioGpuReadSynchronousEpochState(&m_SynchronousEpochState) != epoch || QueueBuffer(buffer) < 0)
+    {
+        VioGpuClaimVbufferTerminalCallbacks(buffer);
+        VioGpuDetachVbufferTerminalCallbacks(buffer);
+        ReleaseBuffer(buffer);
+        delete pending;
+        return FALSE;
+    }
+    // Completion may already have destroyed pending and buffer.
+    return TRUE;
+}
+
 static BOOLEAN IsNativeResourceId(UINT resourceId)
 {
     return resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START && resourceId != MAXUINT;
@@ -3018,18 +3148,33 @@ PGPU_VBUFFER CtrlQueue::PrepareNativeSubmit(UINT context_id, const void *command
     return vbuf;
 }
 
-BOOLEAN CtrlQueue::RefreshNativeSubmit(PGPU_VBUFFER buf, const void *command, UINT command_size)
+BOOLEAN CtrlQueue::RefreshNativeSubmit(PGPU_VBUFFER buf, const void *command, UINT command_size, BOOLEAN resize)
 {
     if (buf == NULL || command == NULL || command_size == 0 || buf->size != sizeof(GPU_CMD_SUBMIT_3D) ||
-        buf->data_buf == NULL || buf->data_size != command_size)
+        buf->data_buf == NULL || (!resize && buf->data_size != command_size))
     {
         return FALSE;
     }
 
     PGPU_CMD_SUBMIT_3D submit = reinterpret_cast<PGPU_CMD_SUBMIT_3D>(buf->buf);
-    if (submit->hdr.type != VIRTIO_GPU_CMD_SUBMIT_3D || submit->size != command_size)
+    if (submit->hdr.type != VIRTIO_GPU_CMD_SUBMIT_3D || submit->size != buf->data_size)
     {
         return FALSE;
+    }
+
+    if (resize && command_size != buf->data_size)
+    {
+        /* Only the dispatch owner may grow a not-yet-issued packet. */
+        if (submit->hdr.fence_id != 0 || buf->native_submit_link.Flink != &buf->native_submit_link ||
+            buf->native_submit_link.Blink != &buf->native_submit_link)
+            return FALSE;
+        PVOID payload = m_pBuf->AllocateMemoryUninitialized(command_size);
+        if (payload == NULL)
+            return FALSE;
+        m_pBuf->FreeMemory(buf->data_buf);
+        buf->data_buf = payload;
+        buf->data_size = command_size;
+        submit->size = command_size;
     }
 
     RtlCopyMemory(buf->data_buf, command, command_size);
@@ -3058,7 +3203,8 @@ int CtrlQueue::QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id)
      * same gate used by teardown.  Otherwise a D3/failed-start teardown could
      * reclaim this VioGpuBuf after the caller entered the function but before
      * it acquired m_NativeSubmitLock. */
-    if (fence_id == 0 || fence_id > MAXUINT || buf->size != sizeof(GPU_CMD_SUBMIT_3D))
+    if (fence_id == 0 || fence_id > MAXUINT || buf->size != sizeof(GPU_CMD_SUBMIT_3D) ||
+        m_NativeSubmitSequence == MAXULONGLONG)
     {
         KeReleaseSpinLock(&m_NativeSubmitLock, oldIrql);
         return -1;
@@ -3072,7 +3218,10 @@ int CtrlQueue::QueueNativeSubmit(PGPU_VBUFFER buf, ULONGLONG fence_id)
     }
 
     submit->hdr.flags = VIRTIO_GPU_FLAG_FENCE | VIRTIO_GPU_FLAG_INFO_RING_IDX;
-    submit->hdr.fence_id = fence_id;
+    /* Deferred AHB admission can issue a later scheduler fence first. The
+     * renderer timeline must follow actual enqueue order, never VidSch IDs. */
+    buf->native_submit_host_fence = ++m_NativeSubmitSequence;
+    submit->hdr.fence_id = buf->native_submit_host_fence;
     submit->hdr.ring_idx = 1;
 
     if (!IsListEmpty(&m_NativeSubmitBacklog))

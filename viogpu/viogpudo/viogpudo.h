@@ -531,6 +531,9 @@ struct VIOGPU_NATIVE_PASSIVE_WORK
     volatile LONG Retired;
     /* Only Render may overlap host work; Present and paging are drain barriers. */
     BOOLEAN PipelineEligible;
+    /* A display-release waiter has not reached the GPU. It must allow a
+     * different buffer's Present to replace the retained front buffer. */
+    volatile LONG DisplayReleaseWait;
     UINT PayloadBytes;
     UINT AllocationReferences;
     ULONGLONG DispatchTime100ns;
@@ -1092,13 +1095,15 @@ class VioGpuAdapter : IVioGpuPCI
     static BOOLEAN IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
     BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration);
 #if defined(VIOGPU_NATIVE_CONTEXT)
+    BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
+                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize)
     {
         return m_CtrlQueue.PrepareNativeSubmit(contextId, command, commandSize);
     }
-    BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize)
+    BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize, BOOLEAN resize = FALSE)
     {
-        return m_CtrlQueue.RefreshNativeSubmit(buffer, command, commandSize);
+        return m_CtrlQueue.RefreshNativeSubmit(buffer, command, commandSize, resize);
     }
     int QueueNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ ULONGLONG fenceId)
     {
@@ -1922,7 +1927,9 @@ class VioGpuDod
     VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached);
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
-    BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize);
+    BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
+                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
+    BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize, BOOLEAN resize = FALSE);
     int QueueNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ ULONGLONG fenceId);
     BOOLEAN ReleaseNativeSubmitBuffer(_In_ PGPU_VBUFFER buffer);
     BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration) const;
@@ -2585,6 +2592,7 @@ class VioGpuDod
     VOID CompleteNativePassiveWork(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
     // Release dispatch ownership but retain the Render/VBUFFER terminal owner.
     VOID ReleaseNativePassiveDispatch(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
+    BOOLEAN TryResumeNativePassiveDispatch(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work);
     // Caller holds m_NativePassiveLock; incoming is a not-yet-linked FIFO tail.
     BOOLEAN NativePassiveDispatchReadyLocked(VIOGPU_NATIVE_PASSIVE_WORK *incoming = NULL);
     // Include active, queued, and host-owned work in close/reset drain checks.
