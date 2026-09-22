@@ -153,14 +153,15 @@ static HRESULT shared_nt_smoke(IDXGIAdapter1 *adapter, ID3D11Device *creator,
 }
 
 static int exercise(unsigned frames, unsigned idle_ms, unsigned color_hold_ms, bool resize, bool native,
-                    bool shared_nt)
+                    bool shared_nt, bool fullscreen)
 {
     if (!SetProcessDPIAware() && !IsProcessDPIAware())
         return 2;
     if (!SetEnvironmentVariableW(L"VIOGPU_NATIVE_HOST_SURFACE", native ? L"1" : L"0"))
         return 2;
-    std::printf("PROBE native_requested=%u frames=%u idle_ms=%u color_hold_ms=%u resize=%u pixel_readbacks=0\n",
-                static_cast<unsigned>(native), frames, idle_ms, color_hold_ms, static_cast<unsigned>(resize));
+    std::printf("PROBE native_requested=%u frames=%u idle_ms=%u color_hold_ms=%u resize=%u fullscreen=%u pixel_readbacks=0\n",
+                static_cast<unsigned>(native), frames, idle_ms, color_hold_ms, static_cast<unsigned>(resize),
+                static_cast<unsigned>(fullscreen));
 
     HRESULT hr;
     const char *stage = "factory";
@@ -222,8 +223,8 @@ static int exercise(unsigned frames, unsigned idle_ms, unsigned color_hold_ms, b
         return 2;
 
     DXGI_SWAP_CHAIN_DESC1 desc = {};
-    desc.Width = 800;
-    desc.Height = 600;
+    desc.Width = fullscreen ? static_cast<UINT>(GetSystemMetrics(SM_CXSCREEN)) : 800;
+    desc.Height = fullscreen ? static_cast<UINT>(GetSystemMetrics(SM_CYSCREEN)) : 600;
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     desc.SampleDesc.Count = 1;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -238,6 +239,18 @@ static int exercise(unsigned frames, unsigned idle_ms, unsigned color_hold_ms, b
         std::printf("RESULT passed=0 stage=flip-swapchain hr=%08lx\n", static_cast<unsigned long>(hr));
         DestroyWindow(window);
         return 1;
+    }
+    if (fullscreen) {
+        hr = swapchain->SetFullscreenState(TRUE, nullptr);
+        if (SUCCEEDED(hr))
+            hr = swapchain->ResizeBuffers(3, desc.Width, desc.Height, desc.Format, 0);
+        if (FAILED(hr)) {
+            std::printf("RESULT passed=0 stage=fullscreen hr=%08lx\n", static_cast<unsigned long>(hr));
+            swapchain->SetFullscreenState(FALSE, nullptr);
+            DestroyWindow(window);
+            return 1;
+        }
+        std::printf("FULLSCREEN extent=%ux%u direct_scanout_verified=0\n", desc.Width, desc.Height);
     }
     unsigned presented = 0, resized = 0;
     const float colors[][4] = {{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 0, 1}};
@@ -310,6 +323,8 @@ static int exercise(unsigned frames, unsigned idle_ms, unsigned color_hold_ms, b
                 "native_requested=%u zero_copy_verified=0 pixel_readbacks=0\n",
                 static_cast<unsigned>(passed), stage, static_cast<unsigned long>(hr),
                 static_cast<unsigned long>(removed), presented, resized, static_cast<unsigned>(native));
+    if (fullscreen)
+        swapchain->SetFullscreenState(FALSE, nullptr);
     swapchain.Reset();
     DestroyWindow(window);
     return passed ? 0 : 1;
@@ -319,10 +334,11 @@ int main(int argc, char **argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
     unsigned frames = 240, idle_ms = 0, color_hold_ms = 0;
-    bool resize = false, native = false, shared_nt = false;
+    bool resize = false, native = false, shared_nt = false, fullscreen = false;
     for (int index = 1; index < argc; ++index) {
         if (!std::strcmp(argv[index], "--native")) native = true;
         else if (!std::strcmp(argv[index], "--shared-nt")) shared_nt = true;
+        else if (!std::strcmp(argv[index], "--fullscreen")) fullscreen = true;
         else if (!std::strcmp(argv[index], "--resize")) resize = true;
         else if (!std::strcmp(argv[index], "--frames") && index + 1 < argc) {
             if (!number(argv[++index], 600, &frames) || frames < 6) return 2;
@@ -331,17 +347,18 @@ int main(int argc, char **argv)
         } else if (!std::strcmp(argv[index], "--color-hold-ms") && index + 1 < argc) {
             if (!number(argv[++index], 2000, &color_hold_ms)) return 2;
         } else {
-            std::printf("Usage: native_display_probe [--native] [--shared-nt] [--resize] [--frames 6..600] "
+            std::printf("Usage: native_display_probe [--native] [--shared-nt] [--fullscreen | --resize] [--frames 6..600] "
                         "[--idle-ms 0..10000] [--color-hold-ms 0..2000]\n");
             return 2;
         }
     }
     if (frames * color_hold_ms + idle_ms > 45000) return 2;
+    if (fullscreen && resize) return 2;
     HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!done) return 2;
     HANDLE guard = CreateThread(nullptr, 0, watchdog, done, 0, nullptr);
     if (!guard) { CloseHandle(done); return 2; }
-    const int result = exercise(frames, idle_ms, color_hold_ms, resize, native, shared_nt);
+    const int result = exercise(frames, idle_ms, color_hold_ms, resize, native, shared_nt, fullscreen);
     SetEvent(done);
     WaitForSingleObject(guard, INFINITE);
     CloseHandle(guard);
