@@ -19,6 +19,7 @@ env:
   OSMASK: "Server10_ARM64"          # 與 build/Driver.PackOne.targets 一致（Win11/ARM64）
   CERT_SUBJECT: "CN=DroidVM Test"
   PFX_PW: "droidvm"
+  WDK_BOOTSTRAPPER_SHA256: "01c341c97a7cae10e5db19cd1311c3638f15b9f577d19c4f03df909a2b1d70f8"
 
 jobs:
   flat-package-tests:
@@ -196,7 +197,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}\wdk-installer-cache
-          key: wdk-bootstrapper-v1-${{ runner.os }}-${{ runner.arch }}-arm64-${{ steps.arm64_sdk.outputs.version }}-wdk-fwlink-2272234
+          key: wdk-bootstrapper-v1-${{ runner.os }}-${{ runner.arch }}-arm64-${{ steps.arm64_sdk.outputs.version }}-wdk-sha256-${{ env.WDK_BOOTSTRAPPER_SHA256 }}
 
       - name: Install the WDK matching the selected SDK
         shell: pwsh
@@ -236,9 +237,17 @@ jobs:
             New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
             $installer = Join-Path $cacheDir 'wdksetup.exe'
             # fwlink 2272234 is the WDK for Windows 11, version 24H2 (10.0.26100).
-            if (-not (Test-Path -LiteralPath $installer -PathType Leaf) -or
-                (Get-Item -LiteralPath $installer).Length -lt 1MB) {
+            $expectedHash = $env:WDK_BOOTSTRAPPER_SHA256.ToUpperInvariant()
+            $cachedHash = if (Test-Path -LiteralPath $installer -PathType Leaf) {
+              (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToUpperInvariant()
+            }
+            if ($cachedHash -ne $expectedHash) {
+              Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
               Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile $installer
+              $downloadHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToUpperInvariant()
+              if ($downloadHash -ne $expectedHash) {
+                throw "WDK bootstrapper hash mismatch: expected $expectedHash, got $downloadHash"
+              }
             } else {
               Write-Host "Using cached WDK bootstrapper: $installer"
             }
@@ -512,7 +521,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}\wdk-installer-cache
-          key: wdk-bootstrapper-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-${{ steps.emulated_sdk.outputs.version }}-fwlink-2272234
+          key: wdk-bootstrapper-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-${{ steps.emulated_sdk.outputs.version }}-wdk-sha256-${{ env.WDK_BOOTSTRAPPER_SHA256 }}
 
       - name: Install the WDK matching the selected SDK
         shell: pwsh
@@ -543,9 +552,17 @@ jobs:
             $cacheDir = Join-Path $env:RUNNER_TEMP 'wdk-installer-cache'
             New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
             $installer = Join-Path $cacheDir 'wdksetup.exe'
-            if (-not (Test-Path -LiteralPath $installer -PathType Leaf) -or
-                (Get-Item -LiteralPath $installer).Length -lt 1MB) {
+            $expectedHash = $env:WDK_BOOTSTRAPPER_SHA256.ToUpperInvariant()
+            $cachedHash = if (Test-Path -LiteralPath $installer -PathType Leaf) {
+              (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToUpperInvariant()
+            }
+            if ($cachedHash -ne $expectedHash) {
+              Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
               Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile $installer
+              $downloadHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToUpperInvariant()
+              if ($downloadHash -ne $expectedHash) {
+                throw "WDK bootstrapper hash mismatch: expected $expectedHash, got $downloadHash"
+              }
             } else {
               Write-Host "Using cached WDK bootstrapper: $installer"
             }
