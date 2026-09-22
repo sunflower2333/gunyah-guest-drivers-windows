@@ -1,0 +1,39 @@
+name: Build native AHB functional probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [work/native-ahb-direct-20260922]
+    paths:
+      - 'viogpu/tests/native-display/**'
+      - '.github/workflows/native-ahb-functional-probe.yml'
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64_arm64
+      - name: Build hardware-only native flip, resize and idle probe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          cl /nologo /std:c++17 /EHsc /W4 /WX /MT /Zi `
+            viogpu/tests/native-display/native_display_probe.cpp `
+            /Fo:out/native_display_probe.obj /Fe:out/native_display_probe.exe `
+            /link /DEBUG /PDB:out/native_display_probe.pdb d3d11.lib dxgi.lib user32.lib
+          if ($LASTEXITCODE) { throw 'Native AHB functional probe compilation failed' }
+          $headers = & dumpbin /headers out/native_display_probe.exe
+          if ($LASTEXITCODE -or -not ($headers -match 'AA64 machine')) { throw 'Probe is not native ARM64' }
+          git rev-parse HEAD | Set-Content out/source-commit.txt
+          Get-FileHash out/native_display_probe.exe -Algorithm SHA256 | Format-List
+          Remove-Item out/native_display_probe.obj
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-ahb-functional-probe-arm64
+          path: out/
+          if-no-files-found: error
