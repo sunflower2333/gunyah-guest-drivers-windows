@@ -11,7 +11,7 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 env:
   CONFIG: "Win11 Release"
@@ -180,6 +180,24 @@ jobs:
         with:
           arch: x64_arm64
 
+      - name: Resolve Windows SDK identity
+        id: arm64_sdk
+        shell: pwsh
+        run: |
+          $sdkVersion = ($env:WindowsSDKVersion -replace '\\+$', '')
+          if ([string]::IsNullOrWhiteSpace($sdkVersion)) {
+            throw 'msvc-dev-cmd did not report a Windows SDK version'
+          }
+          "version=$sdkVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      # Cache only Microsoft's WDK bootstrapper.  The installed kit remains
+      # runner-owned and is validated against WindowsSDKVersion below.
+      - name: Cache WDK bootstrapper
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\wdk-installer-cache
+          key: wdk-bootstrapper-v1-${{ runner.os }}-${{ runner.arch }}-arm64-${{ steps.arm64_sdk.outputs.version }}-wdk-fwlink-2272234
+
       - name: Install the WDK matching the selected SDK
         shell: pwsh
         run: |
@@ -214,9 +232,16 @@ jobs:
           $kit = Test-KitComplete $sdkVersion
           if ($null -eq $kit) {
             Write-Host "SDK $sdkVersion has no WDK headers; installing the WDK."
-            $installer = Join-Path $env:RUNNER_TEMP 'wdksetup.exe'
+            $cacheDir = Join-Path $env:RUNNER_TEMP 'wdk-installer-cache'
+            New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+            $installer = Join-Path $cacheDir 'wdksetup.exe'
             # fwlink 2272234 is the WDK for Windows 11, version 24H2 (10.0.26100).
-            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile $installer
+            if (-not (Test-Path -LiteralPath $installer -PathType Leaf) -or
+                (Get-Item -LiteralPath $installer).Length -lt 1MB) {
+              Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile $installer
+            } else {
+              Write-Host "Using cached WDK bootstrapper: $installer"
+            }
             $proc = Start-Process -FilePath $installer -ArgumentList '/quiet', '/norestart', '/features', '+' -Wait -PassThru
             Write-Host "WDK installer exit code: $($proc.ExitCode)"
             $kit = Test-KitComplete $sdkVersion
@@ -248,9 +273,16 @@ jobs:
           & $clang.Path --version
 
       - name: Set up Python build tools
+        id: arm64_python
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+
+      - name: Cache Python build wheels
+        uses: actions/cache@v4
+        with:
+          path: '~\AppData\Local\pip\Cache'
+          key: pip-meson-v1-${{ runner.os }}-${{ runner.arch }}-arm64-${{ steps.arm64_python.outputs.python-version }}-meson-1.9.1-mako-packaging-pyyaml
 
       - name: Install Meson generators
         shell: pwsh
@@ -464,6 +496,24 @@ jobs:
         with:
           arch: ${{ matrix.msvc }}
 
+      - name: Resolve Windows SDK identity
+        id: emulated_sdk
+        shell: pwsh
+        run: |
+          $sdkVersion = ($env:WindowsSDKVersion -replace '\\+$', '')
+          if ([string]::IsNullOrWhiteSpace($sdkVersion)) {
+            throw 'msvc-dev-cmd did not report a Windows SDK version'
+          }
+          "version=$sdkVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      # The cache contains only the Microsoft bootstrapper, never the installed
+      # Windows Kits tree or any driver output.
+      - name: Cache WDK bootstrapper
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\wdk-installer-cache
+          key: wdk-bootstrapper-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-${{ steps.emulated_sdk.outputs.version }}-fwlink-2272234
+
       - name: Install the WDK matching the selected SDK
         shell: pwsh
         run: |
@@ -490,8 +540,15 @@ jobs:
           $kit = Test-KitComplete $sdkVersion
           if ($null -eq $kit) {
             Write-Host "SDK $sdkVersion has no WDK headers; installing the WDK."
-            $installer = Join-Path $env:RUNNER_TEMP 'wdksetup.exe'
-            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile $installer
+            $cacheDir = Join-Path $env:RUNNER_TEMP 'wdk-installer-cache'
+            New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+            $installer = Join-Path $cacheDir 'wdksetup.exe'
+            if (-not (Test-Path -LiteralPath $installer -PathType Leaf) -or
+                (Get-Item -LiteralPath $installer).Length -lt 1MB) {
+              Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile $installer
+            } else {
+              Write-Host "Using cached WDK bootstrapper: $installer"
+            }
             $proc = Start-Process -FilePath $installer -ArgumentList '/quiet', '/norestart', '/features', '+' -Wait -PassThru
             Write-Host "WDK installer exit code: $($proc.ExitCode)"
             $kit = Test-KitComplete $sdkVersion
@@ -511,9 +568,16 @@ jobs:
           }
 
       - name: Set up Python build tools
+        id: emulated_python
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+
+      - name: Cache Python build wheels
+        uses: actions/cache@v4
+        with:
+          path: '~\AppData\Local\pip\Cache'
+          key: pip-meson-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-${{ steps.emulated_python.outputs.python-version }}-meson-1.9.1-mako-packaging-pyyaml
 
       - name: Install Meson generators and Windows flex/bison
         shell: pwsh

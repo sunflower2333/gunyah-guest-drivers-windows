@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write          # 推 dev tag、發 release 需要
+  actions: write           # reusable build workflow saves dependency caches
 
 concurrency:
   group: dev-release       # 避免多個 push 同時搶 dev tag
