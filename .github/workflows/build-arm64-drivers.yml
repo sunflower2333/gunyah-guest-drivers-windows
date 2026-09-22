@@ -728,6 +728,37 @@ jobs:
           name: viogpu-opencl-flat-unsigned
           path: opencl-payload
 
+      - name: Ensure WDK MSBuild tasks are installed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The ARM runner can retain the 10.0.26100 headers and targets while
+          # losing the WDK task assembly after an image refresh.  The driver
+          # projects all enter WindowsDriver.common.targets, so a header-only
+          # probe is insufficient: ValidateNTTargetVersion must be loadable.
+          $kitRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+          $taskRoot = Join-Path $kitRoot 'build'
+          $taskName = 'Microsoft.DriverKit.Build.Tasks.18.0.dll'
+          $task = @(Get-ChildItem -LiteralPath $taskRoot -Recurse -Filter $taskName -File `
+            -ErrorAction SilentlyContinue | Select-Object -First 1)
+          if ($task.Count -eq 0) {
+            Write-Host "WDK build task $taskName is missing; installing the official Windows 11 24H2 WDK."
+            $installer = Join-Path $env:RUNNER_TEMP 'wdksetup.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2272234' -OutFile $installer
+            $proc = Start-Process -FilePath $installer -ArgumentList '/quiet', '/norestart', '/features', '+' -Wait -PassThru
+            if ($proc.ExitCode -ne 0) {
+              throw "WDK installer failed with exit code $($proc.ExitCode)"
+            }
+            $task = @(Get-ChildItem -LiteralPath $taskRoot -Recurse -Filter $taskName -File `
+              -ErrorAction SilentlyContinue | Select-Object -First 1)
+          }
+          if ($task.Count -eq 0) {
+            $available = @(Get-ChildItem -LiteralPath $taskRoot -Recurse -Filter 'Microsoft.DriverKit.Build.Tasks*.dll' -File `
+              -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)
+            throw "WDK task $taskName is unavailable after installation. Found: $($available -join '; ')"
+          }
+          Write-Host "WDK MSBuild task: $($task[0].FullName)"
+
       - name: Locate preinstalled Windows SDK and WDK
         shell: pwsh
         run: ./.github/scripts/locate-windows-kit.ps1 -RequirePackagingTools
