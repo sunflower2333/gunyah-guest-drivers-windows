@@ -99,9 +99,10 @@ static int exercise(unsigned frames, unsigned idle_ms, bool resize, bool native)
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     D3D_FEATURE_LEVEL actual;
-    const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+    const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
+                                       D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
     hr = D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr,
-                          D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2, D3D11_SDK_VERSION,
+                          D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, ARRAYSIZE(levels), D3D11_SDK_VERSION,
                           device.GetAddressOf(), &actual, context.GetAddressOf());
     if (FAILED(hr)) {
         std::printf("RESULT passed=0 stage=device hr=%08lx\n", static_cast<unsigned long>(hr));
