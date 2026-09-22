@@ -2,7 +2,7 @@
 // Functional exercise only: host/KMD identity and release traces plus visible
 // pixels are required separately before claiming full-chain zero-copy.
 #include <windows.h>
-#include <d3d11.h>
+#include <d3d11_1.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 #include <cstdio>
@@ -55,7 +55,105 @@ static bool number(const char *text, unsigned limit, unsigned *value)
     return true;
 }
 
-static int exercise(unsigned frames, unsigned idle_ms, unsigned color_hold_ms, bool resize, bool native)
+// Separate from flip-surface support: explicitly request an NT-shareable
+// resource, reopen it on another device, and use it after creator destruction.
+static HRESULT shared_nt_smoke(IDXGIAdapter1 *adapter, ID3D11Device *creator,
+                               ID3D11DeviceContext *creator_context)
+{
+    const char *stage = "create";
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = 513;
+    desc.Height = 257;
+    desc.MipLevels = desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    ComPtr<ID3D11Texture2D> source;
+    HRESULT hr = creator->CreateTexture2D(&desc, nullptr, source.GetAddressOf());
+    HANDLE shared = nullptr;
+    do {
+        if (FAILED(hr)) break;
+        stage = "share";
+        ComPtr<IDXGIResource1> resource;
+        hr = source.As(&resource);
+        if (FAILED(hr)) break;
+        hr = resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                          nullptr, &shared);
+        if (FAILED(hr)) break;
+        resource.Reset();
+        stage = "second-device";
+        ComPtr<ID3D11Device> importer;
+        ComPtr<ID3D11DeviceContext> importer_context;
+        hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                              nullptr, 0, D3D11_SDK_VERSION, importer.GetAddressOf(), nullptr,
+                              importer_context.GetAddressOf());
+        if (FAILED(hr)) break;
+        ComPtr<ID3D11Device1> importer1;
+        hr = importer.As(&importer1);
+        if (FAILED(hr)) break;
+        stage = "open";
+        ComPtr<ID3D11Texture2D> opened;
+        hr = importer1->OpenSharedResource1(shared, IID_PPV_ARGS(opened.GetAddressOf()));
+        if (FAILED(hr)) break;
+        CloseHandle(shared);
+        shared = nullptr;
+        ComPtr<IDXGIKeyedMutex> source_mutex, opened_mutex;
+        hr = source.As(&source_mutex);
+        if (FAILED(hr)) break;
+        hr = opened.As(&opened_mutex);
+        if (FAILED(hr)) break;
+        ComPtr<ID3D11RenderTargetView> source_target, opened_target;
+        hr = creator->CreateRenderTargetView(source.Get(), nullptr, source_target.GetAddressOf());
+        if (FAILED(hr)) break;
+        hr = importer->CreateRenderTargetView(opened.Get(), nullptr, opened_target.GetAddressOf());
+        if (FAILED(hr)) break;
+        stage = "creator-acquire";
+        hr = source_mutex->AcquireSync(0, 5000);
+        if (hr != S_OK) break;
+        const float initial[] = {0.25f, 0.5f, 0.75f, 1};
+        creator_context->ClearRenderTargetView(source_target.Get(), initial);
+        creator_context->Flush();
+        hr = source_mutex->ReleaseSync(1);
+        if (FAILED(hr)) break;
+        // The independent importer must outlive all creator resource handles.
+        source_target.Reset();
+        source_mutex.Reset();
+        source.Reset();
+        stage = "importer-after-creator-destroy";
+        hr = opened_mutex->AcquireSync(1, 5000);
+        if (hr != S_OK) break;
+        const float final_color[] = {0.75f, 0.25f, 0.5f, 1};
+        importer_context->ClearRenderTargetView(opened_target.Get(), final_color);
+        importer_context->Flush();
+        hr = opened_mutex->ReleaseSync(2);
+        if (FAILED(hr)) break;
+        stage = "gpu-completion";
+        D3D11_QUERY_DESC query_desc = {D3D11_QUERY_EVENT, 0};
+        ComPtr<ID3D11Query> query;
+        hr = importer->CreateQuery(&query_desc, query.GetAddressOf());
+        if (FAILED(hr)) break;
+        importer_context->End(query.Get());
+        importer_context->Flush();
+        const ULONGLONG deadline = GetTickCount64() + 5000;
+        do {
+            hr = importer_context->GetData(query.Get(), nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            if (hr != S_FALSE) break;
+            Sleep(1);
+        } while (GetTickCount64() < deadline);
+        if (hr == S_FALSE) hr = HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+        if (SUCCEEDED(hr)) hr = importer->GetDeviceRemovedReason();
+    } while (false);
+    if (shared) CloseHandle(shared);
+    // WAIT_TIMEOUT/WAIT_ABANDONED from AcquireSync are positive status codes.
+    if (hr != S_OK && SUCCEEDED(hr)) hr = HRESULT_FROM_WIN32(static_cast<DWORD>(hr));
+    std::printf("SHARED_NT passed=%u stage=%s hr=%08lx pixel_preservation_verified=0 flip_support_verified=0\n",
+                static_cast<unsigned>(hr == S_OK), stage, static_cast<unsigned long>(hr));
+    return hr;
+}
+
+static int exercise(unsigned frames, unsigned idle_ms, unsigned color_hold_ms, bool resize, bool native,
+                    bool shared_nt)
 {
     if (!SetProcessDPIAware() && !IsProcessDPIAware())
         return 2;
@@ -109,6 +207,8 @@ static int exercise(unsigned frames, unsigned idle_ms, unsigned color_hold_ms, b
         return 1;
     }
     std::printf("DEVICE feature_level=%x hardware=1\n", static_cast<unsigned>(actual));
+    if (shared_nt && shared_nt_smoke(adapter.Get(), device.Get(), context.Get()) != S_OK)
+        return 1;
     WNDCLASSW wc = {};
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpfnWndProc = window_proc;
@@ -219,9 +319,10 @@ int main(int argc, char **argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
     unsigned frames = 240, idle_ms = 0, color_hold_ms = 0;
-    bool resize = false, native = false;
+    bool resize = false, native = false, shared_nt = false;
     for (int index = 1; index < argc; ++index) {
         if (!std::strcmp(argv[index], "--native")) native = true;
+        else if (!std::strcmp(argv[index], "--shared-nt")) shared_nt = true;
         else if (!std::strcmp(argv[index], "--resize")) resize = true;
         else if (!std::strcmp(argv[index], "--frames") && index + 1 < argc) {
             if (!number(argv[++index], 600, &frames) || frames < 6) return 2;
@@ -230,7 +331,7 @@ int main(int argc, char **argv)
         } else if (!std::strcmp(argv[index], "--color-hold-ms") && index + 1 < argc) {
             if (!number(argv[++index], 2000, &color_hold_ms)) return 2;
         } else {
-            std::printf("Usage: native_display_probe [--native] [--resize] [--frames 6..600] "
+            std::printf("Usage: native_display_probe [--native] [--shared-nt] [--resize] [--frames 6..600] "
                         "[--idle-ms 0..10000] [--color-hold-ms 0..2000]\n");
             return 2;
         }
@@ -240,7 +341,7 @@ int main(int argc, char **argv)
     if (!done) return 2;
     HANDLE guard = CreateThread(nullptr, 0, watchdog, done, 0, nullptr);
     if (!guard) { CloseHandle(done); return 2; }
-    const int result = exercise(frames, idle_ms, color_hold_ms, resize, native);
+    const int result = exercise(frames, idle_ms, color_hold_ms, resize, native, shared_nt);
     SetEvent(done);
     WaitForSingleObject(guard, INFINITE);
     CloseHandle(guard);
