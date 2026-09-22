@@ -30,6 +30,8 @@ constexpr UINT PAGE_SIZE = 4096;
 #define FIELD_OFFSET(type, field) offsetof(type, field)
 constexpr SIZE_T VIOGPU_WDDM_APERTURE_SIZE = 512ULL << 20;
 constexpr UINT VIOGPU_WDDM_SEGMENT_ID = 1;
+constexpr UINT VIOGPU_WDDM_HOST_SURFACE_SEGMENT_ID = 2;
+constexpr ULONGLONG VIOGPU_WDDM_HOST_SURFACE_BUDGET = 256ULL << 20;
 constexpr UINT VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE = 1;
 constexpr UINT D3DDDI_ALLOCATIONPRIORITY_NORMAL = 0x78000000;
 constexpr UINT DXGK_ENGINE_TYPE_3D = 1;
@@ -148,6 +150,8 @@ struct VioGpuDod
         return &Interface;
     }
     bool Ready = true;
+    bool HostPaging = false;
+    bool SupportsNativeAhbPaging() const { return HostPaging; }
     uint64_t Generation = 1;
     bool QueryNativeContextReadiness(GPU_CAPSET_DRM *, void *, void *, ULONGLONG *generation)
     {
@@ -177,6 +181,7 @@ union AllocationFlags {
 struct VIOGPU_WDDM_ALLOCATION
 {
     UINT Flags;
+    bool HostSurface = false;
 };
 struct DXGK_ALLOCATIONINFO
 {
@@ -264,6 +269,44 @@ int main()
                   descriptor.Flags.CacheCoherent,
           "armed trial marks the primary segment direct-flip capable");
     g_DirectFlipTrial = false;
+    {
+        adapter.HostPaging = true;
+        output.NbSegment = 0;
+        check(QuerySegment4(&adapter, &query) == STATUS_SUCCESS && output.NbSegment == 2,
+              "native paging feature exposes the second memory segment");
+        constexpr SIZE_T stride = sizeof(DXGK_SEGMENTDESCRIPTOR4) + 32;
+        std::array<BYTE, 2 * stride> hostStorage;
+        hostStorage.fill(0xa5);
+        output.pSegmentDescriptor = hostStorage.data();
+        output.SegmentDescriptorStride = stride;
+        output.NbSegment = 1;
+        check(QuerySegment4(&adapter, &query) == STATUS_INVALID_PARAMETER,
+              "native segment query rejects capacity below the advertised count");
+        output.NbSegment = 2;
+        check(QuerySegment4(&adapter, &query) == STATUS_SUCCESS, "native segment descriptors accepted");
+        DXGK_SEGMENTDESCRIPTOR4 guest{}, host{};
+        std::memcpy(&guest, hostStorage.data(), sizeof(guest));
+        std::memcpy(&host, hostStorage.data() + stride, sizeof(host));
+        check(guest.Size == VIOGPU_WDDM_APERTURE_SIZE && guest.Flags.Aperture && guest.Flags.CpuVisible,
+              "native paging preserves the ordinary CPU aperture");
+        check(host.Size == VIOGPU_WDDM_HOST_SURFACE_BUDGET && host.CommitLimit == host.Size &&
+              !host.Flags.Aperture && !host.Flags.CpuVisible && !host.Flags.CacheCoherent && host.BaseAddress == 0,
+              "native host segment is a bounded non-CPU-visible memory segment");
+        for (SIZE_T i = 0; i < 2; ++i)
+            for (SIZE_T j = sizeof(host); j < stride; ++j)
+                check(hostStorage[i * stride + j] == 0xa5, "both segment descriptor tails remain untouched");
+        VIOGPU_WDDM_ALLOCATION hostAllocation{VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE, true};
+        DXGK_ALLOCATIONINFO hostInfo{};
+        InitializeAllocationInfo(&hostInfo, &hostAllocation, 8192);
+        check(hostInfo.PreferredSegment.SegmentId0 == 2 && hostInfo.SupportedReadSegmentSet == 2 &&
+              hostInfo.SupportedWriteSegmentSet == 2 && hostInfo.EvictionSegmentSet == 0 &&
+              !hostInfo.FlagsWddm2.CpuVisible && !hostInfo.FlagsWddm2.Cached && hostInfo.FlagsWddm2.AccessedPhysically,
+              "HostSurface allocation advertises segment 2 without a CPU mapping or alternate eviction segment");
+        adapter.HostPaging = false;
+        output.NbSegment = 1;
+        output.pSegmentDescriptor = storage.data();
+        output.SegmentDescriptorStride = storage.size();
+    }
     check(output.PagingBufferSegmentId == 0 && output.PagingBufferSize == PAGE_SIZE && output.PagingBufferPrivateDataSize == sizeof(VIOGPU_WDDM_PAGING_PRIVATE),
           "physical paging buffers preserve existing transaction storage");
     output.SegmentDescriptorStride = sizeof(descriptor) - 1;

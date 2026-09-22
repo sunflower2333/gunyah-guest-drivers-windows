@@ -11,6 +11,8 @@
 
 constexpr SIZE_T VIOGPU_WDDM_APERTURE_SIZE = 512ULL << 20;
 constexpr UINT VIOGPU_WDDM_SEGMENT_ID = 1;
+constexpr UINT VIOGPU_WDDM_HOST_SURFACE_SEGMENT_ID = 2;
+constexpr ULONGLONG VIOGPU_WDDM_HOST_SURFACE_BUDGET = 256ULL << 20;
 constexpr UINT VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE = 1;
 struct GPU_CAPSET_DRM
 {
@@ -22,6 +24,7 @@ struct VIOGPU_WDDM_PAGING_PRIVATE
 struct VIOGPU_WDDM_ALLOCATION
 {
     UINT Flags;
+    bool HostSurface = false;
 };
 struct VioGpuDod
 {
@@ -31,6 +34,8 @@ struct VioGpuDod
         return &Interface;
     }
     bool Ready = true;
+    bool HostPaging = false;
+    bool SupportsNativeAhbPaging() const { return HostPaging; }
     bool QueryNativeContextReadiness(GPU_CAPSET_DRM *, void *, void *, ULONGLONG *generation)
     {
         *generation = Ready ? 1 : 0;
@@ -126,6 +131,44 @@ int main()
     for (size_t i = sizeof(descriptor); i < storage.size(); ++i)
     {
         check(storage[i] == 0xa5, "larger descriptor tail preserved");
+    }
+    {
+        adapter.HostPaging = true;
+        output.NbSegment = 0;
+        check(QuerySegment4(&adapter, &query) == STATUS_SUCCESS && output.NbSegment == 2,
+              "WDK native paging advertises two segments");
+        constexpr UINT stride = static_cast<UINT>(sizeof(DXGK_SEGMENTDESCRIPTOR4) + 32);
+        std::array<unsigned char, 2 * stride> hostStorage;
+        hostStorage.fill(0xa5);
+        output.pSegmentDescriptor = hostStorage.data();
+        output.SegmentDescriptorStride = stride;
+        output.NbSegment = 1;
+        check(QuerySegment4(&adapter, &query) == STATUS_INVALID_PARAMETER,
+              "WDK native segment query rejects insufficient capacity");
+        output.NbSegment = 2;
+        check(QuerySegment4(&adapter, &query) == STATUS_SUCCESS, "WDK native descriptors accepted");
+        DXGK_SEGMENTDESCRIPTOR4 guest{}, host{};
+        std::memcpy(&guest, hostStorage.data(), sizeof(guest));
+        std::memcpy(&host, hostStorage.data() + stride, sizeof(host));
+        check(guest.Size == VIOGPU_WDDM_APERTURE_SIZE && guest.Flags.Aperture && guest.Flags.CpuVisible,
+              "WDK ordinary aperture remains CPU visible");
+        check(host.Size == VIOGPU_WDDM_HOST_SURFACE_BUDGET && host.CommitLimit == host.Size &&
+              host.Flags.Value == 0 && host.BaseAddress.QuadPart == 0,
+              "WDK host memory segment advertises no aperture, CPU visibility or preservation flags");
+        for (SIZE_T i = 0; i < 2; ++i)
+            for (SIZE_T j = sizeof(host); j < stride; ++j)
+                check(hostStorage[i * stride + j] == 0xa5, "WDK both descriptor tails preserved");
+        VIOGPU_WDDM_ALLOCATION hostAllocation{VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE, true};
+        DXGK_ALLOCATIONINFO hostInfo{};
+        InitializeAllocationInfo(&hostInfo, &hostAllocation, 8192);
+        check(hostInfo.PreferredSegment.SegmentId0 == 2 && hostInfo.SupportedReadSegmentSet == 2 &&
+              hostInfo.SupportedWriteSegmentSet == 2 && hostInfo.EvictionSegmentSet == 0 &&
+              hostInfo.FlagsWddm2.Value == 0x8000U,
+              "WDK HostSurface allocation uses only segment 2 and AccessedPhysically");
+        adapter.HostPaging = false;
+        output.NbSegment = 1;
+        output.pSegmentDescriptor = storage.data();
+        output.SegmentDescriptorStride = static_cast<UINT>(storage.size());
     }
     output.SegmentDescriptorStride = sizeof(descriptor) - 1;
     check(QuerySegment4(&adapter, &query) == STATUS_INVALID_PARAMETER, "short stride rejected");

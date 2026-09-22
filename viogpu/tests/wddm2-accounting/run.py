@@ -31,6 +31,7 @@ def function(signature):
 host_only = ('_Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCalibrateGpuClock(',)
 production = '\n'.join(function(signature) for signature in (
     'VOID InitializeAllocationInfo(',
+    'template <typename Descriptor>\nVOID InitializeSegmentDescriptor(',
     'static NTSTATUS QuerySegment4(',
     'static NTSTATUS QueryPhysicalAdapterCaps(',
     'static NTSTATUS QueryHistoryBufferPrecision(',
