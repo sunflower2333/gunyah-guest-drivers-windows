@@ -549,7 +549,8 @@ class CtrlQueue : public VioGpuQueue
     /* Give (attach) or take away (detach) another native context's access to
      * an existing resource. The host imports the resource's backing into that
      * context; its GPU address still comes from a later GEM_SET_IOVA. */
-    VIOGPU_HOST_CONTEXT_RESULT SetNativeResourceAttachment(UINT context_id, UINT resource_id, BOOLEAN attach);
+    VIOGPU_HOST_CONTEXT_RESULT SetNativeResourceAttachment(UINT context_id, UINT resource_id, BOOLEAN attach,
+                                                          BOOLEAN hostSurface = FALSE);
     VIOGPU_HOST_CONTEXT_RESULT
     SubmitNativeControl(UINT context_id,
                         const void *command,

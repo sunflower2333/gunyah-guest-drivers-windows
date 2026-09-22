@@ -6279,6 +6279,7 @@ def check_wddm_present_contract() -> None:
         "VioGpuWddmPresentExecuteSubmissionOperation": "20",
         "VioGpuWddmPresentExecuteTransactionRetire": "21",
         "VioGpuWddmPresentExecuteStateTransition": "22",
+        "VioGpuWddmPresentExecuteHostSurfaceProtocol": "23",
         "VioGpuWddmPresentExecuteComplete": "0x0FFF",
     }
     execution_stage_match = re.search(
@@ -7820,11 +7821,13 @@ def check_synchronous_channel_split() -> None:
         "MapNativeControlBlob",
         "UnmapNativeControlBlob",
         "UnrefNativeResource",
-        "SetNativeResourceAttachment",
     ):
         body = canonical_code(function_body(f"CtrlQueue::{name}", queue))
         if body.count("!AdmitNativeResourceId(resource_id)") != 1:
             fail(f"{name} must admit only native-half resource identities: {name}")
+    attachment = canonical_code(function_body("CtrlQueue::SetNativeResourceAttachment", queue))
+    if "!(hostSurface?IsStandard2DResourceId(resource_id):AdmitNativeResourceId(resource_id))" not in attachment:
+        fail("native attachment must select standard IDs only for a registry-authenticated host surface")
     admit = canonical_code(function_body("CtrlQueue::AdmitNativeResourceId", queue))
     if "IsNativeResourceId(resource_id)" not in admit or "InterlockedIncrement(&m_NativeResourceIdRefusals);" not in admit:
         fail("the native resource-id gate must test the id space and count every refusal")
@@ -8200,6 +8203,32 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_ABI_VERSION", 0, "WDDM private ABI")
     require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_CAPABILITIES_NONE", 0, "WDDM private ABI")
     require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_ESCAPE_FLAGS_NONE", 0, "WDDM private ABI")
+    require_integer_define(WDDM_ABI_HEADER_CODE, "VIOGPU_WDDM_RESOURCE_SHARE_NATIVE_SURFACE", 1, "WDDM private ABI")
+
+    surface_escape = canonical_code(function_body("HandleNativeSurfaceEscape", WDDM_DDI_CODE))
+    for fragment in (
+        "escape->hDevice!=NULL||escape->hContext!=NULL",
+        "!VioGpuNativeSurfaceRequestValid(&request)",
+        "share->OwnerProcess!=PsGetCurrentProcess()",
+        "!VioGpuNativeSurfaceIdentityMatches(&request,&share->Surface)",
+        "share->OwnerReleased=TRUE;",
+        "request.ResetGeneration=generation;",
+    ):
+        if fragment not in surface_escape:
+            fail(f"Native AHB escape must retain adapter-only allocation and exact creator authority: {fragment}")
+    collect = canonical_code(function_body("CollectNativeSurfacesLocked", WDDM_DDI_CODE))
+    if "VioGpuNativeSurfaceMayRetire(share->OwnerReleased!=FALSE,share->ImportReferences,share->AllocationReferences)" not in collect:
+        fail("native surface UNREF must wait for creator, importer and WDDM leases")
+    release_share = canonical_code(function_body("ReleaseNativeShareLocked", WDDM_DDI_CODE))
+    if "if(!entry->HostSurface||result==VioGpuHostContextConfirmed)" not in release_share:
+        fail("failed native surface detach must retain the importer lease")
+    primary = canonical_code(function_body("BindStandardPrimaryScanout", WDDM_DDI_CODE))
+    if "if(allocation->HostSurface){returnSTATUS_DEVICE_NOT_READY;}" not in primary:
+        fail("native surface scanout must remain gated until per-buffer release acquisition exists")
+    present = canonical_code(function_body("ExecutePresentTransaction", WDDM_DDI_CODE))
+    if "if(source->HostSurface||destination->HostSurface)" not in present or \
+       present.find("if(source->HostSurface||destination->HostSurface)") > present.find("CopyPresentRow("):
+        fail("native surface pixels must never enter the CPU Present copy")
 
     if "Experimental pre-v1 snapshot" not in WDDM_ABI_HEADER_SOURCE or (
         "Version 1 must not be published until the" not in WDDM_ABI_HEADER_SOURCE
@@ -8352,6 +8381,26 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT32 Flags;
             VIOGPU_WDDM_UINT64 Reserved[2];
         """,
+        "VIOGPU_WDDM_NATIVE_SURFACE": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            VIOGPU_WDDM_UINT32 Opcode;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+            VIOGPU_WDDM_UINT64 ShareKey;
+            VIOGPU_WDDM_UINT64 Size;
+            VIOGPU_WDDM_UINT64 ResetGeneration;
+            VIOGPU_WDDM_UINT64 Modifier;
+            VIOGPU_WDDM_UINT64 PlaneOffset;
+            VIOGPU_WDDM_UINT32 ResourceId;
+            VIOGPU_WDDM_UINT32 ContextId;
+            VIOGPU_WDDM_UINT32 Width;
+            VIOGPU_WDDM_UINT32 Height;
+            VIOGPU_WDDM_UINT32 Fourcc;
+            VIOGPU_WDDM_UINT32 Stride;
+            VIOGPU_WDDM_UINT32 PlaneCount;
+            VIOGPU_WDDM_UINT32 LayoutFlags;
+            VIOGPU_WDDM_UINT64 Reserved[3];
+        """,
         "VIOGPU_WDDM_ALLOCATION_REFERENCE": """
             VIOGPU_WDDM_UINT32 AllocationIndex;
             VIOGPU_WDDM_UINT32 Flags;
@@ -8386,11 +8435,14 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "VIRTIO",
         "KGSL",
         "KMD_CONTEXT",
-        "ResourceId",
         "BlobId",
     )
     if "*" in abi or any(re.search(rf"\b{re.escape(token)}\b", WDDM_ABI_HEADER_CODE) for token in forbidden_identifiers):
         fail("WDDM private ABI must not expose pointers, Windows handles, physical addresses, or transport/KMD identities")
+    # Native-surface ResourceId is an echoed identity, never user-selected
+    # authority. Its one declaration is pinned by the exact schema above.
+    if len(re.findall(r"\bResourceId\b", WDDM_ABI_HEADER_CODE)) != 1:
+        fail("only the authoritative native-surface reply may expose ResourceId")
 
     expected_fixture_files = {
         ".gitattributes",
@@ -8936,7 +8988,7 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "__try{RtlCopyMemory(&share,data,sizeof(share));}__except(EXCEPTION_EXECUTE_HANDLER){returnFALSE;}",
         "IsCurrentAbiHeader(&share.Header,sizeof(share))",
         "share.ShareKey!=0",
-        "share.Flags==0&&share.Reserved[0]==0&&share.Reserved[1]==0",
+        "(share.Flags&~VIOGPU_WDDM_RESOURCE_SHARE_NATIVE_SURFACE)==0&&share.Reserved[0]==0&&share.Reserved[1]==0",
     ):
         if resource_share_validator.count(fragment) != 1:
             fail(f"resource-private share data must be validated exactly: {fragment}")
@@ -10089,7 +10141,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         if fragment not in map_aperture:
             fail(f"aperture mapping must reject non-page-locked MDLs before treating PFNs as guest backing: {fragment}")
     for fragment in (
-        "constBOOLEANnativeAhbPrimary=adapter->IsNativeAhbScanoutEnabled()&&IsStandardPrimaryAllocation(allocation);",
+        "constBOOLEANnativeAhbPrimary=allocation->HostSurface||(adapter->IsNativeAhbScanoutEnabled()&&IsStandardPrimaryAllocation(allocation));",
         "if(!nativeAhbPrimary&&(mdl==NULL||MmGetMdlByteCount(mdl)==0||MmGetMdlByteOffset(mdl)!=0||(mdl->MdlFlags&MDL_PAGES_LOCKED)==0))",
         "if(nativeAhbPrimary)",
         "SIZE_TbasePage=offsetInPages;",

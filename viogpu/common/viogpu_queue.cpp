@@ -2742,11 +2742,13 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefNativeResource(UINT resource_id)
     return result;
 }
 
-VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetNativeResourceAttachment(UINT context_id, UINT resource_id, BOOLEAN attach)
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SetNativeResourceAttachment(UINT context_id, UINT resource_id, BOOLEAN attach,
+                                                                 BOOLEAN hostSurface)
 {
     PAGED_CODE();
 
-    if (context_id == 0 || !AdmitNativeResourceId(resource_id) || !BeginNativeSynchronousRequest())
+    if (context_id == 0 || !(hostSurface ? IsStandard2DResourceId(resource_id) : AdmitNativeResourceId(resource_id)) ||
+        !BeginNativeSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }

@@ -48,6 +48,7 @@ static UINT g_InstanceId = 0;
 extern "C" UCHAR __ImageBase;
 
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
+VOID VioGpuWddmRetireNativeShares(_In_ VioGpuDod *adapter);
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
 BOOLEAN VioGpuWddmIsMpo3Registration();
@@ -762,6 +763,7 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
 #if defined(VIOGPU_NATIVE_CONTEXT)
     if (NT_SUCCESS(status))
     {
+        VioGpuWddmRetireNativeShares(this);
         RecordNativeActivationPhase(VioGpuActivationStopped);
     }
 #endif
@@ -2449,7 +2451,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::UnmapNativeAhbBlob(_In_ UINT resourceId)
 VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Destroy2DResource(_In_ UINT resourceId,
                                                         _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                         _Inout_ ULONGLONG *resourceResetGeneration,
-                                                        _Out_ BOOLEAN *released)
+                                                        _Out_ BOOLEAN *released,
+                                                        _In_ BOOLEAN retainIfBusy)
 {
     if (released == NULL)
     {
@@ -2465,7 +2468,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Destroy2DResource(_In_ UINT resourceId,
     VIOGPU_HOST_CONTEXT_RESULT result = adapter != NULL ? adapter->Destroy2DResource(resourceId,
                                                                                      resourceState,
                                                                                      resourceResetGeneration,
-                                                                                     released)
+                                                                                     released,
+                                                                                     retainIfBusy)
                                                         : VioGpuHostContextNotSubmitted;
     ReleaseNativeSubmissionOperation();
     return result;
@@ -11136,7 +11140,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
 
     if (nativeAhb)
     {
-        if (guestBlob || nativeLayout == NULL || !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_RESOURCE_BLOB))
+        if (guestBlob || nativeLayout == NULL || !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_RESOURCE_BLOB) ||
+            (backingSize == 0 && !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_V2)))
         {
             return VioGpuHostContextNotSubmitted;
         }
@@ -11151,7 +11156,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
         if (result == VioGpuHostContextConfirmed)
         {
             if (nativeLayout->Width != width || nativeLayout->Height != height || nativeLayout->Format != format ||
-                nativeLayout->BackingSize == 0 || nativeLayout->BackingSize > backingSize ||
+                nativeLayout->BackingSize == 0 || (backingSize != 0 && nativeLayout->BackingSize > backingSize) ||
                 static_cast<ULONGLONG>(nativeLayout->Stride) < static_cast<ULONGLONG>(width) * 4 ||
                 !VioGpuGuestScanoutBoundsValid(nativeLayout->Width,
                                                 nativeLayout->Height,
@@ -11321,7 +11326,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::UnmapNativeAhbBlob(_In_ UINT resourceI
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId,
                                                             _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                             _Inout_ ULONGLONG *resourceResetGeneration,
-                                                            _Out_ BOOLEAN *released)
+                                                            _Out_ BOOLEAN *released,
+                                                            _In_ BOOLEAN retainIfBusy)
 {
     PAGED_CODE();
 
@@ -11380,6 +11386,12 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId
         *resourceState = VioGpu2DResourceNone;
         *resourceResetGeneration = 0;
         *released = TRUE;
+    }
+    else if (retainIfBusy && result == VioGpuHostContextRejected)
+    {
+        /* Checked Native AHB UNREF refuses live importer/display ownership.
+         * Keep the ledger and retry after its last lease has retired. */
+        return result;
     }
     else if (result == VioGpuHostContextUnknown || result == VioGpuHostContextRejected)
     {
@@ -11878,11 +11890,14 @@ static BOOLEAN IsLiveNativeImporter(_In_ VioGpuAdapter *adapter, _In_opt_ const 
 
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ImportNativeSharedResource(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *importer,
                                                                      _In_ UINT resourceId,
-                                                                     _In_ ULONGLONG iova)
+                                                                     _In_ ULONGLONG iova,
+                                                                     _In_ BOOLEAN hostSurface)
 {
     PAGED_CODE();
 
-    if (!IsLiveNativeImporter(this, importer) || resourceId < VIOGPU_NATIVE_RESOURCE_ID_START ||
+    if (!IsLiveNativeImporter(this, importer) ||
+        (hostSurface ? resourceId == 0 || resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START
+                     : resourceId < VIOGPU_NATIVE_RESOURCE_ID_START) ||
         resourceId == MAXUINT || iova == 0 || (iova & (PAGE_SIZE - 1)) != 0 || KeGetCurrentIrql() != PASSIVE_LEVEL ||
         !IsNativeContextGenerationCurrent(importer->Generation, importer->ResetGeneration) ||
         !VioGpuNativeControlFaultsClear(this, importer->Owner))
@@ -11890,7 +11905,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ImportNativeSharedResource(_In_ const 
         return VioGpuHostContextNotSubmitted;
     }
 
-    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, TRUE);
+    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, TRUE,
+                                                                               hostSurface);
     if (result == VioGpuHostContextUnknown)
     {
         VioGpuQuarantineNativeContextOwner(importer->Owner, VioGpuNativeQuarantineImportAttach);
@@ -11917,21 +11933,25 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ImportNativeSharedResource(_In_ const 
         return result;
     }
     /* The binding never happened: take the import back out again. */
-    VIOGPU_HOST_CONTEXT_RESULT rollback = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE);
-    if (rollback == VioGpuHostContextUnknown)
+    VIOGPU_HOST_CONTEXT_RESULT rollback = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE,
+                                                                                 hostSurface);
+    if (rollback == VioGpuHostContextUnknown || (hostSurface && rollback != VioGpuHostContextConfirmed))
     {
         VioGpuQuarantineNativeContextOwner(importer->Owner, VioGpuNativeQuarantineImportRollback);
-        return rollback;
+        return VioGpuHostContextUnknown;
     }
     return result;
 }
 
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ReleaseNativeSharedResource(_In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *importer,
-                                                                      _In_ UINT resourceId)
+                                                                      _In_ UINT resourceId,
+                                                                      _In_ BOOLEAN hostSurface)
 {
     PAGED_CODE();
 
-    if (!IsLiveNativeImporter(this, importer) || resourceId < VIOGPU_NATIVE_RESOURCE_ID_START ||
+    if (!IsLiveNativeImporter(this, importer) ||
+        (hostSurface ? resourceId == 0 || resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START
+                     : resourceId < VIOGPU_NATIVE_RESOURCE_ID_START) ||
         resourceId == MAXUINT || KeGetCurrentIrql() != PASSIVE_LEVEL ||
         !IsNativeContextGenerationCurrent(importer->Generation, importer->ResetGeneration))
     {
@@ -11961,7 +11981,11 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::ReleaseNativeSharedResource(_In_ const
         VioGpuQuarantineNativeContextOwner(importer->Owner, VioGpuNativeQuarantineReleaseDetach);
         return result;
     }
-    result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE);
+    if (hostSurface && result != VioGpuHostContextConfirmed)
+    {
+        return result;
+    }
+    result = m_CtrlQueue.SetNativeResourceAttachment(importer->ContextId, resourceId, FALSE, hostSurface);
     if (result == VioGpuHostContextUnknown)
     {
         VioGpuQuarantineNativeContextOwner(importer->Owner, VioGpuNativeQuarantineReleaseAttachment);

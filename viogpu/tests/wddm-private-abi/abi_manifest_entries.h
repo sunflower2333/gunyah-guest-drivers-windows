@@ -141,3 +141,26 @@ ABI_OFFSET(offset.allocation_copy.flags, VIOGPU_WDDM_ALLOCATION_COPY, Flags, 20)
 ABI_OFFSET(offset.allocation_copy.width, VIOGPU_WDDM_ALLOCATION_COPY, Width, 24);
 ABI_OFFSET(offset.allocation_copy.height, VIOGPU_WDDM_ALLOCATION_COPY, Height, 28);
 ABI_OFFSET(offset.allocation_copy.reserved, VIOGPU_WDDM_ALLOCATION_COPY, Reserved, 32);
+
+ABI_VALUE(escape.opcode.allocate_native_surface, VIOGPU_WDDM_ESCAPE_ALLOCATE_NATIVE_SURFACE, 8);
+ABI_VALUE(escape.opcode.free_native_surface, VIOGPU_WDDM_ESCAPE_FREE_NATIVE_SURFACE, 9);
+ABI_VALUE(resource_share.native_surface, VIOGPU_WDDM_RESOURCE_SHARE_NATIVE_SURFACE, 1);
+ABI_SIZE(size.native_surface, VIOGPU_WDDM_NATIVE_SURFACE, 128);
+ABI_OFFSET(offset.native_surface.header, VIOGPU_WDDM_NATIVE_SURFACE, Header, 0);
+ABI_OFFSET(offset.native_surface.opcode, VIOGPU_WDDM_NATIVE_SURFACE, Opcode, 16);
+ABI_OFFSET(offset.native_surface.flags, VIOGPU_WDDM_NATIVE_SURFACE, Flags, 20);
+ABI_OFFSET(offset.native_surface.expected_reset_generation, VIOGPU_WDDM_NATIVE_SURFACE, ExpectedResetGeneration, 24);
+ABI_OFFSET(offset.native_surface.share_key, VIOGPU_WDDM_NATIVE_SURFACE, ShareKey, 32);
+ABI_OFFSET(offset.native_surface.size, VIOGPU_WDDM_NATIVE_SURFACE, Size, 40);
+ABI_OFFSET(offset.native_surface.reset_generation, VIOGPU_WDDM_NATIVE_SURFACE, ResetGeneration, 48);
+ABI_OFFSET(offset.native_surface.modifier, VIOGPU_WDDM_NATIVE_SURFACE, Modifier, 56);
+ABI_OFFSET(offset.native_surface.plane_offset, VIOGPU_WDDM_NATIVE_SURFACE, PlaneOffset, 64);
+ABI_OFFSET(offset.native_surface.resource_id, VIOGPU_WDDM_NATIVE_SURFACE, ResourceId, 72);
+ABI_OFFSET(offset.native_surface.context_id, VIOGPU_WDDM_NATIVE_SURFACE, ContextId, 76);
+ABI_OFFSET(offset.native_surface.width, VIOGPU_WDDM_NATIVE_SURFACE, Width, 80);
+ABI_OFFSET(offset.native_surface.height, VIOGPU_WDDM_NATIVE_SURFACE, Height, 84);
+ABI_OFFSET(offset.native_surface.fourcc, VIOGPU_WDDM_NATIVE_SURFACE, Fourcc, 88);
+ABI_OFFSET(offset.native_surface.stride, VIOGPU_WDDM_NATIVE_SURFACE, Stride, 92);
+ABI_OFFSET(offset.native_surface.plane_count, VIOGPU_WDDM_NATIVE_SURFACE, PlaneCount, 96);
+ABI_OFFSET(offset.native_surface.layout_flags, VIOGPU_WDDM_NATIVE_SURFACE, LayoutFlags, 100);
+ABI_OFFSET(offset.native_surface.reserved, VIOGPU_WDDM_NATIVE_SURFACE, Reserved, 104);

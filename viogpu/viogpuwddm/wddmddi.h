@@ -209,6 +209,8 @@ struct VIOGPU_WDDM_ALLOCATION
      * allocation, not in this one. */
     ULONGLONG ShareKey;
     UINT ShareStride;
+    /* A reference to an adapter-owned host surface, never an owned second BO. */
+    BOOLEAN HostSurface;
 };
 
 enum VIOGPU_WDDM_PAGING_TRANSACTION_STATE : LONG
@@ -405,6 +407,7 @@ enum VIOGPU_WDDM_PRESENT_EXECUTION_STAGE : DWORD
     VioGpuWddmPresentExecuteSubmissionOperation = 20,
     VioGpuWddmPresentExecuteTransactionRetire = 21,
     VioGpuWddmPresentExecuteStateTransition = 22,
+    VioGpuWddmPresentExecuteHostSurfaceProtocol = 23,
     VioGpuWddmPresentExecuteComplete = 0x0FFF,
 };
 

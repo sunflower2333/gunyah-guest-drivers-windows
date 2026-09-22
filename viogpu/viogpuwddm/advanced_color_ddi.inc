@@ -7,6 +7,7 @@ static BOOLEAN VioGpuDirectScanoutGeometry(VioGpuDod *adapter,
                                            const DXGK_MULTIPLANE_OVERLAY_ATTRIBUTES3 &attr)
 {
     return IsOwnedAllocation(allocation, adapter) && IsStandardPrimaryAllocation(allocation) &&
+           !allocation->HostSurface &&
            allocation->Width != 0 && allocation->Height != 0 && allocation->Width <= MAXLONG &&
            allocation->Height <= MAXLONG && attr.Flags.Value == 0 && attr.Blend.Value == 0 &&
            attr.Rotation == D3DDDI_ROTATION_IDENTITY && attr.SrcRect.left == 0 && attr.SrcRect.top == 0 &&

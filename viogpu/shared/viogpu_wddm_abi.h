@@ -22,6 +22,7 @@
  * cannot import its own export, and a process does open a resource it created
  * itself. */
 #define VIOGPU_WDDM_ESCAPE_FLAGS_ALIAS_OWNER 0x00000001U
+#define VIOGPU_WDDM_RESOURCE_SHARE_NATIVE_SURFACE 0x00000001U
 #define VIOGPU_WDDM_RENDER_FLAGS_NONE        0U
 
 #define VIOGPU_WDDM_REFERENCE_READ           0x00000001U
@@ -55,6 +56,8 @@ typedef enum VIOGPU_WDDM_ESCAPE_OPCODE
     VIOGPU_WDDM_ESCAPE_EXPORT_NATIVE = 5,
     VIOGPU_WDDM_ESCAPE_IMPORT_NATIVE = 6,
     VIOGPU_WDDM_ESCAPE_RELEASE_NATIVE = 7,
+    VIOGPU_WDDM_ESCAPE_ALLOCATE_NATIVE_SURFACE = 8,
+    VIOGPU_WDDM_ESCAPE_FREE_NATIVE_SURFACE = 9,
 } VIOGPU_WDDM_ESCAPE_OPCODE;
 
 #pragma pack(push, 4)
@@ -198,6 +201,31 @@ typedef struct VIOGPU_WDDM_RESOURCE_SHARE
     VIOGPU_WDDM_UINT32 Flags;
     VIOGPU_WDDM_UINT64 Reserved[2];
 } VIOGPU_WDDM_RESOURCE_SHARE;
+
+/* Adapter-only host allocation. IMPORT_NATIVE subsequently selects the GPU
+ * context. FREE drops the creator lease; import and WDDM/display leases keep
+ * the same backing alive until their confirmed retirement. */
+typedef struct VIOGPU_WDDM_NATIVE_SURFACE
+{
+    VIOGPU_WDDM_ABI_HEADER Header;
+    VIOGPU_WDDM_UINT32 Opcode;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT64 ExpectedResetGeneration;
+    VIOGPU_WDDM_UINT64 ShareKey;
+    VIOGPU_WDDM_UINT64 Size;
+    VIOGPU_WDDM_UINT64 ResetGeneration;
+    VIOGPU_WDDM_UINT64 Modifier;
+    VIOGPU_WDDM_UINT64 PlaneOffset;
+    VIOGPU_WDDM_UINT32 ResourceId;
+    VIOGPU_WDDM_UINT32 ContextId;
+    VIOGPU_WDDM_UINT32 Width;
+    VIOGPU_WDDM_UINT32 Height;
+    VIOGPU_WDDM_UINT32 Fourcc;
+    VIOGPU_WDDM_UINT32 Stride;
+    VIOGPU_WDDM_UINT32 PlaneCount;
+    VIOGPU_WDDM_UINT32 LayoutFlags;
+    VIOGPU_WDDM_UINT64 Reserved[3];
+} VIOGPU_WDDM_NATIVE_SURFACE;
 
 typedef struct VIOGPU_WDDM_RENDER_COMMAND
 {
