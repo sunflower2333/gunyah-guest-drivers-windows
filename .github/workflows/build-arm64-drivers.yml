@@ -689,7 +689,10 @@ jobs:
           if-no-files-found: error
 
   build:
-    runs-on: windows-11-arm
+    # Keep the native ARM64 runner on the VS2026 image.  The generic
+    # windows-11-arm label is migrating between VS/WDK generations and can
+    # pair VS18 targets with only the VS17 DriverKit task assembly.
+    runs-on: windows-11-vs2026-arm
     needs: [mesa-umd, d3d10-multiarch, opengl-icd, opencl-icd, flat-package-tests]
 
     steps:
