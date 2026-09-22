@@ -2,7 +2,7 @@
 # Disposable Windows CI runner only. No adapter staging, binding or GPU context.
 [CmdletBinding()]
 param([string]$Output='out', [string]$GlProbes='opengl-payload', [string]$ClProbes='opencl-payload',
-    [string]$D3dProbes='d3d10-payload')
+    [string]$D3dProbes='d3d10-payload', [switch]$StaticOnly)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This trust/ABI fixture is for disposable GitHub runners' }
@@ -51,17 +51,16 @@ try {
         }
     }
     $hostArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
-    $arm64RuntimeProbeSkipped = $false
+    if ($StaticOnly) {
+        Write-Host 'PASS signed catalog, file hashes and common signer; runtime loading is delegated to the Windows ARM64 job'
+        return
+    }
+    # ARM64X DLLs contain an emulated x64 view for Windows ARM64, not an
+    # ordinary AMD64 DLL that an x64 Windows installation can load.
+    if ($hostArchitecture -ne 'arm64') {
+        throw 'Signed ARM64/ARM64X runtime validation requires Windows ARM64; use -StaticOnly for catalog verification'
+    }
     foreach ($arch in @('arm64','x64','x86')) {
-        # Windows cannot execute ARM64 PE files on the x64 hosted runner. Keep
-        # the signed catalog/PE checks above authoritative for ARM64, and run
-        # the native ARM64 ABI probes only on an ARM64 runner. Windows ARM64
-        # hosts can still exercise the x64/x86 emulation paths below.
-        if ($arch -eq 'arm64' -and $hostArchitecture -ne 'arm64') {
-            Write-Host "SKIP arm64 runtime probes on $hostArchitecture runner; static PE/catalog/signer checks already passed"
-            $arm64RuntimeProbeSkipped = $true
-            continue
-        }
         $loader = if ($arch -eq 'x86') {'OpenCL32.dll'} else {'OpenCL.dll'}
         & (Join-Path $driver $manifest.loader_probes.$arch) (Join-Path $driver $loader)
         if ($LASTEXITCODE) { throw "Signed $arch public loader ABI failed" }
@@ -81,11 +80,7 @@ try {
         & (Join-Path $d3d "d3d-umd-probe-$arch.exe") $driver
         if ($LASTEXITCODE) { throw "Signed $arch D3D10 UMD ABI failed" }
     }
-    if ($arm64RuntimeProbeSkipped) {
-        Write-Host 'PASS signed flat x64/x86 GL, CL and D3D UMD loading; ARM64 runtime probes were skipped on this non-ARM64 runner; GPU rendering and driver binding remain untested'
-    } else {
-        Write-Host 'PASS signed flat ARM64/EC/x86 GL, CL and D3D UMD loading; GPU rendering and driver binding remain untested'
-    }
+    Write-Host 'PASS signed flat ARM64/EC/x86 GL, CL and D3D UMD loading; GPU rendering and driver binding remain untested'
 } finally {
     Remove-GpuAttemptTrust $created
     $cert.Dispose()
