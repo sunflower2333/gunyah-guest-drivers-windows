@@ -191,6 +191,19 @@ typedef struct virtio_gpu_native_ahb_operation
 } GPU_NATIVE_AHB_OPERATION, *PGPU_NATIVE_AHB_OPERATION;
 #pragma pack()
 
+/* Feature 9: explicit preservation transfers, never part of Present. */
+#pragma pack(1)
+typedef struct virtio_gpu_native_ahb_paging
+{
+    GPU_CTRL_HDR hdr;
+    ULONG resource_id;
+    ULONG operation;
+    ULONGLONG offset;
+    ULONG length;
+    ULONG pattern;
+} GPU_NATIVE_AHB_PAGING, *PGPU_NATIVE_AHB_PAGING;
+#pragma pack()
+
 /* VIRTIO_GPU_CMD_SET_SCANOUT_BLOB. Layout is independent of the crop rectangle. */
 #pragma pack(1)
 typedef struct virtio_gpu_set_scanout_blob
@@ -285,6 +298,11 @@ static_assert(sizeof(GPU_RESP_NATIVE_AHB) == VIRTIO_GPU_NATIVE_AHB_RESPONSE_WIRE
               "virtio-gpu native AHB response wire size");
 static_assert(sizeof(GPU_NATIVE_AHB_OPERATION) == VIRTIO_GPU_NATIVE_AHB_OPERATION_WIRE_SIZE,
               "virtio-gpu native AHB operation wire size");
+static_assert(sizeof(GPU_NATIVE_AHB_PAGING) == VIRTIO_GPU_NATIVE_AHB_PAGING_WIRE_SIZE,
+              "virtio-gpu native AHB paging wire size");
+static_assert(FIELD_OFFSET(GPU_NATIVE_AHB_PAGING, offset) == 32 &&
+              FIELD_OFFSET(GPU_NATIVE_AHB_PAGING, length) == 40,
+              "virtio-gpu native AHB paging offsets");
 static_assert(FIELD_OFFSET(GPU_NATIVE_AHB_OPERATION, resource_id) == 24,
               "virtio-gpu native AHB operation resource offset");
 static_assert(FIELD_OFFSET(GPU_NATIVE_AHB_OPERATION, sequence) == 32,

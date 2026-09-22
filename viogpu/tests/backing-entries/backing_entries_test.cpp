@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 
 using SIZE_T = size_t;
 using UINT = uint32_t;
@@ -270,6 +271,48 @@ static void queuePacket(SIZE_T pages)
     check(result < 0 && queue.calls == previousCalls && outstanding == 0,
           "oversized packet is refused before any enqueue or wrapped allocation");
 }
+#ifdef TEST_NATIVE_PAGING
+static void nativePagingPacket()
+{
+    // Deliberately straddle both ends of the response to exercise every page.
+    std::vector<char> storage(VIRTIO_GPU_NATIVE_AHB_PAGING_MAX_BYTES + 3 * PAGE_SIZE);
+    uintptr_t aligned = (reinterpret_cast<uintptr_t>(storage.data()) + PAGE_SIZE - 1) &
+                        ~(static_cast<uintptr_t>(PAGE_SIZE) - 1);
+    char *response = reinterpret_cast<char *>(aligned + PAGE_SIZE - 1);
+    GPU_NATIVE_AHB_PAGING command = {};
+    command.hdr.type = VIRTIO_GPU_CMD_PAGE_NATIVE_AHB;
+    command.resource_id = 19;
+    command.operation = VIRTIO_GPU_NATIVE_AHB_PAGE_READ;
+    command.length = VIRTIO_GPU_NATIVE_AHB_PAGING_MAX_BYTES;
+    GPU_VBUFFER packet = {reinterpret_cast<char *>(&command), sizeof(command), nullptr, 0,
+                         response, static_cast<int>(sizeof(command) + command.length), 0};
+    CtrlQueue queue;
+    int result = queue.QueueBuffer(&packet);
+    check(result == 0 && queue.kicks == 1 && queue.inputCount == 18,
+          "maximum paging READ reaches the production queue with all response pages");
+    uint64_t responseBytes = 0;
+    for (UINT i = queue.outputCount; i < queue.retained.size(); ++i)
+        responseBytes += queue.retained[i].length;
+    check(responseBytes == sizeof(command) + command.length,
+          "paging READ DMA covers the exact header and full 64 KiB payload");
+    const auto valid = command;
+    const UINT calls = queue.calls;
+    auto rejected = [&] {
+        check(queue.QueueBuffer(&packet) < 0 && queue.calls == calls,
+              "malformed large response refuses before queue publication");
+    };
+    command.hdr.type = 0; rejected(); command = valid;
+    command.operation = 2; rejected(); command = valid;
+    command.hdr.padding[2] = 1; rejected(); command = valid;
+    command.length++; rejected(); command = valid;
+    command.offset = UINT64_MAX; rejected(); command = valid;
+    command.pattern = 1; rejected(); command = valid;
+    --packet.size; rejected(); ++packet.size;
+    ++packet.resp_size; rejected(); --packet.resp_size;
+    packet.data_buf = &command; packet.data_size = 1; rejected();
+    check(outstanding == 0, "paging SG construction leaks no storage");
+}
+#endif
 int main(int argc, char **)
 {
     bool old = argc > 1;
@@ -282,6 +325,9 @@ int main(int argc, char **)
     allocation(VIOGPU_MAX_BACKING_ENTRIES, 1, true);
     allocation(static_cast<SIZE_T>(VIOGPU_MAX_BACKING_ENTRIES) + 1, 1, false);
     controlPacket();
+#ifdef TEST_NATIVE_PAGING
+    nativePagingPacket();
+#endif
     queuePacket(16);
     queuePacket(32768);
     if (!old)

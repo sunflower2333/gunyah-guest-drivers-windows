@@ -585,6 +585,8 @@ class CtrlQueue : public VioGpuQueue
      * ownership until completion/cancellation, possibly before this returns. */
     BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, BOOLEAN present,
                                     VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
+    VIOGPU_HOST_CONTEXT_RESULT PageNativeAhbSynchronous(UINT resourceId, UINT operation,
+                                                       ULONGLONG offset, UINT length, UINT pattern, PVOID data);
     /* Standard-resource MAP_BLOB/UNMAP_BLOB used by the opt-in Native AHB
      * path.  These deliberately use the adapter synchronous channel; native
      * context resources use the separate MapNativeControlBlob APIs below. */

@@ -36,10 +36,10 @@ names = ['VioGpuArmVbufferTerminalCallbacks', 'VioGpuClaimVbufferTerminalCallbac
 production = '\n'.join(definition(n) for n in names)
 production += '\n' + definition('VIOGPU_NATIVE_AHB_PENDING', True)
 production += '\n' + '\n'.join(definition('CtrlQueue::' + n) for n in
-    ['CompleteNativeAhbOperation', 'CancelNativeAhbOperation', 'QueueNativeAhbOperation'])
+    ['CompleteNativeAhbOperation', 'CancelNativeAhbOperation', 'QueueNativeAhbOperation', 'PageNativeAhbSynchronous'])
 header = (root / 'viogpu/common/viogpu.h').read_text()
 wire = '\n'.join(re.search(r'typedef struct ' + n + r'\s*\{.*?\}[^;]+;', header, re.S)[0]
-                 for n in ['virtio_gpu_ctrl_hdr', 'virtio_gpu_native_ahb_operation'])
+                 for n in ['virtio_gpu_ctrl_hdr', 'virtio_gpu_native_ahb_operation', 'virtio_gpu_native_ahb_paging'])
 fixture = (here / 'native_ahb_release_test.cpp').read_text().replace('// INSERT_WIRE', wire)
 variants = [('production', production)]
 if args.negative_controls:
@@ -51,6 +51,8 @@ if args.negative_controls:
         ('wrong-resource', 'response->resource_id == pending->ResourceId', 'true'),
         ('cancel-grants-release', 'completion(callerContext, VioGpuHostContextUnknown, resourceId, sequence)',
          'completion(callerContext, VioGpuHostContextConfirmed, resourceId, sequence)'),
+        ('paging-echo', 'response->offset == offset', 'true'),
+        ('paging-short-read', 'buffer->response_size == responseSize', 'buffer->response_size >= sizeof(GPU_NATIVE_AHB_PAGING)'),
     ]:
         if production.count(old) != 1:
             raise RuntimeError('negative control anchor changed: ' + name)

@@ -2732,8 +2732,11 @@ def check_native_driver_caps_contract() -> None:
     segment_direct_flip = compact_ddi.count(
         "if(VioGpuWddmIsDirectFlipTrial()){descriptor->Flags.DirectFlip=TRUE;}") + compact_ddi.count(
         "if(VioGpuWddmIsDirectFlipTrial()){descriptor.Flags.DirectFlip=TRUE;}")
-    if segment_direct_flip != 3:
-        fail(f"every segment descriptor must gate DirectFlip on the trial, found {segment_direct_flip} of 3")
+    if segment_direct_flip != 1:
+        fail("shared segment descriptor initializer must gate DirectFlip on the trial")
+    for segment_query in ("QuerySegment", "QuerySegmentVersioned", "QuerySegment4"):
+        if "InitializeSegmentDescriptor" not in function_body(segment_query, WDDM_DDI_CODE):
+            fail(f"{segment_query} must use the shared segment descriptor initializer")
 
     query_body = function_body("VioGpuDod::QueryAdapterInfo", VIOGPU_CODE)
     driver_caps_case = re.search(
@@ -4800,7 +4803,7 @@ def check_wddm_2d_resource_ownership() -> None:
 def check_wddm_standard_paging() -> None:
     allocation_info = canonical_code(function_body("InitializeAllocationInfo", WDDM_DDI_CODE))
     for fragment in (
-        "BOOLEANcpuVisible=(allocation->Flags&VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE)!=0;",
+        "BOOLEANcpuVisible=!allocation->HostSurface&&(allocation->Flags&VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE)!=0;",
         "allocationInfo->FlagsWddm2.CpuVisible=cpuVisible;",
         "allocationInfo->FlagsWddm2.Cached=cpuVisible;",
         "allocationInfo->FlagsWddm2.AccessedPhysically=TRUE;",
@@ -4811,18 +4814,17 @@ def check_wddm_standard_paging() -> None:
     if "PermanentSysMem" in allocation_info:
         fail("CPU-visible Present sources must remain pageable into the aperture segment")
 
-    query_segment = canonical_code(function_body("QuerySegment", WDDM_DDI_CODE))
+    query_segment = canonical_code(function_body("InitializeSegmentDescriptor", WDDM_DDI_CODE))
     for fragment in (
-        "descriptor->BaseAddress.QuadPart=0;",
-        "descriptor->CpuTranslatedAddress.QuadPart=0;",
-        "descriptor->Size=VIOGPU_WDDM_APERTURE_SIZE;",
-        "descriptor->CommitLimit=VIOGPU_WDDM_APERTURE_SIZE;",
-        "descriptor->Flags.CpuVisible=TRUE;",
-        "descriptor->Flags.Aperture=TRUE;",
-        "descriptor->Flags.CacheCoherent=TRUE;",
+        "RtlZeroMemory(descriptor,sizeof(*descriptor));",
+        "descriptor->Size=hostSurface?VIOGPU_WDDM_HOST_SURFACE_BUDGET:VIOGPU_WDDM_APERTURE_SIZE;",
+        "descriptor->CommitLimit=descriptor->Size;",
+        "descriptor->Flags.CpuVisible=!hostSurface;",
+        "descriptor->Flags.Aperture=!hostSurface;",
+        "descriptor->Flags.CacheCoherent=!hostSurface;",
     ):
         if query_segment.count(fragment) != 1:
-            fail(f"VidMm must see one CPU-visible cache-coherent aperture: {fragment}")
+            fail(f"VidMm must distinguish the CPU-visible aperture from host-local memory: {fragment}")
 
     placement = canonical_code(
         function_body_with_parameters(
@@ -5124,12 +5126,23 @@ def check_wddm_standard_paging() -> None:
     for fragment in (
         "BOOLEANnativeAhb=FALSE;",
         "nativeAhb=IsNativeAhbPrimaryAllocation(allocation);",
-        "BOOLEANtransferDataComplete=!transfer||nativeAhb;",
+        "BOOLEANtransferDataComplete=!hostSurface&&(!transfer||nativeAhb);",
         "if(status==STATUS_SUCCESS&&transfer&&nativeAhb)",
         "elseif(status==STATUS_SUCCESS&&transfer)",
     ):
         if fragment not in software:
-            fail(f"Native AHB paging must not consume a guest transfer MDL: {fragment}")
+            fail(f"legacy mapped AHB paging must keep its existing transfer gate: {fragment}")
+    host_paging = canonical_code(function_body("ExecuteHostSurfacePaging", WDDM_DDI_CODE))
+    for fragment in ("adapter->PageNativeAhb(", "VIRTIO_GPU_NATIVE_AHB_PAGE_READ",
+                     "VIRTIO_GPU_NATIVE_AHB_PAGE_WRITE", "VIRTIO_GPU_NATIVE_AHB_PAGE_FILL",
+                     "share->Access.Poisoned=TRUE;", "transaction->TransferDataComplete=TRUE;",
+                     "share->SurfaceResident=pageIn;", "share->Access.Writer=TRUE;",
+                     "share->Access.Writer=FALSE;", "adapter->QueueNativeAhbOperation("):
+        if fragment not in host_paging:
+            fail(f"host-local paging must preserve contents and ownership: {fragment}")
+    if "transaction->TransferAddress=hostTransferAddress;" not in software or \
+       "ResolveTransferMdlAddress(transferMdl,mdlOffset,transferSize,&hostTransferAddress);" not in software:
+        fail("host-local paging must retain the VidMm MDL range until its scheduled fence")
     require_order(
         software,
         (
@@ -5258,7 +5271,8 @@ def check_wddm_standard_primary_scanout() -> None:
         "setVidPnSourceAddress->VidPnSourceId!=0",
         "setVidPnSourceAddress->ContextCount!=0",
         "setVidPnSourceAddress->Flags.Value!=1",
-        "setVidPnSourceAddress->PrimarySegment!=VIOGPU_WDDM_SEGMENT_ID",
+        "setVidPnSourceAddress->PrimarySegment!=AllocationSegmentId("
+        "reinterpret_cast<constVIOGPU_WDDM_ALLOCATION*>(setVidPnSourceAddress->hAllocation))",
         "result==VioGpuHostContextConfirmed?STATUS_SUCCESS:STATUS_DEVICE_NOT_READY",
     ):
         if fragment not in set_ddi:
@@ -5474,7 +5488,7 @@ def check_shared_allocation_copy_contract() -> None:
     for fragment in (
         "copyOnly&&context->Type!=VioGpuWddmContextGdi",
         "copyOnly&&!IsGdiSourceAllocation(sourceOpen->Allocation)&&!IsStandardPrimaryAllocation(sourceOpen->Allocation)",
-        "IsStandardPrimaryAllocation(destination)||IsGdiSourceAllocation(destination)",
+        "IsStandardPresentSurface(destination)",
         "destinationOpen->ReadOnly", "transaction->CopyOnly=copyOnly;",
         "packet->Flags=copyOnly?2:present->Flags.Value;", "privateData->Flags=packet->Flags;",
         "transaction->SourceAllocationIndex=copyOnly?0:DXGK_PRESENT_SOURCE_INDEX;",
@@ -5487,7 +5501,7 @@ def check_shared_allocation_copy_contract() -> None:
     execute = canonical_code(function_body("ExecutePresentTransaction", WDDM_DDI_CODE))
     patch = canonical_code(function_body("VioGpuWddmPatch", WDDM_DDI_CODE))
     for stage in (execute, patch):
-        if "IsStandardPrimaryAllocation(destination)||IsGdiSourceAllocation(destination)" not in stage:
+        if "IsStandardPresentSurface(destination)" not in stage:
             fail("scheduled Present and copies must accept CPU-visible redirection destinations through Patch and Execute")
     require_order(execute, (
         "AcquirePresentAllocationLifecycles(", "AllocationBackingAddress(source)==NULL",
@@ -5650,7 +5664,7 @@ def check_wddm_present_contract() -> None:
         "HasGdiPresentIdentity(allocation,context,adapter)",
         "VioGpuResourceBackingAttached(allocation->Resource2DState)",
         "allocation->Resource2DResetGeneration!=0",
-        "HasMappedAllocationBacking(allocation)",
+        "HasResidentAllocationBacking(allocation)",
     ):
         if live_gdi_identity.count(fragment) != 1:
             fail(f"GDI Present source must retain its exact live standard-2D identity: {fragment}")
@@ -5670,7 +5684,7 @@ def check_wddm_present_contract() -> None:
     )
     if "allocation->ApertureMdl!=NULL" not in ensure_primary or \
        "allocation->ApertureAddress!=NULL" not in ensure_primary or \
-       "HasMappedAllocationBacking(allocation)" not in reconcile_gdi or \
+       "HasResidentAllocationBacking(allocation)" not in reconcile_gdi or \
        "EnsureStandard2DAllocationBacking(allocation)" not in reconcile_gdi or \
        "VioGpuResourceBackingAttached(allocation->Resource2DState)" not in reconcile_gdi or \
        "allocation->Resource2DResetGeneration!=0" not in reconcile_gdi:
@@ -5713,7 +5727,7 @@ def check_wddm_present_contract() -> None:
         "entry->Reserved!=0",
         "(entry->WriteOperation!=0)!=(writeOperation!=FALSE)",
         "entry->SegmentId==0",
-        "entry->SegmentId!=VIOGPU_WDDM_SEGMENT_ID",
+        "entry->SegmentId!=AllocationSegmentId(allocation)",
         "static_cast<ULONGLONG>(entry->PhysicalAddress.QuadPart)!=allocation->PlacementOffset",
         "*prepatched=TRUE;",
     ):
@@ -6000,7 +6014,7 @@ def check_wddm_present_contract() -> None:
         "AcquirePresentAllocationLifecycles(source,destination,&sourceLocked,&destinationLocked)",
         "HasLiveNativePresentIdentity(source,context,context->Device->Adapter)",
         "gdiCandidate&&HasGdiPresentIdentity(source,context,context->Device->Adapter)",
-        "IsStandardPrimaryAllocation(destination)",
+        "IsStandardPresentSurface(destination)",
         "EnsureStandard2DAllocationBacking(destination)",
         "ValidatePresentGeometry(source,destination,",
         "destinationOpen->ReadOnly",
@@ -6012,8 +6026,8 @@ def check_wddm_present_contract() -> None:
         "gdiSourcePrepatchLive=ReconcileGdiSourcePlacementAfterReset(source)&&"
         "HasLiveGdiPresentIdentity(source,context,context->Device->Adapter);",
         "sourcePrepatched&&gdiSource&&!gdiSourcePrepatchLive",
-        "sourcePrepatched&&!HasMappedAllocationBacking(source)",
-        "destinationPrepatched&&!HasMappedAllocationBacking(destination)",
+        "sourcePrepatched&&!HasResidentAllocationBacking(source)",
+        "destinationPrepatched&&!HasResidentAllocationBacking(destination)",
         "destinationPrepatched&&(!EnsureStandard2DAllocationBacking(destination)",
         "transaction->State=VioGpuWddmPresentBuilt;",
         "transaction->FullyPrepatched=sourcePrepatched&&destinationPrepatched;",
@@ -6080,7 +6094,7 @@ def check_wddm_present_contract() -> None:
             "ReconcileGdiSourcePlacementAfterReset(source)",
             "HasLiveGdiPresentIdentity(source,transaction->Context,adapter)",
             "!destinationOpen->ReadOnly",
-            "IsStandardPrimaryAllocation(destination)",
+            "IsStandardPresentSurface(destination)",
             "EnsureStandard2DAllocationBacking(destination)",
             "transaction->FenceId=patchArguments->SubmissionFenceId;",
             "KeMemoryBarrier();",
@@ -7915,14 +7929,12 @@ def check_versioned_segment_query_contract() -> None:
         "queryAdapterInfo->OutputDataSize<sizeof(SegmentOut)",
         "returnSTATUS_BUFFER_TOO_SMALL;",
         "returnSTATUS_DEVICE_NOT_READY;",
-        "segmentInfo->NbSegment=1;",
+        "segmentInfo->NbSegment=adapter->SupportsNativeAhbPaging()?2:1;",
         "segmentInfo->PagingBufferPrivateDataSize=sizeof(VIOGPU_WDDM_PAGING_PRIVATE);",
         # Two-pass protocol: dxgkrnl first asks for the count with a null pointer.
         "if(segmentInfo->pSegmentDescriptor!=NULL)",
-        "descriptor->Size=VIOGPU_WDDM_APERTURE_SIZE;",
-        "descriptor->CommitLimit=VIOGPU_WDDM_APERTURE_SIZE;",
-        "descriptor->Flags.Aperture=TRUE;",
-        "descriptor->Flags.CacheCoherent=TRUE;",
+        "InitializeSegmentDescriptor(descriptor,FALSE);",
+        "if(segmentInfo->NbSegment==2)InitializeSegmentDescriptor(descriptor+1,TRUE);",
     ):
         if helper.count(fragment) != 1:
             fail(f"versioned segment query must describe the same aperture segment: {fragment}")
@@ -8238,8 +8250,16 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if "if(!entry->HostSurface||result==VioGpuHostContextConfirmed)" not in release_share:
         fail("failed native surface detach must retain the importer lease")
     primary = canonical_code(function_body("BindStandardPrimaryScanout", WDDM_DDI_CODE))
-    if "PresentHostSurface(adapter,allocation)" not in primary:
+    if "PresentResidentHostSurface(adapter,allocation,static_cast<ULONGLONG>(primaryAddress),modeChange)" not in primary:
         fail("native surface scanout must use per-buffer producer and release ownership")
+    resident_present = canonical_code(function_body("PresentResidentHostSurface", WDDM_DDI_CODE))
+    require_order(resident_present, (
+        "AcquireAllocationLifecycle(allocation)",
+        "AcquireAllocationSubmissionReference(allocation,adapter)",
+        "KeReleaseMutex(&allocation->LifecycleMutex,FALSE);",
+        "PresentHostSurface(adapter,allocation)",
+        "ReleaseAllocationSubmissionReference(allocation)",
+    ), "native surface Present must pin then release lifecycle before waiting for a paging producer")
     host_present = canonical_code(function_body("PresentHostSurface", WDDM_DDI_CODE))
     require_order(host_present, (
         "share->Access.PresentPending=TRUE;",
@@ -9511,7 +9531,7 @@ def check_wddm_paging_transaction_gate() -> None:
     worker_claim = batch_worker.find(
         "VioGpuWddmPagingTransactionExecuting,VioGpuWddmPagingTransactionQueued"
     )
-    worker_execute = batch_worker.find("status=ExecutePagingTransaction(&pagingPrivate->Transaction);")
+    worker_execute = batch_worker.find("status=ExecutePagingTransaction(&pagingPrivate->Transaction,&first->Work);")
     worker_release = batch_worker.find("ReleasePagingTransactionReference(&pagingPrivate->Transaction);")
     if min(worker_claim, worker_execute, worker_release) < 0 or not worker_claim < worker_execute < worker_release:
         fail("paging worker must claim before execution and retain references through terminal cleanup")
@@ -10173,7 +10193,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         if fragment not in map_aperture:
             fail(f"aperture mapping must reject non-page-locked MDLs before treating PFNs as guest backing: {fragment}")
     for fragment in (
-        "constBOOLEANnativeAhbPrimary=allocation->HostSurface||(adapter->IsNativeAhbScanoutEnabled()&&IsStandardPrimaryAllocation(allocation));",
+        "constBOOLEANnativeAhbPrimary=!allocation->HostSurface&&IsNativeAhbPrimaryAllocation(allocation);",
         "if(!nativeAhbPrimary&&(mdl==NULL||MmGetMdlByteCount(mdl)==0||MmGetMdlByteOffset(mdl)!=0||(mdl->MdlFlags&MDL_PAGES_LOCKED)==0))",
         "if(nativeAhbPrimary)",
         "SIZE_TbasePage=offsetInPages;",
@@ -10259,11 +10279,12 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         "packet->TransferSize>MAXULONG",
         "(packet->PlacementOffset&(PAGE_SIZE-1))!=0",
         "(packet->Flags&~allowedFlags)!=0",
-        "(packet->Flags&VioGpuWddmPagingFlagSoftwareCompleted)==0",
+        "((packet->Flags&VioGpuWddmPagingFlagSoftwareCompleted)!=0)==hostSurface",
+        "hostSurface!=(transaction->Allocation->HostSurface!=FALSE)",
         "packet->Operation==DXGK_OPERATION_TRANSFER",
         "operationFlags==VioGpuWddmPagingFlagPageIn",
         "operationFlags==VioGpuWddmPagingFlagPageOut",
-        "pageOut&&(packet->Flags&VioGpuWddmPagingFlagAllocationIdle)==0",
+        "pageOut&&!hostSurface&&(packet->Flags&VioGpuWddmPagingFlagAllocationIdle)==0",
         "packet->Operation==DXGK_OPERATION_FILL",
         "operationFlags==VioGpuWddmPagingFlagFill",
         "packet->Operation==DXGK_OPERATION_DISCARD_CONTENT",

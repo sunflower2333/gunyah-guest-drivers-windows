@@ -4,10 +4,18 @@
 #include <cstring>
 #include <new>
 #include <vector>
+#include <functional>
+#define VIOGPU_WIRE_U8 uint8_t
+#define VIOGPU_WIRE_I8 int8_t
+#define VIOGPU_WIRE_U32 uint32_t
+#define VIOGPU_WIRE_I32 int32_t
+#define VIOGPU_WIRE_U64 uint64_t
+#include "viogpu_3d_wire.h"
 #include "viogpu_native_ahb_access.h"
 #include "viogpu_native_surface_policy.h"
 
 #define _In_
+#define _Inout_
 #define __declspec(x)
 #define PAGED_CODE() ((void)0)
 #define RtlZeroMemory(p,n) std::memset(p,0,n)
@@ -15,21 +23,25 @@
 #define TRUE true
 #define FALSE false
 #define NT_SUCCESS(x) ((x)>=0)
+#define DbgPrintEx(...) ((void)0)
 using UINT=unsigned; using ULONG=unsigned; using LONG=int; using ULONGLONG=unsigned long long;
 using BOOLEAN=bool; using VOID=void; using BYTE=unsigned char; using PVOID=void*;
 using PEPROCESS=void*; using NTSTATUS=int; using SIZE_T=std::size_t;
 using KIRQL=int; using KSPIN_LOCK=int; using KEVENT=bool;
 constexpr int STATUS_SUCCESS=0, STATUS_PENDING=1, STATUS_DEVICE_NOT_READY=-1,
     STATUS_INVALID_PARAMETER=-2, STATUS_NO_MEMORY=-3, STATUS_INVALID_HANDLE=-4,
-    STATUS_GRAPHICS_ALLOCATION_BUSY=-5;
+    STATUS_GRAPHICS_ALLOCATION_BUSY=-5,STATUS_CANCELLED=-6,STATUS_INVALID_DEVICE_STATE=-7;
 constexpr int NonPagedPoolNx=0, IO_NO_INCREMENT=0;
 void *operator new[](std::size_t size,int) { return ::operator new[](size); }
+void *operator new(std::size_t size,int) { return ::operator new(size); }
 void KeAcquireSpinLock(KSPIN_LOCK*,KIRQL *irql) { *irql=0; }
 void KeReleaseSpinLock(KSPIN_LOCK*,KIRQL) {}
 void KeAcquireSpinLockAtDpcLevel(KSPIN_LOCK*) {}
 void KeReleaseSpinLockFromDpcLevel(KSPIN_LOCK*) {}
 void KeClearEvent(KEVENT *e) { *e=false; }
 void KeSetEvent(KEVENT *e,int,bool) { *e=true; }
+constexpr int NotificationEvent=0;
+void KeInitializeEvent(KEVENT *e,int,bool value) { *e=value; }
 LONG InterlockedCompareExchange(volatile LONG *p,LONG value,LONG old) {
     LONG before=*p; if(before==old) *p=value; return before;
 }
@@ -50,13 +62,60 @@ enum VIOGPU_HOST_CONTEXT_RESULT { VioGpuHostContextNotSubmitted,VioGpuHostContex
 using VIOGPU_2D_RESOURCE_STATE=int;
 struct VIOGPU_NATIVE_PASSIVE_WORK {
     LIST_ENTRY Link{}; bool PipelineEligible{}; volatile LONG DisplayReleaseWait{};
-};
-struct VIOGPU_WDDM_CONTEXT { KSPIN_LOCK SubmissionLock{}; LIST_ENTRY PendingSubmissions{}; };
-struct VIOGPU_WDDM_ALLOCATION {
-    struct { ULONGLONG RequestedIova{}; } PrivateData;
-    ULONGLONG ContextResetGeneration{}; int Pins{};
+    volatile LONG *CancelRequested{};
 };
 class VioGpuDod;
+struct VIOGPU_WDDM_DEVICE { VioGpuDod *Adapter; };
+struct VIOGPU_WDDM_CONTEXT {
+    KSPIN_LOCK SubmissionLock{}; LIST_ENTRY PendingSubmissions{};
+    VIOGPU_WDDM_DEVICE *Device{};
+};
+struct VIOGPU_WDDM_ALLOCATION {
+    struct { ULONGLONG RequestedIova{},Size{}; } PrivateData;
+    ULONGLONG ContextResetGeneration{}; int Pins{};
+    bool HostSurface{},Destroying{},PlacementValid{};
+    UINT ResourceId{},Signature{},Width{},Height{},Pitch{}; VioGpuDod *Adapter{};
+    ULONGLONG ShareKey{},Resource2DResetGeneration{},PlacementOffset{};
+    SIZE_T BackingSize{}; int LifecycleMutex{};
+};
+struct VIOGPU_WDDM_OPEN_ALLOCATION {
+    UINT Signature{}; VIOGPU_WDDM_DEVICE *Device{}; VIOGPU_WDDM_ALLOCATION *Allocation{}; bool ReadOnly{};
+};
+struct DXGK_ALLOCATIONLIST {
+    PVOID hDeviceSpecificAllocation{}; UINT SegmentId{},Reserved{},WriteOperation{};
+    struct { long long QuadPart{}; } PhysicalAddress;
+};
+constexpr UINT VIOGPU_WDDM_ALLOCATION_SIGNATURE=1,VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE=2;
+constexpr UINT VIOGPU_WDDM_HOST_SURFACE_SEGMENT_ID=2;
+constexpr ULONGLONG VIOGPU_WDDM_HOST_SURFACE_BUDGET=256ULL*1024*1024;
+bool IsOwnedAllocation(VIOGPU_WDDM_ALLOCATION *a,VioGpuDod *d) {
+    return a && a->Signature==VIOGPU_WDDM_ALLOCATION_SIGNATURE && a->Adapter==d;
+}
+static int lifecycleResult;
+int AcquireAllocationLifecycle(VIOGPU_WDDM_ALLOCATION *a) {
+    if(lifecycleResult) { int result=lifecycleResult; lifecycleResult=0; return result; }
+    assert(a->LifecycleMutex==0); a->LifecycleMutex=1; return 0;
+}
+void KeReleaseMutex(int *mutex,bool) { assert(*mutex==1); *mutex=0; }
+bool EnsureStandard2DAllocationBacking(VIOGPU_WDDM_ALLOCATION *a) { return a->PlacementValid; }
+struct LARGE_INTEGER { long long QuadPart; };
+constexpr int Executive=0,KernelMode=0;
+static std::function<void()> onWait;
+static unsigned waitCount;
+int KeWaitForSingleObject(KEVENT *event,int,int,bool,LARGE_INTEGER*) {
+    if(*event) return 0;
+    assert(onWait); ++waitCount; onWait(); return 0;
+}
+struct VIOGPU_PRIMARY_SCANOUT_LAYOUT { UINT Width,Height,Format,Pitch; SIZE_T Size; };
+enum { VioGpuWddmPagingFlagPageIn=1,VioGpuWddmPagingFlagPageOut=2,VioGpuWddmPagingFlagFill=4,
+       VioGpuWddmPagingFlagDiscard=8,VioGpuWddmPagingFlagTransferStart=16,VioGpuWddmPagingFlagTransferEnd=32 };
+struct VIOGPU_WDDM_PAGING_TRANSACTION {
+    VIOGPU_WDDM_ALLOCATION *Allocation{}; VioGpuDod *Adapter{};
+    UINT Flags{},ResourceId{},FillPattern{};
+    ULONGLONG HostResetGeneration{},PlacementOffset{};
+    SIZE_T TransferOffset{},TransferSize{}; PVOID TransferAddress{};
+    volatile LONG CancelRequested{}; bool TransferDataComplete{};
+};
 struct VIOGPU_WDDM_CONTEXT_SUBMISSION_ENTRY { LIST_ENTRY Link; int Kind; PVOID Owner; };
 struct VIOGPU_WDDM_SUBMISSION_IMPORT {
     VIOGPU_WDDM_IMPORTED_REFERENCE Reference; PVOID Share,Import;
@@ -81,23 +140,25 @@ int AcquireAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a,VioGpuDod*) {
 void ReleaseAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a) { assert(a->Pins>0); --a->Pins; }
 struct VIOGPU_WDDM_MSM_SUBMIT_BO { UINT Flags,Handle; ULONGLONG Presumed; };
 struct VIOGPU_WDDM_MSM_SUBMIT_CMD { UINT words[8]; };
-struct MSM_CCMD_GEM_SUBMIT_REQ {
-    struct { UINT cmd,len,seqno,rsp_off; } hdr;
-    UINT flags,queue_id,nr_bos,nr_cmds,fence,pad;
-    BYTE payload[0];
-};
 class VioGpuDod {
 public:
     struct Wait { UINT resource; ULONGLONG sequence; PVOID context;
         void (*callback)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG); };
     std::vector<Wait> waits;
     std::vector<BYTE> packet;
+    std::vector<BYTE> ahb;
+    UINT pagingCalls{},failPagingCall{};
+    UINT scanouts{};
+    ULONGLONG crtcAddress{};
     bool slots=true,queueOk=true,reset=false;
-    bool TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK*) { return slots; }
+    bool TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *work) {
+        if(slots) work->DisplayReleaseWait=false;
+        return slots;
+    }
     bool QueueNativeAhbOperation(UINT id,ULONGLONG,ULONGLONG sequence,bool present,
         void (*cb)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG),PVOID context) {
-        assert(!present);
         if(!queueOk) return false;
+        if(present) { cb(context,VioGpuHostContextConfirmed,id,sequence+100); return true; }
         waits.push_back({id,sequence,context,cb}); return true;
     }
     bool RefreshNativeSubmit(PVOID,const void *data,UINT size,bool grow) {
@@ -107,6 +168,25 @@ public:
     VIOGPU_NATIVE_PASSIVE_WORK *m_NativePassiveActiveWork{};
     LIST_ENTRY m_NativePassiveHostPending{},m_NativePassiveQueue{};
     bool IsHardwareResetRequested() { return reset; }
+    bool SupportsNativeAhbPaging() const { return true; }
+    bool IsNativeAhbScanoutEnabled() const { return true; }
+    void SetCrtcVsyncPrimaryAddress(ULONGLONG address) { crtcAddress=address; }
+    void LatchFlippedScanout(UINT,UINT,UINT) {}
+    VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(UINT,UINT,UINT,UINT,UINT*,
+        VIOGPU_PRIMARY_SCANOUT_LAYOUT*,bool,bool) { ++scanouts; return VioGpuHostContextConfirmed; }
+    void RequestHardwareResetAtAnyIrql() { reset=true; }
+    VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resource,ULONGLONG generation,UINT operation,
+        ULONGLONG offset,UINT length,UINT pattern,PVOID data) {
+        assert(resource==19 && generation==7 && length && length<=65536 && offset+length<=ahb.size());
+        ++pagingCalls;
+        if(operation==VIRTIO_GPU_NATIVE_AHB_PAGE_READ) std::memcpy(data,ahb.data()+offset,length);
+        else if(operation==VIRTIO_GPU_NATIVE_AHB_PAGE_WRITE) std::memcpy(ahb.data()+offset,data,length);
+        else {
+            assert(operation==VIRTIO_GPU_NATIVE_AHB_PAGE_FILL && !(offset%4) && !(length%4));
+            for(UINT i=0;i<length;i+=4) std::memcpy(ahb.data()+offset+i,&pattern,4);
+        }
+        return pagingCalls==failPagingCall?VioGpuHostContextUnknown:VioGpuHostContextConfirmed;
+    }
     BOOLEAN NativePassiveDispatchReadyLocked(VIOGPU_NATIVE_PASSIVE_WORK *incoming=nullptr);
 };
 // INSERT_STRUCTS
@@ -119,6 +199,11 @@ void ReleaseNativeShareRegistry() {}
 void WakeNativeImportWaitersLocked(VioGpuDod*) { ++wakeCount; }
 // INSERT_PRODUCTION
 
+static DXGK_ALLOCATIONLIST importList;
+static NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *s,const VIOGPU_WDDM_RENDER_COMMAND *h) {
+    return PinNativeSubmitImports(s,h,&importList,1);
+}
+
 struct Packet {
     VIOGPU_WDDM_RENDER_COMMAND header{};
     VIOGPU_WDDM_IMPORTED_REFERENCE refs[2]{};
@@ -127,9 +212,9 @@ static Packet make_packet(UINT count=1) {
     Packet p;
     p.header.Flags=VIOGPU_WDDM_RENDER_IMPORTED_REFERENCES;
     p.header.Reserved[0]=sizeof(p.header); p.header.Reserved[1]=count;
-    p.header.Reserved[2]=1;
+    p.header.Reserved[2]=VIOGPU_WDDM_IMPORTED_REFERENCES_VERSION;
     p.header.CommandStreamOffset=sizeof(p.header)+count*sizeof(p.refs[0]);
-    p.refs[0]={11,0x10000,0x4000,7,2,0};
+    p.refs[0]={11,0x10000,0x4000,7,2,1};
     return p;
 }
 static VIOGPU_WDDM_SUBMISSION make_submit(VioGpuDod &a,VIOGPU_WDDM_CONTEXT &c,UINT fence) {
@@ -151,11 +236,21 @@ int main() {
     InitializeListHead(&g_VioGpuNativeShares); InitializeListHead(&g_VioGpuNativeImports);
     InitializeListHead(&g_VioGpuNativeAccessWaiters);
     VioGpuDod adapter; VIOGPU_WDDM_CONTEXT context{},other{};
+    VIOGPU_WDDM_DEVICE device{&adapter}; context.Device=other.Device=&device;
+    VIOGPU_WDDM_ALLOCATION wrapper{};
+    wrapper.Signature=VIOGPU_WDDM_ALLOCATION_SIGNATURE; wrapper.Adapter=&adapter;
+    wrapper.HostSurface=wrapper.PlacementValid=true; wrapper.ShareKey=11;
+    wrapper.PrivateData.Size=wrapper.BackingSize=0x4000; wrapper.ResourceId=19;
+    wrapper.Resource2DResetGeneration=7;
+    VIOGPU_WDDM_OPEN_ALLOCATION opened{VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE,&device,&wrapper,false};
+    importList.hDeviceSpecificAllocation=&opened; importList.SegmentId=2; importList.WriteOperation=1;
     InitializeListHead(&context.PendingSubmissions); InitializeListHead(&other.PendingSubmissions);
     InitializeListHead(&adapter.m_NativePassiveHostPending); InitializeListHead(&adapter.m_NativePassiveQueue);
     VIOGPU_WDDM_NATIVE_SHARE_ENTRY share{};
     share.Adapter=&adapter; share.Key=11; share.ResourceId=19; share.Size=0x4000;
     share.HostSurface=true; share.SurfaceResetGeneration=7; share.ProducersIdle=true;
+    share.SurfaceResident=true; share.AllocationReferences=1;
+    share.Surface.Fourcc=0x34325241U;
     InsertTailList(&g_VioGpuNativeShares,&share.Link);
     VIOGPU_WDDM_NATIVE_IMPORT_ENTRY entry{};
     entry.Adapter=&adapter; entry.Context=&context; entry.Key=11; entry.Iova=0x10000;
@@ -165,10 +260,15 @@ int main() {
     assert(VioGpuNativeImportTableValid(&p.header,64,104));
     p.header.Reserved[1]=257; assert(!VioGpuNativeImportTableValid(&p.header,64,~0ULL)); p=make_packet();
     auto first=make_submit(adapter,context,1); link_submit(first);
+    wrapper.ShareKey=12; assert(PinNativeSubmitImports(&first,&p.header)==STATUS_INVALID_HANDLE);
+    UnpinNativeSubmitImports(&first); wrapper.ShareKey=11;
     p.refs[0].Iova++; assert(PinNativeSubmitImports(&first,&p.header)==STATUS_INVALID_HANDLE);
     UnpinNativeSubmitImports(&first); p=make_packet();
     assert(PinNativeSubmitImports(&first,&p.header)==0);
     assert(share.SubmissionReferences==1 && entry.SubmissionReferences==1);
+    share.SurfaceResident=false;
+    assert(AdmitNativeSubmitImports(&first)==STATUS_DEVICE_NOT_READY);
+    share.SurfaceResident=true;
     assert(AdmitNativeSubmitImports(&first)==0 && share.Access.Writer && !share.ProducersIdle);
     auto second=make_submit(adapter,context,2); link_submit(second);
     assert(PinNativeSubmitImports(&second,&p.header)==0);
@@ -222,4 +322,86 @@ int main() {
     assert(out->payload[2*sizeof(*obs)]==0x5a && packed.HostCommandStreamSize==raw.size()+sizeof(*bo));
     finish(packed,true);
     assert(IsListEmpty(&g_VioGpuNativeAccessWaiters));
+    assert(wrapper.Pins==0);
+
+    // The exact production paging path preserves allocator padding, handles
+    // split transfers and returns no fence success after a host sync failure.
+    const SIZE_T bytes=0x24000;
+    wrapper.PrivateData.Size=wrapper.BackingSize=share.Size=bytes;
+    adapter.ahb.resize(bytes); share.Access={}; share.SurfaceResident=false;
+    wrapper.PlacementValid=false;
+    volatile LONG cancel=0;
+    VIOGPU_NATIVE_PASSIVE_WORK pagingWork{};
+    pagingWork.CancelRequested=&cancel; pagingWork.PipelineEligible=true;
+    InsertTailList(&adapter.m_NativePassiveHostPending,&pagingWork.Link);
+    VIOGPU_WDDM_PAGING_TRANSACTION tx{};
+    tx.Allocation=&wrapper; tx.Adapter=&adapter; tx.ResourceId=19; tx.HostResetGeneration=7;
+    tx.PlacementOffset=0x80000; tx.TransferSize=bytes; tx.FillPattern=0x7b12cd35;
+    tx.Flags=VioGpuWddmPagingFlagFill;
+    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && share.SurfaceResident && wrapper.PlacementValid);
+    assert(adapter.pagingCalls==3 && wrapper.PlacementOffset==0x80000);
+    for(SIZE_T i=0;i<bytes;i+=4) assert(std::memcmp(adapter.ahb.data()+i,&tx.FillPattern,4)==0);
+    for(SIZE_T i=0;i<bytes;i++) adapter.ahb[i]=static_cast<BYTE>((i*37)^(i>>9));
+    const auto original=adapter.ahb;
+    std::vector<BYTE> saved(bytes);
+    share.Access.Sequence=73;
+    onWait=[&] {
+        assert(pagingWork.DisplayReleaseWait && !share.Access.Writer);
+        assert(adapter.NativePassiveDispatchReadyLocked(&present));
+        const auto release=adapter.waits.back();
+        release.callback(release.context,VioGpuHostContextConfirmed,release.resource,release.sequence);
+    };
+    tx.Flags=VioGpuWddmPagingFlagPageOut|VioGpuWddmPagingFlagTransferStart;
+    tx.TransferAddress=saved.data(); tx.TransferSize=65536;
+    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && waitCount==1);
+    assert(!share.SurfaceResident && wrapper.PlacementValid && share.PagingNextOffset==65536);
+    tx.Flags=VioGpuWddmPagingFlagPageOut|VioGpuWddmPagingFlagTransferEnd;
+    tx.TransferOffset=65536; tx.TransferAddress=saved.data()+65536; tx.TransferSize=bytes-65536;
+    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && saved==original);
+    assert(!share.SurfaceResident && !wrapper.PlacementValid && share.PagingDirection==0);
+    std::memset(adapter.ahb.data(),0,bytes);
+    tx.Flags=VioGpuWddmPagingFlagPageIn|VioGpuWddmPagingFlagTransferStart|VioGpuWddmPagingFlagTransferEnd;
+    tx.TransferOffset=0; tx.TransferSize=bytes; tx.TransferAddress=saved.data();
+    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && adapter.ahb==original);
+    assert(share.SurfaceResident && wrapper.PlacementValid && !share.Access.Writer);
+    lifecycleResult=0x102; // STATUS_TIMEOUT is positive, but owns no mutex.
+    assert(PresentResidentHostSurface(&adapter,&wrapper,tx.PlacementOffset,true)==STATUS_DEVICE_NOT_READY);
+    assert(!wrapper.Pins && !wrapper.LifecycleMutex);
+    // Interleave an already-admitted paging writer with real production Present.
+    // The writer needs LifecycleMutex before it can signal ProducersIdle.
+    share.Access.Writer=true; share.ProducersIdle=false;
+    const auto beforePresent=adapter.scanouts;
+    onWait=[&] {
+        assert(share.Access.PresentPending && share.Access.Writer && wrapper.Pins==1);
+        assert(AcquireAllocationLifecycle(&wrapper)==0);
+        share.SurfaceResident=false;
+        wrapper.PlacementValid=false;
+        share.Access.Writer=false;
+        KeSetEvent(&share.ProducersIdle,0,false);
+        KeReleaseMutex(&wrapper.LifecycleMutex,false);
+    };
+    assert(PresentResidentHostSurface(&adapter,&wrapper,tx.PlacementOffset,true)==STATUS_DEVICE_NOT_READY);
+    assert(adapter.scanouts==beforePresent && wrapper.Pins==0 && !wrapper.LifecycleMutex);
+    assert(share.Access.Poisoned && adapter.reset);
+    adapter.reset=false; share.Access={}; share.SurfaceResident=true; wrapper.PlacementValid=true;
+    // A normal resident Present retains its allocation until host acceptance.
+    assert(PresentResidentHostSurface(&adapter,&wrapper,tx.PlacementOffset,true)==0);
+    assert(adapter.scanouts==beforePresent+1 && wrapper.Pins==0 && adapter.crtcAddress==tx.PlacementOffset);
+    share.Access.Sequence=share.Access.ReleasedSequence=0;
+    const UINT beforeDiscard=adapter.pagingCalls;
+    tx.Flags=VioGpuWddmPagingFlagDiscard; tx.TransferSize=0; tx.TransferAddress=nullptr;
+    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && adapter.pagingCalls==beforeDiscard);
+    assert(!share.SurfaceResident && !wrapper.PlacementValid && adapter.ahb==original);
+    tx.Flags=VioGpuWddmPagingFlagFill; tx.TransferSize=bytes;
+    adapter.failPagingCall=adapter.pagingCalls+2;
+    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==STATUS_DEVICE_NOT_READY);
+    assert(share.Access.Poisoned && !share.Access.Writer && adapter.reset);
+    assert(!share.SurfaceResident && !wrapper.PlacementValid && share.AsyncReferences==0);
+    adapter.reset=false; share.Access={};
+    lifecycleResult=0x102;
+    const UINT beforeTimeout=adapter.pagingCalls;
+    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==STATUS_DEVICE_NOT_READY);
+    assert(adapter.pagingCalls==beforeTimeout && share.Access.Poisoned && adapter.reset);
+    assert(!wrapper.LifecycleMutex && !share.AsyncReferences);
+    RemoveEntryList(&pagingWork.Link);
 }

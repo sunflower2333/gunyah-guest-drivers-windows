@@ -6,6 +6,7 @@
 #include <cstring>
 #include <limits>
 #include <utility>
+#include <cstdlib>
 #ifndef _In_
 #define _In_
 #endif
@@ -30,6 +31,8 @@ constexpr bool TRUE = true, FALSE = false;
 constexpr UINT MAXUINT = UINT32_MAX, MAXULONG = UINT32_MAX;
 constexpr ULONGLONG MAXULONGLONG = UINT64_MAX;
 constexpr NTSTATUS STATUS_SUCCESS = 0, STATUS_INVALID_PARAMETER = -1, STATUS_DEVICE_NOT_READY = -2;
+constexpr NTSTATUS STATUS_INVALID_HANDLE = -3;
+constexpr UINT VIOGPU_WDDM_RENDER_IMPORTED_REFERENCES = 1;
 constexpr UINT VioGpuWddmSubmissionAllocationLimit = 1024;
 constexpr UINT VIOGPU_WDDM_REFERENCE_WRITE = 2, VIOGPU_WDDM_SEGMENT_ID = 1;
 constexpr UINT VIOGPU_NATIVE_RESOURCE_ID_START = 0x80000000U;
@@ -105,7 +108,16 @@ struct VIOGPU_WDDM_ALLOCATION_REFERENCE
 struct VIOGPU_WDDM_RENDER_COMMAND
 {
     UINT AllocationReferenceCount, AllocationReferencesOffset, CommandStreamOffset, CommandStreamSize;
+    UINT Flags = 0, Reserved[4] = {};
 };
+struct VIOGPU_WDDM_IMPORTED_REFERENCE { UINT Reserved; };
+/* Imported residency is exercised by the production ownership fixture. This
+ * fixture asserts its ordinary-BO cases never enter that separate dependency. */
+VIOGPU_WDDM_ALLOCATION *ResolveHostImportAllocation(const VIOGPU_WDDM_IMPORTED_REFERENCE &,
+    VIOGPU_WDDM_DEVICE *, const DXGK_ALLOCATIONLIST *, UINT, BOOLEAN *)
+{
+    std::abort();
+}
 struct VIOGPU_WDDM_MSM_SUBMIT_BO
 {
     UINT Flags, Handle;
@@ -171,9 +183,9 @@ struct Fixture
     DXGK_ALLOCATIONLIST entry{&open, 1, 0, 1, {0x2000}};
     alignas(8) std::array<BYTE, 256> bytes{};
     VIOGPU_WDDM_RENDER_COMMAND *header = reinterpret_cast<VIOGPU_WDDM_RENDER_COMMAND *>(bytes.data());
-    VIOGPU_WDDM_ALLOCATION_REFERENCE *ref = reinterpret_cast<VIOGPU_WDDM_ALLOCATION_REFERENCE *>(bytes.data() + 16);
-    MSM_CCMD_GEM_SUBMIT_REQ *request = reinterpret_cast<MSM_CCMD_GEM_SUBMIT_REQ *>(bytes.data() + 64);
-    VIOGPU_WDDM_MSM_SUBMIT_BO *bo = reinterpret_cast<VIOGPU_WDDM_MSM_SUBMIT_BO *>(bytes.data() + 80);
+    VIOGPU_WDDM_ALLOCATION_REFERENCE *ref = reinterpret_cast<VIOGPU_WDDM_ALLOCATION_REFERENCE *>(bytes.data() + 40);
+    MSM_CCMD_GEM_SUBMIT_REQ *request = reinterpret_cast<MSM_CCMD_GEM_SUBMIT_REQ *>(bytes.data() + 96);
+    VIOGPU_WDDM_MSM_SUBMIT_BO *bo = reinterpret_cast<VIOGPU_WDDM_MSM_SUBMIT_BO *>(bytes.data() + 112);
     VIOGPU_WDDM_SUBMISSION_REFERENCE retained{};
     VIOGPU_WDDM_SUBMISSION submission{&adapter, &context, &retained, 1, request, 32};
     bool fully = false;
@@ -181,7 +193,7 @@ struct Fixture
     {
         allocation.Adapter = &adapter;
         allocation.NativeContext = &context.NativeContext;
-        *header = {1, 16, 64, 32};
+        *header = {1, 40, 96, 32};
         *ref = {};
         ref->PatchOffset = 24;
         *request = {1, reinterpret_cast<BYTE *>(bo)};

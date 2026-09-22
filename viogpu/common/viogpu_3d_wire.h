@@ -79,6 +79,7 @@ enum virtio_gpu_ctrl_type
 /* Private DroidVM protocol: extent/format-qualified Native AHB creation. */
 #define VIRTIO_GPU_F_NATIVE_AHB_V2               7
 #define VIRTIO_GPU_F_NATIVE_AHB_RELEASE          8
+#define VIRTIO_GPU_F_NATIVE_AHB_PAGING           9
 
 #define VIRTIO_GPU_FLAG_FENCE                    (1U << 0)
 #define VIRTIO_GPU_FLAG_INFO_RING_IDX            (1U << 1)
@@ -105,6 +106,13 @@ enum virtio_gpu_ctrl_type
 #define VIRTIO_GPU_CMD_WAIT_NATIVE_AHB_RELEASE   0xd214U
 #define VIRTIO_GPU_RESP_OK_NATIVE_AHB_OPERATION  0xd215U
 #define VIRTIO_GPU_NATIVE_AHB_OPERATION_WIRE_SIZE 40U
+#define VIRTIO_GPU_CMD_PAGE_NATIVE_AHB          0xd216U
+#define VIRTIO_GPU_RESP_OK_NATIVE_AHB_PAGING    0xd217U
+#define VIRTIO_GPU_NATIVE_AHB_PAGING_WIRE_SIZE  48U
+#define VIRTIO_GPU_NATIVE_AHB_PAGING_MAX_BYTES  65536U
+#define VIRTIO_GPU_NATIVE_AHB_PAGE_READ         1U
+#define VIRTIO_GPU_NATIVE_AHB_PAGE_WRITE        2U
+#define VIRTIO_GPU_NATIVE_AHB_PAGE_FILL         3U
 
 #define VIRTGPU_DRM_CAPSET_DRM                   6
 #define VIRTGPU_DRM_CONTEXT_MSM                  1

@@ -15,7 +15,7 @@ adapter = (root / 'viogpu/viogpudo/viogpudo.cpp').read_text()
 
 def definition(name, text=source, structure=False):
     pattern = (r'^struct ' + name + r'\s*\{' if structure else
-               r'^(?:static )?(?:VOID|BOOLEAN|NTSTATUS|VIOGPU_WDDM_NATIVE_SHARE_ENTRY\s*\*)\s*' +
+               r'^(?:static )?(?:VOID|BOOLEAN|NTSTATUS|VIOGPU_WDDM_NATIVE_SHARE_ENTRY\s*\*|VIOGPU_WDDM_ALLOCATION\s*\*)\s*' +
                re.escape(name) + r'\([^;]*?\)\s*\{')
     match = re.search(pattern, text, re.M)
     if not match:
@@ -28,11 +28,13 @@ def definition(name, text=source, structure=False):
     return text[match.start():end + structure]
 
 structs = '\n'.join(definition(n, structure=True) for n in
-                   ['VIOGPU_WDDM_NATIVE_SHARE_ENTRY', 'VIOGPU_WDDM_NATIVE_IMPORT_ENTRY'])
+                   ['VIOGPU_WDDM_NATIVE_SHARE_ENTRY', 'VIOGPU_WDDM_NATIVE_IMPORT_ENTRY',
+                    'VIOGPU_NATIVE_AHB_PRESENT_COMPLETION'])
 production = '\n'.join(definition(n) for n in
-    ['FindNativeShareByKeyLocked', 'NativeAhbReleaseObserved', 'PinNativeSubmitImports',
+    ['FindNativeShareByKeyLocked', 'NativeAhbReleaseObserved', 'ResolveHostImportAllocation', 'PinNativeSubmitImports',
      'UnpinNativeSubmitImports', 'AdmitNativeSubmitImports', 'RetireNativeSubmitImports',
-     'RepackNativeSubmitImports'])
+     'RepackNativeSubmitImports', 'PublishStandardPlacement', 'ClearNativePlacement', 'ExecuteHostSurfacePaging',
+     'NativeAhbPresentAccepted', 'PresentHostSurface', 'PresentResidentHostSurface'])
 production += '\n' + definition('VioGpuDod::NativePassiveDispatchReadyLocked', adapter)
 fixture = (here / 'ownership_test.cpp').read_text().replace('// INSERT_STRUCTS', structs)
 variants = [('production', production)]
@@ -44,6 +46,19 @@ for name, old, new in [
     ('same-context-reorder', 'status = STATUS_PENDING;\n    }\n    KeReleaseSpinLockFromDpcLevel',
      'status = STATUS_SUCCESS;\n    }\n    KeReleaseSpinLockFromDpcLevel'),
     ('missing-residency', 'bos[index].Handle = share->ResourceId;', 'bos[index].Handle = 0;'),
+    ('evicted-render', '!share->SurfaceResident || allocation == NULL', 'false || allocation == NULL'),
+    ('forged-vidmm-allocation', 'allocation->ShareKey != ref.ShareKey', 'false'),
+    ('paging-error-reuse', 'share->Access.Poisoned = true;\n        share->Access.Writer = false;',
+     'share->Access.Poisoned = false;\n        share->Access.Writer = false;'),
+    ('paging-omit-transfer', 'while (status == STATUS_SUCCESS && !discard && completed < transaction->TransferSize)',
+     'while (false && status == STATUS_SUCCESS && !discard && completed < transaction->TransferSize)'),
+    ('present-paging-mutex-cycle',
+     'KeReleaseMutex(&allocation->LifecycleMutex, FALSE);\n    if (status == STATUS_SUCCESS)\n    {\n        status = PresentHostSurface(adapter, allocation);',
+     'if (status == STATUS_SUCCESS)\n    {\n        status = PresentHostSurface(adapter, allocation);\n        KeReleaseMutex(&allocation->LifecycleMutex, FALSE);'),
+    ('present-evicted-after-wait', 'BOOLEAN idle = share->SurfaceResident && !share->Access.Poisoned &&',
+     'BOOLEAN idle = !share->Access.Poisoned &&'),
+    ('paging-positive-wait',
+     'return status != STATUS_SUCCESS && NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;', 'return status;'),
 ]:
     if production.count(old) != 1:
         raise RuntimeError('mutation anchor changed: ' + name)

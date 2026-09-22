@@ -381,7 +381,7 @@ VOID CtrlQueue::CompleteNativeAhbOperation(PVOID context)
     auto pending = static_cast<VIOGPU_NATIVE_AHB_PENDING *>(context);
     CtrlQueue *queue = pending->Queue;
     PGPU_VBUFFER buffer = pending->Buffer;
-    auto response = static_cast<PGPU_NATIVE_AHB_OPERATION>(buffer->resp_buf);
+    auto response = reinterpret_cast<PGPU_NATIVE_AHB_OPERATION>(buffer->resp_buf);
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
     ULONGLONG sequence = pending->Sequence;
     if (VioGpuReadSynchronousEpochState(&queue->m_SynchronousEpochState) == pending->Epoch)
@@ -395,7 +395,7 @@ VOID CtrlQueue::CompleteNativeAhbOperation(PVOID context)
             result = VioGpuHostContextConfirmed;
         }
         else if (buffer->response_size == sizeof(GPU_CTRL_HDR) &&
-                 IsPlainControlErrorResponse(static_cast<PGPU_CTRL_HDR>(buffer->resp_buf)))
+                 IsPlainControlErrorResponse(reinterpret_cast<PGPU_CTRL_HDR>(buffer->resp_buf)))
         {
             result = VioGpuHostContextRejected;
         }
@@ -1800,6 +1800,76 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeAhbBlobSynchronous(UINT resour
     {
         ReleaseBuffer(vbuf);
     }
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::PageNativeAhbSynchronous(UINT resourceId, UINT operation,
+                                                              ULONGLONG offset, UINT length,
+                                                              UINT pattern, PVOID data)
+{
+    PAGED_CODE();
+    const BOOLEAN read = operation == VIRTIO_GPU_NATIVE_AHB_PAGE_READ;
+    const BOOLEAN write = operation == VIRTIO_GPU_NATIVE_AHB_PAGE_WRITE;
+    const BOOLEAN fill = operation == VIRTIO_GPU_NATIVE_AHB_PAGE_FILL;
+    if (!IsStandard2DResourceId(resourceId) || (!read && !write && !fill) || length == 0 ||
+        length > VIRTIO_GPU_NATIVE_AHB_PAGING_MAX_BYTES || offset > MAXULONGLONG - length ||
+        (fill ? data != NULL || ((offset | length) & 3) != 0 : data == NULL || pattern != 0) ||
+        !BeginSynchronousRequest())
+        return VioGpuHostContextNotSubmitted;
+
+    const UINT responseSize = sizeof(GPU_NATIVE_AHB_PAGING) + (read ? length : 0);
+    auto response = static_cast<PGPU_NATIVE_AHB_PAGING>(m_pBuf->AllocateMemory(responseSize));
+    PGPU_VBUFFER buffer = NULL;
+    auto command = response == NULL ? NULL : static_cast<PGPU_NATIVE_AHB_PAGING>(
+        AllocCmdResp(&buffer, sizeof(GPU_NATIVE_AHB_PAGING), response, responseSize));
+    if (command == NULL)
+    {
+        if (response != NULL)
+            m_pBuf->FreeMemory(response);
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    RtlZeroMemory(response, responseSize);
+    command->hdr.type = VIRTIO_GPU_CMD_PAGE_NATIVE_AHB;
+    command->resource_id = resourceId;
+    command->operation = operation;
+    command->offset = offset;
+    command->length = length;
+    command->pattern = pattern;
+    if (write)
+    {
+        buffer->data_buf = m_pBuf->AllocateMemoryUninitialized(length);
+        if (buffer->data_buf == NULL)
+        {
+            ReleaseBuffer(buffer);
+            EndSynchronousRequest();
+            return VioGpuHostContextNotSubmitted;
+        }
+        buffer->data_size = length;
+        RtlCopyMemory(buffer->data_buf, data, length);
+    }
+    BOOLEAN releaseBuffer = FALSE;
+    BOOLEAN submitted = FALSE;
+    const BOOLEAN completed = SubmitSynchronousLocked(buffer, &releaseBuffer, &submitted);
+    VIOGPU_HOST_CONTEXT_RESULT result = submitted ? VioGpuHostContextUnknown : VioGpuHostContextNotSubmitted;
+    if (completed && buffer->response_size == responseSize &&
+        IsPlainControlResponse(&response->hdr, VIRTIO_GPU_RESP_OK_NATIVE_AHB_PAGING) &&
+        response->resource_id == resourceId && response->operation == operation &&
+        response->offset == offset && response->length == length && response->pattern == pattern)
+    {
+        if (read)
+            RtlCopyMemory(data, response + 1, length);
+        result = VioGpuHostContextConfirmed;
+    }
+    else if (completed && buffer->response_size == sizeof(GPU_CTRL_HDR) &&
+             IsPlainControlErrorResponse(&response->hdr))
+        result = VioGpuHostContextRejected;
+    else if (completed)
+        PoisonSynchronousRequests();
+    if (releaseBuffer)
+        ReleaseBuffer(buffer);
     EndSynchronousRequest();
     return result;
 }
@@ -3390,10 +3460,28 @@ static const int VIOGPU_QUEUE_ERROR = -1;
 static UINT ControlDescriptorCount(const GPU_VBUFFER *buf)
 {
     if (buf == NULL || buf->buf == NULL || buf->size <= 0 || buf->size > static_cast<int>(PAGE_SIZE) ||
-        buf->resp_size < 0 || buf->resp_size > static_cast<int>(PAGE_SIZE) ||
+        buf->resp_size < 0 ||
         (buf->data_size != 0 && buf->data_buf == NULL) || (buf->resp_size != 0 && buf->resp_buf == NULL))
     {
         return 0;
+    }
+
+    // Only the bounded native paging READ has a response larger than a page.
+    // Validate its complete command before allowing the larger DMA range.
+    if (buf->resp_size > static_cast<int>(PAGE_SIZE))
+    {
+        if (buf->size != static_cast<int>(sizeof(GPU_NATIVE_AHB_PAGING)) || buf->data_size != 0)
+            return 0;
+        const auto command = reinterpret_cast<const GPU_NATIVE_AHB_PAGING *>(buf->buf);
+        if (command->hdr.type != VIRTIO_GPU_CMD_PAGE_NATIVE_AHB || command->hdr.flags != 0 ||
+            command->hdr.fence_id != 0 || command->hdr.ctx_id != 0 || command->hdr.ring_idx != 0 ||
+            command->hdr.padding[0] != 0 || command->hdr.padding[1] != 0 || command->hdr.padding[2] != 0 ||
+            command->resource_id == 0 || command->operation != VIRTIO_GPU_NATIVE_AHB_PAGE_READ ||
+            command->pattern != 0 || command->length == 0 ||
+            command->length > VIRTIO_GPU_NATIVE_AHB_PAGING_MAX_BYTES ||
+            command->offset > MAXULONGLONG - command->length ||
+            static_cast<UINT>(buf->resp_size) != sizeof(*command) + command->length)
+            return 0;
     }
 
     // Use 64-bit arithmetic before the bound so a wrapped payload length

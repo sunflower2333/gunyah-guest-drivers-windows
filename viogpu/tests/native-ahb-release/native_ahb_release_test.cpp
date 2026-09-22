@@ -20,6 +20,9 @@ using BOOLEAN = bool;
 #define TRUE true
 #define FALSE false
 #define RtlZeroMemory(p, n) std::memset(p, 0, n)
+#define RtlCopyMemory(p, q, n) std::memcpy(p, q, n)
+#define PAGED_CODE() ((void)0)
+constexpr ULONGLONG MAXULONGLONG=~ULONGLONG(0);
 constexpr int DISPATCH_LEVEL = 2, NonPagedPoolNx = 0, IO_NO_INCREMENT = 0;
 static int currentIrql;
 int KeGetCurrentIrql() { return currentIrql; }
@@ -46,6 +49,8 @@ enum VIOGPU_VBUFFER_TERMINAL_CLAIM { VioGpuVbufferTerminalClaimUnarmed,
 using VIOGPU_NATIVE_AHB_COMPLETION = VOID (*)(PVOID, VIOGPU_HOST_CONTEXT_RESULT, UINT, ULONGLONG);
 struct GPU_VBUFFER {
     GPU_NATIVE_AHB_OPERATION command{};
+    GPU_NATIVE_AHB_PAGING paging{};
+    PVOID data_buf{}; UINT data_size{},resp_size{};
     void *resp_buf{};
     UINT response_size{};
     void (*complete_cb)(void *){}; void *complete_ctx{};
@@ -61,6 +66,7 @@ VOID VioGpuCompleteVbufferTerminalCallbacks(PGPU_VBUFFER);
 struct Pool {
     bool fail{}; int live{};
     void *AllocateMemory(std::size_t size) { if(fail) return nullptr; ++live; return std::malloc(size); }
+    void *AllocateMemoryUninitialized(std::size_t size) { return AllocateMemory(size); }
     void FreeMemory(void *p) { assert(p && live > 0); --live; std::free(p); }
 };
 class CtrlQueue {
@@ -68,21 +74,48 @@ public:
     Pool pool; Pool *m_pBuf = &pool;
     LONG64 m_SynchronousEpochState = (1LL << 32) | VioGpuSynchronousEnabled;
     bool full{}, failCommand{}, immediate{};
+    bool synchronous{},poisoned{};
+    UINT pagingVariant{};
+    std::vector<UCHAR> pixels=std::vector<UCHAR>(65536,0x3a);
     UINT liveBuffers{}, freedBuffers{};
     std::vector<PGPU_VBUFFER> pending;
     static bool IsStandard2DResourceId(UINT id) { return id && id < 0x80000000U; }
     bool QueueNativeAhbOperation(UINT, ULONGLONG, BOOLEAN, VIOGPU_NATIVE_AHB_COMPLETION, PVOID);
     static VOID CompleteNativeAhbOperation(PVOID);
     static VOID CancelNativeAhbOperation(PVOID);
+    VIOGPU_HOST_CONTEXT_RESULT PageNativeAhbSynchronous(UINT,UINT,ULONGLONG,UINT,UINT,PVOID);
+    bool BeginSynchronousRequest() { assert(!synchronous); synchronous=true; return true; }
+    void EndSynchronousRequest() { assert(synchronous); synchronous=false; }
+    void PoisonSynchronousRequests() { poisoned=true; }
+    bool SubmitSynchronousLocked(PGPU_VBUFFER b,BOOLEAN *release,BOOLEAN *submitted) {
+        assert(synchronous); *release=true; *submitted=true;
+        auto r=static_cast<PGPU_NATIVE_AHB_PAGING>(b->resp_buf); *r=b->paging;
+        assert(r->hdr.type==VIRTIO_GPU_CMD_PAGE_NATIVE_AHB);
+        r->hdr.type=VIRTIO_GPU_RESP_OK_NATIVE_AHB_PAGING; b->response_size=b->resp_size;
+        assert(r->offset+r->length<=pixels.size());
+        if(r->operation==VIRTIO_GPU_NATIVE_AHB_PAGE_WRITE) {
+            assert(b->data_size==r->length); std::memcpy(pixels.data()+r->offset,b->data_buf,r->length);
+        } else if(r->operation==VIRTIO_GPU_NATIVE_AHB_PAGE_READ) {
+            assert(!b->data_buf); std::memcpy(r+1,pixels.data()+r->offset,r->length);
+        } else {
+            assert(!b->data_buf);
+            for(UINT i=0;i<r->length;i+=4) std::memcpy(pixels.data()+r->offset+i,&r->pattern,4);
+        }
+        if(pagingVariant==1) ++r->offset;
+        if(pagingVariant==2) b->response_size=48;
+        if(pagingVariant==3) { r->hdr.type=VIRTIO_GPU_RESP_ERR_UNSPEC; b->response_size=24; }
+        return true;
+    }
     PVOID AllocCmdResp(PGPU_VBUFFER *out, int size, PVOID response, int responseSize) {
-        assert(size==40 && responseSize==40);
+        assert((size==40 && responseSize==40) || (size==48 && responseSize>=48));
         if(failCommand) return nullptr;
-        *out = new GPU_VBUFFER; ++liveBuffers; (*out)->resp_buf = response;
-        return &(*out)->command;
+        *out = new GPU_VBUFFER; ++liveBuffers; (*out)->resp_buf = response; (*out)->resp_size=responseSize;
+        return size==40?static_cast<PVOID>(&(*out)->command):static_cast<PVOID>(&(*out)->paging);
     }
     void ReleaseBuffer(PGPU_VBUFFER b) {
         assert(liveBuffers); --liveBuffers; ++freedBuffers;
         VioGpuDetachVbufferTerminalCallbacks(b);
+        if(b->data_buf) pool.FreeMemory(b->data_buf);
         pool.FreeMemory(b->resp_buf); VioGpuCompleteVbufferTerminalCallbacks(b); delete b;
     }
     int QueueBuffer(PGPU_VBUFFER b) {
@@ -189,4 +222,24 @@ int main() {
     q.m_SynchronousEpochState=VioGpuSynchronousPoisoned;
     assert(!q.QueueNativeAhbOperation(1,0,false,Result::done,&unqueued));
     assert(unqueued.calls==0);
+
+    static_assert(sizeof(GPU_NATIVE_AHB_PAGING)==48);
+    std::vector<UCHAR> data(65536),restored(65536);
+    for(UINT i=0;i<data.size();++i) data[i]=static_cast<UCHAR>(i*13);
+    assert(q.PageNativeAhbSynchronous(1,2,0,data.size(),0,data.data())==VioGpuHostContextConfirmed);
+    assert(q.PageNativeAhbSynchronous(1,1,0,data.size(),0,restored.data())==VioGpuHostContextConfirmed);
+    assert(data==restored);
+    assert(q.PageNativeAhbSynchronous(1,3,0,65536,0x75ab1234,nullptr)==VioGpuHostContextConfirmed);
+    assert(q.pixels[0]==0x34 && q.pixels[65535]==0x75);
+    for(UINT variant=1;variant<=3;++variant) {
+        q.pagingVariant=variant; q.poisoned=false; std::fill(restored.begin(),restored.end(),0);
+        const auto expected=variant==3?VioGpuHostContextRejected:VioGpuHostContextUnknown;
+        assert(q.PageNativeAhbSynchronous(1,1,0,65536,0,restored.data())==expected);
+        assert(q.poisoned==(variant!=3));
+        assert(std::all_of(restored.begin(),restored.end(),[](UCHAR c){return c==0;}));
+    }
+    assert(q.PageNativeAhbSynchronous(1,1,0,65537,0,restored.data())==VioGpuHostContextNotSubmitted);
+    assert(q.PageNativeAhbSynchronous(1,3,1,4,0,nullptr)==VioGpuHostContextNotSubmitted);
+    assert(q.PageNativeAhbSynchronous(1,1,0,4,1,restored.data())==VioGpuHostContextNotSubmitted);
+    assert(q.PageNativeAhbSynchronous(1,1,MAXULONGLONG,4,0,restored.data())==VioGpuHostContextNotSubmitted);
 }

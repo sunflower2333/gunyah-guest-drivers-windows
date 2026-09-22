@@ -1095,8 +1095,11 @@ class VioGpuAdapter : IVioGpuPCI
     static BOOLEAN IsNativeContextReleased(_Inout_ VIOGPU_NATIVE_CONTEXT_REGISTRATION *context);
     BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration);
 #if defined(VIOGPU_NATIVE_CONTEXT)
-    BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
+    __declspec(code_seg(".text")) BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
                                     BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
+    BOOLEAN SupportsNativeAhbPaging() const;
+    VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
+                                            ULONGLONG offset, UINT length, UINT pattern, PVOID data);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize)
     {
         return m_CtrlQueue.PrepareNativeSubmit(contextId, command, commandSize);
@@ -1929,6 +1932,9 @@ class VioGpuDod
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
     BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
                                     BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
+    BOOLEAN SupportsNativeAhbPaging() const;
+    VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
+                                            ULONGLONG offset, UINT length, UINT pattern, PVOID data);
     BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize, BOOLEAN resize = FALSE);
     int QueueNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ ULONGLONG fenceId);
     BOOLEAN ReleaseNativeSubmitBuffer(_In_ PGPU_VBUFFER buffer);

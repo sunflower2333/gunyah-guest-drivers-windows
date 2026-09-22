@@ -17,6 +17,7 @@
 #define TRUE true
 #define FALSE false
 using UINT = unsigned int;
+using SIZE_T = std::size_t;
 using ULONG = unsigned int;
 using LONG = int;
 using KEVENT = bool;
@@ -26,6 +27,7 @@ LONG InterlockedCompareExchange(volatile LONG *p, LONG value, LONG expected) {
     LONG old=*p; if(old==expected) *p=value; return old;
 }
 using ULONGLONG = unsigned long long;
+constexpr ULONGLONG VIOGPU_WDDM_HOST_SURFACE_BUDGET=256ULL*1024*1024;
 using BOOLEAN = bool;
 using VOID = void;
 using NTSTATUS = int;
@@ -67,6 +69,7 @@ public:
     bool enabled=true, busy=false, failRelease=false, failImport=false;
     bool IsDriverActive() { return true; }
     bool IsNativeAhbScanoutEnabled() { return enabled; }
+    bool SupportsNativeAhbPaging() { return enabled; }
     bool QueryNativeContextReadiness(GPU_CAPSET_DRM *, void *, void *, ULONGLONG *g) { *g=generation; return true; }
     UINT Allocate2DResourceId() { return nextId++; }
     bool Release2DResourceId(UINT) { return true; }

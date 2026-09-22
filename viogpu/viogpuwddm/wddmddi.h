@@ -17,8 +17,10 @@ BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
 BOOLEAN VioGpuWddmIsMpo3Registration();
 BOOLEAN VioGpuWddmIsDirectFlipTrial();
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
 NTSTATUS APIENTRY VioGpuWddmGetMultiPlaneOverlayCaps(CONST HANDLE hAdapter,
                                                      DXGKARG_GETMULTIPLANEOVERLAYCAPS *args);
+#endif
 VOID VioGpuWddmDrainPresentTransactions(_In_ VioGpuDod *adapter);
 
 struct VIOGPU_WDDM_KMD_DMA_PRIVATE
@@ -67,6 +69,7 @@ enum : UINT
     VioGpuWddmPagingFlagTransferEnd = 1U << 5,
     VioGpuWddmPagingFlagAllocationIdle = 1U << 6,
     VioGpuWddmPagingFlagSoftwareCompleted = 1U << 7,
+    VioGpuWddmPagingFlagHostSurface = 1U << 8,
 };
 
 struct VIOGPU_WDDM_PAGING_DMA_PACKET
@@ -245,6 +248,9 @@ struct VIOGPU_WDDM_PAGING_TRANSACTION
     LONG ContextGeneration;
     ULONGLONG ResetGeneration;
     BOOLEAN TransferDataComplete;
+    /* VidMm keeps this mapped, page-locked MDL range alive until our fence. */
+    PVOID TransferAddress;
+    ULONGLONG HostResetGeneration;
 };
 
 struct VIOGPU_WDDM_PAGING_PRIVATE
@@ -259,6 +265,7 @@ struct VIOGPU_WDDM_PAGING_PRIVATE
     UINT BatchFenceId;
     UINT BatchNodeOrdinal;
     UINT BatchEngineOrdinal;
+    BOOLEAN BatchDetached;
 };
 
 static_assert(FIELD_OFFSET(VIOGPU_WDDM_PAGING_PRIVATE, Header) == 0,

@@ -777,6 +777,22 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
 }
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
+BOOLEAN VioGpuDod::SupportsNativeAhbPaging() const
+{
+    return IsNativeAhbScanoutEnabled() && m_pHWDevice != NULL && m_pHWDevice->SupportsNativeAhbPaging();
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
+                                                   ULONGLONG offset, UINT length, UINT pattern, PVOID data)
+{
+    PAGED_CODE();
+    if (!AcquireNativeSubmissionOperation())
+        return VioGpuHostContextNotSubmitted;
+    const auto result = m_pHWDevice->PageNativeAhb(resourceId, generation, operation, offset, length, pattern, data);
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
 #pragma code_seg(push)
 #pragma code_seg()
 BOOLEAN VioGpuDod::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
@@ -4390,11 +4406,14 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
              * that is what shipped here, but a mode set whose every entry claims
              * canonical scRGB is a suspect once the link claims HighColorSpace.
              * Mode 1 publishes the basis each format really carries. */
+            pVidPnSourceModeInfo->Format.Graphics.ColorBasis = D3DKMDT_CB_SCRGB;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
             pVidPnSourceModeInfo->Format.Graphics.ColorBasis =
                 SourceColorBasisPerFormat() &&
                         pVidPnSourceModeInfo->Format.Graphics.PixelFormat != D3DDDIFMT_A16B16G16R16F
                     ? D3DKMDT_CB_SRGB
                     : D3DKMDT_CB_SCRGB;
+#endif
             pVidPnSourceModeInfo->Format.Graphics.PixelValueAccessMode = D3DKMDT_PVAM_DIRECT;
 
             Status = pVidPnSourceModeSetInterface->pfnAddMode(hVidPnSourceModeSet, pVidPnSourceModeInfo);
@@ -4547,7 +4566,11 @@ NTSTATUS VioGpuDod::AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODE
     /* Registry-selectable so the ten-bit case can be retried against a link that
      * actually claims HighColorSpace; the two were never testable together
      * before the Host admitted PQ. Default is unchanged at eight. */
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     const UINT monitorColorRange = MonitorColorRange();
+#else
+    const UINT monitorColorRange = 8;
+#endif
 
     pMonitorSourceMode->Origin = D3DKMDT_MCO_DRIVER;
     pMonitorSourceMode->Preference = D3DKMDT_MP_PREFERRED;
@@ -10514,6 +10537,10 @@ NTSTATUS VioGpuAdapter::NegotiateNativeContextFeatures(void)
         return STATUS_NOT_SUPPORTED;
     }
 
+    if (virtio_is_feature_enabled(m_u64HostFeatures, VIRTIO_GPU_F_NATIVE_AHB_PAGING) &&
+        !AckFeature(VIRTIO_GPU_F_NATIVE_AHB_PAGING))
+        return STATUS_NOT_SUPPORTED;
+
     return STATUS_SUCCESS;
 }
 
@@ -10527,6 +10554,25 @@ NTSTATUS VioGpuAdapter::FailNativeContextInitialization(NTSTATUS status)
 }
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
+BOOLEAN VioGpuAdapter::SupportsNativeAhbPaging() const
+{
+    return virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_V2) &&
+           virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_RELEASE) &&
+           virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_PAGING);
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
+                                                       ULONGLONG offset, UINT length, UINT pattern, PVOID data)
+{
+    PAGED_CODE();
+    if (!SupportsNativeAhbPaging() || generation == 0 ||
+        generation != static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0)))
+        return VioGpuHostContextNotSubmitted;
+    const auto result = m_CtrlQueue.PageNativeAhbSynchronous(resourceId, operation, offset, length, pattern, data);
+    return generation == static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0))
+               ? result : VioGpuHostContextUnknown;
+}
+
 __declspec(code_seg(".text"))
 BOOLEAN VioGpuAdapter::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
                                               BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context)
