@@ -55,14 +55,14 @@ static bool number(const char *text, unsigned limit, unsigned *value)
     return true;
 }
 
-static int exercise(unsigned frames, unsigned idle_ms, bool resize, bool native)
+static int exercise(unsigned frames, unsigned idle_ms, unsigned color_hold_ms, bool resize, bool native)
 {
     if (!SetProcessDPIAware() && !IsProcessDPIAware())
         return 2;
     if (!SetEnvironmentVariableW(L"VIOGPU_NATIVE_HOST_SURFACE", native ? L"1" : L"0"))
         return 2;
-    std::printf("PROBE native_requested=%u frames=%u idle_ms=%u resize=%u pixel_readbacks=0\n",
-                static_cast<unsigned>(native), frames, idle_ms, static_cast<unsigned>(resize));
+    std::printf("PROBE native_requested=%u frames=%u idle_ms=%u color_hold_ms=%u resize=%u pixel_readbacks=0\n",
+                static_cast<unsigned>(native), frames, idle_ms, color_hold_ms, static_cast<unsigned>(resize));
 
     HRESULT hr;
     const char *stage = "factory";
@@ -141,6 +141,7 @@ static int exercise(unsigned frames, unsigned idle_ms, bool resize, bool native)
     }
     unsigned presented = 0, resized = 0;
     const float colors[][4] = {{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 0, 1}};
+    const unsigned sample_colors[][3] = {{37,149,211}, {211,37,149}, {149,211,37}, {211,149,37}};
     for (unsigned frame = 0; frame < frames; ++frame) {
         if (!pump()) {
             stage = "window-closed";
@@ -170,15 +171,27 @@ static int exercise(unsigned frames, unsigned idle_ms, bool resize, bool native)
         hr = device->CreateRenderTargetView(image.Get(), nullptr, target.GetAddressOf());
         if (FAILED(hr))
             break;
-        context->ClearRenderTargetView(target.Get(), colors[(frame / 12) % 4]);
+        const unsigned color_index = color_hold_ms ? frame % 4 : (frame / 12) % 4;
+        float sample_color[4] = {0, 0, 0, 1};
+        for (unsigned channel = 0; channel < 3; ++channel)
+            sample_color[channel] = sample_colors[color_index][channel] / 255.0f;
+        context->ClearRenderTargetView(target.Get(), color_hold_ms ? sample_color : colors[color_index]);
         stage = "present";
         hr = swapchain->Present(1, 0);
         if (hr != S_OK)
             break; // Occlusion is not successful visible-test progress.
         ++presented;
         if (frame < 4 || frame % 60 == 0)
-            std::printf("PRESENT frame=%u color=%u hr=%08lx\n", frame, (frame / 12) % 4,
+            std::printf("PRESENT frame=%u color=%u hr=%08lx\n", frame, color_index,
                         static_cast<unsigned long>(hr));
+        if (color_hold_ms) {
+            std::printf("PIXEL_SAMPLE frame=%u expected_rgb=%u,%u,%u hold_ms=%u tick=%llu\n", frame,
+                        sample_colors[color_index][0], sample_colors[color_index][1],
+                        sample_colors[color_index][2], color_hold_ms, GetTickCount64());
+            const ULONGLONG until = GetTickCount64() + color_hold_ms;
+            while (GetTickCount64() < until && pump())
+                Sleep(10);
+        }
         if (idle_ms && frame == frames / 2) {
             // Keep dispatching messages while leaving the current front buffer
             // untouched; it must not acquire a false release timeout.
@@ -205,7 +218,7 @@ static int exercise(unsigned frames, unsigned idle_ms, bool resize, bool native)
 int main(int argc, char **argv)
 {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    unsigned frames = 240, idle_ms = 0;
+    unsigned frames = 240, idle_ms = 0, color_hold_ms = 0;
     bool resize = false, native = false;
     for (int index = 1; index < argc; ++index) {
         if (!std::strcmp(argv[index], "--native")) native = true;
@@ -214,16 +227,20 @@ int main(int argc, char **argv)
             if (!number(argv[++index], 600, &frames) || frames < 6) return 2;
         } else if (!std::strcmp(argv[index], "--idle-ms") && index + 1 < argc) {
             if (!number(argv[++index], 10000, &idle_ms)) return 2;
+        } else if (!std::strcmp(argv[index], "--color-hold-ms") && index + 1 < argc) {
+            if (!number(argv[++index], 2000, &color_hold_ms)) return 2;
         } else {
-            std::printf("Usage: native_display_probe [--native] [--resize] [--frames 6..600] [--idle-ms 0..10000]\n");
+            std::printf("Usage: native_display_probe [--native] [--resize] [--frames 6..600] "
+                        "[--idle-ms 0..10000] [--color-hold-ms 0..2000]\n");
             return 2;
         }
     }
+    if (frames * color_hold_ms + idle_ms > 45000) return 2;
     HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!done) return 2;
     HANDLE guard = CreateThread(nullptr, 0, watchdog, done, 0, nullptr);
     if (!guard) { CloseHandle(done); return 2; }
-    const int result = exercise(frames, idle_ms, resize, native);
+    const int result = exercise(frames, idle_ms, color_hold_ms, resize, native);
     SetEvent(done);
     WaitForSingleObject(guard, INFINITE);
     CloseHandle(guard);

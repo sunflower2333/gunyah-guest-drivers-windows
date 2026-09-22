@@ -21,3 +21,12 @@ native accepted/released counters, zero presentation copy/blit counters,
 and visibly correct frames before reporting full-chain zero-copy. The
 probe explicitly reports `zero_copy_verified=0`; an environment flag and
 successful `Present` calls alone cannot establish the display transport.
+
+For on-device final-screen color sampling, use `--frames 6 --color-hold-ms 2000`.
+This holds distinctive RGB colors and prints the expected values and Guest tick
+for each frame. The existing workspace `chat/tools/native-solid-color.c` helper
+can inspect SurfaceFlinger pixels entirely on Android and return only numeric
+counts; no screenshot needs to be pulled. Compare a before-test baseline, the
+active color interval and the observed window location. This is a functional
+pixel check, not FPS or zero-copy proof. The same host identities and copy/fence
+evidence remain required.
