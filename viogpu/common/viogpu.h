@@ -162,6 +162,23 @@ typedef struct virtio_gpu_resource_create_blob
 } GPU_CMD_RESOURCE_CREATE_BLOB, *PGPU_CMD_RESOURCE_CREATE_BLOB;
 #pragma pack()
 
+/* Private command used only after VIRTIO_GPU_F_NATIVE_AHB_V2 negotiation.
+ * Its dedicated opcode keeps extent and format metadata out of standard
+ * RESOURCE_CREATE_BLOB fields.  `size` covers version through flags. */
+#pragma pack(1)
+typedef struct virtio_gpu_resource_create_native_ahb
+{
+    GPU_CTRL_HDR hdr;
+    ULONG resource_id;
+    ULONG version;
+    ULONG size;
+    ULONG width;
+    ULONG height;
+    ULONG fourcc;
+    ULONG flags;
+} GPU_CMD_RESOURCE_CREATE_NATIVE_AHB, *PGPU_CMD_RESOURCE_CREATE_NATIVE_AHB;
+#pragma pack()
+
 /* VIRTIO_GPU_CMD_SET_SCANOUT_BLOB. Layout is independent of the crop rectangle. */
 #pragma pack(1)
 typedef struct virtio_gpu_set_scanout_blob
@@ -247,6 +264,8 @@ static_assert(sizeof(GPU_CTRL_HDR) == 24, "virtio-gpu control header wire size")
 static_assert(sizeof(GPU_CMD_SUBMIT_3D) == 32, "virtio-gpu submit wire size");
 static_assert(sizeof(GPU_CMD_CTX_CREATE) == 96, "virtio-gpu context create wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_CREATE_BLOB) == 56, "virtio-gpu blob create wire size");
+static_assert(sizeof(GPU_CMD_RESOURCE_CREATE_NATIVE_AHB) == VIRTIO_GPU_NATIVE_AHB_REQUEST_WIRE_SIZE,
+              "virtio-gpu native AHB request wire size");
 static_assert(sizeof(GPU_CMD_SET_SCANOUT_BLOB) == 96, "virtio-gpu scanout blob wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_MAP_BLOB) == 40, "virtio-gpu blob map wire size");
 static_assert(sizeof(GPU_RESP_MAP_INFO) == 32, "virtio-gpu blob map response wire size");

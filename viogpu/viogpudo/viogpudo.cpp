@@ -10446,6 +10446,13 @@ NTSTATUS VioGpuAdapter::NegotiateNativeContextFeatures(void)
         return STATUS_NOT_SUPPORTED;
     }
 
+    /* Native AHB v2 is optional so older hosts retain the v1 protocol. */
+    if (virtio_is_feature_enabled(m_u64HostFeatures, VIRTIO_GPU_F_NATIVE_AHB_V2) &&
+        !AckFeature(VIRTIO_GPU_F_NATIVE_AHB_V2))
+    {
+        return STATUS_NOT_SUPPORTED;
+    }
+
     return STATUS_SUCCESS;
 }
 
@@ -11135,6 +11142,11 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
         }
         VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.CreateNativeAhbBlobSynchronous(resourceId,
                                                                                         backingSize,
+                                                                                        width,
+                                                                                        height,
+                                                                                        format,
+                                                                                        virtio_is_feature_enabled(m_u64GuestFeatures,
+                                                                                                                  VIRTIO_GPU_F_NATIVE_AHB_V2),
                                                                                         nativeLayout);
         if (result == VioGpuHostContextConfirmed)
         {

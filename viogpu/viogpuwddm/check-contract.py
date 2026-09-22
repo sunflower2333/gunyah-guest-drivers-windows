@@ -3518,6 +3518,10 @@ def check_native_context_readiness(
     require_integer_define(wire_header_code, "VIRTGPU_DRM_CAPSET_DRM", 6, "wire header")
     require_integer_define(wire_header_code, "VIRTGPU_DRM_CONTEXT_MSM", 1, "wire header")
     require_integer_define(wire_header_code, "VIRTGPU_DRM_WIRE_FORMAT_VERSION", 2, "wire header")
+    require_integer_define(wire_header_code, "VIRTIO_GPU_F_NATIVE_AHB_V2", 7, "wire header")
+    require_integer_define(wire_header_code, "VIRTIO_GPU_CMD_RESOURCE_CREATE_NATIVE_AHB", 0xD211, "wire header")
+    require_integer_define(wire_header_code, "VIRTIO_GPU_NATIVE_AHB_REQUEST_BODY_SIZE", 24, "wire header")
+    require_integer_define(wire_header_code, "VIRTIO_GPU_NATIVE_AHB_REQUEST_WIRE_SIZE", 52, "wire header")
     require_integer_define(wire_header_code, "VIRTGPU_CAP_BOOL_UNSUPPORTED_BY_HOST", 0, "wire header")
     require_integer_define(wire_header_code, "VIRTGPU_CAP_BOOL_FALSE", 0xFFFFFFFF, "wire header")
     require_integer_define(wire_header_code, "VIRTGPU_CAP_BOOL_TRUE", 1, "wire header")
@@ -3552,6 +3556,12 @@ def check_native_context_readiness(
     expected_negotiation = "if(" + "||".join(f"!AckFeature({feature})" for feature in required_features) + ")"
     if expected_negotiation not in negotiation_compact:
         fail("native-context feature negotiation must fail closed on the exact required feature set")
+    optional_native_ahb_v2 = (
+        "if(virtio_is_feature_enabled(m_u64HostFeatures,VIRTIO_GPU_F_NATIVE_AHB_V2)&&"
+        "!AckFeature(VIRTIO_GPU_F_NATIVE_AHB_V2))"
+    )
+    if optional_native_ahb_v2 not in negotiation_compact:
+        fail("Native AHB v2 must be acknowledged only when the host advertises it")
     for feature in required_features:
         count = len(re.findall(rf"\b{re.escape(feature)}\b", negotiation))
         if count != 1:
@@ -4563,6 +4573,15 @@ def check_wddm_2d_resource_ownership() -> None:
         "VIRTIO_GPU_BLOB_FLAG_USE_NATIVE_AHB",
         "command->nr_entries=0;",
         "command->size=0;",
+        "nativeCommand->hdr.type=VIRTIO_GPU_CMD_RESOURCE_CREATE_NATIVE_AHB;",
+        "nativeCommand->version=VIRTIO_GPU_NATIVE_AHB_REQUEST_VERSION;",
+        "nativeCommand->size=VIRTIO_GPU_NATIVE_AHB_REQUEST_BODY_SIZE;",
+        "nativeCommand->width=width;",
+        "nativeCommand->height=height;",
+        "nativeCommand->fourcc=requestedFourcc;",
+        "nativeCommand->flags=0;",
+        "response->width==width&&response->height==height",
+        "response->fourcc==requestedFourcc&&authenticatedFormat==format",
         "VIRTIO_GPU_RESP_OK_NATIVE_AHB",
         "layout->BackingSize=allocationSize;",
     ):
@@ -4583,7 +4602,7 @@ def check_wddm_2d_resource_ownership() -> None:
 
     create_host = canonical_code(function_body("VioGpuAdapter::Create2DResourceBacking", VIOGPU_CODE))
     native_create_host = create_host.find("if(nativeAhb)")
-    native_create_call = create_host.find("m_CtrlQueue.CreateNativeAhbBlobSynchronous(resourceId,backingSize,nativeLayout)")
+    native_create_call = create_host.find("m_CtrlQueue.CreateNativeAhbBlobSynchronous(resourceId,backingSize,width,height,format,")
     native_create_state = create_host.find("*resourceState=VioGpu2DResourceNativeAhbBackingAttached;", native_create_call)
     if min(native_create_host, native_create_call, native_create_state) < 0 or not (
         native_create_host < native_create_call < native_create_state

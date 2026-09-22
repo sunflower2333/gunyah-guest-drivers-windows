@@ -562,6 +562,10 @@ class CtrlQueue : public VioGpuQueue
                                                           UINT entry_count);
     VIOGPU_HOST_CONTEXT_RESULT CreateNativeAhbBlobSynchronous(UINT resource_id,
                                                               ULONGLONG size,
+                                                              UINT width,
+                                                              UINT height,
+                                                              UINT format,
+                                                              BOOLEAN protocolV2,
                                                               _Out_ VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout);
     /* Standard-resource MAP_BLOB/UNMAP_BLOB used by the opt-in Native AHB
      * path.  These deliberately use the adapter synchronous channel; native

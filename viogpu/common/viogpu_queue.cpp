@@ -28,6 +28,7 @@
  */
 
 #include "viogpu_queue.h"
+#include "viogpu_native_ahb_format.h"
 #include "viogpu_primary_scanout.h"
 #include "baseobj.h"
 #include "../../VirtIO/osdep.h"
@@ -1536,6 +1537,10 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateGuestBlobSynchronous(UINT resource_i
 
 VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeAhbBlobSynchronous(UINT resource_id,
                                                                        ULONGLONG size,
+                                                                       UINT width,
+                                                                       UINT height,
+                                                                       UINT format,
+                                                                       BOOLEAN protocolV2,
                                                                        _Out_ VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout)
 {
     PAGED_CODE();
@@ -1549,7 +1554,9 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeAhbBlobSynchronous(UINT resour
      * here would silently turn a requested direct allocation into a guest blob
      * and break the resource-identity guarantee of Native Display. */
     const UINT flags = VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE | VIRTIO_GPU_BLOB_FLAG_USE_NATIVE_AHB;
+    UINT requestedFourcc = 0;
     if (!IsStandard2DResourceId(resource_id) || layout == NULL || size > MAXULONG ||
+        width == 0 || height == 0 || !VioGpuNativeAhbVirtioFormatToFourcc(format, &requestedFourcc) ||
         (size != 0 && (size & (PAGE_SIZE - 1)) != 0) || !BeginSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
@@ -1563,27 +1570,40 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeAhbBlobSynchronous(UINT resour
     }
 
     PGPU_VBUFFER vbuf = NULL;
-    PGPU_CMD_RESOURCE_CREATE_BLOB command = static_cast<PGPU_CMD_RESOURCE_CREATE_BLOB>(AllocCmdResp(&vbuf,
-                                                                                                      sizeof(*command),
-                                                                                                      response,
-                                                                                                      sizeof(*response)));
+    const UINT commandSize = protocolV2 ? sizeof(GPU_CMD_RESOURCE_CREATE_NATIVE_AHB)
+                                        : sizeof(GPU_CMD_RESOURCE_CREATE_BLOB);
+    PVOID commandMemory = AllocCmdResp(&vbuf, commandSize, response, sizeof(*response));
+    PGPU_CMD_RESOURCE_CREATE_BLOB command = static_cast<PGPU_CMD_RESOURCE_CREATE_BLOB>(commandMemory);
     if (command == NULL)
     {
         m_pBuf->FreeMemory(response);
         EndSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
-    RtlZeroMemory(command, sizeof(*command));
-    command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB;
-    command->resource_id = resource_id;
-    command->blob_mem = VIRTIO_GPU_BLOB_MEM_HOST3D;
-    command->blob_flags = flags;
-    command->nr_entries = 0;
-    command->blob_id = 0;
-    /* A zero size asks crosvm to negotiate the actual gralloc allocation.
-     * `size` is the caller's VidMm reservation bound, not a guest-owned blob
-     * size and therefore must never be put on the wire. */
-    command->size = 0;
+    RtlZeroMemory(commandMemory, commandSize);
+    if (protocolV2)
+    {
+        PGPU_CMD_RESOURCE_CREATE_NATIVE_AHB nativeCommand =
+            static_cast<PGPU_CMD_RESOURCE_CREATE_NATIVE_AHB>(commandMemory);
+        nativeCommand->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_NATIVE_AHB;
+        nativeCommand->resource_id = resource_id;
+        nativeCommand->version = VIRTIO_GPU_NATIVE_AHB_REQUEST_VERSION;
+        nativeCommand->size = VIRTIO_GPU_NATIVE_AHB_REQUEST_BODY_SIZE;
+        nativeCommand->width = width;
+        nativeCommand->height = height;
+        nativeCommand->fourcc = requestedFourcc;
+        nativeCommand->flags = 0;
+    }
+    else
+    {
+        command->hdr.type = VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB;
+        command->resource_id = resource_id;
+        command->blob_mem = VIRTIO_GPU_BLOB_MEM_HOST3D;
+        command->blob_flags = flags;
+        command->nr_entries = 0;
+        command->blob_id = 0;
+        command->size = 0;
+    }
 
     BOOLEAN releaseBuffer = TRUE;
     BOOLEAN submitted = FALSE;
@@ -1603,11 +1623,12 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeAhbBlobSynchronous(UINT resour
                                            ? 0
                                            : (static_cast<ULONGLONG>(response->height - 1) * response->plane_stride);
         const BOOLEAN layoutValid = plain && response->hdr.type == VIRTIO_GPU_RESP_OK_NATIVE_AHB &&
-                                    response->version == 1 && response->size == 64 && response->buffer_id != 0 &&
+                                    response->version == (protocolV2 ? VIRTIO_GPU_NATIVE_AHB_REQUEST_VERSION : 1U) &&
+                                    response->size == 64 && response->buffer_id != 0 &&
                                     response->modifier == 0 && response->plane_offset == 0 && response->width != 0 &&
                                     response->height != 0 && response->width <= MAXULONG / 4 && response->plane_count == 1 &&
                                     response->layout_flags == 1 &&
-                                    response->fourcc == 0x34324241U && response->plane_stride % 4 == 0 &&
+                                    response->plane_stride % 4 == 0 &&
                                     response->plane_stride >= response->width * 4 && allocationSize != 0 &&
                                     allocationSize <= MAXULONG && (allocationSize & (PAGE_SIZE - 1)) == 0 &&
                                     visibleBytes <= allocationSize &&
@@ -1617,11 +1638,16 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::CreateNativeAhbBlobSynchronous(UINT resour
                                                                   response->plane_stride,
                                                                   allocationSize) &&
                                     (size == 0 || allocationSize <= size);
-        if (layoutValid)
+        unsigned int authenticatedFormat = 0;
+        const BOOLEAN formatValid = VioGpuNativeAhbFourccToVirtioFormat(response->fourcc, &authenticatedFormat);
+        const BOOLEAN requestMatches = !protocolV2 ||
+                                       (response->width == width && response->height == height &&
+                                        response->fourcc == requestedFourcc && authenticatedFormat == format);
+        if (layoutValid && formatValid && requestMatches)
         {
             layout->Width = response->width;
             layout->Height = response->height;
-            layout->Format = VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM;
+            layout->Format = authenticatedFormat;
             layout->Stride = response->plane_stride;
             layout->BackingSize = allocationSize;
             result = VioGpuHostContextConfirmed;
