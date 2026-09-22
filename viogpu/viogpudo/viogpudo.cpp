@@ -8814,6 +8814,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     KeInitializeSpinLock(&m_ActiveScanoutLock);
     m_ActiveScanoutGuestBlob = FALSE;
     m_ScanoutRefreshRequested = 0;
+    KeInitializeMutex(&m_CursorMutex, 0);
     m_pCursorBuf = NULL;
     m_PendingWorks = 0;
     m_bStopWorkThread = FALSE;
@@ -13260,6 +13261,15 @@ NTSTATUS VioGpuAdapter::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSet
 {
     PAGED_CODE();
 
+    (VOID) KeWaitForSingleObject(&m_CursorMutex, Executive, KernelMode, FALSE, NULL);
+
+    if (!m_CtrlQueue.IsSynchronousRequestsHealthy())
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s cursor transport unavailable\n", __FUNCTION__));
+        KeReleaseMutex(&m_CursorMutex, FALSE);
+        return STATUS_DEVICE_NOT_READY;
+    }
+
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     DbgPrint(TRACE_LEVEL_INFORMATION,
              ("<--> %s flag = %d pitch = %d, pixels = %p, id = %d, w = %d, h = %d, x = %d, y = %d\n",
@@ -13282,6 +13292,7 @@ NTSTATUS VioGpuAdapter::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSet
         if (crsr == NULL || vbuf == NULL || m_pCursorBuf == NULL)
         {
             DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s cursor command allocation failed\n", __FUNCTION__));
+            KeReleaseMutex(&m_CursorMutex, FALSE);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
         RtlZeroMemory(crsr, sizeof(*crsr));
@@ -13296,11 +13307,13 @@ NTSTATUS VioGpuAdapter::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSet
         DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s vbuf = %p, ret = %d\n", __FUNCTION__, vbuf, ret));
         if (ret == 0)
         {
+            KeReleaseMutex(&m_CursorMutex, FALSE);
             return STATUS_SUCCESS;
         }
         VioGpuDbgBreak();
     }
     DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s Failed to create cursor\n", __FUNCTION__));
+    KeReleaseMutex(&m_CursorMutex, FALSE);
     return STATUS_UNSUCCESSFUL;
 }
 
@@ -13308,6 +13321,15 @@ NTSTATUS VioGpuAdapter::SetPointerPosition(_In_ CONST DXGKARG_SETPOINTERPOSITION
                                            _In_ CONST CURRENT_MODE *pModeCur)
 {
     PAGED_CODE();
+    (VOID) KeWaitForSingleObject(&m_CursorMutex, Executive, KernelMode, FALSE, NULL);
+
+    if (!m_CtrlQueue.IsSynchronousRequestsHealthy())
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s cursor transport unavailable\n", __FUNCTION__));
+        KeReleaseMutex(&m_CursorMutex, FALSE);
+        return STATUS_DEVICE_NOT_READY;
+    }
+
     if (m_pCursorBuf != NULL)
     {
         PGPU_UPDATE_CURSOR crsr;
@@ -13317,6 +13339,7 @@ NTSTATUS VioGpuAdapter::SetPointerPosition(_In_ CONST DXGKARG_SETPOINTERPOSITION
         if (crsr == NULL || vbuf == NULL)
         {
             DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s cursor command allocation failed\n", __FUNCTION__));
+            KeReleaseMutex(&m_CursorMutex, FALSE);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
         RtlZeroMemory(crsr, sizeof(*crsr));
@@ -13358,10 +13381,12 @@ NTSTATUS VioGpuAdapter::SetPointerPosition(_In_ CONST DXGKARG_SETPOINTERPOSITION
         DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s vbuf = %p, ret = %d\n", __FUNCTION__, vbuf, ret));
         if (ret == 0)
         {
+            KeReleaseMutex(&m_CursorMutex, FALSE);
             return STATUS_SUCCESS;
         }
         VioGpuDbgBreak();
     }
+    KeReleaseMutex(&m_CursorMutex, FALSE);
     return STATUS_UNSUCCESSFUL;
 }
 
@@ -14631,6 +14656,15 @@ BOOLEAN VioGpuAdapter::UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
         return FALSE;
     }
 
+    // CreateCursor() normally publishes m_pCursorBuf before returning TRUE,
+    // but allocation/teardown can race a pointer DDI during reset.  Do not
+    // dereference a partially-created object or an object without backing.
+    if (m_pCursorBuf == NULL || m_pCursorBuf->GetVirtualAddress() == NULL)
+    {
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s cursor backing unavailable\n", __FUNCTION__));
+        return FALSE;
+    }
+
     BLT_INFO DstBltInfo;
     DstBltInfo.pBits = m_pCursorBuf->GetVirtualAddress();
     DstBltInfo.Pitch = POINTER_SIZE * 4;
@@ -14692,6 +14726,7 @@ BOOLEAN VioGpuAdapter::UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
 void VioGpuAdapter::DestroyCursor()
 {
     PAGED_CODE();
+    (VOID) KeWaitForSingleObject(&m_CursorMutex, Executive, KernelMode, FALSE, NULL);
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     if (m_pCursorBuf != NULL)
     {
@@ -14706,6 +14741,7 @@ void VioGpuAdapter::DestroyCursor()
         m_Idr.PutId(id);
     }
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    KeReleaseMutex(&m_CursorMutex, FALSE);
 }
 
 BOOLEAN VioGpuAdapter::GpuObjectAttach(UINT res_id, VioGpuObj *obj)

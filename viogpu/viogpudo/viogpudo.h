@@ -917,6 +917,9 @@ class VioGpuAdapter : IVioGpuPCI
     HANDLE m_WorkThreadHandle;
     CtrlQueue m_CtrlQueue;
     CrsrQueue m_CursorQueue;
+    // Pointer DDIs can overlap adapter teardown during native-display reset.
+    // Keep cursor backing lifetime stable across all passive-level accesses.
+    KMUTEX m_CursorMutex;
     VioGpuBuf m_GpuBuf;
     VioGpuIdr m_Idr;
     VioGpuObj *m_pFrameBuf;
