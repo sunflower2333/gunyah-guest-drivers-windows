@@ -2376,7 +2376,9 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Create2DResourceBacking(_In_ UINT resource
                                                               _In_ UINT entryCount,
                                                               _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                               _Inout_ ULONGLONG *resourceResetGeneration,
-                                                              _In_ BOOLEAN guestBlob)
+                                                              _In_ BOOLEAN guestBlob,
+                                                              _In_ BOOLEAN nativeAhb,
+                                                              _Out_opt_ VIOGPU_PRIMARY_SCANOUT_LAYOUT *nativeLayout)
 {
     if (!AcquireNativeSubmissionOperation())
     {
@@ -2393,7 +2395,51 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Create2DResourceBacking(_In_ UINT resource
                                                                                            entryCount,
                                                                                            resourceState,
                                                                                            resourceResetGeneration,
-                                                                                           guestBlob)
+                                                                                           guestBlob,
+                                                                                           nativeAhb,
+                                                                                           nativeLayout)
+                                                        : VioGpuHostContextNotSubmitted;
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::MapNativeAhbBlob(_In_ UINT resourceId,
+                                                       _In_ ULONGLONG offset,
+                                                       _In_ SIZE_T length,
+                                                       _Out_ BOOLEAN *hostMapped,
+                                                       _Outptr_result_bytebuffer_(length) PVOID *address)
+{
+    if (hostMapped == NULL || address == NULL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    *hostMapped = FALSE;
+    *address = NULL;
+    if (!AcquireNativeSubmissionOperation())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    VIOGPU_HOST_CONTEXT_RESULT result = adapter != NULL ? adapter->MapNativeAhbBlob(resourceId,
+                                                                                    offset,
+                                                                                    length,
+                                                                                    hostMapped,
+                                                                                    address)
+                                                        : VioGpuHostContextNotSubmitted;
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::UnmapNativeAhbBlob(_In_ UINT resourceId)
+{
+    if (!AcquireNativeSubmissionOperation())
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+
+    VioGpuAdapter *adapter = m_pHWDevice;
+    VIOGPU_HOST_CONTEXT_RESULT result = adapter != NULL ? adapter->UnmapNativeAhbBlob(resourceId)
                                                         : VioGpuHostContextNotSubmitted;
     ReleaseNativeSubmissionOperation();
     return result;
@@ -2582,7 +2628,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::SetResourceColor(_In_ const VIOGPU_SET_RES
 VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::PresentColorResource(_In_ const VIOGPU_SET_RESOURCE_COLOR *color,
                                                            UINT width,
                                                            UINT height,
-                                                           ULONGLONG resetGeneration)
+                                                           ULONGLONG resetGeneration,
+                                                           BOOLEAN nativeAhb)
 {
     if (color == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || !AcquireNativeSubmissionOperation())
     {
@@ -2591,7 +2638,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::PresentColorResource(_In_ const VIOGPU_SET
     VIOGPU_HOST_CONTEXT_RESULT result = m_pHWDevice != NULL ? m_pHWDevice->PresentColorResource(color,
                                                                                                 width,
                                                                                                 height,
-                                                                                                resetGeneration)
+                                                                                                resetGeneration,
+                                                                                                nativeAhb)
                                                             : VioGpuHostContextNotSubmitted;
     ReleaseNativeSubmissionOperation();
     return result;
@@ -2617,7 +2665,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
                                                    _In_ UINT height,
                                                    _Out_ UINT *previousResourceId,
                                                    _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout,
-                                                   _In_ BOOLEAN nativeResource)
+                                                   _In_ BOOLEAN nativeResource,
+                                                   _In_ BOOLEAN nativeAhb)
 {
     if (previousResourceId == NULL)
     {
@@ -2636,7 +2685,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Set2DScanout(_In_ UINT scanoutId,
                                                                                 height,
                                                                                 previousResourceId,
                                                                                 layout,
-                                                                                nativeResource)
+                                                                                nativeResource,
+                                                                                nativeAhb)
                                                         : VioGpuHostContextNotSubmitted;
     ReleaseNativeSubmissionOperation();
     return result;
@@ -9675,6 +9725,9 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
     m_Flags.GuestBlobScanout = NT_SUCCESS(StatusOptional) && value == 1 && !IsRenderOnly();
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"ZeroCopyScanout", &value);
     m_Flags.ZeroCopyScanout = NT_SUCCESS(StatusOptional) && value == 1 && !IsRenderOnly();
+    value = 0;
+    StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"NativeAhbScanout", &value);
+    m_Flags.NativeAhbScanout = NT_SUCCESS(StatusOptional) && value == 1 && !IsRenderOnly();
     /* A render-only adapter owns no VidPn target, so it must never service the
      * pointer DDIs.  SetPointerShape() reaches UpdateCursor() -> CreateCursor(),
      * which builds a cursor resource against CURRENT_MODE and shares
@@ -9737,6 +9790,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     KeInitializeSpinLock(&m_ActiveScanoutLock);
     m_ActiveScanoutGuestBlob = FALSE;
     m_ActiveScanoutNative = FALSE;
+    m_ActiveScanoutNativeAhb = FALSE;
     m_ScanoutRefreshRequested = 0;
     m_pCursorBuf = NULL;
     m_PendingWorks = 0;
@@ -10795,7 +10849,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::SetResourceColor(_In_ const VIOGPU_SET
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::PresentColorResource(_In_ const VIOGPU_SET_RESOURCE_COLOR *color,
                                                                UINT width,
                                                                UINT height,
-                                                               ULONGLONG resetGeneration)
+                                                               ULONGLONG resetGeneration,
+                                                               BOOLEAN nativeAhb)
 {
     if (color == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || width == 0 || height == 0 || resetGeneration == 0)
     {
@@ -10822,7 +10877,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::PresentColorResource(_In_ const VIOGPU
     {
         result = m_CtrlQueue.SetScanoutSynchronous(0, color->resource_id, width, height, 0, 0);
     }
-    if (result == VioGpuHostContextConfirmed)
+    if (result == VioGpuHostContextConfirmed && !nativeAhb)
     {
         result = m_CtrlQueue.TransferToHost2DSynchronous(color->resource_id, 0, width, height, 0, 0);
     }
@@ -10834,7 +10889,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::PresentColorResource(_In_ const VIOGPU
     {
         m_2DScanoutResourceId = color->resource_id;
         m_2DScanoutResetGeneration = resetGeneration;
-        RecordActiveScanout(color->resource_id, width, height);
+        RecordActiveScanout(color->resource_id, width, height, TRUE, FALSE, nativeAhb);
     }
     else if (result == VioGpuHostContextUnknown)
     {
@@ -10852,7 +10907,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
                                                        _In_ UINT height,
                                                        _Out_ UINT *previousResourceId,
                                                        _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout,
-                                                       _In_ BOOLEAN nativeResource)
+                                                       _In_ BOOLEAN nativeResource,
+                                                       _In_ BOOLEAN nativeAhb)
 {
     /* A native scanout names the owning context's own allocation, which lives
      * above the 2D id range and always carries a blob layout. */
@@ -10904,7 +10960,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Set2DScanout(_In_ UINT scanoutId,
                                                                                            0);
     if (result == VioGpuHostContextConfirmed)
     {
-        RecordActiveScanout(resourceId, width, height, layout != NULL, nativeResource);
+        RecordActiveScanout(resourceId, width, height, layout != NULL, nativeResource, nativeAhb);
         m_2DScanoutResourceId = resourceId;
         m_2DScanoutResetGeneration = resourceId == 0 ? 0 : operationGeneration;
     }
@@ -11024,6 +11080,15 @@ BOOLEAN VioGpuAdapter::Release2DResourceId(_In_ UINT resourceId)
     return TRUE;
 }
 
+/* Both guest-blob and Native AHB creation can lose the synchronous ownership
+ * epoch after the host has replied. Keep one escalation call site so the
+ * failure-site census remains bijective while preserving the same fail-closed
+ * adapter latch for either backing mode. */
+static VOID FailNative2DCreateAtAnyIrql()
+{
+    FailNativeContextAtAnyIrql(VioGpuNativeFailSiteBacking2DCreate);
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT resourceId,
                                                                   _In_ UINT format,
                                                                   _In_ UINT width,
@@ -11033,14 +11098,19 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
                                                                   _In_ UINT entryCount,
                                                                   _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                                   _Inout_ ULONGLONG *resourceResetGeneration,
-                                                                  _In_ BOOLEAN guestBlob)
+                                                                  _In_ BOOLEAN guestBlob,
+                                                                  _In_ BOOLEAN nativeAhb,
+                                                                  _Out_opt_ VIOGPU_PRIMARY_SCANOUT_LAYOUT *nativeLayout)
 {
     PAGED_CODE();
 
     if (resourceState == NULL || resourceResetGeneration == NULL || resourceId == 0 ||
-        resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || width == 0 || height == 0 || backingSize == 0 ||
-        backingSize > MAXULONG || (backingSize & (PAGE_SIZE - 1)) != 0 || entries == NULL || entryCount == 0 ||
-        (*resourceState != VioGpu2DResourceNone && *resourceState != VioGpu2DResourceCreated) ||
+        resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || width == 0 || height == 0 ||
+        (!nativeAhb && backingSize == 0) ||
+        backingSize > MAXULONG || (backingSize & (PAGE_SIZE - 1)) != 0 ||
+        (!nativeAhb && (entries == NULL || entryCount == 0)) || (nativeAhb && (entries != NULL || entryCount != 0)) ||
+        (!nativeAhb && *resourceState != VioGpu2DResourceNone && *resourceState != VioGpu2DResourceCreated) ||
+        (nativeAhb && *resourceState != VioGpu2DResourceNone) ||
         KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
         return VioGpuHostContextNotSubmitted;
@@ -11054,6 +11124,47 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
                                                 : *resourceResetGeneration != operationGeneration))
     {
         return VioGpuHostContextNotSubmitted;
+    }
+
+    if (nativeAhb)
+    {
+        if (guestBlob || nativeLayout == NULL || !virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_RESOURCE_BLOB))
+        {
+            return VioGpuHostContextNotSubmitted;
+        }
+        VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.CreateNativeAhbBlobSynchronous(resourceId,
+                                                                                        backingSize,
+                                                                                        nativeLayout);
+        if (result == VioGpuHostContextConfirmed)
+        {
+            if (nativeLayout->Width != width || nativeLayout->Height != height || nativeLayout->Format != format ||
+                nativeLayout->BackingSize == 0 || nativeLayout->BackingSize > backingSize ||
+                static_cast<ULONGLONG>(nativeLayout->Stride) < static_cast<ULONGLONG>(width) * 4 ||
+                !VioGpuGuestScanoutBoundsValid(nativeLayout->Width,
+                                                nativeLayout->Height,
+                                                nativeLayout->Stride,
+                                                nativeLayout->BackingSize))
+            {
+                result = VioGpuHostContextRejected;
+            }
+        }
+        if (result == VioGpuHostContextConfirmed)
+        {
+            *resourceState = VioGpu2DResourceNativeAhbBackingAttached;
+            *resourceResetGeneration = operationGeneration;
+            if (static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0)) !=
+                operationGeneration)
+            {
+                result = VioGpuHostContextUnknown;
+            }
+        }
+        if (result == VioGpuHostContextUnknown)
+        {
+            *resourceState = VioGpu2DResourceUnknown;
+            *resourceResetGeneration = operationGeneration;
+            FailNative2DCreateAtAnyIrql();
+        }
+        return result;
     }
 
     if (guestBlob)
@@ -11081,7 +11192,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
         {
             *resourceState = VioGpu2DResourceUnknown;
             *resourceResetGeneration = operationGeneration;
-            FailNativeContextAtAnyIrql(VioGpuNativeFailSiteBacking2DCreate);
+            FailNative2DCreateAtAnyIrql();
         }
         return result;
     }
@@ -11142,6 +11253,58 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
     return VioGpuHostContextConfirmed;
 }
 
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::MapNativeAhbBlob(_In_ UINT resourceId,
+                                                           _In_ ULONGLONG offset,
+                                                           _In_ SIZE_T length,
+                                                           _Out_ BOOLEAN *hostMapped,
+                                                           _Outptr_result_bytebuffer_(length) PVOID *address)
+{
+    PAGED_CODE();
+
+    if (hostMapped == NULL || address == NULL || !IsStandard2DResourceId(resourceId) || length == 0 ||
+        length > MAXULONG || (length & (PAGE_SIZE - 1)) != 0 || (offset & (PAGE_SIZE - 1)) != 0 ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    *hostMapped = FALSE;
+    *address = NULL;
+
+    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.MapBlobSynchronous(resourceId, offset);
+    if (result != VioGpuHostContextConfirmed)
+    {
+        return result;
+    }
+    *hostMapped = TRUE;
+
+    NTSTATUS mapStatus = m_PciResources.MapHostVisibleAddress(offset, length, address);
+    if (!NT_SUCCESS(mapStatus) || *address == NULL)
+    {
+        /* MapApertureAllocation owns the whole create/map transaction.  Leave
+         * the confirmed resource-level mapping live here so its single
+         * Destroy2DResource rollback emits exactly one UNMAP_BLOB followed by
+         * RESOURCE_UNREF.  Unmapping in both layers would submit UNMAP_BLOB
+         * twice and crosvm quite correctly rejects the second request. */
+        *address = NULL;
+        return VioGpuHostContextNotSubmitted;
+    }
+    return VioGpuHostContextConfirmed;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::UnmapNativeAhbBlob(_In_ UINT resourceId)
+{
+    PAGED_CODE();
+
+    if (!IsStandard2DResourceId(resourceId) || KeGetCurrentIrql() != PASSIVE_LEVEL)
+    {
+        return VioGpuHostContextNotSubmitted;
+    }
+    /* CPciResources keeps one suffix mapping for all users and releases it at
+     * PCI close; the resource-level UNMAP is the operation that removes the
+     * crosvm stage-2 mapping and must complete before RESOURCE_UNREF. */
+    return m_CtrlQueue.UnmapBlobSynchronous(resourceId);
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId,
                                                             _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                             _Inout_ ULONGLONG *resourceResetGeneration,
@@ -11186,7 +11349,19 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId
         return VioGpuHostContextUnknown;
     }
 
-    VIOGPU_HOST_CONTEXT_RESULT result = m_CtrlQueue.UnrefResourceSynchronous(resourceId);
+    /* Native AHB resources are mapped through the host BAR rather than guest
+     * backing.  crosvm rejects UNREF while that mapping is live, so make the
+     * resource-level UNMAP part of the same synchronous destruction transaction
+     * and fail closed if it cannot be acknowledged. */
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextConfirmed;
+    if (VioGpuResourceNativeAhbMapped(*resourceState))
+    {
+        result = m_CtrlQueue.UnmapBlobSynchronous(resourceId);
+    }
+    if (result == VioGpuHostContextConfirmed)
+    {
+        result = m_CtrlQueue.UnrefResourceSynchronous(resourceId);
+    }
     if (result == VioGpuHostContextConfirmed)
     {
         *resourceState = VioGpu2DResourceNone;
@@ -11287,7 +11462,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Present2DResource(_In_ UINT resourceId
     m_pVioGpuDod->RecordDisplayValue(63, static_cast<LONG>(resourceId));
     KeQueryPerformanceCounter(&frequency);
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextConfirmed;
-    if (*resourceState != VioGpu2DResourceGuestBlobBackingAttached)
+    if (*resourceState != VioGpu2DResourceGuestBlobBackingAttached &&
+        !VioGpuResourceNativeAhb(*resourceState))
     {
         m_pVioGpuDod->RecordDisplayValue(52, 1);
         m_pVioGpuDod->CountDisplayEvent(53);
@@ -15322,13 +15498,15 @@ VOID VioGpuAdapter::RecordActiveScanout(_In_ UINT resourceId,
                                         _In_ UINT width,
                                         _In_ UINT height,
                                         _In_ BOOLEAN guestBlob,
-                                        _In_ BOOLEAN nativeResource)
+                                        _In_ BOOLEAN nativeResource,
+                                        _In_ BOOLEAN nativeAhb)
 {
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_ActiveScanoutLock, &oldIrql);
     InterlockedExchange(&m_ExplicitPresentResourceId, 0);
     m_ActiveScanoutGuestBlob = guestBlob;
     m_ActiveScanoutNative = nativeResource;
+    m_ActiveScanoutNativeAhb = nativeAhb;
     InterlockedExchange(&m_ActiveScanoutWidth, static_cast<LONG>(width));
     InterlockedExchange(&m_ActiveScanoutHeight, static_cast<LONG>(height));
     InterlockedExchange(&m_ActiveScanoutResourceId, static_cast<LONG>(resourceId));
@@ -15389,6 +15567,7 @@ void VioGpuAdapter::RefreshActiveScanout(void)
     const UINT height = static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutHeight, 0, 0));
     const BOOLEAN guestBlob = m_ActiveScanoutGuestBlob;
     const BOOLEAN nativeScanout = m_ActiveScanoutNative;
+    const BOOLEAN nativeAhb = m_ActiveScanoutNativeAhb;
     KeReleaseSpinLock(&m_ActiveScanoutLock, oldIrql);
     if (resourceId == 0 || width == 0 || height == 0 || m_pVioGpuDod == NULL || !m_pVioGpuDod->IsDriverActive() ||
         static_cast<UINT>(InterlockedCompareExchange(&m_ExplicitPresentResourceId, 0, 0)) == resourceId)
@@ -15396,10 +15575,32 @@ void VioGpuAdapter::RefreshActiveScanout(void)
         return;
     }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    /* Transport teardown closes this rundown before stopping the worker.  Keep
+     * the periodic refresh on the same submission lifetime as WDDM presents so
+     * a synchronous Native AHB flush cannot race virtqueue reset. */
+    const BOOLEAN operationAcquired = AcquireNativeSubmitOperation();
+    if (!operationAcquired)
+    {
+        return;
+    }
+#endif
+
     /* The compositor writes the primary in place and never tells us again, so
-     * move what is there now. Both commands are queued, not waited on. */
-    if ((guestBlob || nativeScanout || m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0)) &&
-        m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0, nativeScanout))
+     * move what is there now. A Native AHB is retained by Android until the
+     * release event for the prior presentation; its refresh must therefore
+     * wait for the host response instead of queueing another flush against a
+     * still-consumed buffer. */
+    const BOOLEAN refreshed = nativeAhb
+                                  ? m_CtrlQueue.FlushResourceSynchronous(resourceId, width, height, 0, 0, FALSE) ==
+                                        VioGpuHostContextConfirmed
+                                  : (guestBlob || nativeScanout ||
+                                     m_CtrlQueue.TransferToHost2D(resourceId, 0, width, height, 0, 0)) &&
+                                        m_CtrlQueue.ResFlush(resourceId, width, height, 0, 0, nativeScanout);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    ReleaseNativeSubmitOperation();
+#endif
+    if (refreshed)
     {
         m_pVioGpuDod->CountDisplayEvent(48);
     }

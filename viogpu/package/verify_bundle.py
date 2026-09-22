@@ -13,7 +13,9 @@ from flat_package import d3d_registration_line
 from flat_package import LOADER_PROBES, MACHINES, RECEIPT, REGISTRATION
 from flat_package import flat_name, pe_machine, require, sha, source_files
 
-D3D10_MESA = "985b7a202979de10a81ceb5b970f2ac3f3dda96c"
+# D3D10 UMDs follow the checked-in Mesa gitlink. This is independent from the
+# older OpenGL ICD artifact pin verified by the reusable OpenGL workflow.
+D3D10_MESA = "a304f0ff445bfd78cd82c9dee82632b7b766dae7"
 
 INSTALLER_FILES = (
     "INSTALL.cmd", "install-drivers.ps1", "pvmpower-devnode.ps1",

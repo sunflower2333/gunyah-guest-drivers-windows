@@ -1,10 +1,12 @@
 # A8xx OpenGL: source pairing, not a native Gallium migration
 
 The current `external/mesa` gitlink carries the app-local Windows ARM64
-OpenGL candidate and Zink last-pipeline collision fix. Its exact commit must
-match `viogpu/package/verify_bundle.py`'s `D3D10_MESA` identity. The new
-`VIOGPU OpenGL source pairing` workflow tests that checkout, not an independently
-moving branch. Existing lifetime and KMD recovery gates remain enabled.
+OpenGL candidate and Zink last-pipeline collision fix. Its exact commit is the
+source pin for the packaged D3D10 UMDs and must match
+`viogpu/package/verify_bundle.py`'s `D3D10_MESA` identity. The system OpenGL
+ICD workflow uses its separately pinned, published Mesa artifact and is
+verified independently; it must not be conflated with the D3D10 gitlink.
+Existing lifetime and KMD recovery gates remain enabled.
 
 ## Implemented route
 

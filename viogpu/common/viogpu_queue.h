@@ -32,6 +32,14 @@
 #include "../shared/viogpu_display_color.h"
 #include "viogpu_pci.h"
 
+/* Standard 2D resources are allocated from the low id range.  Keep this
+ * predicate in the shared header so adapter-side BAR mapping and queue-side
+ * command validation cannot drift apart. */
+inline BOOLEAN IsStandard2DResourceId(UINT resourceId)
+{
+    return resourceId != 0 && resourceId < VIOGPU_NATIVE_RESOURCE_ID_START;
+}
+
 #pragma pack(1)
 typedef struct virtio_gpu_config
 {
@@ -280,11 +288,24 @@ enum VIOGPU_2D_RESOURCE_STATE : LONG
     VioGpu2DResourceBackingAttached,
     VioGpu2DResourceUnknown,
     VioGpu2DResourceGuestBlobBackingAttached,
+    VioGpu2DResourceNativeAhbBackingAttached,
+    VioGpu2DResourceNativeAhbMapped,
 };
 
 inline BOOLEAN VioGpuResourceBackingAttached(VIOGPU_2D_RESOURCE_STATE state)
 {
-    return state == VioGpu2DResourceBackingAttached || state == VioGpu2DResourceGuestBlobBackingAttached;
+    return state == VioGpu2DResourceBackingAttached || state == VioGpu2DResourceGuestBlobBackingAttached ||
+           state == VioGpu2DResourceNativeAhbBackingAttached || state == VioGpu2DResourceNativeAhbMapped;
+}
+
+inline BOOLEAN VioGpuResourceNativeAhb(VIOGPU_2D_RESOURCE_STATE state)
+{
+    return state == VioGpu2DResourceNativeAhbBackingAttached || state == VioGpu2DResourceNativeAhbMapped;
+}
+
+inline BOOLEAN VioGpuResourceNativeAhbMapped(VIOGPU_2D_RESOURCE_STATE state)
+{
+    return state == VioGpu2DResourceNativeAhbMapped;
 }
 
 #define MAX_INLINE_CMD_SIZE               96
@@ -539,6 +560,14 @@ class CtrlQueue : public VioGpuQueue
                                                           ULONGLONG size,
                                                           const GPU_MEM_ENTRY *entries,
                                                           UINT entry_count);
+    VIOGPU_HOST_CONTEXT_RESULT CreateNativeAhbBlobSynchronous(UINT resource_id,
+                                                              ULONGLONG size,
+                                                              _Out_ VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout);
+    /* Standard-resource MAP_BLOB/UNMAP_BLOB used by the opt-in Native AHB
+     * path.  These deliberately use the adapter synchronous channel; native
+     * context resources use the separate MapNativeControlBlob APIs below. */
+    VIOGPU_HOST_CONTEXT_RESULT MapBlobSynchronous(UINT resource_id, ULONGLONG offset);
+    VIOGPU_HOST_CONTEXT_RESULT UnmapBlobSynchronous(UINT resource_id);
     /* nativeResource scans out a native context's own allocation: the pixels a
      * compositor rendered live there, so nothing has to be copied into a 2D
      * resource first. */

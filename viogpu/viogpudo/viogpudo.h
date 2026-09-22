@@ -119,7 +119,11 @@ typedef struct
     /* Scan out the creator's shared native texture instead of the primary's
      * own allocation, so the compositor need not copy its frame there. */
     UINT ZeroCopyScanout : 1;
-    UINT Unused : 23;
+    /* Allocate the standard primary itself from host Android gralloc and map
+     * that same backing through the guest BAR.  This is deliberately separate
+     * from ZeroCopyScanout, which uses the native-context ShareKey path. */
+    UINT NativeAhbScanout : 1;
+    UINT Unused : 22;
 } DRIVER_STATUS_FLAG;
 
 #pragma pack(pop)
@@ -211,6 +215,33 @@ enum : UINT
     VioGpuApertureStageMapCpuMapping = 22,
     VioGpuNativeContextDestroyDiagnosticSlotCount = 64,
 };
+
+/* Pack the two facts that separate the four ways stage 8 (MapHost) can fail,
+ * into the single detail DWORD the aperture recorder carries.  Decoding:
+ *   result   = detail >> 28
+ *   second   = (detail >> 27) & 1     ownership retained / backing attached
+ *   sizeKiB  = detail & 0x07FFFFFF
+ * Size is included because create_udmabuf returns EINVAL both for a bad
+ * argument and for exceeding size_limit_mb, and only the size tells them apart.
+ * Only the first aperture failure latches detail, which is the one that matters:
+ * the rest are VidMm retrying the same allocation. */
+/* Sentinel for "stage 8 was reached without any host call", so the submission
+ * gate refusing is not mistaken for a host verdict.  0xF cannot collide with a
+ * VIOGPU_HOST_CONTEXT_RESULT, which is a small enumeration. */
+enum
+{
+    VioGpuApertureHostDetailNoSubmission = 0xF,
+};
+
+inline DWORD VioGpuPackApertureHostDetail(_In_ LONG result, _In_ BOOLEAN secondCondition, _In_ SIZE_T backingSize)
+{
+    DWORD packed = static_cast<DWORD>((static_cast<ULONG>(result) & 0xF) << 28);
+    if (secondCondition)
+    {
+        packed |= 0x08000000U;
+    }
+    return packed | static_cast<DWORD>((backingSize >> 10) & 0x07FFFFFFU);
+}
 
 enum VIOGPU_NATIVE_START_STAGE : DWORD
 {
@@ -907,7 +938,15 @@ class VioGpuAdapter : IVioGpuPCI
                                                        _In_ UINT entryCount,
                                                        _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                        _Inout_ ULONGLONG *resourceResetGeneration,
-                                                       _In_ BOOLEAN guestBlob = FALSE);
+                                                       _In_ BOOLEAN guestBlob = FALSE,
+                                                       _In_ BOOLEAN nativeAhb = FALSE,
+                                                       _Out_opt_ VIOGPU_PRIMARY_SCANOUT_LAYOUT *nativeLayout = NULL);
+    VIOGPU_HOST_CONTEXT_RESULT MapNativeAhbBlob(_In_ UINT resourceId,
+                                                _In_ ULONGLONG offset,
+                                                _In_ SIZE_T length,
+                                                _Out_ BOOLEAN *hostMapped,
+                                                _Outptr_result_bytebuffer_(length) PVOID *address);
+    VIOGPU_HOST_CONTEXT_RESULT UnmapNativeAhbBlob(_In_ UINT resourceId);
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                  _Inout_ ULONGLONG *resourceResetGeneration,
@@ -941,7 +980,7 @@ class VioGpuAdapter : IVioGpuPCI
      * display's cadence for anything to reach the host. */
     VOID RequestScanoutRefresh(void);
     VOID RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height, _In_ BOOLEAN guestBlob = FALSE,
-                             _In_ BOOLEAN nativeResource = FALSE);
+                             _In_ BOOLEAN nativeResource = FALSE, _In_ BOOLEAN nativeAhb = FALSE);
     /* A flip publishes a finished primary that the compositor does not write
      * again while it is scanned out, so the vsync republish stands down for
      * it exactly as it does after a completed Present of the binding. */
@@ -960,14 +999,16 @@ class VioGpuAdapter : IVioGpuPCI
     VIOGPU_HOST_CONTEXT_RESULT PresentColorResource(_In_ const VIOGPU_SET_RESOURCE_COLOR *color,
                                                     UINT width,
                                                     UINT height,
-                                                    ULONGLONG resetGeneration);
+                                                    ULONGLONG resetGeneration,
+                                                    BOOLEAN nativeAhb);
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(_In_ UINT scanoutId,
                                             _In_ UINT resourceId,
                                             _In_ UINT width,
                                             _In_ UINT height,
                                             _Out_ UINT *previousResourceId,
                                             _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout = NULL,
-                                            _In_ BOOLEAN nativeResource = FALSE);
+                                            _In_ BOOLEAN nativeResource = FALSE,
+                                            _In_ BOOLEAN nativeAhb = FALSE);
     /* Flush a native scanout: its pixels are written by the owning context's
      * GPU work, so there is nothing to transfer first. */
     VIOGPU_HOST_CONTEXT_RESULT FlushNativeScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
@@ -1267,6 +1308,10 @@ class VioGpuAdapter : IVioGpuPCI
     /* The active scanout is a native context's allocation, so a refresh flushes
      * it without a transfer: nothing copies into it. */
     BOOLEAN m_ActiveScanoutNative;
+    /* A standard 2D primary can also own a host Android AHB. It uses the same
+     * no-transfer path, but unlike a native-context resource it has a standard
+     * resource id and therefore needs its own lifetime bit. */
+    BOOLEAN m_ActiveScanoutNativeAhb;
     volatile LONG m_ScanoutRefreshRequested;
     VioGpuObj *m_pCursorBuf;
     VioGpuMemSegment m_CursorSegment;
@@ -1527,6 +1572,10 @@ class VioGpuDod
     {
         return m_Flags.ZeroCopyScanout && !IsRenderOnly();
     }
+    BOOLEAN IsNativeAhbScanoutEnabled() const
+    {
+        return m_Flags.NativeAhbScanout && !IsRenderOnly();
+    }
     void SetPersistentDispMode0Width(USHORT res)
     {
         m_PersistentDispMode0Width = res;
@@ -1691,7 +1740,15 @@ class VioGpuDod
                                                        _In_ UINT entryCount,
                                                        _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                        _Inout_ ULONGLONG *resourceResetGeneration,
-                                                       _In_ BOOLEAN guestBlob = FALSE);
+                                                       _In_ BOOLEAN guestBlob = FALSE,
+                                                       _In_ BOOLEAN nativeAhb = FALSE,
+                                                       _Out_opt_ VIOGPU_PRIMARY_SCANOUT_LAYOUT *nativeLayout = NULL);
+    VIOGPU_HOST_CONTEXT_RESULT MapNativeAhbBlob(_In_ UINT resourceId,
+                                                _In_ ULONGLONG offset,
+                                                _In_ SIZE_T length,
+                                                _Out_ BOOLEAN *hostMapped,
+                                                _Outptr_result_bytebuffer_(length) PVOID *address);
+    VIOGPU_HOST_CONTEXT_RESULT UnmapNativeAhbBlob(_In_ UINT resourceId);
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(_In_ UINT resourceId,
                                                  _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                  _Inout_ ULONGLONG *resourceResetGeneration,
@@ -1743,7 +1800,8 @@ class VioGpuDod
     VIOGPU_HOST_CONTEXT_RESULT PresentColorResource(_In_ const VIOGPU_SET_RESOURCE_COLOR *color,
                                                     UINT width,
                                                     UINT height,
-                                                    ULONGLONG resetGeneration);
+                                                    ULONGLONG resetGeneration,
+                                                    BOOLEAN nativeAhb);
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     // Slot and event are changed under the same lock. A configuration owns the
     // same slot as a queued present, so an older worker cannot restore old modes.
@@ -1854,7 +1912,8 @@ class VioGpuDod
                                             _In_ UINT height,
                                             _Out_ UINT *previousResourceId,
                                             _In_opt_ const VIOGPU_PRIMARY_SCANOUT_LAYOUT *layout = NULL,
-                                            _In_ BOOLEAN nativeResource = FALSE);
+                                            _In_ BOOLEAN nativeResource = FALSE,
+                                            _In_ BOOLEAN nativeAhb = FALSE);
     VIOGPU_HOST_CONTEXT_RESULT FlushNativeScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
     VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *detached);
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);

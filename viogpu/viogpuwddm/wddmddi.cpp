@@ -587,6 +587,38 @@ BOOLEAN IsStandardPrimaryAllocation(const VIOGPU_WDDM_ALLOCATION *allocation)
     return IsStandardAllocation(allocation) && (allocation->Flags & VIOGPU_WDDM_ALLOCATION_PRIMARY) != 0;
 }
 
+/* Native AHB is an opt-in backing for a standard primary.  Keep this predicate
+ * separate from IsNativeAllocation(): the latter describes the WDDM native
+ * context ABI and uses the high resource-id range, while Native AHB deliberately
+ * owns an ordinary 2D resource id. */
+BOOLEAN IsNativeAhbPrimaryAllocation(const VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    return IsStandardPrimaryAllocation(allocation) &&
+           VioGpuResourceNativeAhb(allocation->Resource2DState);
+}
+
+BOOLEAN HasNativeAhbMapping(const VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    return IsNativeAhbPrimaryAllocation(allocation) && allocation->NativeAhbMapped &&
+           allocation->NativeAhbAddress != NULL;
+}
+
+PVOID AllocationBackingAddress(const VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    if (allocation == NULL)
+    {
+        return NULL;
+    }
+    return HasNativeAhbMapping(allocation) ? allocation->NativeAhbAddress : allocation->ApertureAddress;
+}
+
+BOOLEAN HasMappedAllocationBacking(const VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    return allocation != NULL && allocation->PlacementValid && AllocationBackingAddress(allocation) != NULL &&
+           (HasNativeAhbMapping(allocation) ||
+            (allocation->ApertureMdl != NULL && allocation->ApertureMappedPageCount == allocation->AperturePageCount));
+}
+
 BOOLEAN IsGdiSourceAllocation(const VIOGPU_WDDM_ALLOCATION *allocation)
 {
     return IsStandardAllocation(allocation) && !IsStandardPrimaryAllocation(allocation) &&
@@ -2500,13 +2532,14 @@ NTSTATUS CopyAperturePlacement(VIOGPU_WDDM_ALLOCATION *allocation,
                                PVOID systemAddress,
                                BOOLEAN toSegment)
 {
-    if (allocation == NULL || allocation->ApertureAddress == NULL || systemAddress == NULL || transferSize == 0 ||
+    PVOID allocationAddress = AllocationBackingAddress(allocation);
+    if (allocation == NULL || allocationAddress == NULL || systemAddress == NULL || transferSize == 0 ||
         allocationOffset > allocation->BackingSize || transferSize > allocation->BackingSize - allocationOffset)
     {
         return STATUS_INVALID_PARAMETER;
     }
 
-    PVOID apertureAddress = static_cast<PUCHAR>(allocation->ApertureAddress) + allocationOffset;
+    PVOID apertureAddress = static_cast<PUCHAR>(allocationAddress) + allocationOffset;
     if (toSegment)
     {
         RtlCopyMemory(apertureAddress, systemAddress, transferSize);
@@ -2522,14 +2555,15 @@ NTSTATUS CopyAperturePlacement(VIOGPU_WDDM_ALLOCATION *allocation,
 
 NTSTATUS FillAperturePlacement(VIOGPU_WDDM_ALLOCATION *allocation, SIZE_T fillSize, UINT pattern)
 {
-    if (allocation == NULL || allocation->ApertureAddress == NULL || fillSize == 0 ||
+    PVOID allocationAddress = AllocationBackingAddress(allocation);
+    if (allocation == NULL || allocationAddress == NULL || fillSize == 0 ||
         fillSize > allocation->BackingSize || (fillSize & (sizeof(ULONG) - 1)) != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
     for (SIZE_T offset = 0; offset < fillSize; offset += sizeof(pattern))
     {
-        RtlCopyMemory(static_cast<PUCHAR>(allocation->ApertureAddress) + offset, &pattern, sizeof(pattern));
+        RtlCopyMemory(static_cast<PUCHAR>(allocationAddress) + offset, &pattern, sizeof(pattern));
     }
     KeMemoryBarrier();
     return STATUS_SUCCESS;
@@ -2605,9 +2639,21 @@ BOOLEAN ReconcileStandard2DAllocationAfterReset(VIOGPU_WDDM_ALLOCATION *allocati
     BOOLEAN valid = allocation->Adapter->Reconcile2DResourceAfterReset(&allocation->Resource2DState,
                                                                        &allocation->Resource2DResetGeneration,
                                                                        &retired);
+    const BOOLEAN nativeAhb = VioGpuResourceNativeAhb(allocation->Resource2DState) ||
+                              allocation->NativeAhbMapped || allocation->NativeAhbAddress != NULL;
     if (!valid || !retired)
     {
         return valid;
+    }
+
+    /* Reset retirement drops the host resource with its generation.  There is
+     * no valid UNMAP/UNREF to submit afterwards, but the local BAR alias must
+     * not be mistaken for a live scanout on the next VidMm callback. */
+    allocation->NativeAhbAddress = NULL;
+    allocation->NativeAhbMapped = FALSE;
+    if (nativeAhb)
+    {
+        ClearNativePlacement(allocation);
     }
 
     return TRUE;
@@ -2645,6 +2691,10 @@ BOOLEAN EnsureStandard2DAllocationBacking(VIOGPU_WDDM_ALLOCATION *allocation)
                              VIOGPU_2D_BACKING_STAGE_RECONCILE,
                              allocation != NULL ? static_cast<DWORD>(allocation->Resource2DState) : 0);
         return FALSE;
+    }
+    if (VioGpuResourceNativeAhb(allocation->Resource2DState))
+    {
+        return allocation->PlacementValid && allocation->NativeAhbMapped && allocation->NativeAhbAddress != NULL;
     }
     if (VioGpuResourceBackingAttached(allocation->Resource2DState))
     {
@@ -2710,9 +2760,8 @@ BOOLEAN ReconcileGdiSourcePlacementAfterReset(VIOGPU_WDDM_ALLOCATION *allocation
         return FALSE;
     }
 
-    return allocation->ApertureMdl != NULL && allocation->ApertureAddress != NULL &&
-           allocation->ApertureMappedPageCount == allocation->AperturePageCount &&
-           VioGpuResourceBackingAttached(allocation->Resource2DState) && allocation->Resource2DResetGeneration != 0;
+    return HasMappedAllocationBacking(allocation) && VioGpuResourceBackingAttached(allocation->Resource2DState) &&
+           allocation->Resource2DResetGeneration != 0;
 }
 
 BOOLEAN HasGdiPresentIdentity(_In_ const VIOGPU_WDDM_ALLOCATION *allocation,
@@ -2734,8 +2783,7 @@ BOOLEAN HasLiveGdiPresentIdentity(_In_ const VIOGPU_WDDM_ALLOCATION *allocation,
 {
     return HasGdiPresentIdentity(allocation, context, adapter) &&
            VioGpuResourceBackingAttached(allocation->Resource2DState) && allocation->Resource2DResetGeneration != 0 &&
-           allocation->PlacementValid && allocation->ApertureMdl != NULL && allocation->ApertureAddress != NULL &&
-           allocation->ApertureMappedPageCount == allocation->AperturePageCount;
+           HasMappedAllocationBacking(allocation);
 }
 
 DWORD BuildPresentPlacementDiagnosticState(_In_opt_ const VIOGPU_WDDM_ALLOCATION *allocation)
@@ -2750,6 +2798,8 @@ DWORD BuildPresentPlacementDiagnosticState(_In_opt_ const VIOGPU_WDDM_ALLOCATION
     state |= allocation->ApertureMdl != NULL ? 1U << 1 : 0;
     state |= allocation->ApertureAddress != NULL ? 1U << 2 : 0;
     state |= allocation->ApertureMappedPageCount == allocation->AperturePageCount ? 1U << 3 : 0;
+    state |= allocation->NativeAhbMapped ? 1U << 6 : 0;
+    state |= allocation->NativeAhbAddress != NULL ? 1U << 7 : 0;
     state |= allocation->Destroying ? 1U << 4 : 0;
     state |= allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE ? 1U << 5 : 0;
     return state;
@@ -3343,8 +3393,12 @@ VOID ProbePresentCopy(_In_ const VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
     probe->RectCount = transaction->RectCount;
     probe->HostPresentResult = static_cast<DWORD>(VioGpuHostContextNotSubmitted);
 
-    const PUCHAR sourceBase = static_cast<PUCHAR>(transaction->Source->ApertureAddress);
-    const PUCHAR destinationBase = static_cast<PUCHAR>(transaction->Destination->ApertureAddress);
+    const PUCHAR sourceBase = static_cast<PUCHAR>(AllocationBackingAddress(transaction->Source));
+    const PUCHAR destinationBase = static_cast<PUCHAR>(AllocationBackingAddress(transaction->Destination));
+    if (sourceBase == NULL || destinationBase == NULL)
+    {
+        return;
+    }
     for (UINT rectIndex = 0; rectIndex < transaction->RectCount && probe->SampleCount < 256; ++rectIndex)
     {
         const RECT *rect = &transaction->DestinationSubRects[rectIndex];
@@ -3484,7 +3538,7 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
             status = STATUS_DEVICE_NOT_READY;
             *failureStage = VioGpuWddmPresentExecuteDestinationPrimary;
         }
-        else if (NT_SUCCESS(status) && (!source->PlacementValid || source->ApertureAddress == NULL))
+        else if (NT_SUCCESS(status) && !HasMappedAllocationBacking(source))
         {
             status = STATUS_DEVICE_NOT_READY;
             *failureStage = VioGpuWddmPresentExecuteSourcePlacement;
@@ -3540,15 +3594,15 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
 
     if (NT_SUCCESS(status))
     {
-        if (source->ApertureAddress == NULL || destination->ApertureAddress == NULL)
+        if (AllocationBackingAddress(source) == NULL || AllocationBackingAddress(destination) == NULL)
         {
             status = STATUS_DEVICE_NOT_READY;
             *failureStage = VioGpuWddmPresentExecuteCopyAddress;
         }
         if (NT_SUCCESS(status))
         {
-            PUCHAR sourceBase = static_cast<PUCHAR>(source->ApertureAddress);
-            PUCHAR destinationBase = static_cast<PUCHAR>(destination->ApertureAddress);
+            PUCHAR sourceBase = static_cast<PUCHAR>(AllocationBackingAddress(source));
+            PUCHAR destinationBase = static_cast<PUCHAR>(AllocationBackingAddress(destination));
 #if defined(VIOGPU_NATIVE_CONTEXT)
             /* The one-shot copy probe saw a standard source with zero pixels.
              * DWM's steady-state source may be a native guest-alloc blob whose
@@ -3603,7 +3657,10 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                 }
             }
             KeMemoryBarrier();
-            KeFlushIoBuffers(destination->ApertureMdl, FALSE, TRUE);
+            if (destination->ApertureMdl != NULL)
+            {
+                KeFlushIoBuffers(destination->ApertureMdl, FALSE, TRUE);
+            }
             ProbePresentCopy(transaction, &copyProbe);
         }
     }
@@ -5400,16 +5457,18 @@ VOID VioGpuColorPresentWorker(_In_ PVOID context)
     if (status == STATUS_SUCCESS)
     {
         VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
+        const BOOLEAN nativeAhb = VioGpuResourceNativeAhbMapped(allocation->Resource2DState);
         if (work->FenceEpoch == adapter->QueryNativeFenceEpoch() && !adapter->IsHardwareResetRequested() &&
             IsStandardPrimaryAllocation(allocation) && allocation->PlacementValid &&
             allocation->PlacementOffset == work->PrimaryAddress && EnsureStandard2DAllocationBacking(allocation) &&
-            allocation->Resource2DState == VioGpu2DResourceBackingAttached)
+            (allocation->Resource2DState == VioGpu2DResourceBackingAttached || nativeAhb))
         {
             work->Color.resource_id = allocation->ResourceId;
             result = adapter->PresentColorResource(&work->Color,
                                                    allocation->Width,
                                                    allocation->Height,
-                                                   allocation->Resource2DResetGeneration);
+                                                   allocation->Resource2DResetGeneration,
+                                                   nativeAhb);
         }
         status = result == VioGpuHostContextConfirmed ? STATUS_SUCCESS : STATUS_DEVICE_NOT_READY;
         KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
@@ -6219,6 +6278,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
         allocation->ContextId = contextId;
         allocation->PrivateData = privateData;
         allocation->BackingSize = alignedSize;
+        allocation->ApertureReservationSize = alignedSize;
         allocation->ResourceId = nativeContext != NULL ? nativeResourceId : standardResourceId;
         allocation->BlobId = nativeResourceId;
         allocation->Resource2DState = VioGpu2DResourceNone;
@@ -6450,6 +6510,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
                                 if (released)
                                 {
                                     ClearNativePlacement(allocation);
+                                    allocation->NativeAhbAddress = NULL;
+                                    allocation->NativeAhbMapped = FALSE;
                                 }
                                 status = result == VioGpuHostContextConfirmed && released ? STATUS_SUCCESS
                                                                                           : STATUS_DEVICE_NOT_READY;
@@ -7395,7 +7457,7 @@ NTSTATUS ExecutePagingTransaction(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTION *transa
     BOOLEAN valid = allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
                     allocation->Adapter == transaction->Adapter && allocation->ResourceId == transaction->ResourceId &&
                     allocation->PlacementValid && allocation->PlacementOffset == transaction->PlacementOffset &&
-                    allocation->ApertureMdl != NULL && allocation->ApertureAddress != NULL;
+                    HasMappedAllocationBacking(allocation);
     if (valid && transaction->ContextId == 0)
     {
         valid = IsStandardAllocation(allocation) && allocation->NativeContext == NULL && allocation->ContextId == 0 &&
@@ -7683,8 +7745,7 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
                                _In_ PMDL mdl,
                                _In_ UINT mdlOffset)
 {
-    if (adapter == NULL || allocation == NULL || mdl == NULL || numberOfPages == 0 || MmGetMdlByteCount(mdl) == 0 ||
-        MmGetMdlByteOffset(mdl) != 0 || (mdl->MdlFlags & MDL_PAGES_LOCKED) == 0 ||
+    if (adapter == NULL || allocation == NULL || numberOfPages == 0 ||
         offsetInPages > (MAXULONGLONG >> PAGE_SHIFT) ||
         numberOfPages - 1 > (MAXULONGLONG >> PAGE_SHIFT) - offsetInPages ||
         offsetInPages >= (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) ||
@@ -7697,10 +7758,136 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
+    const BOOLEAN nativeAhbPrimary = adapter->IsNativeAhbScanoutEnabled() && IsStandardPrimaryAllocation(allocation);
+    if (!nativeAhbPrimary &&
+        (mdl == NULL || MmGetMdlByteCount(mdl) == 0 || MmGetMdlByteOffset(mdl) != 0 ||
+         (mdl->MdlFlags & MDL_PAGES_LOCKED) == 0))
+    {
+        adapter->RecordNativeApertureFailure(VioGpuApertureStageMapArguments, STATUS_INVALID_PARAMETER);
+        return STATUS_GRAPHICS_ALLOCATION_BUSY;
+    }
+
     NTSTATUS status = AcquireAllocationLifecycle(allocation);
     if (status != STATUS_SUCCESS)
     {
         adapter->RecordNativeApertureFailure(VioGpuApertureStageMapLifecycle, status);
+        return STATUS_GRAPHICS_ALLOCATION_BUSY;
+    }
+
+    /* Native AHB primaries have no guest PFN list.  VidMm still sends the
+     * normal aperture operation, so use its placement arithmetic for the BAR
+     * alias but deliberately skip page-state/MDL/SG construction.  This branch
+     * is gated twice (adapter registry opt-in and standard primary) so ordinary
+     * allocations can never accidentally become host-owned buffers. */
+    if (nativeAhbPrimary)
+    {
+        SIZE_T allocationPageCount = BYTES_TO_PAGES(allocation->BackingSize);
+        SIZE_T reservationPageCount = BYTES_TO_PAGES(allocation->ApertureReservationSize != 0
+                                                         ? allocation->ApertureReservationSize
+                                                         : allocation->BackingSize);
+        /* The host-owned blob has no VidMm page zero.  Its BAR alias starts at
+         * the segment offset itself; MdlOffset is meaningful only for the
+         * guest-backed branch below. */
+        SIZE_T basePage = offsetInPages;
+        ULONGLONG placementOffset = static_cast<ULONGLONG>(basePage) << PAGE_SHIFT;
+        BOOLEAN valid = allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE && allocation->Adapter == adapter &&
+                        !allocation->Destroying && allocation->ResourceId != 0 &&
+                        allocation->ResourceId < VIOGPU_NATIVE_RESOURCE_ID_START && allocation->BlobId == 0 &&
+                        allocation->BackingSize != 0 && (allocation->BackingSize & (PAGE_SIZE - 1)) == 0 &&
+                        allocation->ApertureReservationSize != 0 &&
+                        (allocation->ApertureReservationSize & (PAGE_SIZE - 1)) == 0 &&
+                        allocationPageCount != 0 && reservationPageCount != 0 &&
+                        allocationPageCount <= reservationPageCount && numberOfPages <= reservationPageCount &&
+                        basePage < (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) &&
+                        reservationPageCount <= (VIOGPU_WDDM_APERTURE_SIZE >> PAGE_SHIFT) - basePage &&
+                        allocation->AperturePfns == NULL && allocation->ApertureMappedPages == NULL &&
+                        allocation->AperturePageCount == 0 && allocation->ApertureMappedPageCount == 0;
+        if (!valid)
+        {
+            KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+            adapter->RecordNativeApertureFailure(VioGpuApertureStageMapValidate, STATUS_DEVICE_NOT_READY);
+            return STATUS_GRAPHICS_ALLOCATION_BUSY;
+        }
+
+        if (allocation->PlacementValid)
+        {
+            valid = allocation->PlacementOffset == placementOffset && HasNativeAhbMapping(allocation);
+            KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+            if (!valid)
+            {
+                adapter->RecordNativeApertureFailure(VioGpuApertureStageMapPlacement, STATUS_DEVICE_NOT_READY);
+                return STATUS_GRAPHICS_ALLOCATION_BUSY;
+            }
+            return STATUS_SUCCESS;
+        }
+
+        UINT virtioFormat = 0;
+        if (!ResolveStandard2DFormat(allocation->Format, &virtioFormat))
+        {
+            KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+            adapter->RecordNativeApertureFailure(VioGpuApertureStageMapHost, STATUS_INVALID_PARAMETER);
+            return STATUS_GRAPHICS_ALLOCATION_BUSY;
+        }
+
+        VIOGPU_PRIMARY_SCANOUT_LAYOUT nativeLayout = {};
+        VIOGPU_HOST_CONTEXT_RESULT result = adapter->Create2DResourceBacking(allocation->ResourceId,
+                                                                               virtioFormat,
+                                                                               allocation->Width,
+                                                                               allocation->Height,
+                                                                               allocation->BackingSize,
+                                                                               NULL,
+                                                                               0,
+                                                                               &allocation->Resource2DState,
+                                                                               &allocation->Resource2DResetGeneration,
+                                                                               FALSE,
+                                                                               TRUE,
+                                                                               &nativeLayout);
+        if (result == VioGpuHostContextConfirmed)
+        {
+            allocation->BackingSize = static_cast<SIZE_T>(nativeLayout.BackingSize);
+            allocation->Pitch = nativeLayout.Stride;
+        }
+        if (result == VioGpuHostContextConfirmed &&
+            allocation->Resource2DState == VioGpu2DResourceNativeAhbBackingAttached)
+        {
+            PVOID nativeAddress = NULL;
+            BOOLEAN hostMapped = FALSE;
+            result = adapter->MapNativeAhbBlob(allocation->ResourceId,
+                                               placementOffset,
+                                               allocation->BackingSize,
+                                               &hostMapped,
+                                               &nativeAddress);
+            if (hostMapped)
+            {
+                allocation->Resource2DState = VioGpu2DResourceNativeAhbMapped;
+                allocation->NativeAhbMapped = TRUE;
+            }
+            if (result == VioGpuHostContextConfirmed && nativeAddress != NULL)
+            {
+                allocation->NativeAhbAddress = nativeAddress;
+                PublishStandardPlacement(allocation, placementOffset);
+                KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+                return STATUS_SUCCESS;
+            }
+        }
+
+        /* A failed BAR map must not leave a host resource behind.  Destroy2D
+         * handles the Native AHB UNMAP-before-UNREF ordering. */
+        if (VioGpuResourceNativeAhb(allocation->Resource2DState))
+        {
+            BOOLEAN released = FALSE;
+            (void)adapter->Destroy2DResource(allocation->ResourceId,
+                                              &allocation->Resource2DState,
+                                              &allocation->Resource2DResetGeneration,
+                                              &released);
+        }
+        allocation->NativeAhbAddress = NULL;
+        allocation->NativeAhbMapped = FALSE;
+        ClearNativePlacement(allocation);
+        KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+        adapter->RecordNativeApertureFailure(VioGpuApertureStageMapHost,
+                                             STATUS_DEVICE_NOT_READY,
+                                             static_cast<DWORD>(result));
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
     }
 
@@ -7891,6 +8078,22 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     }
 
     BOOLEAN hostAttempted = NT_SUCCESS(status);
+    /* Stage 8 (MapHost) is reached from two branches and four conditions -- host
+     * non-confirmation or lost ownership on the native path, host
+     * non-confirmation or an unattached backing on the standard-2D path -- and
+     * recorded STATUS_DEVICE_NOT_READY for all of them with detail 0.  Measured
+     * 2026-09-19: a Geekbench Vulkan run produced 353 stage-8 failures whose
+     * cause could only be recovered by correlating a host log, and reasoning
+     * from the counters alone reached the wrong conjunct.  So carry the two
+     * facts that separate them.  Packing, because detail is one DWORD:
+     *   bits 31..28  VIOGPU_HOST_CONTEXT_RESULT from the host call
+     *   bit  27      the second conjunct (ownership retained / backing attached)
+     *   bits 26..0   allocation backing size in KiB
+     * The size is here because the host-side failure behind that run was
+     * create_udmabuf returning EINVAL, which udmabuf also returns when a
+     * request exceeds size_limit_mb -- so the size is the discriminator, and
+     * nothing published it. */
+    DWORD hostDetail = 0;
     if (NT_SUCCESS(status))
     {
         if (nativeAllocation)
@@ -7898,6 +8101,13 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
             BOOLEAN nativeOperation = adapter->AcquireNativeSubmissionOperation();
             if (!nativeOperation)
             {
+                /* No host call was made at all: the submission gate refused,
+                 * which on a latched adapter is every retry.  Sentinel result
+                 * 0xF distinguishes that from a host verdict, because both used
+                 * to record stage 8 with detail 0 and read identically. */
+                hostDetail = VioGpuPackApertureHostDetail(VioGpuApertureHostDetailNoSubmission,
+                                                          FALSE,
+                                                          allocation->BackingSize);
                 status = STATUS_DEVICE_NOT_READY;
             }
             else
@@ -7936,6 +8146,7 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
                                            result == VioGpuHostContextConfirmed ? VioGpuWddmAllocationHostLive
                                                                                 : VioGpuWddmAllocationHostUnknown);
                 }
+                hostDetail = VioGpuPackApertureHostDetail(result, ownershipRetained, allocation->BackingSize);
                 status = result == VioGpuHostContextConfirmed && ownershipRetained ? STATUS_SUCCESS
                                                                                    : STATUS_DEVICE_NOT_READY;
                 adapter->ReleaseNativeSubmissionOperation();
@@ -7965,6 +8176,9 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
                 {
                     PublishStandardPlacement(allocation, placementOffset);
                 }
+                hostDetail = VioGpuPackApertureHostDetail(result,
+                                                          VioGpuResourceBackingAttached(allocation->Resource2DState),
+                                                          allocation->BackingSize);
                 status = result == VioGpuHostContextConfirmed && VioGpuResourceBackingAttached(allocation->Resource2DState) ? STATUS_SUCCESS
                                                                                                                             : STATUS_DEVICE_NOT_READY;
             }
@@ -7986,6 +8200,10 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
         if (failureStage == VioGpuApertureStageMapBackingEntries || failureStage == VioGpuApertureStageMapCpuMapping)
         {
             detail = static_cast<DWORD>(allocationPageCount);
+        }
+        else if (hostAttempted)
+        {
+            detail = hostDetail;
         }
         adapter->RecordNativeApertureFailure(hostAttempted ? VioGpuApertureStageMapHost : failureStage, status, detail);
     }
@@ -8015,6 +8233,66 @@ NTSTATUS UnmapApertureAllocation(_In_ VioGpuDod *adapter,
     {
         adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapLifecycle, status);
         return STATUS_GRAPHICS_ALLOCATION_BUSY;
+    }
+
+    /* Native AHB has no guest page-state to retire.  Treat the full VidMm
+     * unmap as the lifetime boundary for the BAR alias; partial notifications
+     * are harmless and are acknowledged without tearing down a live resource. */
+    if (IsStandardPrimaryAllocation(allocation) &&
+        (VioGpuResourceNativeAhb(allocation->Resource2DState) || allocation->NativeAhbMapped ||
+         allocation->NativeAhbAddress != NULL))
+    {
+        SIZE_T allocationPageCount = BYTES_TO_PAGES(allocation->BackingSize);
+        SIZE_T reservationPageCount = BYTES_TO_PAGES(allocation->ApertureReservationSize != 0
+                                                         ? allocation->ApertureReservationSize
+                                                         : allocation->BackingSize);
+        SIZE_T placementPage = allocation->PlacementValid ? static_cast<SIZE_T>(allocation->PlacementOffset >> PAGE_SHIFT) : 0;
+        BOOLEAN nativeMapped = allocation->NativeAhbMapped || allocation->NativeAhbAddress != NULL ||
+                               VioGpuResourceNativeAhb(allocation->Resource2DState);
+        if (!nativeMapped)
+        {
+            KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+            return STATUS_SUCCESS;
+        }
+        BOOLEAN fullRange = allocation->PlacementValid && allocationPageCount != 0 && reservationPageCount != 0 &&
+                            offsetInPages == placementPage && numberOfPages >= reservationPageCount;
+        if (!fullRange)
+        {
+            KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+            return STATUS_SUCCESS;
+        }
+
+        BOOLEAN detached = FALSE;
+        if (VioGpuResourceNativeAhb(allocation->Resource2DState))
+        {
+            VIOGPU_HOST_CONTEXT_RESULT detach = adapter->Detach2DScanoutResource(allocation->ResourceId, &detached);
+            if (detach != VioGpuHostContextConfirmed || !detached)
+            {
+                KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+                adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapScanout,
+                                                     STATUS_DEVICE_NOT_READY,
+                                                     static_cast<DWORD>(detach));
+                return STATUS_GRAPHICS_ALLOCATION_BUSY;
+            }
+            BOOLEAN released = FALSE;
+            VIOGPU_HOST_CONTEXT_RESULT destroy = adapter->Destroy2DResource(allocation->ResourceId,
+                                                                              &allocation->Resource2DState,
+                                                                              &allocation->Resource2DResetGeneration,
+                                                                              &released);
+            if (destroy != VioGpuHostContextConfirmed || !released)
+            {
+                KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+                adapter->RecordNativeApertureFailure(VioGpuApertureStageUnmapStandard,
+                                                     STATUS_DEVICE_NOT_READY,
+                                                     static_cast<DWORD>(destroy));
+                return STATUS_GRAPHICS_ALLOCATION_BUSY;
+            }
+        }
+        allocation->NativeAhbAddress = NULL;
+        allocation->NativeAhbMapped = FALSE;
+        ClearNativePlacement(allocation);
+        KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+        return STATUS_SUCCESS;
     }
 
     VIOGPU_NATIVE_CONTEXT_SNAPSHOT snapshot = {};
@@ -8240,9 +8518,11 @@ NTSTATUS BuildSoftwarePagingTransaction(_In_ VioGpuDod *adapter,
     NTSTATUS status = AcquireAllocationLifecycle(allocation);
     BOOLEAN lifecycleAcquired = status == STATUS_SUCCESS;
     BOOLEAN nativeAllocation = FALSE;
+    BOOLEAN nativeAhb = FALSE;
     if (status == STATUS_SUCCESS)
     {
         nativeAllocation = IsNativeAllocation(allocation);
+        nativeAhb = IsNativeAhbPrimaryAllocation(allocation);
         if (!NT_SUCCESS(ValidateNativePlacement(allocation, segmentAddress, &placementOffset)))
         {
             status = STATUS_INVALID_PARAMETER;
@@ -8251,7 +8531,7 @@ NTSTATUS BuildSoftwarePagingTransaction(_In_ VioGpuDod *adapter,
     if (status == STATUS_SUCCESS &&
         (allocation->Signature != VIOGPU_WDDM_ALLOCATION_SIGNATURE || allocation->Adapter != adapter ||
          !allocation->PlacementValid || allocation->PlacementOffset != placementOffset ||
-         allocation->ApertureMdl == NULL || allocation->ApertureAddress == NULL ||
+         !HasMappedAllocationBacking(allocation) ||
          (nativeAllocation && allocation->HostState != VioGpuWddmAllocationHostLive) ||
          (!nativeAllocation && !VioGpuResourceBackingAttached(allocation->Resource2DState))))
     {
@@ -8259,8 +8539,16 @@ NTSTATUS BuildSoftwarePagingTransaction(_In_ VioGpuDod *adapter,
     }
 
     BOOLEAN transfer = (packetFlags & (VioGpuWddmPagingFlagPageIn | VioGpuWddmPagingFlagPageOut)) != 0;
-    BOOLEAN transferDataComplete = !transfer;
-    if (status == STATUS_SUCCESS && transfer)
+    BOOLEAN transferDataComplete = !transfer || nativeAhb;
+    if (status == STATUS_SUCCESS && transfer && nativeAhb)
+    {
+        if (transferOffset > allocation->BackingSize || transferSize > allocation->BackingSize - transferOffset)
+        {
+            status = STATUS_INVALID_PARAMETER;
+            transferDataComplete = FALSE;
+        }
+    }
+    else if (status == STATUS_SUCCESS && transfer)
     {
         PVOID systemAddress = NULL;
         status = ResolveTransferMdlAddress(transferMdl, mdlOffset, transferSize, &systemAddress);
@@ -9631,10 +9919,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                             destination->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE && source->Adapter == adapter &&
                             destination->Adapter == adapter &&
                             (IsStandardPrimaryAllocation(destination) || IsGdiSourceAllocation(destination)) &&
-                            source->PlacementValid && source->ApertureAddress != NULL &&
+                            HasMappedAllocationBacking(source) &&
                             EnsureStandard2DAllocationBacking(destination) &&
                             VioGpuResourceBackingAttached(destination->Resource2DState) &&
-                            destination->PlacementValid && destination->ApertureAddress != NULL &&
+                            HasMappedAllocationBacking(destination) &&
                             sourcePatch->AllocationIndex == transaction->SourceAllocationIndex &&
                             sourcePatch->AllocationOffset == 0 &&
                             IsPatchOffsetForSubmission(sourcePatch->PatchOffset,
@@ -10144,15 +10432,11 @@ static NTSTATUS BuildAllocationBlit(CONST HANDLE hContext, DXGKARG_PRESENT *pres
         {
             reason = VioGpuWddmPresentDiagnosticGdiSourcePlacement;
         }
-        else if (sourcePrepatched &&
-                 (!source->PlacementValid || source->ApertureMdl == NULL || source->ApertureAddress == NULL ||
-                  source->ApertureMappedPageCount != source->AperturePageCount))
+        else if (sourcePrepatched && !HasMappedAllocationBacking(source))
         {
             reason = VioGpuWddmPresentDiagnosticSourcePlacement;
         }
-        else if (destinationPrepatched && (!destination->PlacementValid || destination->ApertureMdl == NULL ||
-                                           destination->ApertureAddress == NULL ||
-                                           destination->ApertureMappedPageCount != destination->AperturePageCount))
+        else if (destinationPrepatched && !HasMappedAllocationBacking(destination))
         {
             reason = VioGpuWddmPresentDiagnosticDestinationPlacement;
         }
@@ -11575,6 +11859,7 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
          * outright freezes it. Sample first and only bind a primary that
          * actually holds something. */
         const BOOLEAN guestBlob = allocation->Resource2DState == VioGpu2DResourceGuestBlobBackingAttached;
+        const BOOLEAN nativeAhb = VioGpuResourceNativeAhbMapped(allocation->Resource2DState);
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
         /* Tag the Host resource with the negotiated color before it can be
          * scanned out or flushed. Without this an AB30 import is interpreted as
@@ -11589,9 +11874,10 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
         }
 #endif
         LONG primaryNonZero = -1;
-        if (!guestBlob && allocation->ApertureAddress != NULL && allocation->BackingSize >= 0x1000)
+        PVOID primaryAddressAlias = nativeAhb ? allocation->NativeAhbAddress : allocation->ApertureAddress;
+        if (!guestBlob && primaryAddressAlias != NULL && allocation->BackingSize >= 0x1000)
         {
-            const BYTE *sample = static_cast<const BYTE *>(allocation->ApertureAddress);
+            const BYTE *sample = static_cast<const BYTE *>(primaryAddressAlias);
             SIZE_T sampleSpan = allocation->BackingSize < 0x100000 ? allocation->BackingSize : 0x100000;
             LONG seen = 0;
             for (SIZE_T offset = 0; offset < sampleSpan; offset += 4096)
@@ -11605,9 +11891,9 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
         }
         /* Guest-backed primaries receive scheduled writes into these pages.
          * Bind even an initially black buffer so later flushes reach the target. */
-        const BOOLEAN keepPublishedFrame = !guestBlob && primaryNonZero == 0 && adapter->HasPublishedFrame();
+        const BOOLEAN keepPublishedFrame = !guestBlob && !nativeAhb && primaryNonZero == 0 && adapter->HasPublishedFrame();
         UINT scanoutFormat = 0;
-        const BOOLEAN layoutValid = !guestBlob || ResolveStandard2DFormat(allocation->Format, &scanoutFormat);
+        const BOOLEAN layoutValid = (!guestBlob && !nativeAhb) || ResolveStandard2DFormat(allocation->Format, &scanoutFormat);
         const VIOGPU_PRIMARY_SCANOUT_LAYOUT guestLayout = {allocation->Width,
                                                            allocation->Height,
                                                            scanoutFormat,
@@ -11636,18 +11922,21 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
                                             : keepPublishedFrame ? VioGpuHostContextConfirmed
                                             : nativeScanout      ? adapter->Set2DScanout(0,
                                                                                          nativeResourceId,
-                                                                                         allocation->Width,
-                                                                                         allocation->Height,
-                                                                                         &previousResourceId,
-                                                                                         &nativeLayout,
-                                                                                         TRUE)
+                                                                 allocation->Width,
+                                                                 allocation->Height,
+                                                                 &previousResourceId,
+                                                                 &nativeLayout,
+                                                                 TRUE,
+                                                                 FALSE)
                                                                  : adapter->Set2DScanout(0,
-                                                                                         allocation->ResourceId,
-                                                                                         allocation->Width,
-                                                                                         allocation->Height,
-                                                                                         &previousResourceId,
-                                                                                         guestBlob ? &guestLayout
-                                                                                                   : NULL);
+                                                                                           allocation->ResourceId,
+                                                                                           allocation->Width,
+                                                                                           allocation->Height,
+                                                                                           &previousResourceId,
+                                                                                           (guestBlob || nativeAhb) ? &guestLayout
+                                                                                                                   : NULL,
+                                                                                           FALSE,
+                                                                                           nativeAhb);
         if (result == VioGpuHostContextConfirmed)
         {
             /* The vsync report carries the primary dxgkrnl programmed here. */
@@ -11667,6 +11956,11 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
                                                : nativeScanout    ? adapter->FlushNativeScanout(nativeResourceId,
                                                                                                 allocation->Width,
                                                                                                 allocation->Height)
+                                               : nativeAhb        ? adapter->Flush2DResource(allocation->ResourceId,
+                                                                                             allocation->Width,
+                                                                                             allocation->Height,
+                                                                                             &allocation->Resource2DState,
+                                                                                             &allocation->Resource2DResetGeneration)
                                                                   : adapter->Flush2DResource(allocation->ResourceId,
                                                                                              allocation->Width,
                                                                                              allocation->Height,
@@ -11686,9 +11980,10 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
             /* Whether the primary Windows just bound actually holds a desktop.
              * A confirmed transfer of an all-black surface and a transfer that
              * never happened look identical from the host side. */
-            if (allocation->ApertureAddress != NULL && allocation->BackingSize >= 0x1000)
+            PVOID presentAddress = nativeAhb ? allocation->NativeAhbAddress : allocation->ApertureAddress;
+            if (presentAddress != NULL && allocation->BackingSize >= 0x1000)
             {
-                const BYTE *pixels = static_cast<const BYTE *>(allocation->ApertureAddress);
+                const BYTE *pixels = static_cast<const BYTE *>(presentAddress);
                 adapter->RecordDisplayValue(20, primaryNonZero);
                 adapter->RecordDisplayValue(21,
                                             static_cast<LONG>(pixels[0]) | (static_cast<LONG>(pixels[1]) << 8) | (static_cast<LONG>(pixels[2]) << 16));

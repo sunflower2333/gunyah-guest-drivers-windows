@@ -211,6 +211,28 @@ typedef struct virtio_gpu_resp_map_info
 } GPU_RESP_MAP_INFO, *PGPU_RESP_MAP_INFO;
 #pragma pack()
 
+/* Private CREATE_BLOB response used by the Native AHB opt-in.  The host owns
+ * the gralloc allocation, so the guest must consume its authenticated stride
+ * and allocation extent instead of deriving them from width * 4. */
+#pragma pack(1)
+typedef struct virtio_gpu_resp_native_ahb
+{
+    GPU_CTRL_HDR hdr;
+    ULONG version;
+    ULONG size;
+    ULONGLONG buffer_id;
+    ULONGLONG allocation_size;
+    ULONGLONG modifier;
+    ULONGLONG plane_offset;
+    ULONG plane_stride;
+    ULONG width;
+    ULONG height;
+    ULONG fourcc;
+    ULONG plane_count;
+    ULONG layout_flags;
+} GPU_RESP_NATIVE_AHB, *PGPU_RESP_NATIVE_AHB;
+#pragma pack()
+
 /* VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB */
 #pragma pack(1)
 typedef struct virtio_gpu_resource_unmap_blob
@@ -228,6 +250,8 @@ static_assert(sizeof(GPU_CMD_RESOURCE_CREATE_BLOB) == 56, "virtio-gpu blob creat
 static_assert(sizeof(GPU_CMD_SET_SCANOUT_BLOB) == 96, "virtio-gpu scanout blob wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_MAP_BLOB) == 40, "virtio-gpu blob map wire size");
 static_assert(sizeof(GPU_RESP_MAP_INFO) == 32, "virtio-gpu blob map response wire size");
+static_assert(sizeof(GPU_RESP_NATIVE_AHB) == VIRTIO_GPU_NATIVE_AHB_RESPONSE_WIRE_SIZE,
+              "virtio-gpu native AHB response wire size");
 static_assert(sizeof(GPU_CMD_RESOURCE_UNMAP_BLOB) == 32, "virtio-gpu blob unmap wire size");
 
 #pragma pack(1)

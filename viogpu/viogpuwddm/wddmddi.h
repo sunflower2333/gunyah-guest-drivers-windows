@@ -164,6 +164,10 @@ struct VIOGPU_WDDM_ALLOCATION
     UINT ContextId;
     VIOGPU_WDDM_ALLOCATION_INFO PrivateData;
     SIZE_T BackingSize;
+    /* VidMm's reservation is based on the UMD request. Native AHB negotiation
+     * may return a smaller authoritative gralloc extent, but it must never
+     * exceed this reservation. */
+    SIZE_T ApertureReservationSize;
     VIOGPU_WDDM_ALLOCATION_RANGE *ContextRange;
     UINT ResourceId;
     UINT BlobId;
@@ -182,6 +186,11 @@ struct VIOGPU_WDDM_ALLOCATION
     SIZE_T ApertureBasePage;
     PMDL ApertureMdl;
     PVOID ApertureAddress;
+    /* CPU alias of the host-owned Native AHB mapped through the PCI BAR.
+     * This is intentionally separate from ApertureAddress, which remains the
+     * VidMm guest-page mapping used for WDDM bookkeeping and legacy paths. */
+    PVOID NativeAhbAddress;
+    BOOLEAN NativeAhbMapped;
     VIOGPU_WDDM_ALLOCATION_HOST_STATE HostState;
     LONG BoundGeneration;
     ULONGLONG BoundResetGeneration;

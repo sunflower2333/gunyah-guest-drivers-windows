@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58548",
+        "$minor = 58549",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58548",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58549",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -4519,13 +4519,25 @@ def check_wddm_2d_resource_ownership() -> None:
         "VioGpu2DResourceBackingAttached,"
         "VioGpu2DResourceUnknown,"
         "VioGpu2DResourceGuestBlobBackingAttached,"
+        "VioGpu2DResourceNativeAhbBackingAttached,"
+        "VioGpu2DResourceNativeAhbMapped,"
     )
     if queue_header.count(expected_states) != 1:
         fail("2D primary resources must retain explicit none, created, attached, and unknown Host states")
 
     attached = canonical_code(function_body("VioGpuResourceBackingAttached", QUEUE_HEADER_CODE))
-    if attached != "returnstate==VioGpu2DResourceBackingAttached||state==VioGpu2DResourceGuestBlobBackingAttached;":
-        fail("only confirmed legacy and guest-blob backing states may count as attached")
+    if attached != ("returnstate==VioGpu2DResourceBackingAttached||"
+                    "state==VioGpu2DResourceGuestBlobBackingAttached||"
+                    "state==VioGpu2DResourceNativeAhbBackingAttached||"
+                    "state==VioGpu2DResourceNativeAhbMapped;"):
+        fail("only confirmed legacy, guest-blob, and Native AHB backing states may count as attached")
+    native_ahb = canonical_code(function_body("VioGpuResourceNativeAhb", QUEUE_HEADER_CODE))
+    if native_ahb != ("returnstate==VioGpu2DResourceNativeAhbBackingAttached||"
+                      "state==VioGpu2DResourceNativeAhbMapped;"):
+        fail("Native AHB ownership must include both created and mapped states")
+    native_ahb_mapped = canonical_code(function_body("VioGpuResourceNativeAhbMapped", QUEUE_HEADER_CODE))
+    if native_ahb_mapped != "returnstate==VioGpu2DResourceNativeAhbMapped;":
+        fail("Native AHB mapped ownership must have one exact state")
     guest_create = canonical_code(function_body("CtrlQueue::CreateGuestBlobSynchronous", QUEUE_CODE))
     for fragment in (
         "!IsStandard2DResourceId(resource_id)",
@@ -4544,6 +4556,21 @@ def check_wddm_2d_resource_ownership() -> None:
     if "VioGpuGuestScanoutBoundsValid(layout->Width,layout->Height,layout->Stride,layout->BackingSize)" not in guest_scanout:
         fail("guest scanout must validate the complete visible layout before queuing it")
 
+    native_create = canonical_code(function_body("CtrlQueue::CreateNativeAhbBlobSynchronous", QUEUE_CODE))
+    for fragment in (
+        "!IsStandard2DResourceId(resource_id)",
+        "VIRTIO_GPU_BLOB_MEM_HOST3D",
+        "VIRTIO_GPU_BLOB_FLAG_USE_NATIVE_AHB",
+        "command->nr_entries=0;",
+        "command->size=0;",
+        "VIRTIO_GPU_RESP_OK_NATIVE_AHB",
+        "layout->BackingSize=allocationSize;",
+    ):
+        if native_create.count(fragment) != 1:
+            fail(f"Native AHB creation must use a host-owned standard blob without SG entries: {fragment}")
+    if "VIRTIO_GPU_BLOB_MEM_GUEST" in native_create:
+        fail("Native AHB creation must not use guest blob memory")
+
     allocate_id = canonical_code(function_body("VioGpuAdapter::Allocate2DResourceId", VIOGPU_CODE))
     for fragment in (
         "KeGetCurrentIrql()!=PASSIVE_LEVEL",
@@ -4555,6 +4582,29 @@ def check_wddm_2d_resource_ownership() -> None:
             fail(f"2D primary ID allocation must remain in the standard resource range: {fragment}")
 
     create_host = canonical_code(function_body("VioGpuAdapter::Create2DResourceBacking", VIOGPU_CODE))
+    native_create_host = create_host.find("if(nativeAhb)")
+    native_create_call = create_host.find("m_CtrlQueue.CreateNativeAhbBlobSynchronous(resourceId,backingSize,nativeLayout)")
+    native_create_state = create_host.find("*resourceState=VioGpu2DResourceNativeAhbBackingAttached;", native_create_call)
+    if min(native_create_host, native_create_call, native_create_state) < 0 or not (
+        native_create_host < native_create_call < native_create_state
+    ):
+        fail("Native AHB backing must have its own host-owned create branch and state transition")
+
+    native_map = canonical_code(function_body("VioGpuAdapter::MapNativeAhbBlob", VIOGPU_CODE))
+    for fragment in (
+        "!IsStandard2DResourceId(resourceId)",
+        "m_CtrlQueue.MapBlobSynchronous(resourceId,offset)",
+        "*hostMapped=TRUE;",
+        "m_PciResources.MapHostVisibleAddress(offset,length,address)",
+    ):
+        if native_map.count(fragment) != 1:
+            fail(f"Native AHB mapping must use the standard blob BAR alias: {fragment}")
+    if "m_CtrlQueue.UnmapBlobSynchronous(resourceId)" in native_map:
+        fail("Native AHB map helper must not roll back a confirmed map; its caller owns the single UNMAP+UNREF transaction")
+    native_unmap = canonical_code(function_body("VioGpuAdapter::UnmapNativeAhbBlob", VIOGPU_CODE))
+    for fragment in ("!IsStandard2DResourceId(resourceId)", "m_CtrlQueue.UnmapBlobSynchronous(resourceId)"):
+        if native_unmap.count(fragment) != 1:
+            fail(f"Native AHB unmap must retire the resource-level BAR mapping: {fragment}")
     create_sequence = (
         create_host.find("entries==NULL||entryCount==0"),
         create_host.find("m_CtrlQueue.CreateResource2DSynchronous(resourceId,format,width,height)"),
@@ -4584,13 +4634,15 @@ def check_wddm_2d_resource_ownership() -> None:
     destroy_host = canonical_code(function_body("VioGpuAdapter::Destroy2DResource", VIOGPU_CODE))
     for fragment in (
         "result=m_CtrlQueue.UnrefResourceSynchronous(resourceId);",
-        "if(result==VioGpuHostContextConfirmed)",
         "*resourceState=VioGpu2DResourceNone;",
         "*resourceResetGeneration=0;",
         "elseif(result==VioGpuHostContextUnknown||result==VioGpuHostContextRejected)",
     ):
         if destroy_host.count(fragment) != 1:
             fail(f"2D primary teardown must retain confirmed-only UNREF ownership: {fragment}")
+    confirmed_destroy_checks = destroy_host.count("if(result==VioGpuHostContextConfirmed)")
+    if confirmed_destroy_checks not in (1, 2):
+        fail("2D primary teardown must gate UNREF and final release on confirmed Host responses")
     if destroy_host.count("*resourceState=VioGpu2DResourceUnknown;") != 2:
         fail("2D primary teardown must quarantine generation mismatch and uncertain UNREF ownership")
     if destroy_host.count("*released=TRUE;") != 2:
@@ -4599,6 +4651,13 @@ def check_wddm_2d_resource_ownership() -> None:
         fail("2D primary teardown must quarantine preexisting, generation-mismatched, and response-derived unknown ownership")
     if "result==VioGpuHostContextConfirmed||result==VioGpuHostContextRejected" in destroy_host:
         fail("2D primary teardown must not interpret INVALID_RESOURCE_ID as released ownership")
+    native_destroy_gate = destroy_host.find("VioGpuResourceNativeAhbMapped(*resourceState)")
+    native_destroy_unmap = destroy_host.find("m_CtrlQueue.UnmapBlobSynchronous(resourceId)", native_destroy_gate)
+    native_destroy_unref = destroy_host.find("m_CtrlQueue.UnrefResourceSynchronous(resourceId)", native_destroy_unmap)
+    if min(native_destroy_gate, native_destroy_unmap, native_destroy_unref) < 0 or not (
+        native_destroy_gate < native_destroy_unmap < native_destroy_unref
+    ):
+        fail("Native AHB teardown must acknowledge UNMAP_BLOB before RESOURCE_UNREF")
 
     allocation_header = canonical_code(WDDM_DDI_HEADER_CODE)
     if allocation_header.count("VIOGPU_2D_RESOURCE_STATEResource2DState;") != 1:
@@ -4781,6 +4840,20 @@ def check_wddm_standard_paging() -> None:
         fail("UNMAP_APERTURE must return only success or a retryable paging-buffer status")
 
     map_allocation = canonical_code(function_body("MapApertureAllocation", WDDM_DDI_CODE))
+    # Every way of reaching stage 8 must say which way it was.  Stage 8 conflates
+    # four conditions across two branches, and recording detail 0 for all of them
+    # is why a Geekbench run's 353 stage-8 failures could only be attributed by
+    # correlating a host log.  A third branch added later without packing its
+    # detail would silently restore that, so the count of DEVICE_NOT_READY
+    # verdicts and the count of packed details are pinned equal rather than
+    # pinned individually.
+    not_ready_verdicts = map_allocation.count(":STATUS_DEVICE_NOT_READY;")
+    packed_details = map_allocation.count("hostDetail=VioGpuPackApertureHostDetail(")
+    if not_ready_verdicts == 0 or packed_details != not_ready_verdicts:
+        fail("every stage-8 host verdict must pack its own detail: "
+             f"{not_ready_verdicts} DEVICE_NOT_READY verdicts against {packed_details} packed details")
+    if "elseif(hostAttempted){detail=hostDetail;}" not in map_allocation:
+        fail("the packed stage-8 detail must reach the aperture failure record")
     for aperture_name in ("MapApertureAllocation", "UnmapApertureAllocation"):
         aperture_body = canonical_code(function_body(aperture_name, WDDM_DDI_CODE))
         require_order(
@@ -5014,6 +5087,15 @@ def check_wddm_standard_paging() -> None:
     ):
         if fragment not in software:
             fail(f"software paging must retain exact MDL transfer ownership: {fragment}")
+    for fragment in (
+        "BOOLEANnativeAhb=FALSE;",
+        "nativeAhb=IsNativeAhbPrimaryAllocation(allocation);",
+        "BOOLEANtransferDataComplete=!transfer||nativeAhb;",
+        "if(status==STATUS_SUCCESS&&transfer&&nativeAhb)",
+        "elseif(status==STATUS_SUCCESS&&transfer)",
+    ):
+        if fragment not in software:
+            fail(f"Native AHB paging must not consume a guest transfer MDL: {fragment}")
     require_order(
         software,
         (
@@ -5153,11 +5235,13 @@ def check_wddm_standard_primary_scanout() -> None:
         "!VioGpuResourceBackingAttached(allocation->Resource2DState)",
         "!allocation->PlacementValid",
         "static_cast<ULONGLONG>(primaryAddress)!=allocation->PlacementOffset",
-        "adapter->Set2DScanout(0,allocation->ResourceId,allocation->Width,allocation->Height,&previousResourceId,guestBlob?&guestLayout:NULL)",
         "status=result==VioGpuHostContextConfirmed?STATUS_SUCCESS:STATUS_DEVICE_NOT_READY;",
     ):
         if fragment not in bind_primary:
             fail(f"the shared primary bind must retain the exact standard primary contract: {fragment}")
+    if "adapter->Set2DScanout(0,allocation->ResourceId,allocation->Width,allocation->Height,&previousResourceId," not in bind_primary or \
+       "guestBlob||nativeAhb" not in bind_primary or "?&guestLayout:NULL" not in bind_primary:
+        fail("the shared primary bind must select SET_SCANOUT_BLOB for guest-blob and Native AHB primaries")
     # The shared bind (mode change and MMIO flip worker) scans out a ten-bit
     # primary only while Advanced Color is usable, and only after tagging the
     # Host resource with the negotiated color. dxgkrnl never calls MPO3 without
@@ -5210,7 +5294,7 @@ def check_wddm_standard_primary_scanout() -> None:
     unmap_allocation = canonical_code(function_body("UnmapApertureAllocation", WDDM_DDI_CODE))
     if destroy_allocation.count("Detach2DScanoutResource(allocation->ResourceId,&detached)") != 1:
         fail("DestroyAllocation must detach its exact scanout before unref")
-    if unmap_allocation.count("Detach2DScanoutResource(allocation->ResourceId,&detached)") != 1:
+    if unmap_allocation.count("Detach2DScanoutResource(allocation->ResourceId,&detached)") < 1:
         fail("standard primary aperture unmap must detach its exact scanout before unref")
     if "Query2DScanoutResource(allocation->ResourceId" in destroy_allocation or \
        "Query2DScanoutResource(allocation->ResourceId" in unmap_allocation:
@@ -5372,7 +5456,7 @@ def check_shared_allocation_copy_contract() -> None:
         if "IsStandardPrimaryAllocation(destination)||IsGdiSourceAllocation(destination)" not in stage:
             fail("scheduled Present and copies must accept CPU-visible redirection destinations through Patch and Execute")
     require_order(execute, (
-        "AcquirePresentAllocationLifecycles(", "source->ApertureAddress==NULL",
+        "AcquirePresentAllocationLifecycles(", "AllocationBackingAddress(source)==NULL",
         "CopyPresentRow(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes,source->Format,destination->Format);",
         "KeFlushIoBuffers(destination->ApertureMdl,FALSE,TRUE);",
         "if(NT_SUCCESS(status)&&!transaction->CopyOnly&&IsStandardPrimaryAllocation(destination))",
@@ -5532,10 +5616,7 @@ def check_wddm_present_contract() -> None:
         "HasGdiPresentIdentity(allocation,context,adapter)",
         "VioGpuResourceBackingAttached(allocation->Resource2DState)",
         "allocation->Resource2DResetGeneration!=0",
-        "allocation->PlacementValid",
-        "allocation->ApertureMdl!=NULL",
-        "allocation->ApertureAddress!=NULL",
-        "allocation->ApertureMappedPageCount==allocation->AperturePageCount",
+        "HasMappedAllocationBacking(allocation)",
     ):
         if live_gdi_identity.count(fragment) != 1:
             fail(f"GDI Present source must retain its exact live standard-2D identity: {fragment}")
@@ -5555,8 +5636,7 @@ def check_wddm_present_contract() -> None:
     )
     if "allocation->ApertureMdl!=NULL" not in ensure_primary or \
        "allocation->ApertureAddress!=NULL" not in ensure_primary or \
-       "allocation->ApertureMdl!=NULL" not in reconcile_gdi or \
-       "allocation->ApertureAddress!=NULL" not in reconcile_gdi or \
+       "HasMappedAllocationBacking(allocation)" not in reconcile_gdi or \
        "EnsureStandard2DAllocationBacking(allocation)" not in reconcile_gdi or \
        "VioGpuResourceBackingAttached(allocation->Resource2DState)" not in reconcile_gdi or \
        "allocation->Resource2DResetGeneration!=0" not in reconcile_gdi:
@@ -5898,8 +5978,8 @@ def check_wddm_present_contract() -> None:
         "gdiSourcePrepatchLive=ReconcileGdiSourcePlacementAfterReset(source)&&"
         "HasLiveGdiPresentIdentity(source,context,context->Device->Adapter);",
         "sourcePrepatched&&gdiSource&&!gdiSourcePrepatchLive",
-        "sourcePrepatched&&(!source->PlacementValid",
-        "destinationPrepatched&&(!destination->PlacementValid",
+        "sourcePrepatched&&!HasMappedAllocationBacking(source)",
+        "destinationPrepatched&&!HasMappedAllocationBacking(destination)",
         "destinationPrepatched&&(!EnsureStandard2DAllocationBacking(destination)",
         "transaction->State=VioGpuWddmPresentBuilt;",
         "transaction->FullyPrepatched=sourcePrepatched&&destinationPrepatched;",
@@ -6201,7 +6281,7 @@ def check_wddm_present_contract() -> None:
         "AcquirePresentAllocationLifecycles(source,destination,&sourceLocked,&destinationLocked)",
         "ReconcileGdiSourcePlacementAfterReset(source)",
         "HasLiveGdiPresentIdentity(source,transaction->Context,transaction->Adapter)",
-        "source->ApertureAddress==NULL||destination->ApertureAddress==NULL",
+        "AllocationBackingAddress(source)==NULL||AllocationBackingAddress(destination)==NULL",
         "CopyPresentRow(destinationBase+destinationOffset,sourceBase+sourceOffset,rowBytes,source->Format,destination->Format);",
         "ProbePresentCopy(transaction,&copyProbe);",
         "transaction->Adapter->Present2DResource(destination->ResourceId,0,destination->Width,"
@@ -8546,6 +8626,8 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         if fragment not in canonical_code(WDDM_DDI_CODE + VIOGPU_SOURCE):
             fail(f"display diagnostics must keep distinct counter ownership: {fragment}")
     present_2d = canonical_code(function_body("VioGpuAdapter::Present2DResource", VIOGPU_SOURCE))
+    if "VioGpuResourceNativeAhb(*resourceState)" not in present_2d:
+        fail("Native AHB Present2D must skip guest-to-host transfer before flushing")
     for fragment in (
         "m_pVioGpuDod->RecordDisplayValue(52,1);",
         "m_pVioGpuDod->CountDisplayEvent(53);",
@@ -8590,9 +8672,13 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     refresh = canonical_code(function_body("VioGpuAdapter::RefreshActiveScanout", VIOGPU_SOURCE))
     request_refresh = canonical_code(function_body("VioGpuAdapter::RequestScanoutRefresh", VIOGPU_SOURCE))
     record_scanout = canonical_code(function_body("VioGpuAdapter::RecordActiveScanout", VIOGPU_SOURCE))
-    if "m_ExplicitPresentResourceId=0;" not in canonical_code(function_body("VioGpuAdapter::VioGpuAdapter", VIOGPU_SOURCE)) or \
+    scanout_constructor = canonical_code(function_body("VioGpuAdapter::VioGpuAdapter", VIOGPU_SOURCE))
+    if "m_ExplicitPresentResourceId=0;" not in scanout_constructor or \
+       "m_ActiveScanoutNativeAhb=FALSE;" not in scanout_constructor or \
        "InterlockedExchange(&m_ExplicitPresentResourceId,0);" not in record_scanout:
         fail("a new scanout binding must retain legacy refresh until a confirmed explicit Present")
+    if "m_ActiveScanoutNativeAhb=nativeAhb;" not in record_scanout:
+        fail("the active scanout record must retain the Native AHB discriminator")
     if "result==VioGpuHostContextConfirmed&&offset==0&&x==0&&y==0&&static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutResourceId,0,0))==resourceId&&static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutWidth,0,0))==width&&static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutHeight,0,0))==height" not in present_2d or \
        "InterlockedExchange(&m_ExplicitPresentResourceId,static_cast<LONG>(resourceId));" not in present_2d:
         fail("only a confirmed Present to the active binding may suppress duplicate refresh")
@@ -8603,9 +8689,19 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "InterlockedExchange(&m_ScanoutRefreshRequested,0)==0",
         "m_CtrlQueue.TransferToHost2D(resourceId,0,width,height,0,0)",
         "m_CtrlQueue.ResFlush(resourceId,width,height,0,0,nativeScanout)",
+        "constBOOLEANnativeAhb=m_ActiveScanoutNativeAhb;",
+        "constBOOLEANrefreshed=nativeAhb?",
+        "m_CtrlQueue.FlushResourceSynchronous(resourceId,width,height,0,0,FALSE)==VioGpuHostContextConfirmed",
+        "constBOOLEANoperationAcquired=AcquireNativeSubmitOperation();",
+        "if(!operationAcquired){return;}",
+        "ReleaseNativeSubmitOperation();",
     ):
         if refresh.count(fragment) != 1:
-            fail(f"the periodic scanout refresh must move the bound surface: {fragment}")
+            fail(f"the periodic scanout refresh must move and lifetime-gate the bound surface: {fragment}")
+    native_refresh = refresh.find("m_CtrlQueue.FlushResourceSynchronous(resourceId,width,height,0,0,FALSE)")
+    native_transfer = refresh.find("m_CtrlQueue.TransferToHost2D(resourceId,0,width,height,0,0)")
+    if native_refresh < 0 or native_transfer < 0 or native_refresh > native_transfer:
+        fail("Native AHB refresh must synchronously flush before the legacy transfer branch")
     # A native scanout is written by the owning context's GPU work, so the
     # refresh flushes it without a transfer.
     if "guestBlob||nativeScanout||m_CtrlQueue.TransferToHost2D(" not in refresh:
@@ -8620,6 +8716,9 @@ def check_wddm_private_abi(root: ET.Element) -> None:
     if set_source_address.count("adapter->HasPublishedFrame();") != 1 or \
        set_source_address.count("keepPublishedFrame") != 3:
         fail("a flip must not replace a published frame with an empty primary")
+    if "&nativeLayout,TRUE,FALSE)" not in set_source_address or \
+       "(guestBlob||nativeAhb)?&guestLayout:NULL,FALSE,nativeAhb)" not in set_source_address:
+        fail("primary binding must pass Native AHB identity through Set2DScanout")
     completed_fence_query = canonical_code(function_body("QueryCompletedFenceInfo", WDDM_DDI_CODE))
     for fragment in (
         "escape->hDevice==NULL",
@@ -9935,8 +10034,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         fail("BuildPagingBuffer must accept VidMm sub-transfers instead of requiring a whole allocation")
     worker = canonical_code(function_body("ExecutePagingTransaction", WDDM_DDI_CODE))
     for fragment in (
-        "allocation->ApertureMdl!=NULL",
-        "allocation->ApertureAddress!=NULL",
+        "HasMappedAllocationBacking(allocation)",
         "EnsureStandard2DAllocationBacking(allocation)",
         "VioGpuResourceBackingAttached(allocation->Resource2DState)",
         "allocation->Resource2DResetGeneration!=0",
@@ -9971,6 +10069,23 @@ def check_wddm_guest_allocation_lifecycle() -> None:
     ):
         if fragment not in map_aperture:
             fail(f"aperture mapping must reject non-page-locked MDLs before treating PFNs as guest backing: {fragment}")
+    for fragment in (
+        "constBOOLEANnativeAhbPrimary=adapter->IsNativeAhbScanoutEnabled()&&IsStandardPrimaryAllocation(allocation);",
+        "if(!nativeAhbPrimary&&(mdl==NULL||MmGetMdlByteCount(mdl)==0||MmGetMdlByteOffset(mdl)!=0||(mdl->MdlFlags&MDL_PAGES_LOCKED)==0))",
+        "if(nativeAhbPrimary)",
+        "SIZE_TbasePage=offsetInPages;",
+        "numberOfPages<=allocationPageCount",
+    ):
+        if fragment not in map_aperture:
+            fail(f"Native AHB aperture mapping must use placement arithmetic without a guest MDL: {fragment}")
+
+    color_present = canonical_code(function_body("VioGpuAdapter::PresentColorResource", VIOGPU_CODE))
+    if "if(result==VioGpuHostContextConfirmed&&!nativeAhb)" not in color_present:
+        fail("Native AHB color publication must skip TRANSFER_TO_HOST_2D")
+    color_worker = canonical_code(function_body("VioGpuColorPresentWorker", WDDM_DDI_CODE))
+    if "VioGpuResourceNativeAhbMapped(allocation->Resource2DState)" not in color_worker or \
+       "allocation->Resource2DResetGeneration,nativeAhb" not in color_worker:
+        fail("Native AHB color publication must reach PresentColorResource without a guest backing assumption")
 
     private_matches = re.findall(
         r"\bstruct\s+VIOGPU_WDDM_KMD_DMA_PRIVATE\s*\{(.*?)\}\s*;",
