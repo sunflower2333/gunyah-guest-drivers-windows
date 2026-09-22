@@ -1246,7 +1246,7 @@ jobs:
             if ($d.n -eq 'viogpu') {
               python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
                 --d3d10 d3d10-payload --d3d10-mesa (git rev-parse HEAD:external/mesa).Trim() `
-                --mesa a0eabb42a516dc9e667401f63d61976059a8d319 --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
+                --mesa 325681471b0718faa41435957f7a510529f11146 --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
               if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
               if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
@@ -1333,7 +1333,7 @@ jobs:
         shell: pwsh
         run: |
           python viogpu/package/verify_bundle.py --output out `
-            --mesa a0eabb42a516dc9e667401f63d61976059a8d319 --mesa-run 35739208629 `
+            --mesa 325681471b0718faa41435957f7a510529f11146 --mesa-run 35742963084 `
             --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58549
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
