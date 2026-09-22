@@ -28,11 +28,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          submodules: true
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
       - name: Verify flat INF inventory and installer contract
         run: python -m unittest discover -s viogpu/package -p 'test_*.py'
+      - name: Verify native AHB allocation ownership and copy-free rotation
+        run: |
+          python viogpu/tests/native-surface/run.py
+          python external/mesa/src/gallium/frontends/d3d10umd/native_host_surface_test.py
+          python external/mesa/src/gallium/frontends/d3d10umd/native_rotation_test.py
+          python external/mesa/src/gallium/frontends/d3d10umd/shared_finish_test.py
 
   opencl-icd:
     uses: ./.github/workflows/opencl-system-icd.yml
@@ -1239,7 +1246,7 @@ jobs:
             if ($d.n -eq 'viogpu') {
               python viogpu/package/flat_package.py --driver $dest --gl opengl-payload --cl opencl-payload `
                 --d3d10 d3d10-payload --d3d10-mesa (git rev-parse HEAD:external/mesa).Trim() `
-                --mesa 985b7a202979de10a81ceb5b970f2ac3f3dda96c --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
+                --mesa a0eabb42a516dc9e667401f63d61976059a8d319 --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27
               if ($LASTEXITCODE) { throw 'Flat same-INF composition failed' }
               & $infverif /w /v $infPath
               if ($LASTEXITCODE -ne 0) { throw "InfVerif failed for $($d.n)" }
@@ -1326,7 +1333,7 @@ jobs:
         shell: pwsh
         run: |
           python viogpu/package/verify_bundle.py --output out `
-            --mesa 985b7a202979de10a81ceb5b970f2ac3f3dda96c --mesa-run 35358345085 `
+            --mesa a0eabb42a516dc9e667401f63d61976059a8d319 --mesa-run 35739208629 `
             --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58549
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 

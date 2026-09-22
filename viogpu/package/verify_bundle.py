@@ -13,9 +13,9 @@ from flat_package import d3d_registration_line
 from flat_package import LOADER_PROBES, MACHINES, RECEIPT, REGISTRATION
 from flat_package import flat_name, pe_machine, require, sha, source_files
 
-# D3D10 UMDs follow the checked-in Mesa gitlink. This is independent from the
-# older OpenGL ICD artifact pin verified by the reusable OpenGL workflow.
-D3D10_MESA = "a304f0ff445bfd78cd82c9dee82632b7b766dae7"
+# Native AHB image layout needs D3D10 Zink and the packaged Turnip runtime
+# from this same Mesa revision; the GL workflow verifies its matching pin.
+D3D10_MESA = "a0eabb42a516dc9e667401f63d61976059a8d319"
 
 INSTALLER_FILES = (
     "INSTALL.cmd", "install-drivers.ps1", "pvmpower-devnode.ps1",
