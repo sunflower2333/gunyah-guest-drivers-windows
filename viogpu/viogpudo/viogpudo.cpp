@@ -34,6 +34,7 @@
 #include "bitops.h"
 #include "viogpum.h"
 #include "edid.h"
+#include "viogpu_primary_scanout.h"
 
 #include <intrin.h>
 
@@ -11084,9 +11085,9 @@ BOOLEAN VioGpuAdapter::Release2DResourceId(_In_ UINT resourceId)
  * epoch after the host has replied. Keep one escalation call site so the
  * failure-site census remains bijective while preserving the same fail-closed
  * adapter latch for either backing mode. */
-static VOID FailNative2DCreateAtAnyIrql()
+static VOID FailNative2DCreateAtAnyIrql(_In_ VioGpuAdapter *adapter)
 {
-    FailNativeContextAtAnyIrql(VioGpuNativeFailSiteBacking2DCreate);
+    adapter->FailNativeContextAtAnyIrql(VioGpuNativeFailSiteBacking2DCreate);
 }
 
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT resourceId,
@@ -11162,7 +11163,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
         {
             *resourceState = VioGpu2DResourceUnknown;
             *resourceResetGeneration = operationGeneration;
-            FailNative2DCreateAtAnyIrql();
+            FailNative2DCreateAtAnyIrql(this);
         }
         return result;
     }
@@ -11192,7 +11193,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Create2DResourceBacking(_In_ UINT reso
         {
             *resourceState = VioGpu2DResourceUnknown;
             *resourceResetGeneration = operationGeneration;
-            FailNative2DCreateAtAnyIrql();
+            FailNative2DCreateAtAnyIrql(this);
         }
         return result;
     }
