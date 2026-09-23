@@ -10547,6 +10547,18 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmBuildPagingBuffer(CONST HANDL
     {
         return CompletePagingBufferOperation(adapter, STATUS_INVALID_PARAMETER, VioGpuApertureStageSoftware);
     }
+    /* VidMm splits a HostSurface transfer into chunks and gives each chunk's
+     * own segment address (allocation base + TransferOffset). The host paging
+     * protocol addresses the allocation by its base, and residency publishes
+     * that base, so carry the base in the packet. */
+    if (pagingBuffer->Operation == DXGK_OPERATION_TRANSFER && allocation->HostSurface)
+    {
+        if (segmentAddress.QuadPart < 0 || static_cast<ULONGLONG>(segmentAddress.QuadPart) < transferOffset)
+        {
+            return CompletePagingBufferOperation(adapter, STATUS_INVALID_PARAMETER, VioGpuApertureStageSoftware);
+        }
+        segmentAddress.QuadPart -= static_cast<LONGLONG>(transferOffset);
+    }
     NTSTATUS softwareStatus = BuildSoftwarePagingTransaction(adapter,
                                                              pagingBuffer,
                                                              allocation,
