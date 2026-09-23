@@ -76,6 +76,9 @@ with tempfile.TemporaryDirectory(prefix='.native-surface-', dir=here) as temp:
             ('wrong-parent', 'resource != allocation->Resource', 'false'),
             ('foreign-device', 'opened->Device->Adapter == adapter', 'true'),
             ('null-parent', 'if (parent == 0)', 'if (false)'),
+            ('parent-under-allocation-pin',
+             'stage = 6;\n        lookup.hObject = parent;',
+             'stage = 6;\n        (void)dxgk->DxgkCbGetHandleParent(request.AllocationHandle);\n        lookup.hObject = parent;'),
         ]:
             if query.count(old) != 1:
                 raise RuntimeError('query mutation anchor changed: ' + name)

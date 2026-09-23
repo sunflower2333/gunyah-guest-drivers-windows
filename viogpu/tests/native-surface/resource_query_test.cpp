@@ -90,7 +90,7 @@ void *Acquire(const DXGKARGCB_GETHANDLEDATA *q,DXGKARG_RELEASE_HANDLE *pin) {
         if(failLookup) return nullptr;
         ++allocationPins; *pin=reinterpret_cast<void*>(1); return opened;
     }
-        assert(q->Type==DXGK_HANDLE_RESOURCE && !q->Flags.Value && allocationPins==1 && opened->Allocation->References==1);
+    assert(q->Type==DXGK_HANDLE_RESOURCE && !q->Flags.Value && allocationPins==1 && opened->Allocation->References==1);
     assert(q->hObject==parentValue);
     ++resourcePins; *pin=reinterpret_cast<void*>(2);
     static VIOGPU_WDDM_RESOURCE unrelated;
