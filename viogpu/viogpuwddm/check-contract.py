@@ -10207,7 +10207,7 @@ def check_wddm_guest_allocation_lifecycle() -> None:
         if fragment not in map_aperture:
             fail(f"aperture mapping must reject non-page-locked MDLs before treating PFNs as guest backing: {fragment}")
     for fragment in (
-        "constBOOLEANnativeAhbPrimary=!allocation->HostSurface&&IsNativeAhbPrimaryAllocation(allocation);",
+        "constBOOLEANnativeAhbPrimary=!allocation->HostSurface&&IsStandardPrimaryAllocation(allocation)&&(IsNativeAhbPrimaryAllocation(allocation)||(allocation->Resource2DState==VioGpu2DResourceNone&&adapter->SupportsNativeAhbPaging()));",
         "if(!nativeAhbPrimary&&(mdl==NULL||MmGetMdlByteCount(mdl)==0||MmGetMdlByteOffset(mdl)!=0||(mdl->MdlFlags&MDL_PAGES_LOCKED)==0))",
         "if(nativeAhbPrimary)",
         "SIZE_TbasePage=offsetInPages;",
