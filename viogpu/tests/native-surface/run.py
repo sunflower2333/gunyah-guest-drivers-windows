@@ -31,7 +31,9 @@ def declaration(name, kind='function'):
 
 names = ['FindNativeShareByKeyLocked', 'CollectNativeSurfacesLocked', 'HandleNativeSurfaceEscape',
          'ReferenceHostSurfaceAllocation', 'ReleaseHostSurfaceAllocation', 'RemoveNativeImportsForContext',
-         'ImportNativeShareLocked', 'ReleaseNativeShareLocked', 'VioGpuWddmRetireNativeShares']
+         'ImportNativeShareLocked', 'ReleaseNativeShareLocked', 'VioGpuWddmRetireNativeShares',
+         'IsOwnedAllocation', 'IsNativeAllocation', 'IsStandardAllocation', 'IsStandardPrimaryAllocation',
+         'BeginAllocationDestroy', 'UnmapHostSurfaceAllocation', 'VioGpuWddmDestroyAllocation']
 production = '\n'.join(declaration(name) for name in names)
 structs = '\n'.join(declaration(name, 'struct') for name in
                     ['VIOGPU_WDDM_NATIVE_SHARE_ENTRY', 'VIOGPU_WDDM_NATIVE_IMPORT_ENTRY'])
@@ -44,6 +46,9 @@ if args.negative_controls:
          '0, share->AllocationReferences'),
         ('stale-import', 'share->SurfaceResetGeneration != snapshot->ResetGeneration ||\n         share->Surface.ResetGeneration != snapshot->ResetGeneration', 'false'),
         ('forged-pitch', 'info->Pitch == share->Surface.Stride && resource->Stride == share->Surface.Stride', 'true'),
+        ('wrapper-destroy-routing', 'else if (allocation->HostSurface)', 'else if (false)'),
+        ('wrapper-destroy-live-owner',
+         'allocation->SubmissionReferences != 0 || allocation->OpenReferences != 0', 'false'),
     ]
     for name, old, new in mutations:
         if production.count(old) != 1:

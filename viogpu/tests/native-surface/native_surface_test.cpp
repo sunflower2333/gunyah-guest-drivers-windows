@@ -2,12 +2,19 @@
 #include <cstddef>
 #include <cstring>
 #include <new>
+#include <cstdlib>
+#include <initializer_list>
 #include "viogpu_native_surface_policy.h"
 #include "viogpu_native_ahb_access.h"
 
 #define _In_
 #define _Out_
 #define _Inout_
+#define _Use_decl_annotations_
+#define APIENTRY
+#define CONST const
+#define NT_ASSERT(x) assert(x)
+#define UNREFERENCED_PARAMETER(x) ((void)(x))
 #define PAGED_CODE() ((void)0)
 #define __try try
 #define __except(x) catch (...)
@@ -31,12 +38,20 @@ constexpr ULONGLONG VIOGPU_WDDM_HOST_SURFACE_BUDGET=256ULL*1024*1024;
 using BOOLEAN = bool;
 using VOID = void;
 using NTSTATUS = int;
+using HANDLE = void*;
+using KIRQL = int;
+using KSPIN_LOCK = int;
+constexpr KIRQL PASSIVE_LEVEL=0;
+int KeGetCurrentIrql() { return PASSIVE_LEVEL; }
+void KeAcquireSpinLock(KSPIN_LOCK*,KIRQL *irql) { *irql=0; }
+void KeReleaseSpinLock(KSPIN_LOCK*,KIRQL) {}
+LONG InterlockedDecrement(volatile LONG *p) { return --*p; }
 using PEPROCESS = int *;
 constexpr UINT VIOGPU_NATIVE_RESOURCE_ID_START = 0x80000000U;
 constexpr UINT MAXUINT = ~0U;
 constexpr int STATUS_SUCCESS = 0, STATUS_INVALID_PARAMETER = -1, STATUS_INVALID_USER_BUFFER = -2,
     STATUS_DEVICE_NOT_READY = -3, STATUS_INVALID_HANDLE = -4, STATUS_INSUFFICIENT_RESOURCES = -5, STATUS_NO_MEMORY = -6,
-    STATUS_GRAPHICS_ALLOCATION_BUSY = -7;
+    STATUS_GRAPHICS_ALLOCATION_BUSY = -7, STATUS_DEVICE_BUSY = -8;
 constexpr int NonPagedPoolNx = 0;
 void *operator new(std::size_t size, int) { return ::operator new(size); }
 enum VIOGPU_HOST_CONTEXT_RESULT { VioGpuHostContextNotSubmitted, VioGpuHostContextConfirmed,
@@ -61,18 +76,57 @@ struct DXGKARG_ESCAPE { void *hDevice{}, *hContext{}; struct { UINT Value{}; } F
 struct VIOGPU_WDDM_CONTEXT {};
 class VioGpuDod;
 struct VIOGPU_NATIVE_CONTEXT_SNAPSHOT { VioGpuDod *Adapter; UINT ContextId; ULONGLONG ResetGeneration; };
-struct VIOGPU_WDDM_ALLOCATION { BOOLEAN HostSurface{}; VioGpuDod *Adapter{}; ULONGLONG ShareKey{}; UINT ResourceId{}; };
+constexpr UINT VIOGPU_WDDM_RESOURCE_SIGNATURE=123,VIOGPU_WDDM_ALLOCATION_SIGNATURE=456;
+constexpr int VioGpuWddmAllocationHostNone=0;
+enum { VioGpuNativeAllocationDestroyLifecycle,VioGpuNativeAllocationDestroyBegin,
+       VioGpuNativeAllocationDestroyHost,VioGpuNativeAllocationDestroyComplete };
+struct VIOGPU_WDDM_RESOURCE { UINT Signature{}; VioGpuDod *Adapter{}; LONG AllocationCount{}; };
+LONG ReadResourceAllocationCount(const VIOGPU_WDDM_RESOURCE *r) { return r->AllocationCount; }
+struct VIOGPU_WDDM_ALLOCATION {
+    BOOLEAN HostSurface{}; VioGpuDod *Adapter{}; ULONGLONG ShareKey{}; UINT ResourceId{};
+    UINT Signature{},Flags{}; VIOGPU_WDDM_RESOURCE *Resource{};
+    bool Destroying{},PlacementValid{},NativeAhbMapped{};
+    void *NativeAhbAddress{}; int HostState{},LifecycleMutex{}; KSPIN_LOCK SubmissionLock{};
+    LONG SubmissionReferences{},OpenReferences{};
+    VIOGPU_2D_RESOURCE_STATE Resource2DState{}; ULONGLONG Resource2DResetGeneration{};
+};
+struct DXGKARG_DESTROYALLOCATION {
+    UINT NumAllocations{}; HANDLE *pAllocationList{}; HANDLE hResource{};
+    union { UINT Value{}; struct { UINT DestroyResource:1; }; } Flags;
+};
+int AcquireAllocationLifecycleForDestroy(VIOGPU_WDDM_ALLOCATION *a) {
+    assert(!a->LifecycleMutex); a->LifecycleMutex=1; return 0;
+}
+void KeReleaseMutex(int *m,bool) { assert(*m==1); *m=0; }
+void RecordNativeAllocationDestroyState(VioGpuDod*,int,int,UINT,VIOGPU_WDDM_ALLOCATION*) {}
+bool ValidateNativeAllocationDestroyState(VIOGPU_WDDM_ALLOCATION*) { return true; }
+bool AcquireAllocationNativeContextSnapshot(VIOGPU_WDDM_ALLOCATION*,VIOGPU_NATIVE_CONTEXT_SNAPSHOT*) { return false; }
+struct VioGpuAdapter { static void ReleaseNativeContextSnapshot(VIOGPU_NATIVE_CONTEXT_SNAPSHOT*) {} };
+void RevokeNativeShares(VioGpuDod*,UINT) { std::abort(); }
+bool AllocationResetRetired(VIOGPU_WDDM_ALLOCATION*) { std::abort(); }
+int ReleaseAllocationHostOwnership(VIOGPU_WDDM_ALLOCATION*,VIOGPU_NATIVE_CONTEXT_SNAPSHOT*,bool) { std::abort(); }
+bool ReconcileStandard2DAllocationAfterReset(VIOGPU_WDDM_ALLOCATION*) { std::abort(); }
+void ClearNativePlacement(VIOGPU_WDDM_ALLOCATION *a) { a->PlacementValid=false; }
+void ReleaseApertureMapping(VIOGPU_WDDM_ALLOCATION *a) { assert(!a->NativeAhbMapped); }
+int DetachAllocationNativeContext(VIOGPU_WDDM_ALLOCATION *a) { assert(a->HostSurface); return 0; }
 class VioGpuDod {
 public:
     ULONGLONG generation=7;
     UINT nextId=1, created=0, destroyed=0, imported=0, detached=0;
+    UINT scanoutId=999,scanoutDetaches=0,unmaps=0,releasedIds=0;
     bool enabled=true, busy=false, failRelease=false, failImport=false;
     bool IsDriverActive() { return true; }
     bool IsNativeAhbScanoutEnabled() { return enabled; }
     bool SupportsNativeAhbPaging() { return enabled; }
     bool QueryNativeContextReadiness(GPU_CAPSET_DRM *, void *, void *, ULONGLONG *g) { *g=generation; return true; }
     UINT Allocate2DResourceId() { return nextId++; }
-    bool Release2DResourceId(UINT) { return true; }
+    bool Release2DResourceId(UINT) { ++releasedIds; return true; }
+    void CancelPendingFlip(VIOGPU_WDDM_ALLOCATION*) {}
+    VIOGPU_HOST_CONTEXT_RESULT Detach2DScanoutResource(UINT id,BOOLEAN *done) {
+        if(id==scanoutId) { scanoutId=0; ++scanoutDetaches; }
+        *done=true; return VioGpuHostContextConfirmed;
+    }
+    VIOGPU_HOST_CONTEXT_RESULT UnmapNativeAhbBlob(UINT) { ++unmaps; return VioGpuHostContextConfirmed; }
     bool AcquireNativeSubmissionOperation() { return true; }
     void ReleaseNativeSubmissionOperation() {}
     VIOGPU_HOST_CONTEXT_RESULT Create2DResourceBacking(UINT, UINT f, UINT w, UINT h, int,
@@ -82,7 +136,7 @@ public:
         *layout={w,h,f,512,8192}; return VioGpuHostContextConfirmed;
     }
     VIOGPU_HOST_CONTEXT_RESULT Destroy2DResource(UINT, VIOGPU_2D_RESOURCE_STATE *state,
-        ULONGLONG *g, BOOLEAN *released, bool retain) {
+        ULONGLONG *g, BOOLEAN *released, bool retain=false) {
         assert(retain); *released=false;
         if(busy) return VioGpuHostContextRejected;
         ++destroyed; *state=VioGpu2DResourceNone; *g=0; *released=true; return VioGpuHostContextConfirmed;
@@ -202,4 +256,39 @@ int main() {
     s=allocate(adapter);
     VioGpuWddmRetireNativeShares(&adapter);
     assert(objectReferences==0 && FindNativeShareByKeyLocked(&adapter,s.ShareKey)==nullptr);
+
+    // Failed NT sharing: the resident wrapper is destroyed before the creator
+    // frees the host key. Execute the real destroy DDI, unmap and registry path.
+    for(bool freeFirst : {false,true}) {
+        s=allocate(adapter); resource.ShareKey=s.ShareKey; resource.Stride=s.Stride;
+        assert(ReferenceHostSurfaceAllocation(&adapter,&resource,&info,&id,&generation)==0);
+        auto wrapper=new VIOGPU_WDDM_ALLOCATION{};
+        wrapper->HostSurface=true; wrapper->Adapter=&adapter; wrapper->ShareKey=s.ShareKey;
+        wrapper->ResourceId=id; wrapper->Signature=VIOGPU_WDDM_ALLOCATION_SIGNATURE;
+        wrapper->Resource2DState=VioGpu2DResourceNativeAhbBackingAttached;
+        wrapper->Resource2DResetGeneration=generation; wrapper->PlacementValid=true;
+        auto ownerResource=new VIOGPU_WDDM_RESOURCE{VIOGPU_WDDM_RESOURCE_SIGNATURE,&adapter,1};
+        wrapper->Resource=ownerResource;
+        HANDLE handle=wrapper;
+        DXGKARG_DESTROYALLOCATION destroy{};
+        destroy.NumAllocations=1; destroy.pAllocationList=&handle; destroy.hResource=ownerResource;
+        destroy.Flags.DestroyResource=1;
+        const UINT beforeDestroy=adapter.destroyed,beforeIds=adapter.releasedIds;
+        if(freeFirst) assert(free_surface(adapter,s)==0 && adapter.destroyed==beforeDestroy);
+        // VidMm must finish paging/close opens before destructive ownership can advance.
+        wrapper->SubmissionReferences=1;
+        assert(VioGpuWddmDestroyAllocation(&adapter,&destroy)==STATUS_GRAPHICS_ALLOCATION_BUSY);
+        assert(wrapper->Destroying && adapter.destroyed==beforeDestroy);
+        wrapper->SubmissionReferences=0;
+        wrapper->OpenReferences=1;
+        assert(VioGpuWddmDestroyAllocation(&adapter,&destroy)==STATUS_GRAPHICS_ALLOCATION_BUSY);
+        assert(wrapper->Destroying && adapter.destroyed==beforeDestroy);
+        wrapper->OpenReferences=0;
+        assert(VioGpuWddmDestroyAllocation(&adapter,&destroy)==0);
+        assert(adapter.destroyed==beforeDestroy+(freeFirst?1:0));
+        if(!freeFirst) assert(free_surface(adapter,s)==0);
+        assert(adapter.destroyed==beforeDestroy+1 && adapter.releasedIds==beforeIds+1);
+        assert(adapter.scanoutId==999 && !adapter.scanoutDetaches && !adapter.unmaps && objectReferences==0);
+        assert(FindNativeShareByKeyLocked(&adapter,s.ShareKey)==nullptr);
+    }
 }
