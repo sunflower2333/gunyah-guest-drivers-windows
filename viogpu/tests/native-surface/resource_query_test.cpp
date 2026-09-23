@@ -90,7 +90,7 @@ void *Acquire(const DXGKARGCB_GETHANDLEDATA *q,DXGKARG_RELEASE_HANDLE *pin) {
         if(failLookup) return nullptr;
         ++allocationPins; *pin=reinterpret_cast<void*>(1); return opened;
     }
-    assert(q->Type==DXGK_HANDLE_RESOURCE && !q->Flags.Value && allocationPins==1 && opened->Allocation->References==1);
+        assert(q->Type==DXGK_HANDLE_RESOURCE && !q->Flags.Value && allocationPins==1 && opened->Allocation->References==1);
     assert(q->hObject==parentValue);
     ++resourcePins; *pin=reinterpret_cast<void*>(2);
     static VIOGPU_WDDM_RESOURCE unrelated;
@@ -102,8 +102,10 @@ void Release(DXGKARGCB_RELEASEHANDLEDATA r) {
     else { assert(r.Type==DXGK_HANDLE_RESOURCE && r.ReleaseHandle==reinterpret_cast<void*>(2)); --resourcePins; }
 }
 D3DKMT_HANDLE Parent(D3DKMT_HANDLE h) {
-    assert(h==0x40001240 && allocationPins==1 && opened->Device->References==1);
-    assert(opened->Allocation->References==1 && !opened->Allocation->LifecycleMutex);
+    /* The parent callback owns its temporary dxgkrnl reference. Calling it
+     * under AcquireHandleData is a real 0x113/0x26 reference-nesting bug. */
+    assert(h==0x40001240 && allocationPins==0 && opened->Device->References==0);
+    assert(opened->Allocation->References==0 && !opened->Allocation->LifecycleMutex);
     ++parentCalls; return parentValue;
 }
 // INSERT_QUERY

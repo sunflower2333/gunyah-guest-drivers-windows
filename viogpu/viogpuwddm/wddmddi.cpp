@@ -5565,7 +5565,19 @@ static NTSTATUS QueryNativeSurfaceResource(_In_ VioGpuDod *adapter, _In_ const D
         return STATUS_DEVICE_NOT_READY;
     }
 
+    /* DxgkCbGetHandleParent creates a temporary DXGALLOCATIONREFERENCE on
+     * the calling thread.  It must run before DxgkCbAcquireHandleData: the
+     * latter leaves a dxgkrnl allocation reference active on this thread and
+     * nesting the parent lookup under that pin trips dxgkrnl's reference
+     * watchdog (VIDEO_DXGKRNL_FATAL_ERROR/0x113 subtype 0x26). */
     UINT stage = 1;
+    const D3DKMT_HANDLE parent = dxgk->DxgkCbGetHandleParent(request.AllocationHandle);
+    if (parent == 0)
+    {
+        adapter->RecordNativeSurfaceResourceDiagnostic(queryNumber, stage, STATUS_INVALID_HANDLE);
+        return STATUS_INVALID_HANDLE;
+    }
+    stage = 2;
     DXGKARGCB_GETHANDLEDATA lookup = {};
     lookup.hObject = request.AllocationHandle;
     lookup.Type = DXGK_HANDLE_ALLOCATION;
@@ -5582,11 +5594,11 @@ static NTSTATUS QueryNativeSurfaceResource(_In_ VioGpuDod *adapter, _In_ const D
         (escape->hDevice == NULL || escape->hDevice == opened->Device) && ReferenceDevice(opened->Device))
     {
         device = opened->Device;
-        stage = 2;
+        stage = 3;
         allocation = opened->Allocation;
         if (IsOwnedAllocation(allocation, adapter) && allocation->HostSurface && allocation->Resource != NULL)
         {
-            stage = 3;
+            stage = 4;
             status = AcquireAllocationLifecycle(allocation);
             if (status == STATUS_SUCCESS)
             {
@@ -5598,7 +5610,7 @@ static NTSTATUS QueryNativeSurfaceResource(_In_ VioGpuDod *adapter, _In_ const D
                     status = STATUS_DEVICE_NOT_READY;
                 else
                 {
-                    stage = 4;
+                    stage = 5;
                     auto share = FindNativeShareByKeyLocked(adapter, request.ShareKey);
                     if (share == NULL || !share->HostSurface || share->OwnerReleased ||
                         share->OwnerProcess != PsGetCurrentProcess() || share->AllocationReferences != 1 ||
@@ -5618,46 +5630,36 @@ static NTSTATUS QueryNativeSurfaceResource(_In_ VioGpuDod *adapter, _In_ const D
     }
     if (status == STATUS_SUCCESS && allocationReferenced)
     {
-        stage = 5;
-        /* WDDM2 lifetime pins surround the legacy parent lookup. A missing or
-         * unsupported callback result is a refusal, never an allocation-handle
-         * substitution. Prove the returned parent against our existing owner. */
-        const D3DKMT_HANDLE parent = dxgk->DxgkCbGetHandleParent(lookup.hObject);
-        if (parent == 0)
+        stage = 6;
+        lookup.hObject = parent;
+        lookup.Type = DXGK_HANDLE_RESOURCE;
+        lookup.Flags.Value = 0;
+        DXGKARG_RELEASE_HANDLE resourceHandle = NULL;
+        auto resource = static_cast<VIOGPU_WDDM_RESOURCE *>(
+            dxgk->DxgkCbAcquireHandleData(&lookup, &resourceHandle));
+        if (resource == NULL || resource != allocation->Resource ||
+            resource->Signature != VIOGPU_WDDM_RESOURCE_SIGNATURE || resource->Adapter != adapter ||
+            ReadResourceAllocationCount(resource) != 1 || adapter->IsHardwareResetRequested())
             status = STATUS_INVALID_HANDLE;
         else
         {
-            stage = 6;
-            lookup.hObject = parent;
-            lookup.Type = DXGK_HANDLE_RESOURCE;
-            lookup.Flags.Value = 0;
-            DXGKARG_RELEASE_HANDLE resourceHandle = NULL;
-            auto resource = static_cast<VIOGPU_WDDM_RESOURCE *>(
-                dxgk->DxgkCbAcquireHandleData(&lookup, &resourceHandle));
-            if (resource == NULL || resource != allocation->Resource ||
-                resource->Signature != VIOGPU_WDDM_RESOURCE_SIGNATURE || resource->Adapter != adapter ||
-                ReadResourceAllocationCount(resource) != 1 || adapter->IsHardwareResetRequested())
-                status = STATUS_INVALID_HANDLE;
-            else
+            stage = 7;
+            request.ResourceHandle = parent;
+            __try
             {
-                stage = 7;
-                request.ResourceHandle = parent;
-                __try
-                {
-                    RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request));
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER)
-                {
-                    status = STATUS_INVALID_USER_BUFFER;
-                }
+                RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request));
             }
-            if (resourceHandle != NULL)
+            __except (EXCEPTION_EXECUTE_HANDLER)
             {
-                DXGKARGCB_RELEASEHANDLEDATA release = {};
-                release.ReleaseHandle = resourceHandle;
-                release.Type = DXGK_HANDLE_RESOURCE;
-                dxgk->DxgkCbReleaseHandleData(release);
+                status = STATUS_INVALID_USER_BUFFER;
             }
+        }
+        if (resourceHandle != NULL)
+        {
+            DXGKARGCB_RELEASEHANDLEDATA release = {};
+            release.ReleaseHandle = resourceHandle;
+            release.Type = DXGK_HANDLE_RESOURCE;
+            dxgk->DxgkCbReleaseHandleData(release);
         }
     }
     if (allocationReferenced)
