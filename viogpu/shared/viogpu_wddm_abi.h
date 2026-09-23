@@ -61,6 +61,7 @@ typedef enum VIOGPU_WDDM_ESCAPE_OPCODE
     VIOGPU_WDDM_ESCAPE_RELEASE_NATIVE = 7,
     VIOGPU_WDDM_ESCAPE_ALLOCATE_NATIVE_SURFACE = 8,
     VIOGPU_WDDM_ESCAPE_FREE_NATIVE_SURFACE = 9,
+    VIOGPU_WDDM_ESCAPE_QUERY_NATIVE_SURFACE_RESOURCE = 10,
 } VIOGPU_WDDM_ESCAPE_OPCODE;
 
 #pragma pack(push, 4)
@@ -229,6 +230,22 @@ typedef struct VIOGPU_WDDM_NATIVE_SURFACE
     VIOGPU_WDDM_UINT32 LayoutFlags;
     VIOGPU_WDDM_UINT64 Reserved[3];
 } VIOGPU_WDDM_NATIVE_SURFACE;
+
+/* Resolve a creator's real runtime allocation to its verified parent resource.
+ * Handles are process-local D3DKMT handles, never driver-private pointers.
+ * ResourceHandle and Reserved must be zero on input. */
+typedef struct VIOGPU_WDDM_NATIVE_SURFACE_RESOURCE
+{
+    VIOGPU_WDDM_ABI_HEADER Header;
+    VIOGPU_WDDM_UINT32 Opcode;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT32 AllocationHandle;
+    VIOGPU_WDDM_UINT32 ResourceHandle;
+    VIOGPU_WDDM_UINT64 ShareKey;
+    VIOGPU_WDDM_UINT64 Size;
+    VIOGPU_WDDM_UINT64 ResetGeneration;
+    VIOGPU_WDDM_UINT64 Reserved;
+} VIOGPU_WDDM_NATIVE_SURFACE_RESOURCE;
 
 typedef struct VIOGPU_WDDM_RENDER_COMMAND
 {

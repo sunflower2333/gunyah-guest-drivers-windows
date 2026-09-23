@@ -5481,6 +5481,151 @@ static NTSTATUS HandleNativeSurfaceEscape(_In_ VioGpuDod *adapter, _In_ const DX
     return status;
 }
 
+static NTSTATUS QueryNativeSurfaceResource(_In_ VioGpuDod *adapter, _In_ const DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+    if (adapter == NULL || escape == NULL || escape->hContext != NULL || escape->Flags.Value != 0 ||
+        escape->pPrivateDriverData == NULL ||
+        escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_NATIVE_SURFACE_RESOURCE))
+        return STATUS_INVALID_PARAMETER;
+    static_assert(sizeof(VIOGPU_WDDM_NATIVE_SURFACE_RESOURCE) == 64, "native surface resource ABI width");
+    VIOGPU_WDDM_NATIVE_SURFACE_RESOURCE request = {};
+    __try
+    {
+        RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return STATUS_INVALID_USER_BUFFER;
+    }
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
+        request.Opcode != VIOGPU_WDDM_ESCAPE_QUERY_NATIVE_SURFACE_RESOURCE || request.Flags != 0 ||
+        request.AllocationHandle == 0 || request.ResourceHandle != 0 || request.ShareKey == 0 ||
+        request.Size == 0 || request.ResetGeneration == 0 || request.Reserved != 0)
+        return STATUS_INVALID_PARAMETER;
+    auto dxgk = adapter->GetDxgkInterface();
+    if (dxgk == NULL || dxgk->DxgkCbAcquireHandleData == NULL || dxgk->DxgkCbReleaseHandleData == NULL ||
+        dxgk->DxgkCbGetHandleParent == NULL)
+        return STATUS_NOT_SUPPORTED;
+    if (!adapter->IsDriverActive() || adapter->IsHardwareResetRequested())
+        return STATUS_DEVICE_NOT_READY;
+
+    static volatile LONG queryCount = 0;
+    const LONG queryNumber = InterlockedIncrement(&queryCount);
+    UINT stage = 1;
+    DXGKARGCB_GETHANDLEDATA lookup = {};
+    lookup.hObject = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(request.AllocationHandle));
+    lookup.Type = DXGK_HANDLE_ALLOCATION;
+    lookup.Flags.DeviceSpecific = 1;
+    DXGKARG_RELEASE_HANDLE allocationHandle = NULL;
+    auto opened = static_cast<VIOGPU_WDDM_OPEN_ALLOCATION *>(
+        dxgk->DxgkCbAcquireHandleData(&lookup, &allocationHandle));
+    NTSTATUS status = STATUS_INVALID_HANDLE;
+    VIOGPU_WDDM_DEVICE *device = NULL;
+    VIOGPU_WDDM_ALLOCATION *allocation = NULL;
+    BOOLEAN allocationReferenced = FALSE;
+    if (opened != NULL && opened->Signature == VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE && !opened->ReadOnly &&
+        opened->Device != NULL && opened->Device->Adapter == adapter &&
+        (escape->hDevice == NULL || escape->hDevice == opened->Device) && ReferenceDevice(opened->Device))
+    {
+        device = opened->Device;
+        stage = 2;
+        allocation = opened->Allocation;
+        if (IsOwnedAllocation(allocation, adapter) && allocation->HostSurface && allocation->Resource != NULL)
+        {
+            stage = 3;
+            status = AcquireAllocationLifecycle(allocation);
+            if (status == STATUS_SUCCESS)
+            {
+                if (allocation->Destroying || allocation->ShareKey != request.ShareKey ||
+                    allocation->PrivateData.Size != request.Size || allocation->BackingSize != request.Size ||
+                    allocation->Resource2DResetGeneration != request.ResetGeneration)
+                    status = STATUS_INVALID_HANDLE;
+                else if (!AcquireNativeShareRegistry(FALSE))
+                    status = STATUS_DEVICE_NOT_READY;
+                else
+                {
+                    stage = 4;
+                    auto share = FindNativeShareByKeyLocked(adapter, request.ShareKey);
+                    if (share == NULL || !share->HostSurface || share->OwnerReleased ||
+                        share->OwnerProcess != PsGetCurrentProcess() || share->AllocationReferences != 1 ||
+                        share->ResourceId != allocation->ResourceId || share->Size != request.Size ||
+                        share->SurfaceResetGeneration != request.ResetGeneration)
+                        status = STATUS_INVALID_HANDLE;
+                    else
+                    {
+                        status = AcquireAllocationSubmissionReference(allocation, adapter);
+                        allocationReferenced = status == STATUS_SUCCESS;
+                    }
+                    ReleaseNativeShareRegistry();
+                }
+                KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
+            }
+        }
+    }
+    if (status == STATUS_SUCCESS && allocationReferenced)
+    {
+        stage = 5;
+        /* WDDM2 lifetime pins surround the legacy parent lookup. A missing or
+         * unsupported callback result is a refusal, never an allocation-handle
+         * substitution. Prove the returned parent against our existing owner. */
+        HANDLE parent = dxgk->DxgkCbGetHandleParent(lookup.hObject);
+        if (parent == NULL || reinterpret_cast<ULONG_PTR>(parent) > MAXUINT)
+            status = STATUS_INVALID_HANDLE;
+        else
+        {
+            stage = 6;
+            lookup.hObject = parent;
+            lookup.Type = DXGK_HANDLE_RESOURCE;
+            lookup.Flags.Value = 0;
+            DXGKARG_RELEASE_HANDLE resourceHandle = NULL;
+            auto resource = static_cast<VIOGPU_WDDM_RESOURCE *>(
+                dxgk->DxgkCbAcquireHandleData(&lookup, &resourceHandle));
+            if (resource == NULL || resource != allocation->Resource ||
+                resource->Signature != VIOGPU_WDDM_RESOURCE_SIGNATURE || resource->Adapter != adapter ||
+                ReadResourceAllocationCount(resource) != 1 || adapter->IsHardwareResetRequested())
+                status = STATUS_INVALID_HANDLE;
+            else
+            {
+                stage = 7;
+                request.ResourceHandle = static_cast<UINT>(reinterpret_cast<ULONG_PTR>(parent));
+                __try
+                {
+                    RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request));
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    status = STATUS_INVALID_USER_BUFFER;
+                }
+            }
+            if (resourceHandle != NULL)
+            {
+                DXGKARGCB_RELEASEHANDLEDATA release = {};
+                release.ReleaseHandle = resourceHandle;
+                release.Type = DXGK_HANDLE_RESOURCE;
+                dxgk->DxgkCbReleaseHandleData(release);
+            }
+        }
+    }
+    if (allocationReferenced)
+        ReleaseAllocationSubmissionReference(allocation);
+    if (device != NULL)
+        DereferenceDevice(device);
+    if (allocationHandle != NULL)
+    {
+        DXGKARGCB_RELEASEHANDLEDATA release = {};
+        release.ReleaseHandle = allocationHandle;
+        release.Type = DXGK_HANDLE_ALLOCATION;
+        dxgk->DxgkCbReleaseHandleData(release);
+    }
+    if (queryNumber <= 64)
+        DbgPrintEx(DPFLTR_IHVVIDEO_ID, DPFLTR_ERROR_LEVEL,
+            "VIOGPU AHB parent query=%ld stage=%u status=%08x allocation=%x resource=%x key=%I64x generation=%I64u\n",
+            queryNumber, stage, status, request.AllocationHandle, request.ResourceHandle,
+            request.ShareKey, request.ResetGeneration);
+    return status != STATUS_SUCCESS && NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
+}
+
 static NTSTATUS ReferenceHostSurfaceAllocation(_In_ VioGpuDod *adapter,
                                                 _In_ const VIOGPU_WDDM_RESOURCE_SHARE *resource,
                                                 _In_ const VIOGPU_WDDM_ALLOCATION_INFO *info,
@@ -7192,6 +7337,23 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
     }
 
     reinterpret_cast<VioGpuDod *>(hAdapter)->CountDisplayEvent(32);
+
+    if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_NATIVE_SURFACE_RESOURCE) &&
+        escape->pPrivateDriverData != NULL)
+    {
+        UINT opcode = 0;
+        __try
+        {
+            RtlCopyMemory(&opcode, static_cast<const BYTE *>(escape->pPrivateDriverData) +
+                                   sizeof(VIOGPU_WDDM_ABI_HEADER), sizeof(opcode));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return STATUS_INVALID_USER_BUFFER;
+        }
+        if (opcode == VIOGPU_WDDM_ESCAPE_QUERY_NATIVE_SURFACE_RESOURCE)
+            return QueryNativeSurfaceResource(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
+    }
 
     if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_TIMESTAMP_INFO))
     {

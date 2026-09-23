@@ -67,3 +67,26 @@ with tempfile.TemporaryDirectory(prefix='.native-surface-', dir=here) as temp:
         if (result.returncode == 0) != (name == 'production'):
             raise SystemExit(name + ': unexpected result\n' + result.stdout + result.stderr)
         print('PASS ' + name + (' rejected' if name != 'production' else ''))
+    query_fixture = (here / 'resource_query_test.cpp').read_text()
+    query = declaration('QueryNativeSurfaceResource')
+    query_variants = [('production', query)]
+    if args.negative_controls:
+        for name, old, new in [
+            ('foreign-process', 'share->OwnerProcess != PsGetCurrentProcess()', 'false'),
+            ('wrong-parent', 'resource != allocation->Resource', 'false'),
+            ('foreign-device', 'opened->Device->Adapter == adapter', 'true'),
+            ('wide-parent', 'reinterpret_cast<ULONG_PTR>(parent) > MAXUINT', 'false'),
+        ]:
+            if query.count(old) != 1:
+                raise RuntimeError('query mutation anchor changed: ' + name)
+            query_variants.append((name, query.replace(old, new)))
+    for name, body in query_variants:
+        unit, binary = output / ('query-' + name + '.cpp'), output / ('query-' + name)
+        unit.write_text(query_fixture.replace('// INSERT_QUERY', body))
+        subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-fsanitize=undefined',
+                        '-I' + str(root / 'viogpu/shared'), str(unit), '-o', str(binary)],
+                       env={**os.environ, 'TMPDIR': str(output)}, check=True)
+        result = subprocess.run([str(binary)], cwd=output, capture_output=True, text=True)
+        if (result.returncode == 0) != (name == 'production'):
+            raise SystemExit('query-' + name + ': unexpected result\n' + result.stdout + result.stderr)
+        print('PASS resource query ' + name + (' rejected' if name != 'production' else ''))
