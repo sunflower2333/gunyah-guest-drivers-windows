@@ -5118,6 +5118,12 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
     const BOOLEAN pageOut = (transaction->Flags & VioGpuWddmPagingFlagPageOut) != 0;
     const BOOLEAN fill = (transaction->Flags & VioGpuWddmPagingFlagFill) != 0;
     const BOOLEAN discard = (transaction->Flags & VioGpuWddmPagingFlagDiscard) != 0;
+    /* The pixels live in the host AHB and never move. Nothing can write it
+     * while it is non-resident (imports and presents both require
+     * SurfaceResident), so eviction and restore are residency bookkeeping:
+     * no host copy, and no wait for Android to release a surface it may keep
+     * displaying until the compositor that is evicting it presents again. */
+    const BOOLEAN bookkeepingOnly = pageIn || pageOut || discard;
     if (!allocation->HostSurface || !adapter->SupportsNativeAhbPaging() || !AcquireNativeShareRegistry(FALSE))
         return STATUS_DEVICE_NOT_READY;
     auto share = FindNativeShareByKeyLocked(adapter, allocation->ShareKey);
@@ -5156,7 +5162,8 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
             status = STATUS_DEVICE_NOT_READY;
             failureStage = 1;
         }
-        else if (VioGpuNativeAhbCanAccess(&share->Access, VIOGPU_WDDM_REFERENCE_WRITE) &&
+        else if ((bookkeepingOnly ? !share->Access.PresentPending && !share->Access.Writer
+                                  : VioGpuNativeAhbCanAccess(&share->Access, VIOGPU_WDDM_REFERENCE_WRITE)) &&
                  adapter->TryResumeNativePassiveDispatch(work))
         {
             share->Access.Writer = true;
@@ -5166,7 +5173,7 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
         else
         {
             InterlockedExchange(&work->DisplayReleaseWait, TRUE);
-            if (!share->Access.PresentPending && !share->Access.WaitPending &&
+            if (!bookkeepingOnly && !share->Access.PresentPending && !share->Access.WaitPending &&
                 share->Access.Sequence != share->Access.ReleasedSequence)
             {
                 share->Access.WaitPending = true;
@@ -5236,8 +5243,8 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
             KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
     }
 
-    SIZE_T completed = 0;
-    while (status == STATUS_SUCCESS && !discard && completed < transaction->TransferSize)
+    SIZE_T completed = status == STATUS_SUCCESS && (pageIn || pageOut) ? transaction->TransferSize : 0;
+    while (status == STATUS_SUCCESS && !bookkeepingOnly && completed < transaction->TransferSize)
     {
         if (adapter->IsHardwareResetRequested() || InterlockedCompareExchange(work->CancelRequested, 0, 0) != 0)
         {

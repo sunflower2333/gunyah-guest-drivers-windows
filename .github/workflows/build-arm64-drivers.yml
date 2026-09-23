@@ -964,7 +964,7 @@ jobs:
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
           # Unified flat API installation atop frozen 58473. All API files
           # share the display INF and the same signed catalog as the KMD/UMD.
-          $minor = 58577
+          $minor = 58578
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -1048,8 +1048,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58577) {
-            throw "Unified flat candidate requires reserved version 100.6.101.58577"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58578) {
+            throw "Unified flat candidate requires reserved version 100.6.101.58578"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -1404,7 +1404,7 @@ jobs:
         run: |
           python viogpu/package/verify_bundle.py --output out `
             --mesa 0ad63ef2779639cb087d7bc368f8c79b970d603d --mesa-run 35801170564 `
-            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58577
+            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58578
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact
