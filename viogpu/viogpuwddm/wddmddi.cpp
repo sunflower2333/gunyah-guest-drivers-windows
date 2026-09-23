@@ -5085,6 +5085,30 @@ static VOID NativeAhbPresentAccepted(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT re
         delete pending;
 }
 
+/* Last HostSurface paging failure, read from a live kernel dump. A failed
+ * transaction poisons the share and its VidMm fence never signals, so this is
+ * the only record of which check refused it. */
+struct VIOGPU_HOST_SURFACE_PAGING_FAILURE
+{
+    volatile LONG Count;
+    ULONG Stage;
+    LONG Status;
+    UINT Flags;
+    UINT ResourceId;
+    UINT PagingDirection;
+    ULONGLONG TransferOffset;
+    ULONGLONG TransferSize;
+    ULONGLONG PlacementOffset;
+    ULONGLONG AllocationPlacementOffset;
+    ULONGLONG BackingSize;
+    ULONGLONG PagingNextOffset;
+    ULONGLONG Completed;
+    BOOLEAN PlacementValid;
+    BOOLEAN SurfaceResident;
+    BOOLEAN TransferAddressValid;
+};
+VIOGPU_HOST_SURFACE_PAGING_FAILURE g_VioGpuHostSurfacePagingFailure;
+
 NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, VIOGPU_NATIVE_PASSIVE_WORK *work)
 {
     PAGED_CODE();
@@ -5108,6 +5132,7 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
     ReleaseNativeShareRegistry();
 
     NTSTATUS status = STATUS_SUCCESS;
+    ULONG failureStage = 0;
     BOOLEAN admitted = FALSE;
     KIRQL irql;
     /* This runs on a separately owned paging worker. Waiting never retains
@@ -5127,7 +5152,10 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
         KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
         KeClearEvent(&share->AccessChanged);
         if (share->Access.Poisoned)
+        {
             status = STATUS_DEVICE_NOT_READY;
+            failureStage = 1;
+        }
         else if (VioGpuNativeAhbCanAccess(&share->Access, VIOGPU_WDDM_REFERENCE_WRITE) &&
                  adapter->TryResumeNativePassiveDispatch(work))
         {
@@ -5173,7 +5201,10 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
             (fill && transaction->TransferSize != allocation->BackingSize) ||
             ((pageOut || discard) && (!allocation->PlacementValid ||
                                       allocation->PlacementOffset != transaction->PlacementOffset))))
+        {
             status = STATUS_INVALID_PARAMETER;
+            failureStage = 2;
+        }
         KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
         if (status == STATUS_SUCCESS && (pageIn || pageOut))
         {
@@ -5182,7 +5213,10 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
             {
                 if (share->PagingDirection != 0 || transaction->TransferOffset != 0 ||
                     (pageOut && !share->SurfaceResident))
+                {
                     status = STATUS_INVALID_DEVICE_STATE;
+                    failureStage = 3;
+                }
                 else
                 {
                     share->PagingDirection = direction;
@@ -5192,7 +5226,10 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
             }
             if (status == STATUS_SUCCESS && (share->PagingDirection != direction ||
                 share->PagingNextOffset != transaction->TransferOffset))
+            {
                 status = STATUS_INVALID_DEVICE_STATE;
+                failureStage = 4;
+            }
         }
         KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
         if (lifecycle)
@@ -5216,7 +5253,10 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
         const auto result = adapter->PageNativeAhb(share->ResourceId, transaction->HostResetGeneration, operation,
             transaction->TransferOffset + completed, length, fill ? transaction->FillPattern : 0, data);
         if (result != VioGpuHostContextConfirmed)
+        {
             status = STATUS_DEVICE_NOT_READY;
+            failureStage = 5;
+        }
         else
             completed += length;
     }
@@ -5232,7 +5272,10 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
             if ((transaction->Flags & VioGpuWddmPagingFlagTransferEnd) != 0)
             {
                 if (share->PagingNextOffset != allocation->BackingSize)
+                {
                     status = STATUS_INVALID_DEVICE_STATE;
+                    failureStage = 6;
+                }
                 else
                 {
                     share->PagingDirection = 0;
@@ -5261,7 +5304,26 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
             KeReleaseMutex(&allocation->LifecycleMutex, FALSE);
     }
     if (status != STATUS_SUCCESS)
+    {
+        auto &failure = g_VioGpuHostSurfacePagingFailure;
+        failure.Stage = failureStage != 0 ? failureStage : (status == STATUS_CANCELLED ? 7 : 8);
+        failure.Status = status;
+        failure.Flags = transaction->Flags;
+        failure.ResourceId = transaction->ResourceId;
+        failure.PagingDirection = share->PagingDirection;
+        failure.TransferOffset = transaction->TransferOffset;
+        failure.TransferSize = transaction->TransferSize;
+        failure.PlacementOffset = transaction->PlacementOffset;
+        failure.AllocationPlacementOffset = allocation->PlacementOffset;
+        failure.BackingSize = allocation->BackingSize;
+        failure.PagingNextOffset = share->PagingNextOffset;
+        failure.Completed = completed;
+        failure.PlacementValid = allocation->PlacementValid;
+        failure.SurfaceResident = share->SurfaceResident;
+        failure.TransferAddressValid = transaction->TransferAddress != NULL;
+        InterlockedIncrement(&failure.Count);
         adapter->RequestHardwareResetAtAnyIrql();
+    }
     InterlockedDecrement(&share->AsyncReferences);
     return status != STATUS_SUCCESS && NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
 }
