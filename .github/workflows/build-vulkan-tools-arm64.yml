@@ -69,7 +69,7 @@ jobs:
           path: |
             Vulkan-Tools/external/Release/64
             Vulkan-Tools/build
-          key: vulkan-tools-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools_identity.outputs.image }}-${{ steps.tools_identity.outputs.sha }}-release
+          key: vulkan-tools-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools_identity.outputs.image }}-${{ steps.tools_identity.outputs.sha }}-release
 
       - name: Report restored build cache
         shell: pwsh
@@ -88,6 +88,7 @@ jobs:
         run: |
           cmake -S . -B build `
             -D UPDATE_DEPS=ON `
+            -D UPDATE_DEPS_SKIP_EXISTING_INSTALL=ON `
             -D CMAKE_BUILD_TYPE=Release `
             -D BUILD_CUBE=ON `
             -D BUILD_VULKANINFO=ON `
