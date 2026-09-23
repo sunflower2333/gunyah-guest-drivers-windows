@@ -444,6 +444,9 @@ jobs:
         shell: pwsh
         run: |
           $buildDir = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-arm64"
+          # Count only source compilations, excluding Meson configuration probes.
+          sccache --zero-stats
+          if ($LASTEXITCODE) { throw 'Unable to reset source compiler statistics' }
           meson compile -C $buildDir --ninja-args=-k0
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $library = Get-ChildItem -Path $buildDir -Recurse -File -Filter "viogpud3d_zink.dll" |
@@ -468,15 +471,19 @@ jobs:
       - name: Verify source compiler cache activity
         shell: pwsh
         run: |
-          $stats = sccache --show-stats 2>&1
-          $stats
+          $json = sccache --show-stats --stats-format=json
           if ($LASTEXITCODE) { throw 'Unable to read sccache statistics' }
-          $text = $stats -join "`n"
-          $requests = [regex]::Match($text, '(?im)^\s*Compile requests\s*:\s*(\d+)').Groups[1].Value
-          $hits = [regex]::Match($text, '(?im)^\s*Cache hits\s*:\s*(\d+)').Groups[1].Value
-          $misses = [regex]::Match($text, '(?im)^\s*Cache misses\s*:\s*(\d+)').Groups[1].Value
-          if ([string]::IsNullOrWhiteSpace($requests) -or [int]$requests -le 0) { throw 'sccache saw no source compile requests' }
-          if (([string]::IsNullOrWhiteSpace($hits) -or [int]$hits -le 0) -and ([string]::IsNullOrWhiteSpace($misses) -or [int]$misses -le 0)) { throw 'sccache saw no cache hits or misses on this build' }
+          $json
+          $stats = ($json | ConvertFrom-Json -AsHashtable).stats
+          $hits = [long](($stats.cache_hits.counts.Values | Measure-Object -Sum).Sum)
+          $misses = [long](($stats.cache_misses.counts.Values | Measure-Object -Sum).Sum)
+          Write-Host "Source compiler cache: $hits hits, $misses misses, $($stats.cache_writes) writes"
+          if ($stats.requests_executed -le 0 -or ($hits + $misses) -le 0) {
+            throw 'sccache saw no cacheable source compilations'
+          }
+          if ($hits -le 0 -and $stats.cache_writes -le 0) {
+            throw 'sccache neither restored nor stored any source compiler objects'
+          }
 
       - name: Stage the Mesa user-mode driver
         shell: pwsh
@@ -739,6 +746,9 @@ jobs:
         run: |
           $arch = '${{ matrix.arch }}'
           $buildDir = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-$arch"
+          # Count only source compilations, excluding Meson configuration probes.
+          sccache --zero-stats
+          if ($LASTEXITCODE) { throw 'Unable to reset source compiler statistics' }
           meson compile -C $buildDir --ninja-args=-k0
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $name = "viogpud3d_$arch.dll"
@@ -771,15 +781,19 @@ jobs:
       - name: Verify source compiler cache activity
         shell: pwsh
         run: |
-          $stats = sccache --show-stats 2>&1
-          $stats
+          $json = sccache --show-stats --stats-format=json
           if ($LASTEXITCODE) { throw 'Unable to read sccache statistics' }
-          $text = $stats -join "`n"
-          $requests = [regex]::Match($text, '(?im)^\s*Compile requests\s*:\s*(\d+)').Groups[1].Value
-          $hits = [regex]::Match($text, '(?im)^\s*Cache hits\s*:\s*(\d+)').Groups[1].Value
-          $misses = [regex]::Match($text, '(?im)^\s*Cache misses\s*:\s*(\d+)').Groups[1].Value
-          if ([string]::IsNullOrWhiteSpace($requests) -or [int]$requests -le 0) { throw 'sccache saw no source compile requests' }
-          if (([string]::IsNullOrWhiteSpace($hits) -or [int]$hits -le 0) -and ([string]::IsNullOrWhiteSpace($misses) -or [int]$misses -le 0)) { throw 'sccache saw no cache hits or misses on this build' }
+          $json
+          $stats = ($json | ConvertFrom-Json -AsHashtable).stats
+          $hits = [long](($stats.cache_hits.counts.Values | Measure-Object -Sum).Sum)
+          $misses = [long](($stats.cache_misses.counts.Values | Measure-Object -Sum).Sum)
+          Write-Host "Source compiler cache: $hits hits, $misses misses, $($stats.cache_writes) writes"
+          if ($stats.requests_executed -le 0 -or ($hits + $misses) -le 0) {
+            throw 'sccache saw no cacheable source compilations'
+          }
+          if ($hits -le 0 -and $stats.cache_writes -le 0) {
+            throw 'sccache neither restored nor stored any source compiler objects'
+          }
 
       - name: Upload the Mesa user-mode driver
         uses: actions/upload-artifact@v4
