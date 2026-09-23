@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <new>
 #define _In_
 #define _In_opt_
 #define _Inout_
@@ -18,7 +19,25 @@
 #define KeMemoryBarrier() ((void)0)
 using UINT=unsigned; using ULONG=uint32_t; using USHORT=uint16_t; using LONG=int;
 using ULONGLONG=uint64_t; using SIZE_T=size_t; using BYTE=unsigned char;
+using ULONG_PTR=uintptr_t;
 using BOOLEAN=bool; using VOID=void; using PVOID=void*; using HANDLE=void*; using NTSTATUS=int;
+using KIRQL=int;
+enum Pool { NonPagedPoolNx };
+void *operator new(size_t size,Pool) { return ::operator new(size,std::nothrow); }
+void *operator new[](size_t size,Pool) { return ::operator new[](size,std::nothrow); }
+struct WORK_QUEUE_ITEM { void (*Routine)(void*){}; void *Context{}; };
+constexpr int DelayedWorkQueue=0,IO_NO_INCREMENT=0;
+static WORK_QUEUE_ITEM *queuedHostWork;
+static int g_VioGpuNativeAccessLock,g_VioGpuNativeImportWorkers;
+static bool g_VioGpuNativeImportWorkersIdle=true;
+void KeAcquireSpinLock(int *lock,KIRQL*) { assert(!*lock);*lock=1; }
+void KeReleaseSpinLock(int *lock,KIRQL) { assert(*lock);*lock=0; }
+void KeSetEvent(bool *event,int,bool) { *event=true; }
+void KeClearEvent(bool *event) { *event=false; }
+void ExInitializeWorkItem(WORK_QUEUE_ITEM *work,void (*routine)(void*),void *context) {
+    work->Routine=routine;work->Context=context;
+}
+void ExQueueWorkItem(WORK_QUEUE_ITEM *work,int) { assert(!queuedHostWork);queuedHostWork=work; }
 constexpr UINT MAXUINT=~0U,MAXULONG=~0U,PAGE_SIZE=4096,VIOGPU_NATIVE_RESOURCE_ID_START=0x80000000;
 constexpr ULONGLONG MAXULONGLONG=~0ULL;
 constexpr int STATUS_SUCCESS=0;
@@ -35,6 +54,8 @@ using PLIST_ENTRY=LIST_ENTRY*;
 struct VIOGPU_NATIVE_PASSIVE_WORK {
     LIST_ENTRY Link; void (*Routine)(void*){}; void (*CancelRoutine)(void*){};
     void *Context{}; volatile LONG *CancelRequested{};
+    PVOID const *OrderingOwners{}; UINT OrderingOwnerCount{};
+    bool PipelineEligible{}; volatile LONG DisplayReleaseWait{};
 };
 class VioGpuDod;
 struct VIOGPU_WDDM_ALLOCATION { bool HostSurface=true; int refs=1; };
@@ -61,6 +82,12 @@ public:
     unsigned queued{},resets{},completed{},retired{},operationReleases{};
     bool IsNativeContextGenerationCurrent(LONG,ULONGLONG) { return true; }
     bool QueueNativePassiveWork(VIOGPU_NATIVE_PASSIVE_WORK*,UINT) { ++queued;return true; }
+    void ReleaseNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *work) {
+        assert(work->OrderingOwnerCount==3 && work->OrderingOwners && work->PipelineEligible && work->DisplayReleaseWait);
+        assert(g_VioGpuNativeImportWorkers==1 && !g_VioGpuNativeImportWorkersIdle);
+        ++released;
+    }
+    unsigned released{};
     void ReleaseNativeSubmissionOperation() { ++operationReleases; }
     void QueueNativeSoftwareSubmissionCompletion(UINT,UINT,UINT) { ++completed; }
     void CompleteNativeSystemSubmission(UINT,UINT,UINT) { ++completed; }
@@ -69,7 +96,14 @@ public:
         return queued?VioGpuNativePassiveWorkRemoved:VioGpuNativePassiveWorkNotQueued;
     }
 };
-void NativePagingBatchWorker(void*) {}
+void NativePagingBatchWorker(void *opaque) {
+    auto first=static_cast<VIOGPU_WDDM_PAGING_PRIVATE*>(opaque);
+    assert(first->BatchDetached && first->Work.OrderingOwnerCount==3);
+    for(unsigned i=0;i<3;++i) assert(first->Work.OrderingOwners[i]);
+    // Completion can clear private metadata and publish the fence. The outer
+    // worker owns the vector independently and must not touch the batch again.
+    *first={};
+}
 bool ReleaseAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a) { assert(a->refs>0);--a->refs;return true; }
 void RetirePatchDmaOwner(VioGpuDod *a,const Command*) { ++a->retired; }
 // INSERT_PRODUCTION
@@ -132,6 +166,32 @@ struct Fixture {
     }
 };
 int main() {
+    {
+        VIOGPU_WDDM_ALLOCATION owners[3];
+        VIOGPU_WDDM_PAGING_PRIVATE records[4]{};
+        records[0].Transaction.Allocation=&owners[2];
+        records[1].Transaction.Allocation=&owners[0];
+        records[2].Transaction.Allocation=&owners[2];
+        records[3].Transaction.Allocation=&owners[1];
+        records[0].BatchPrivateData=records;
+        records[0].BatchPrivateEnd=records[0].BatchPrivateDataSize=sizeof(records);
+        PVOID captured[4]{};
+        assert(CaptureNativeHostPagingOwners(records,captured,4)==3);
+        for(unsigned i=0;i<3;++i) assert(captured[i]==&owners[i]);
+        assert(CaptureNativeHostPagingOwners(records,captured,3)==0);
+        records[0].BatchPrivateEnd--;
+        assert(CaptureNativeHostPagingOwners(records,captured,4)==0);
+        assert(!DetachNativeHostPagingBatch(records) && !queuedHostWork);
+        records[0].BatchPrivateEnd++;
+        VioGpuDod adapter;
+        records[0].Transaction.Adapter=&adapter;
+        assert(DetachNativeHostPagingBatch(records) && adapter.released==1 && queuedHostWork);
+        assert(records[0].Work.OrderingOwnerCount==3);
+        for(unsigned i=0;i<3;++i) assert(records[0].Work.OrderingOwners[i]==&owners[i]);
+        auto work=queuedHostWork;queuedHostWork=nullptr;
+        work->Routine(work->Context);
+        assert(!g_VioGpuNativeImportWorkers && g_VioGpuNativeImportWorkersIdle);
+    }
     { Fixture f; f.accepted(); }
     { Fixture f; f.command.hContext=nullptr; f.accepted(); }
     { Fixture f; f.device.Adapter=&f.foreignAdapter; f.rejected(); }

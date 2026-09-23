@@ -534,6 +534,10 @@ struct VIOGPU_NATIVE_PASSIVE_WORK
     /* A display-release waiter has not reached the GPU. It must allow a
      * different buffer's Present to replace the retained front buffer. */
     volatile LONG DisplayReleaseWait;
+    /* Immutable sorted allocation identities for detached paging. The owner
+     * keeps this vector alive until the work leaves HostPending. */
+    PVOID const *OrderingOwners;
+    UINT OrderingOwnerCount;
     UINT PayloadBytes;
     UINT AllocationReferences;
     ULONGLONG DispatchTime100ns;

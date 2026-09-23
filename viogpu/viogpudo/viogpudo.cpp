@@ -1884,13 +1884,39 @@ BOOLEAN VioGpuDod::TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *wo
     KIRQL irql;
     KeAcquireSpinLock(&m_NativePassiveLock, &irql);
     UINT pending = 0;
+    BOOLEAN earlier = TRUE;
+    BOOLEAN orderingConflict = FALSE;
     for (PLIST_ENTRY link = m_NativePassiveHostPending.Flink; link != &m_NativePassiveHostPending; link = link->Flink)
     {
         auto entry = CONTAINING_RECORD(link, VIOGPU_NATIVE_PASSIVE_WORK, Link);
+        if (entry == work)
+            earlier = FALSE;
         if (entry != work && InterlockedCompareExchange(&entry->DisplayReleaseWait, 0, 0) == 0)
             ++pending;
+        /* Release-waiting paging still precedes a later fill/evict of the
+         * same allocation. Compare immutable sorted identities, without
+         * dereferencing allocations or retaining global dispatch ownership. */
+        if (earlier && work->OrderingOwnerCount != 0 && entry->OrderingOwnerCount != 0)
+        {
+            UINT currentOwner = 0;
+            UINT previousOwner = 0;
+            while (currentOwner < work->OrderingOwnerCount && previousOwner < entry->OrderingOwnerCount)
+            {
+                const ULONG_PTR current = reinterpret_cast<ULONG_PTR>(work->OrderingOwners[currentOwner]);
+                const ULONG_PTR previous = reinterpret_cast<ULONG_PTR>(entry->OrderingOwners[previousOwner]);
+                if (current == previous)
+                {
+                    orderingConflict = TRUE;
+                    break;
+                }
+                if (current < previous)
+                    ++currentOwner;
+                else
+                    ++previousOwner;
+            }
+        }
     }
-    const BOOLEAN allowed = !m_NativePassiveClosing && !IsHardwareResetRequested() &&
+    const BOOLEAN allowed = !orderingConflict && !m_NativePassiveClosing && !IsHardwareResetRequested() &&
         (m_NativePassiveActiveWork == work ||
          (m_NativePassiveActiveWork == NULL && pending < VIOGPU_NATIVE_PIPELINE_WINDOW));
     if (allowed)

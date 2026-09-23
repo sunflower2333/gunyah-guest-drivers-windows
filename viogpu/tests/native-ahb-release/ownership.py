@@ -60,6 +60,7 @@ for name, old, new in [
      'BOOLEAN idle = !share->Access.Poisoned &&'),
     ('paging-positive-wait',
      'return status != STATUS_SUCCESS && NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;', 'return status;'),
+    ('paging-worker-reorder', '!orderingConflict && !m_NativePassiveClosing', '(orderingConflict || !orderingConflict) && !m_NativePassiveClosing'),
 ]:
     if production.count(old) != 1:
         raise RuntimeError('mutation anchor changed: ' + name)
@@ -72,7 +73,8 @@ with tempfile.TemporaryDirectory(prefix='.native-ahb-ownership-', dir=here) as t
         subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
                         '-I' + str(root / 'viogpu/common'), str(unit), '-o', str(binary)],
                        env={**os.environ, 'TMPDIR': str(output)}, check=True)
-        result = subprocess.run([str(binary)], capture_output=True, text=True)
+        result = subprocess.run([str(binary)], capture_output=True, text=True,
+                                env={**os.environ, 'UBSAN_OPTIONS': 'halt_on_error=1'})
         if (result.returncode == 0) != (name == 'production'):
             raise SystemExit(name + ': unexpected result\n' + result.stdout + result.stderr)
         print('PASS ownership ' + name + (' rejected' if name != 'production' else ''))

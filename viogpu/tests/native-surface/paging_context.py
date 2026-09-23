@@ -29,10 +29,12 @@ def definition(name):
 
 records = header[header.index('struct VIOGPU_WDDM_KMD_DMA_PRIVATE'):header.index('struct VIOGPU_WDDM_PRESENT_DMA_PACKET')]
 records += header[header.index('enum VIOGPU_WDDM_PAGING_TRANSACTION_STATE'):header.index('static_assert(FIELD_OFFSET(VIOGPU_WDDM_PAGING_PRIVATE')]
+records += block(source, source.index('struct VIOGPU_NATIVE_HOST_PAGING_WORK\n')) + ';'
 production = '\n'.join(definition(n) for n in ['ValidatePagingDmaPacket', 'ResolvePagingBatchOffset',
     'ResolvePagingBatch', 'ValidatePagingTransactionReference', 'ReferencePagingContext',
     'ReleasePagingTransactionReference', 'CancelPagingTransaction', 'IsRecognizedPagingOwner',
-    'CancelRecognizedPagingTransaction'])
+    'CancelRecognizedPagingTransaction', 'CaptureNativeHostPagingOwners',
+    'RunNativeHostPagingWork', 'DetachNativeHostPagingBatch'])
 cancel = definition('VioGpuWddmCancelCommand')
 start = cancel.index('else if (cancelCommand->hContext != NULL')
 unrelated = block(cancel, start)
@@ -51,6 +53,7 @@ for name, old, new in [
     ('null-context-rejected', 'if (handle == NULL)\n        return TRUE;', 'if (handle == NULL)\n        return FALSE;'),
     ('foreign-context', 'context->Device->Adapter != adapter', 'false'),
     ('cancel-nonnull-paging', 'if (pagingOwner && pagingContextValid &&', 'if (cancelCommand->hContext == NULL && pagingOwner && pagingContextValid &&'),
+    ('paging-owner-publication', 'first->Work.OrderingOwnerCount = ownerCount;', 'first->Work.OrderingOwnerCount = 0;'),
 ]:
     if fixture.count(old) != 1:
         raise RuntimeError('mutation anchor: ' + name)
@@ -60,9 +63,10 @@ with tempfile.TemporaryDirectory(prefix='.paging-context-', dir=here) as temp:
     for name, text in variants:
         unit, binary = out / (name + '.cpp'), out / name
         unit.write_text(text)
-        subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-fsanitize=undefined',
+        subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined', '-no-pie',
                         str(unit), '-o', str(binary)], env={**os.environ, 'TMPDIR': str(out)}, check=True)
-        result = subprocess.run([str(binary)], capture_output=True, text=True)
+        result = subprocess.run([str(binary)], capture_output=True, text=True,
+                                env={**os.environ, 'UBSAN_OPTIONS': 'halt_on_error=1'})
         if (result.returncode == 0) != (name == 'production'):
             raise SystemExit(name + ': unexpected result\n' + result.stdout + result.stderr)
         print('PASS paging context ' + name + (' rejected' if name != 'production' else ''))

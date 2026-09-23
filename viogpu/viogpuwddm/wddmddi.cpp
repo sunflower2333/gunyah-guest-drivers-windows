@@ -4577,12 +4577,44 @@ struct VIOGPU_NATIVE_HOST_PAGING_WORK
 {
     WORK_QUEUE_ITEM Work;
     VIOGPU_WDDM_PAGING_PRIVATE *Batch;
+    PVOID *OrderingOwners;
 };
+
+static UINT CaptureNativeHostPagingOwners(const VIOGPU_WDDM_PAGING_PRIVATE *first, PVOID *owners, UINT capacity)
+{
+    if (first == NULL || owners == NULL || first->BatchPrivateData == NULL ||
+        first->BatchPrivateStart >= first->BatchPrivateEnd || first->BatchPrivateEnd > first->BatchPrivateDataSize ||
+        (first->BatchPrivateEnd - first->BatchPrivateStart) % sizeof(VIOGPU_WDDM_PAGING_PRIVATE) != 0)
+        return 0;
+    const UINT count = (first->BatchPrivateEnd - first->BatchPrivateStart) / sizeof(VIOGPU_WDDM_PAGING_PRIVATE);
+    if (count > capacity)
+        return 0;
+    UINT ownerCount = 0;
+    for (UINT index = 0; index < count; ++index)
+    {
+        auto item = reinterpret_cast<const VIOGPU_WDDM_PAGING_PRIVATE *>(
+            static_cast<const BYTE *>(first->BatchPrivateData) + first->BatchPrivateStart + index * sizeof(*first));
+        PVOID owner = item->Transaction.Allocation;
+        if (owner == NULL)
+            return 0;
+        UINT position = 0;
+        while (position < ownerCount && reinterpret_cast<ULONG_PTR>(owners[position]) < reinterpret_cast<ULONG_PTR>(owner))
+            ++position;
+        if (position < ownerCount && owners[position] == owner)
+            continue;
+        for (UINT move = ownerCount; move > position; --move)
+            owners[move] = owners[move - 1];
+        owners[position] = owner;
+        ++ownerCount;
+    }
+    return ownerCount;
+}
 
 static VOID RunNativeHostPagingWork(PVOID opaque)
 {
     auto work = static_cast<VIOGPU_NATIVE_HOST_PAGING_WORK *>(opaque);
     NativePagingBatchWorker(work->Batch);
+    delete[] work->OrderingOwners;
     delete work;
     KIRQL irql;
     KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
@@ -4593,10 +4625,25 @@ static VOID RunNativeHostPagingWork(PVOID opaque)
 
 static BOOLEAN DetachNativeHostPagingBatch(VIOGPU_WDDM_PAGING_PRIVATE *first)
 {
+    if (first == NULL || first->BatchPrivateData == NULL || first->BatchPrivateStart >= first->BatchPrivateEnd ||
+        first->BatchPrivateEnd > first->BatchPrivateDataSize ||
+        (first->BatchPrivateEnd - first->BatchPrivateStart) % sizeof(VIOGPU_WDDM_PAGING_PRIVATE) != 0)
+        return FALSE;
     auto detached = new (NonPagedPoolNx) VIOGPU_NATIVE_HOST_PAGING_WORK;
     if (detached == NULL)
         return FALSE;
+    const UINT capacity = (first->BatchPrivateEnd - first->BatchPrivateStart) / sizeof(VIOGPU_WDDM_PAGING_PRIVATE);
+    detached->OrderingOwners = new (NonPagedPoolNx) PVOID[capacity];
+    const UINT ownerCount = CaptureNativeHostPagingOwners(first, detached->OrderingOwners, capacity);
+    if (ownerCount == 0)
+    {
+        delete[] detached->OrderingOwners;
+        delete detached;
+        return FALSE;
+    }
     detached->Batch = first;
+    first->Work.OrderingOwners = detached->OrderingOwners;
+    first->Work.OrderingOwnerCount = ownerCount;
     first->BatchDetached = TRUE;
     first->Work.PipelineEligible = TRUE;
     InterlockedExchange(&first->Work.DisplayReleaseWait, TRUE);

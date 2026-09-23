@@ -27,6 +27,7 @@
 using UINT=unsigned; using ULONG=unsigned; using LONG=int; using ULONGLONG=unsigned long long;
 using BOOLEAN=bool; using VOID=void; using BYTE=unsigned char; using PVOID=void*;
 using PEPROCESS=void*; using NTSTATUS=int; using SIZE_T=std::size_t;
+using ULONG_PTR=uintptr_t;
 using KIRQL=int; using KSPIN_LOCK=int; using KEVENT=bool;
 constexpr int STATUS_SUCCESS=0, STATUS_PENDING=1, STATUS_DEVICE_NOT_READY=-1,
     STATUS_INVALID_PARAMETER=-2, STATUS_NO_MEMORY=-3, STATUS_INVALID_HANDLE=-4,
@@ -63,6 +64,7 @@ using VIOGPU_2D_RESOURCE_STATE=int;
 struct VIOGPU_NATIVE_PASSIVE_WORK {
     LIST_ENTRY Link{}; bool PipelineEligible{}; volatile LONG DisplayReleaseWait{};
     volatile LONG *CancelRequested{};
+    PVOID const *OrderingOwners{}; UINT OrderingOwnerCount{};
 };
 class VioGpuDod;
 struct VIOGPU_WDDM_DEVICE { VioGpuDod *Adapter; };
@@ -138,8 +140,10 @@ bool ReferenceRenderSubmission(VIOGPU_WDDM_SUBMISSION *s) { ++s->References; ret
 void DereferenceRenderSubmission(VIOGPU_WDDM_SUBMISSION *s) { assert(s->References>1); --s->References; }
 int AcquireAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a,VioGpuDod*) { ++a->Pins; return 0; }
 void ReleaseAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a) { assert(a->Pins>0); --a->Pins; }
+#pragma pack(push,1)
 struct VIOGPU_WDDM_MSM_SUBMIT_BO { UINT Flags,Handle; ULONGLONG Presumed; };
 struct VIOGPU_WDDM_MSM_SUBMIT_CMD { UINT words[8]; };
+#pragma pack(pop)
 class VioGpuDod {
 public:
     struct Wait { UINT resource; ULONGLONG sequence; PVOID context;
@@ -402,4 +406,59 @@ int main() {
     assert(adapter.pagingCalls==beforeTimeout && share.Access.Poisoned && adapter.reset);
     assert(!wrapper.LifecycleMutex && !share.AsyncReferences);
     RemoveEntryList(&pagingWork.Link);
+
+    // OS workers need not run in ExQueueWorkItem order. A later eviction
+    // starts first while the initial fill has not acquired its writer lease.
+    for (UINT operation : {VioGpuWddmPagingFlagPageOut,VioGpuWddmPagingFlagDiscard}) {
+        adapter.reset=false; adapter.failPagingCall=0; share.Access={};
+        share.SurfaceResident=false; wrapper.PlacementValid=false;
+        share.PagingDirection=0; share.PagingNextOffset=0;
+        VIOGPU_NATIVE_PASSIVE_WORK initial{},eviction{};
+        PVOID owners[]={&wrapper};
+        initial.OrderingOwners=eviction.OrderingOwners=owners;
+        initial.OrderingOwnerCount=eviction.OrderingOwnerCount=1;
+        initial.CancelRequested=eviction.CancelRequested=&cancel;
+        initial.PipelineEligible=eviction.PipelineEligible=true;
+        initial.DisplayReleaseWait=eviction.DisplayReleaseWait=true;
+        InsertTailList(&adapter.m_NativePassiveHostPending,&initial.Link);
+        InsertTailList(&adapter.m_NativePassiveHostPending,&eviction.Link);
+        auto fill=tx;
+        fill.Flags=VioGpuWddmPagingFlagFill; fill.TransferOffset=0; fill.TransferSize=bytes;
+        fill.TransferAddress=nullptr; fill.TransferDataComplete=false;
+        auto evict=fill;
+        evict.Flags=operation;
+        evict.TransferSize=operation==VioGpuWddmPagingFlagDiscard?0:bytes;
+        evict.TransferAddress=operation==VioGpuWddmPagingFlagDiscard?nullptr:saved.data();
+        if(operation==VioGpuWddmPagingFlagPageOut)
+            evict.Flags|=VioGpuWddmPagingFlagTransferStart|VioGpuWddmPagingFlagTransferEnd;
+        const auto beforeWait=waitCount;
+        onWait=[&] {
+            assert(!share.Access.Writer && !adapter.reset);
+            assert(adapter.NativePassiveDispatchReadyLocked(&present));
+            assert(ExecuteHostSurfacePaging(&fill,&initial)==STATUS_SUCCESS);
+            assert(share.SurfaceResident && wrapper.PlacementValid);
+            assert(!adapter.TryResumeNativePassiveDispatch(&eviction));
+            RemoveEntryList(&initial.Link);
+        };
+        assert(ExecuteHostSurfacePaging(&evict,&eviction)==STATUS_SUCCESS);
+        assert(waitCount==beforeWait+1 && !share.SurfaceResident && !wrapper.PlacementValid);
+        assert(!share.Access.Poisoned && !adapter.reset && !share.AsyncReferences);
+        if(operation==VioGpuWddmPagingFlagPageOut) assert(saved==adapter.ahb);
+        RemoveEntryList(&eviction.Link);
+    }
+
+    // An Android release wait on a different allocation is not a global
+    // barrier: another paging worker and independent Render can be admitted.
+    VIOGPU_WDDM_ALLOCATION unrelated{};
+    PVOID otherOwner[]={&unrelated},currentOwner[]={&wrapper};
+    VIOGPU_NATIVE_PASSIVE_WORK held{},otherPaging{},render{};
+    held.OrderingOwners=otherOwner; otherPaging.OrderingOwners=currentOwner;
+    held.OrderingOwnerCount=otherPaging.OrderingOwnerCount=1;
+    held.DisplayReleaseWait=otherPaging.DisplayReleaseWait=true;
+    InsertTailList(&adapter.m_NativePassiveHostPending,&held.Link);
+    InsertTailList(&adapter.m_NativePassiveHostPending,&otherPaging.Link);
+    assert(adapter.TryResumeNativePassiveDispatch(&otherPaging));
+    assert(held.DisplayReleaseWait && !otherPaging.DisplayReleaseWait);
+    assert(adapter.TryResumeNativePassiveDispatch(&render));
+    RemoveEntryList(&held.Link); RemoveEntryList(&otherPaging.Link);
 }

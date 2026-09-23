@@ -14,6 +14,11 @@ repacking and scheduler barrier fixtures. Negative controls cover forged IOVA,
 unknown GPU completion, missing release observation, blocked next Present,
 same-context timestamp reordering and omitted host residency.
 
+Detached paging cases run later pageout/discard before the initial FILL and
+require FIFO for overlapping allocation sets. They also allow independent
+paging, Render and replacement Present while another allocation waits for
+Android release. Removing the overlap guard must fail the interleaving fixture.
+
 The KMD now uses these ownership paths for HostSurface scanout. These tests
 establish transport and software ownership behavior, not Android visibility or
 end-to-end zero-copy runtime. The existing same-AHB BAR mapping still needs the
