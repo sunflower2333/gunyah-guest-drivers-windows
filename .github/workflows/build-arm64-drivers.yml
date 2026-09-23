@@ -294,6 +294,12 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Cache compiled Mesa objects
+        uses: ./.github/actions/compiler-cache
+        with:
+          architecture: arm64
+          flavor: d3d10
+
       - name: Cache Python build wheels
         uses: actions/cache@v4
         with:
@@ -396,8 +402,8 @@ jobs:
           $crossFile = Join-Path $env:RUNNER_TEMP 'mesa-d3d10-zink-arm64-cross.ini'
           $crossFileLines = @(
             '[binaries]'
-            "c = ['clang-cl', '--target=aarch64-pc-windows-msvc']"
-            "cpp = ['clang-cl', '--target=aarch64-pc-windows-msvc']"
+            "c = ['sccache', 'clang-cl', '--target=aarch64-pc-windows-msvc']"
+            "cpp = ['sccache', 'clang-cl', '--target=aarch64-pc-windows-msvc']"
             "ar = 'llvm-lib'"
             ''
             '[host_machine]'
@@ -597,6 +603,12 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Cache compiled Mesa objects
+        uses: ./.github/actions/compiler-cache
+        with:
+          architecture: ${{ matrix.arch }}
+          flavor: d3d10
+
       - name: Cache Python build wheels
         uses: actions/cache@v4
         with:
@@ -665,8 +677,8 @@ jobs:
           $crossFile = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-$arch-cross.ini"
           @(
             '[binaries]'
-            "c = ['clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
-            "cpp = ['clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
+            "c = ['sccache', 'clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
+            "cpp = ['sccache', 'clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
             "ar = 'llvm-lib'"
             ''
             '[host_machine]'
