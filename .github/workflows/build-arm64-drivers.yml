@@ -404,7 +404,7 @@ jobs:
           $clang = (Get-Command clang-cl.exe -ErrorAction Stop).Source
           $shimDir = Join-Path $env:RUNNER_TEMP 'sccache-clang-shim'
           New-Item -ItemType Directory -Force $shimDir | Out-Null
-          @('@echo off', "sccache.exe `\"$clang`\" %*") | Set-Content (Join-Path $shimDir 'clang-cl.cmd') -Encoding ascii
+          @('@echo off', ('sccache.exe "' + $clang + '" %*')) | Set-Content (Join-Path $shimDir 'clang-cl.cmd') -Encoding ascii
           $env:Path = "$shimDir;$env:Path"
           $env:AR = 'llvm-lib'
           # Meson must not execute ARM64 sanity binaries on the x64 runner.
@@ -686,7 +686,7 @@ jobs:
           $clang = (Get-Command clang-cl.exe -ErrorAction Stop).Source
           $shimDir = Join-Path $env:RUNNER_TEMP 'sccache-clang-shim'
           New-Item -ItemType Directory -Force $shimDir | Out-Null
-          @('@echo off', "sccache.exe `\"$clang`\" %*") | Set-Content (Join-Path $shimDir 'clang-cl.cmd') -Encoding ascii
+          @('@echo off', ('sccache.exe "' + $clang + '" %*')) | Set-Content (Join-Path $shimDir 'clang-cl.cmd') -Encoding ascii
           $env:Path = "$shimDir;$env:Path"
           $crossFile = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-$arch-cross.ini"
           @(
