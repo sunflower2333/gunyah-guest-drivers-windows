@@ -27,7 +27,7 @@ static VioGpuFlipTarget AcceptedTarget()
     target.PlacementOffset = 0x2000;
     target.HasAllocation = true;
     target.OwnedByAdapter = true;
-    target.StandardPrimary = true;
+    target.ScanoutPrimary = true;
     target.PlacementValid = true;
     return target;
 }
@@ -120,6 +120,18 @@ int main()
 
     // Flip target validation, one refusal per missing property.
     CHECK(VioGpuValidateFlipTarget(AcceptedTarget()) == VioGpuFlipTargetAccepted);
+    VioGpuFlipTarget host = AcceptedTarget();
+    host.Segment = 2;
+    host.ExpectedSegment = 2;
+    CHECK(VioGpuValidateFlipTarget(host) == VioGpuFlipTargetAccepted);
+    host.Segment = 1;
+    CHECK(VioGpuValidateFlipTarget(host) == VioGpuFlipTargetBadSegment);
+    host.Segment = 2;
+    host.PlacementValid = false;
+    CHECK(VioGpuValidateFlipTarget(host) == VioGpuFlipTargetNotPlaced);
+    host.PlacementValid = true;
+    host.ScanoutPrimary = false;
+    CHECK(VioGpuValidateFlipTarget(host) == VioGpuFlipTargetNotPrimary);
     VioGpuFlipTarget t = AcceptedTarget();
     t.SourceId = 1;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetBadSource);
@@ -130,7 +142,7 @@ int main()
     t.OwnedByAdapter = false;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetForeign);
     t = AcceptedTarget();
-    t.StandardPrimary = false;
+    t.ScanoutPrimary = false;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetNotPrimary);
     t = AcceptedTarget();
     t.Segment = 2;
@@ -160,7 +172,7 @@ int main()
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetHighPrecision);
     t = AcceptedTarget();
     t.HighPrecision = true;
-    t.StandardPrimary = false;
+    t.ScanoutPrimary = false;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetNotPrimary);
     t.OwnedByAdapter = false;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetForeign);
@@ -185,7 +197,7 @@ int main()
     t = AcceptedTarget();
     t.HighPrecision = true;
     t.HighPrecisionAdmitted = true;
-    t.StandardPrimary = false;
+    t.ScanoutPrimary = false;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetNotPrimary);
     // Admission alone never relaxes an eight-bit flip's gates.
     t = AcceptedTarget();
@@ -196,7 +208,7 @@ int main()
     // A foreign allocation is refused before its unrelated fields are trusted.
     t = AcceptedTarget();
     t.OwnedByAdapter = false;
-    t.StandardPrimary = false;
+    t.ScanoutPrimary = false;
     t.PlacementValid = false;
     CHECK(VioGpuValidateFlipTarget(t) == VioGpuFlipTargetForeign);
 

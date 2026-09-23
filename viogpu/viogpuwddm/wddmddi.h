@@ -16,7 +16,6 @@ VOID VioGpuWddmBuildInitializationData(_Out_ DRIVER_INITIALIZATION_DATA *initial
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
 BOOLEAN VioGpuWddmIsMpo3Registration();
-BOOLEAN VioGpuWddmIsDirectFlipTrial();
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
 NTSTATUS APIENTRY VioGpuWddmGetMultiPlaneOverlayCaps(CONST HANDLE hAdapter,
                                                      DXGKARG_GETMULTIPLANEOVERLAYCAPS *args);

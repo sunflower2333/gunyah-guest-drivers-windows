@@ -33,6 +33,7 @@ names = ['FindNativeShareByKeyLocked', 'CollectNativeSurfacesLocked', 'HandleNat
          'ReferenceHostSurfaceAllocation', 'ReleaseHostSurfaceAllocation', 'RemoveNativeImportsForContext',
          'ImportNativeShareLocked', 'ReleaseNativeShareLocked', 'VioGpuWddmRetireNativeShares',
          'IsOwnedAllocation', 'IsNativeAllocation', 'IsStandardAllocation', 'IsStandardPrimaryAllocation',
+         'IsScanoutPrimaryAllocation',
          'BeginAllocationDestroy', 'UnmapHostSurfaceAllocation', 'VioGpuWddmDestroyAllocation']
 production = '\n'.join(declaration(name) for name in names)
 structs = '\n'.join(declaration(name, 'struct') for name in

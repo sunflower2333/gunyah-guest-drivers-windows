@@ -208,14 +208,6 @@ struct DXGK_ALLOCATIONINFO
     HANDLE hAllocation;
 };
 
-/* Direct flip is advertised only while the one-shot trial is armed, so the
- * segment descriptor has to answer both states. */
-static bool g_DirectFlipTrial = false;
-BOOLEAN VioGpuWddmIsDirectFlipTrial()
-{
-    return g_DirectFlipTrial ? TRUE : FALSE;
-}
-
 // INSERT_PRODUCTION
 
 unsigned checks = 0;
@@ -260,15 +252,10 @@ int main()
     }
     check(tail && descriptor.BaseAddress == 0 && !descriptor.Flags.Unimplemented,
           "no descriptor overrun or invented VRAM/capabilities");
-    check(!descriptor.Flags.DirectFlip, "direct flip stays off while the trial is unarmed");
-    g_DirectFlipTrial = true;
-    storage.fill(0xa5);
-    check(QuerySegment4(&adapter, &query) == STATUS_SUCCESS, "armed trial still answers the segment query");
-    std::memcpy(&descriptor, storage.data(), sizeof(descriptor));
+    check(descriptor.Flags.DirectFlip, "standard primary segment supports direct flip");
     check(descriptor.Flags.DirectFlip && descriptor.Flags.Aperture && descriptor.Flags.CpuVisible &&
                   descriptor.Flags.CacheCoherent,
-          "armed trial marks the primary segment direct-flip capable");
-    g_DirectFlipTrial = false;
+          "standard primary segment remains CPU-visible and direct-flip capable");
     {
         adapter.HostPaging = true;
         output.NbSegment = 0;
@@ -290,8 +277,9 @@ int main()
         check(guest.Size == VIOGPU_WDDM_APERTURE_SIZE && guest.Flags.Aperture && guest.Flags.CpuVisible,
               "native paging preserves the ordinary CPU aperture");
         check(host.Size == VIOGPU_WDDM_HOST_SURFACE_BUDGET && host.CommitLimit == host.Size &&
+              host.Flags.DirectFlip && guest.Flags.DirectFlip &&
               !host.Flags.Aperture && !host.Flags.CpuVisible && !host.Flags.CacheCoherent && host.BaseAddress == 0,
-              "native host segment is a bounded non-CPU-visible memory segment");
+              "native host segment is bounded, non-CPU-visible, and direct-flip capable");
         for (SIZE_T i = 0; i < 2; ++i)
             for (SIZE_T j = sizeof(host); j < stride; ++j)
                 check(hostStorage[i * stride + j] == 0xa5, "both segment descriptor tails remain untouched");

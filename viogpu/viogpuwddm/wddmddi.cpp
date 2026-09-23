@@ -637,14 +637,16 @@ BOOLEAN IsStandardPrimaryAllocation(const VIOGPU_WDDM_ALLOCATION *allocation)
     return IsStandardAllocation(allocation) && (allocation->Flags & VIOGPU_WDDM_ALLOCATION_PRIMARY) != 0;
 }
 
-/* Native AHB is an opt-in backing for a standard primary.  Keep this predicate
- * separate from IsNativeAllocation(): the latter describes the WDDM native
- * context ABI and uses the high resource-id range, while Native AHB deliberately
- * owns an ordinary 2D resource id. */
+BOOLEAN IsScanoutPrimaryAllocation(const VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    return IsStandardPrimaryAllocation(allocation) || (allocation != NULL && allocation->HostSurface);
+}
+
+/* Native AHB backs ordinary primaries and native HostSurface scanout targets.
+ * Keep this distinct from the WDDM native-context resource-id ABI. */
 BOOLEAN IsNativeAhbPrimaryAllocation(const VIOGPU_WDDM_ALLOCATION *allocation)
 {
-    return (IsStandardPrimaryAllocation(allocation) || (allocation != NULL && allocation->HostSurface)) &&
-           VioGpuResourceNativeAhb(allocation->Resource2DState);
+    return IsScanoutPrimaryAllocation(allocation) && VioGpuResourceNativeAhb(allocation->Resource2DState);
 }
 
 BOOLEAN HasNativeAhbMapping(const VIOGPU_WDDM_ALLOCATION *allocation)
@@ -4031,10 +4033,7 @@ VOID InitializeSegmentDescriptor(Descriptor *descriptor, BOOLEAN hostSurface)
     descriptor->Flags.CpuVisible = !hostSurface;
     descriptor->Flags.Aperture = !hostSurface;
     descriptor->Flags.CacheCoherent = !hostSurface;
-    if (VioGpuWddmIsDirectFlipTrial())
-    {
-        descriptor->Flags.DirectFlip = TRUE;
-    }
+    descriptor->Flags.DirectFlip = TRUE;
     /* No CPU host aperture and no standby/hibernate preservation promise. */
 }
 
@@ -7910,7 +7909,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmDestroyAllocation(CONST HANDL
     for (UINT index = 0; index < destroyAllocation->NumAllocations; ++index)
     {
         VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(destroyAllocation->pAllocationList[index]);
-        if (IsStandardPrimaryAllocation(allocation))
+        if (IsScanoutPrimaryAllocation(allocation))
         {
             adapter->CancelPendingFlip(allocation);
         }
@@ -12295,8 +12294,8 @@ static BOOLEAN FlipSourceColorAcceptable(_In_ VioGpuDod *adapter, _In_ const VIO
 
 /* With FlipOnVSyncMmIo a flip reaches DxgkDdiPresent without a DMA buffer:
  * the driver validates the surface to flip to and dxgkrnl performs the flip
- * through DxgkDdiSetVidPnSourceAddress. Only a standard primary can become the
- * Host scanout, so anything else is refused here rather than at DIRQL. */
+ * through DxgkDdiSetVidPnSourceAddress. Only a standard primary or a resident
+ * native HostSurface can become the Host scanout. */
 static NTSTATUS ValidateMmioFlipPresent(CONST HANDLE hContext, DXGKARG_PRESENT *present)
 {
     VIOGPU_WDDM_CONTEXT *context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(hContext);
@@ -12323,7 +12322,7 @@ static NTSTATUS ValidateMmioFlipPresent(CONST HANDLE hContext, DXGKARG_PRESENT *
                                               FlipSourceColorAcceptable(adapter, sourceOpen->Allocation);
         if (sourceOpen != NULL && sourceOpen->Signature == VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE &&
             sourceOpen->Device == context->Device && sourceOpen->Allocation != NULL &&
-            IsOwnedAllocation(sourceOpen->Allocation, adapter) && IsStandardPrimaryAllocation(sourceOpen->Allocation) &&
+            IsOwnedAllocation(sourceOpen->Allocation, adapter) && IsScanoutPrimaryAllocation(sourceOpen->Allocation) &&
             sourceColorAcceptable)
         {
             status = STATUS_SUCCESS;
@@ -13365,11 +13364,11 @@ static NTSTATUS QueueMmioFlip(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_SETVID
     {
         target.OwnedByAdapter = allocation->Signature == VIOGPU_WDDM_ALLOCATION_SIGNATURE &&
                                 allocation->Adapter == adapter;
-        target.StandardPrimary = target.OwnedByAdapter && IsStandardPrimaryAllocation(allocation);
+        target.ScanoutPrimary = target.OwnedByAdapter && IsScanoutPrimaryAllocation(allocation);
         target.PlacementValid = target.OwnedByAdapter && allocation->PlacementValid;
         target.PlacementOffset = allocation->PlacementOffset;
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
-        target.HighPrecision = target.StandardPrimary && IsHighPrecisionSurfaceFormat(allocation->Format);
+        target.HighPrecision = target.ScanoutPrimary && IsHighPrecisionSurfaceFormat(allocation->Format);
         /* Interlocked reads only; the PASSIVE bind re-checks the committed mode
          * and tags the resource before the Host can scan it out. */
         target.HighPrecisionAdmitted = adapter->IsNativeHdrModeAvailable();

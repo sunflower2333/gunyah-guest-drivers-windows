@@ -120,7 +120,7 @@ mutations = [
      lambda t: replace_once(t, "        if (InterlockedCompareExchange(&m_pVioGpuDod->m_ColorMonitorConnected, 0, 0) != 0)\n        {\n            UpdateChildStatus(TRUE);\n        }\n", ""),
      "a display event must keep the SDR connected report before the HDR refresh"),
     ("MMIO flip scans out a ten-bit primary", "wddmddi.cpp",
-     lambda t: replace_once(t, "        target.HighPrecision = target.StandardPrimary && IsHighPrecisionSurfaceFormat(allocation->Format);\n", ""),
+     lambda t: replace_once(t, "        target.HighPrecision = target.ScanoutPrimary && IsHighPrecisionSurfaceFormat(allocation->Format);\n", ""),
      "an MMIO flip must refuse ten-bit primaries and end color presentation before publishing"),
     ("MMIO flip keeps a stale color PresentId", "wddmddi.cpp",
      lambda t: replace_once(t, "     * Interlocked writes only, so this stays lock-free at DIRQL. */\n    adapter->ClearColorPresentCompletion();\n",

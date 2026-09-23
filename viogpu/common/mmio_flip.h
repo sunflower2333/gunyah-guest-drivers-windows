@@ -63,7 +63,7 @@ struct VioGpuFlipTarget
     unsigned long long PlacementOffset;
     bool HasAllocation;
     bool OwnedByAdapter;
-    bool StandardPrimary;
+    bool ScanoutPrimary;
     bool PlacementValid;
     /* Ten-bit primary. Set only by the Advanced Color build, where such
      * allocations exist. A flip carries no color space of its own, so one is
@@ -104,7 +104,7 @@ inline VioGpuFlipTargetStatus VioGpuValidateFlipTarget(const VioGpuFlipTarget &t
     {
         return VioGpuFlipTargetForeign;
     }
-    if (!target.StandardPrimary)
+    if (!target.ScanoutPrimary)
     {
         return VioGpuFlipTargetNotPrimary;
     }

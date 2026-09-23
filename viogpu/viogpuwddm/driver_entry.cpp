@@ -40,7 +40,6 @@ static BOOLEAN g_VioGpuWddmConnectorTimingModel = FALSE;
  * that goes wrong cannot repeat, which is the trap the guest-blob scanout
  * experiment fell into. */
 static BOOLEAN g_VioGpuWddmOverlayProbe = FALSE;
-static BOOLEAN g_VioGpuWddmDirectFlipTrial = FALSE;
 /* Whether the table handed to DxgkInitialize carries
  * DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3. Read from the built
  * table, not re-derived from the probe, so DriverCaps can never describe a
@@ -53,11 +52,6 @@ static BOOLEAN g_VioGpuWddmDirectFlipTrial = FALSE;
  * every time the Android display attached (four identical minidumps on
  * 58505, 2026-09-17). */
 static BOOLEAN g_VioGpuWddmMpo3Registration = FALSE;
-
-BOOLEAN VioGpuWddmIsDirectFlipTrial()
-{
-    return g_VioGpuWddmDirectFlipTrial;
-}
 
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration()
 {
@@ -194,17 +188,6 @@ static BOOLEAN VioGpuWddmReadOneShotFlag(_In_ UNICODE_STRING *registryPath, _In_
 
     ZwClose(parametersKey);
     return armed;
-}
-
-/* Reads the one-shot DirectFlipTrial arm exactly like the overlay probe: the
- * value is cleared before the capability can take effect, so a boot that ends
- * in a black desktop cannot repeat. Advertising SupportDirectFlip promises
- * dxgkrnl that this adapter can scan out a flipped primary; until that promise
- * is verified on hardware it stays behind the arm. */
-static BOOLEAN VioGpuWddmReadDirectFlipTrial(_In_ UNICODE_STRING *registryPath)
-{
-    PAGED_CODE();
-    return VioGpuWddmReadOneShotFlag(registryPath, L"DirectFlipTrial");
 }
 
 static BOOLEAN VioGpuWddmReadOverlayProbe(_In_ UNICODE_STRING *registryPath)
@@ -408,7 +391,6 @@ extern "C" NTSTATUS VioGpuWddmInitializeMiniport(_In_ DRIVER_OBJECT *driverObjec
     g_VioGpuWddmRenderOnlyRegistration = renderOnly;
     g_VioGpuWddmConnectorTimingModel = VioGpuWddmReadConnectorTimingModel(registryPath);
     g_VioGpuWddmOverlayProbe = VioGpuWddmReadOverlayProbe(registryPath);
-    g_VioGpuWddmDirectFlipTrial = VioGpuWddmReadDirectFlipTrial(registryPath);
     DRIVER_INITIALIZATION_DATA initialData;
     VioGpuWddmBuildInitializationData(&initialData, renderOnly);
     g_VioGpuWddmMpo3Registration = VioGpuWddmRegistersMpo3(&initialData);

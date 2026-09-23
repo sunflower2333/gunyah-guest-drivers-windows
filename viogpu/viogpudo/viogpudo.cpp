@@ -54,7 +54,6 @@ BOOLEAN VioGpuWddmDrainNativeImportWorkers(void);
 BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
 BOOLEAN VioGpuWddmIsMpo3Registration();
-BOOLEAN VioGpuWddmIsDirectFlipTrial();
 VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter);
 
 static const ULONG VIOGPU_WIN7_DRIVERCAPS_SIZE = FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps);
@@ -3754,13 +3753,9 @@ static NTSTATUS VioGpuQueryNativeDriverCaps(_In_ CONST DXGKARG_QUERYADAPTERINFO 
          * mandatory for a full graphics driver; the segment must also carry
          * DXGK_SEGMENTFLAGS.DirectFlip (see QuerySegment). MaxQueuedFlipOnVSync
          * is the depth dxgkrnl may queue: one, matching the single scanout the
-         * Host binds per vsync. Behind the one-shot arm until proven on
-         * hardware. */
-        if (VioGpuWddmIsDirectFlipTrial())
-        {
-            driverCaps->SupportDirectFlip = 1;
-            driverCaps->MaxQueuedFlipOnVSync = 1;
-        }
+         * Host binds per vsync. */
+        driverCaps->SupportDirectFlip = 1;
+        driverCaps->MaxQueuedFlipOnVSync = 1;
     }
     driverCaps->SchedulingCaps.MultiEngineAware = 1;
     /* Physical-mode WDDM2 retains the allocation/patch-list scheduler.

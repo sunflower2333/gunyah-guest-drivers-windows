@@ -349,7 +349,7 @@ VioGpuWddmSetVidPnSourceAddressMpo3(CONST HANDLE hAdapter, DXGKARG_SETVIDPNSOURC
         target.Address = primary->SegmentAddress.QuadPart;
         target.HasAllocation = TRUE;
         target.OwnedByAdapter = TRUE;
-        target.StandardPrimary = TRUE;
+        target.ScanoutPrimary = TRUE;
         target.PlacementValid = allocation->PlacementValid;
         target.PlacementOffset = allocation->PlacementOffset;
         target.HighPrecision = FALSE;

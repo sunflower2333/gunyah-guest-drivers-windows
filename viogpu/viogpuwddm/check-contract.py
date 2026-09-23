@@ -2681,8 +2681,7 @@ def check_native_driver_caps_contract() -> None:
         # while CheckMultiPlaneOverlaySupport3 still refuses every plane.
         "MaxOverlays",
         "SupportMultiPlaneOverlay",
-        # Direct flip exists only while the one-shot DirectFlipTrial switch is
-        # armed. Measured 2026-09-17: every present arrived as a pure Blt and
+        # Measured 2026-09-17: every present arrived as a pure Blt and
         # NativeDisplayFlipPresentCalls stayed 0, so the desktop composites in
         # blt model and each DWM frame costs a full-surface copy in the guest.
         # SupportDirectFlip is the documented cap that lets dxgkrnl flip DWM's
@@ -2704,12 +2703,12 @@ def check_native_driver_caps_contract() -> None:
             not in helper:
         fail("overlay caps must be gated on the one-shot overlay probe, inside the display-adapter branch")
     # Direct flip promises dxgkrnl this adapter can scan out a flipped primary.
-    # It may only appear for a display adapter and only while the one-shot trial
-    # is armed, and the primary's segment must carry the matching DirectFlip
-    # flag or dxgkrnl refuses the path anyway.
-    if "if(VioGpuWddmIsDirectFlipTrial()){driverCaps->SupportDirectFlip=1;driverCaps->MaxQueuedFlipOnVSync=1;}" \
-            not in helper:
-        fail("direct-flip caps must be gated on the one-shot DirectFlipTrial, inside the display-adapter branch")
+    # It may only appear for a display adapter, and both scanout segments must
+    # carry the matching DirectFlip flag or dxgkrnl refuses the path anyway.
+    if "driverCaps->SupportDirectFlip=1;driverCaps->MaxQueuedFlipOnVSync=1;}" not in helper:
+        fail("direct-flip caps must be set inside the display-adapter branch")
+    if "VioGpuWddmIsDirectFlipTrial" in helper:
+        fail("direct-flip caps must not depend on a one-shot trial")
     # dxgkrnl 10.0.26100 leaves legacy display-state synchronization for any
     # adapter reporting WDDMVersion >= 2.3 and then, when DWM destroys the
     # scanned-out primary, calls DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3
@@ -2728,12 +2727,9 @@ def check_native_driver_caps_contract() -> None:
     if canonical_code(function_body("VioGpuWddmIsMpo3Registration", DRIVER_CODE)) != \
             "returng_VioGpuWddmMpo3Registration;":
         fail("VioGpuWddmIsMpo3Registration must report only the recorded table slot")
-    compact_ddi = compact_code(WDDM_DDI_CODE)
-    segment_direct_flip = compact_ddi.count(
-        "if(VioGpuWddmIsDirectFlipTrial()){descriptor->Flags.DirectFlip=TRUE;}") + compact_ddi.count(
-        "if(VioGpuWddmIsDirectFlipTrial()){descriptor.Flags.DirectFlip=TRUE;}")
-    if segment_direct_flip != 1:
-        fail("shared segment descriptor initializer must gate DirectFlip on the trial")
+    segment = canonical_code(function_body("InitializeSegmentDescriptor", WDDM_DDI_CODE))
+    if segment.count("descriptor->Flags.DirectFlip=TRUE;") != 1 or "VioGpuWddmIsDirectFlipTrial" in segment:
+        fail("shared segment descriptor initializer must enable DirectFlip for both scanout segments")
     for segment_query in ("QuerySegment", "QuerySegmentVersioned", "QuerySegment4"):
         if "InitializeSegmentDescriptor" not in function_body(segment_query, WDDM_DDI_CODE):
             fail(f"{segment_query} must use the shared segment descriptor initializer")
@@ -2789,7 +2785,6 @@ def check_registration_helper(sources: dict[Path, str]) -> None:
         "g_VioGpuWddmRenderOnlyRegistration = renderOnly; "
         "g_VioGpuWddmConnectorTimingModel = VioGpuWddmReadConnectorTimingModel(registryPath); "
         "g_VioGpuWddmOverlayProbe = VioGpuWddmReadOverlayProbe(registryPath); "
-        "g_VioGpuWddmDirectFlipTrial = VioGpuWddmReadDirectFlipTrial(registryPath); "
         "DRIVER_INITIALIZATION_DATA initialData; "
         "VioGpuWddmBuildInitializationData(&initialData, renderOnly); "
         # DriverCaps reports the 2.3 model only when the MPO3 flip slot is filled;
@@ -5396,6 +5391,14 @@ def check_mmio_flip_contract(native_caps: str) -> None:
             fail(f"a mode change must supersede an unbound flip under the flip-apply mutex: {fragment}")
 
     queue = canonical_code(function_body("QueueMmioFlip", WDDM_DDI_CODE))
+    scanout_primary = re.findall(
+        r"\bBOOLEAN\s+IsScanoutPrimaryAllocation\s*\([^)]*\)\s*\{([^{}]*)\}", WDDM_DDI_CODE
+    )
+    if len(scanout_primary) != 1 or canonical_code(scanout_primary[0]) != (
+            "returnIsStandardPrimaryAllocation(allocation)||(allocation!=NULL&&allocation->HostSurface);"):
+        fail("only standard primaries and native HostSurface allocations may enter MMIO scanout")
+    if "target.ScanoutPrimary=target.OwnedByAdapter&&IsScanoutPrimaryAllocation(allocation);" not in queue:
+        fail("the DIRQL flip half must admit owned HostSurface scanout allocations")
     for fragment in (
         "VioGpuValidateFlipTarget(target)",
         "adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(target.Address));",
@@ -5431,8 +5434,8 @@ def check_mmio_flip_contract(native_caps: str) -> None:
     destroy = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
     cancel = destroy.find("adapter->CancelPendingFlip(allocation);")
     detach = destroy.find("Detach2DScanoutResource(allocation->ResourceId,&detached)")
-    if cancel < 0 or detach < 0 or cancel > detach or "if(IsStandardPrimaryAllocation(allocation))" not in destroy:
-        fail("DestroyAllocation must drain the flip mailbox before any primary teardown")
+    if cancel < 0 or detach < 0 or cancel > detach or "if(IsScanoutPrimaryAllocation(allocation))" not in destroy:
+        fail("DestroyAllocation must drain the flip mailbox before standard or HostSurface primary teardown")
 
     cancel_body = canonical_code(function_body("VioGpuDod::CancelPendingFlip", VIOGPU_CODE))
     if cancel_body != ("AcquireFlipApply();(VOID)InterlockedCompareExchangePointer(&m_PendingFlipAllocation,NULL,allocation);"
@@ -5453,7 +5456,7 @@ def check_mmio_flip_contract(native_caps: str) -> None:
         "ExAcquireRundownProtection(&context->Operations)",
         "present->pAllocationList[DXGK_PRESENT_SOURCE_INDEX].hDeviceSpecificAllocation",
         "IsOwnedAllocation(sourceOpen->Allocation,adapter)",
-        "IsStandardPrimaryAllocation(sourceOpen->Allocation)",
+        "IsScanoutPrimaryAllocation(sourceOpen->Allocation)",
         "ExReleaseRundownProtection(&context->Operations);",
     ):
         if fragment not in flip_present:
@@ -14118,7 +14121,7 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     ddi = interface_view(code["wddmddi.cpp"], advanced=True)
     queue = body("QueueMmioFlip", ddi)
     offsets = [queue.find(fragment) for fragment in (
-        "target.HighPrecision=target.StandardPrimary&&IsHighPrecisionSurfaceFormat(allocation->Format);",
+        "target.HighPrecision=target.ScanoutPrimary&&IsHighPrecisionSurfaceFormat(allocation->Format);",
         "VioGpuValidateFlipTarget(target)",
         "adapter->ClearColorPresentCompletion();",
         "adapter->PublishPendingFlip(setVidPnSourceAddress->hAllocation);")]
@@ -14134,7 +14137,7 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     need("constBOOLEANsourceColorAcceptable=sourceOpen!=NULL&&sourceOpen->Allocation!=NULL&&"
          "FlipSourceColorAcceptable(adapter,sourceOpen->Allocation);", flip_present_body,
          "a flip present must decide its source color before validating")
-    need("IsStandardPrimaryAllocation(sourceOpen->Allocation)&&sourceColorAcceptable", flip_present_body,
+    need("IsScanoutPrimaryAllocation(sourceOpen->Allocation)&&sourceColorAcceptable", flip_present_body,
          "a flip present must refuse a ten-bit source unless Advanced Color is usable")
     need("!IsHighPrecisionSurfaceFormat(allocation->Format)||adapter->IsNativeHdrModeAvailable()",
          body("FlipSourceColorAcceptable", code["wddmddi.cpp"]),
@@ -14171,7 +14174,7 @@ def advanced_color_violations(sources: dict[str, str]) -> list[str]:
     if min(offsets) < 0 or offsets != sorted(offsets):
         violations.append("the flip worker must take the color slot before the flip-apply mutex")
     flip_policy = canonical_code(code["mmio_flip.h"])
-    need("if(!target.StandardPrimary){returnVioGpuFlipTargetNotPrimary;}"
+    need("if(!target.ScanoutPrimary){returnVioGpuFlipTargetNotPrimary;}"
          "if(target.HighPrecision&&!target.HighPrecisionAdmitted){returnVioGpuFlipTargetHighPrecision;}",
          flip_policy,
          "the flip policy must refuse unadmitted ten-bit primaries after ownership and type")

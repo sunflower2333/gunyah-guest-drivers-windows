@@ -44,12 +44,6 @@ struct VioGpuDod
 };
 DXGKDDI_GETNODEMETADATA VioGpuWddmGetNodeMetadata;
 
-static bool g_DirectFlipTrial = false;
-BOOLEAN VioGpuWddmIsDirectFlipTrial()
-{
-    return g_DirectFlipTrial ? TRUE : FALSE;
-}
-
 // INSERT_PRODUCTION
 
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
