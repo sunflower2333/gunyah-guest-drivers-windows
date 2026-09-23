@@ -395,8 +395,11 @@ jobs:
             '-Dwerror=false',
             "-Dprefix=$installDir"
           )
-          $env:CC = 'clang-cl'
-          $env:CXX = 'clang-cl'
+          # Keep the explicit clang-cl target in the cross file, but route the
+          # compiler executable through sccache. The MSVC developer environment
+          # otherwise supplies an unwrapped CC/CXX and bypasses object caching.
+          $env:CC = 'sccache clang-cl'
+          $env:CXX = 'sccache clang-cl'
           $env:AR = 'llvm-lib'
           # Meson must not execute ARM64 sanity binaries on the x64 runner.
           $crossFile = Join-Path $env:RUNNER_TEMP 'mesa-d3d10-zink-arm64-cross.ini'
