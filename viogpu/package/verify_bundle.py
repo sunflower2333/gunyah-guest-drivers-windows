@@ -15,7 +15,7 @@ from flat_package import flat_name, pe_machine, require, sha, source_files
 
 # Native AHB image layout needs D3D10 Zink and the packaged Turnip runtime
 # from this same Mesa revision; the GL workflow verifies its matching pin.
-D3D10_MESA = "26c433c6275e73086bfd5d31de63863625a35f6d"
+D3D10_MESA = "eaf69022734c9973940b19cc79490d0f79684297"
 
 INSTALLER_FILES = (
     "INSTALL.cmd", "install-drivers.ps1", "pvmpower-devnode.ps1",
