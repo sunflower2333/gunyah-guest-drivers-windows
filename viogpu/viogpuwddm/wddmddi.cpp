@@ -4458,6 +4458,32 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
     ULONGLONG ReleaseCount;
 };
 
+/* First and last reason a native share was poisoned, read from a live
+ * kernel dump. A poisoned share requests a hardware reset and stops every
+ * later present and render of that surface. */
+struct VIOGPU_NATIVE_POISON_SAMPLE
+{
+    ULONG Site;
+    ULONG ResourceId;
+    LONG Detail;
+    ULONG Result;
+    ULONGLONG HostSequence;
+    ULONGLONG Sequence;
+    ULONGLONG ReleasedSequence;
+    UINT Readers;
+    BOOLEAN Writer;
+    BOOLEAN PresentPending;
+    BOOLEAN WaitPending;
+    BOOLEAN WasPoisoned;
+};
+struct VIOGPU_NATIVE_POISON_RECORD
+{
+    volatile LONG Count;
+    VIOGPU_NATIVE_POISON_SAMPLE First;
+    VIOGPU_NATIVE_POISON_SAMPLE Last;
+};
+VIOGPU_NATIVE_POISON_RECORD g_VioGpuNativePoisonRecord;
+
 struct VIOGPU_WDDM_NATIVE_IMPORT_ENTRY
 {
     LIST_ENTRY Link;
@@ -4706,6 +4732,29 @@ static VOID WakeNativeImportWaitersLocked(VioGpuDod *adapter)
     }
 }
 
+/* Caller holds g_VioGpuNativeAccessLock. */
+__declspec(code_seg(".text"))
+static VOID RecordNativePoisonLocked(const VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share, ULONG site, LONG detail,
+                                     ULONG result, ULONGLONG hostSequence)
+{
+    VIOGPU_NATIVE_POISON_SAMPLE sample = {};
+    sample.Site = site;
+    sample.ResourceId = share->ResourceId;
+    sample.Detail = detail;
+    sample.Result = result;
+    sample.HostSequence = hostSequence;
+    sample.Sequence = share->Access.Sequence;
+    sample.ReleasedSequence = share->Access.ReleasedSequence;
+    sample.Readers = share->Access.Readers;
+    sample.Writer = share->Access.Writer;
+    sample.PresentPending = share->Access.PresentPending;
+    sample.WaitPending = share->Access.WaitPending;
+    sample.WasPoisoned = share->Access.Poisoned;
+    if (InterlockedIncrement(&g_VioGpuNativePoisonRecord.Count) == 1)
+        g_VioGpuNativePoisonRecord.First = sample;
+    g_VioGpuNativePoisonRecord.Last = sample;
+}
+
 __declspec(code_seg(".text"))
 static VOID NativeAhbReleaseObserved(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT result,
                                     UINT resourceId, ULONGLONG sequence)
@@ -4720,7 +4769,10 @@ static VOID NativeAhbReleaseObserved(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT re
         ++share->ReleaseCount;
     }
     else
+    {
+        RecordNativePoisonLocked(share, 1, resourceId, static_cast<ULONG>(result), sequence);
         share->Access.Poisoned = true;
+    }
     share->Access.WaitPending = false;
     KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
     WakeNativeImportWaitersLocked(share->Adapter);
@@ -5020,7 +5072,11 @@ VOID RetireNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, BOOLEAN confi
         {
             auto share = static_cast<VIOGPU_WDDM_NATIVE_SHARE_ENTRY *>(submission->Imports[i].Share);
             if (submission->ImportsHostIssued && !confirmed)
+            {
+                RecordNativePoisonLocked(share, 2, static_cast<LONG>(submission->Imports[i].Reference.Access),
+                                         static_cast<ULONG>(submission->State), submission->FenceId);
                 share->Access.Poisoned = true;
+            }
             if ((submission->Imports[i].Reference.Access & VIOGPU_WDDM_REFERENCE_WRITE) != 0)
                 share->Access.Writer = false;
             else
@@ -5066,7 +5122,10 @@ static VOID NativeAhbPresentAccepted(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT re
         ++share->PresentCount;
     }
     else
+    {
+        RecordNativePoisonLocked(share, 3, resourceId, static_cast<ULONG>(result), sequence);
         share->Access.Poisoned = true;
+    }
     share->Access.PresentPending = false;
     KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
     pending->Result = accepted ? VioGpuHostContextConfirmed : VioGpuHostContextUnknown;
@@ -5372,6 +5431,7 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
     BOOLEAN idle = share->SurfaceResident && !share->Access.Poisoned &&
                    !share->Access.Writer && share->Access.Readers == 0;
     KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+    LONG presentStage = status != STATUS_SUCCESS ? 1 : !idle ? 2 : 0;
     if (status != STATUS_SUCCESS || !idle ||
         !VioGpuNativeAhbFourccToVirtioFormat(share->Surface.Fourcc, &format))
         status = STATUS_DEVICE_NOT_READY;
@@ -5385,7 +5445,10 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
                                                share->Surface.Stride, static_cast<SIZE_T>(share->Size)};
         if (adapter->Set2DScanout(0, share->ResourceId, layout.Width, layout.Height, &previous,
                                   &layout, FALSE, TRUE) != VioGpuHostContextConfirmed)
+        {
             status = STATUS_DEVICE_NOT_READY;
+            presentStage = 3;
+        }
         else
         {
             /* Suppress periodic RESOURCE_FLUSH; only this sequence protocol
@@ -5401,7 +5464,10 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
                 NativeAhbPresentAccepted(pending, VioGpuHostContextNotSubmitted, share->ResourceId, 0);
             status = KeWaitForSingleObject(&pending->Event, Executive, KernelMode, FALSE, &timeout);
             if (status != STATUS_SUCCESS || pending->Result != VioGpuHostContextConfirmed)
+            {
+                presentStage = status != STATUS_SUCCESS ? 4 : 5;
                 status = STATUS_DEVICE_NOT_READY;
+            }
             if (InterlockedDecrement(&pending->References) == 0)
                 delete pending;
             pending = NULL;
@@ -5411,6 +5477,7 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
     if (status != STATUS_SUCCESS)
     {
         KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+        RecordNativePoisonLocked(share, 4, presentStage, static_cast<ULONG>(status), 0);
         share->Access.Poisoned = true;
         share->Access.PresentPending = false;
         WakeNativeImportWaitersLocked(adapter);
