@@ -18,6 +18,7 @@ static_assert(DXGK_PRESENT_SOURCE_INDEX == 1 && DXGK_PRESENT_DESTINATION_INDEX =
 namespace
 {
 VOID ReleaseHostSurfaceAllocation(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation);
+VOID PublishHostSurfaceAllocation(_In_ VIOGPU_WDDM_ALLOCATION *allocation);
 NTSTATUS UnmapHostSurfaceAllocation(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation);
 VOID RemoveNativeImportsForContext(_In_ VIOGPU_WDDM_CONTEXT *context);
 NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU_WDDM_RENDER_COMMAND *header,
@@ -4438,6 +4439,9 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
     BOOLEAN OwnerReleased;
     UINT ImportReferences;
     UINT AllocationReferences;
+    /* The single VidMm wrapper counted by AllocationReferences. Written and
+     * read only under the registry mutex; cleared before the wrapper is freed. */
+    VIOGPU_WDDM_ALLOCATION *SurfaceAllocation;
     VIOGPU_2D_RESOURCE_STATE SurfaceState;
     ULONGLONG SurfaceResetGeneration;
     VIOGPU_WDDM_NATIVE_SURFACE Surface;
@@ -4749,6 +4753,17 @@ static VIOGPU_WDDM_ALLOCATION *ResolveHostImportAllocation(const VIOGPU_WDDM_IMP
     return allocation;
 }
 
+static VIOGPU_WDDM_ALLOCATION *ResolveKeyedHostSurfaceAllocation(const VIOGPU_WDDM_IMPORTED_REFERENCE &ref,
+                                                                 const VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share)
+{
+    auto allocation = share->SurfaceAllocation;
+    if (allocation == NULL || !allocation->HostSurface || allocation->Destroying ||
+        allocation->ShareKey != ref.ShareKey || allocation->ResourceId != share->ResourceId ||
+        allocation->PrivateData.Size != ref.Size || allocation->Resource2DResetGeneration != ref.ResetGeneration)
+        return NULL;
+    return allocation;
+}
+
 NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU_WDDM_RENDER_COMMAND *header,
                                const DXGK_ALLOCATIONLIST *allocationList, UINT allocationListSize)
 {
@@ -4808,9 +4823,13 @@ NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU
             break;
         }
         BOOLEAN prepatched = FALSE;
-        auto pinnedAllocation = share->HostSurface
+        /* A key import (Reserved == 0) has no VidMm handle on the rendering
+         * device: runtime primaries cannot be opened there. Pin the wrapper
+         * the creating runtime device owns; it keeps the surface resident. */
+        auto pinnedAllocation = !share->HostSurface ? share->OwnerAllocation
+            : ref.Reserved != 0
             ? ResolveHostImportAllocation(ref, submission->Context->Device, allocationList, allocationListSize, &prepatched)
-            : share->OwnerAllocation;
+            : ResolveKeyedHostSurfaceAllocation(ref, share);
         if ((share->HostSurface && (pinnedAllocation == NULL || pinnedAllocation->ResourceId != share->ResourceId)) ||
             (!share->HostSurface && ref.Reserved != 0))
         {
@@ -5720,6 +5739,17 @@ static NTSTATUS ReferenceHostSurfaceAllocation(_In_ VioGpuDod *adapter,
     return status;
 }
 
+VOID PublishHostSurfaceAllocation(_In_ VIOGPU_WDDM_ALLOCATION *allocation)
+{
+    if (!allocation->HostSurface || !AcquireNativeShareRegistry(FALSE))
+        return;
+    VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share = FindNativeShareByKeyLocked(allocation->Adapter, allocation->ShareKey);
+    if (share != NULL && share->HostSurface && share->ResourceId == allocation->ResourceId &&
+        share->AllocationReferences == 1)
+        share->SurfaceAllocation = allocation;
+    ReleaseNativeShareRegistry();
+}
+
 VOID ReleaseHostSurfaceAllocation(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation)
 {
     if (!allocation->HostSurface || !AcquireNativeShareRegistry(FALSE))
@@ -5730,6 +5760,8 @@ VOID ReleaseHostSurfaceAllocation(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation)
     if (share != NULL && share->HostSurface && share->ResourceId == allocation->ResourceId &&
         share->AllocationReferences != 0)
     {
+        if (share->SurfaceAllocation == allocation)
+            share->SurfaceAllocation = NULL;
         --share->AllocationReferences;
         CollectNativeSurfacesLocked(allocation->Adapter);
     }
@@ -7824,6 +7856,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
         allocation->Flags = privateData.Flags;
         allocation->RefreshRateNumerator = privateData.RefreshRateNumerator;
         allocation->RefreshRateDenominator = privateData.RefreshRateDenominator;
+        if (hostSurface)
+        {
+            PublishHostSurfaceAllocation(allocation);
+        }
         if (nativeContext != NULL)
         {
             status = RegisterNativeAllocationRange(allocation);
