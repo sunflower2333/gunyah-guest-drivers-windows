@@ -147,8 +147,9 @@ int main()
         check(guest.Size == VIOGPU_WDDM_APERTURE_SIZE && guest.Flags.Aperture && guest.Flags.CpuVisible,
               "WDK ordinary aperture remains CPU visible");
         check(host.Size == VIOGPU_WDDM_HOST_SURFACE_BUDGET && host.CommitLimit == host.Size &&
-              host.Flags.Value == 0 && host.BaseAddress.QuadPart == 0,
-              "WDK host memory segment advertises no aperture, CPU visibility or preservation flags");
+              host.Flags.DirectFlip && !host.Flags.Aperture && !host.Flags.CpuVisible &&
+              !host.Flags.CacheCoherent && host.BaseAddress.QuadPart == 0,
+              "WDK host memory segment is bounded, non-CPU-visible, and direct-flip capable");
         for (SIZE_T i = 0; i < 2; ++i)
             for (SIZE_T j = sizeof(host); j < stride; ++j)
                 check(hostStorage[i * stride + j] == 0xa5, "WDK both descriptor tails preserved");
