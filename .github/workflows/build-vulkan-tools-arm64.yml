@@ -43,6 +43,45 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Identify Vulkan-Tools source revision
+        id: tools_identity
+        shell: pwsh
+        working-directory: Vulkan-Tools
+        run: |
+          $sha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $sha.Length -ne 40) {
+            throw "Unable to identify the checked out Vulkan-Tools revision"
+          }
+          "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "image=$env:ImageOS-$env:ImageVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Vulkan-Tools source: $sha"
+
+      # UPDATE_DEPS writes to external/Release/64, not build/_deps.  Restore
+      # the main CMake tree too: its UPDATE_DEPS_HASH suppresses the initial
+      # --clean-build/--clean-install that would erase restored dependencies.
+      # The exact source and runner image isolate CMake and compiler state.
+      # Third-party installed libraries are build dependencies, not the final
+      # Vulkan-Tools validation binaries uploaded below.
+      - name: Cache Vulkan-Tools dependency and build trees
+        id: tools_cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            Vulkan-Tools/external/Release/64
+            Vulkan-Tools/build
+          key: vulkan-tools-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools_identity.outputs.image }}-${{ steps.tools_identity.outputs.sha }}-release
+
+      - name: Report restored build cache
+        shell: pwsh
+        run: |
+          $dirs = @('Vulkan-Tools/external/Release/64', 'Vulkan-Tools/build')
+          foreach ($dir in $dirs) {
+            $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue)
+            $bytes = ($files | Measure-Object -Property Length -Sum).Sum
+            Write-Host ("Restored {0}: {1} files, {2:N0} bytes" -f $dir, $files.Count, $bytes)
+          }
+          Write-Host "Exact cache hit: ${{ steps.tools_cache.outputs.cache-hit }}"
+
       - name: Configure
         shell: pwsh
         working-directory: Vulkan-Tools
@@ -95,6 +134,14 @@ jobs:
             "{0}  {1} bytes  ARM64" -f $f.Name, $f.Length
             (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() + "  " + $f.Name
           }
+
+      - name: Remove linked binaries from reusable build cache
+        shell: pwsh
+        run: |
+          $dir = 'Vulkan-Tools/build'
+          $binaries = @(Get-ChildItem -LiteralPath $dir -Recurse -File -Include '*.exe', '*.dll', '*.pdb' -ErrorAction SilentlyContinue)
+          $binaries | Remove-Item -Force
+          Write-Host "Removed $($binaries.Count) final Vulkan-Tools binaries from $dir before cache save"
 
       - name: Upload
         uses: actions/upload-artifact@v4
