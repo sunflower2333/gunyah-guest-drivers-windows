@@ -9324,15 +9324,8 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
     }
 
     /* New HostSurface allocations are in segment 2 and never reach this
-     * aperture callback. An opted-in standard primary starts in State=None,
-     * before its host-owned backing exists; admit that one transition into the
-     * same placement-only branch. Once the state is native, the predicate is
-     * still the existing identity check. With the feature disabled, ordinary
-     * primaries keep their existing guest pages and MDL/SG path. */
-    const BOOLEAN nativeAhbPrimary = !allocation->HostSurface && IsStandardPrimaryAllocation(allocation) &&
-                                     (IsNativeAhbPrimaryAllocation(allocation) ||
-                                      (allocation->Resource2DState == VioGpu2DResourceNone &&
-                                       adapter->SupportsNativeAhbPaging()));
+     * aperture callback. Ordinary primaries keep their existing guest pages. */
+    const BOOLEAN nativeAhbPrimary = !allocation->HostSurface && IsNativeAhbPrimaryAllocation(allocation);
     if (!nativeAhbPrimary &&
         (mdl == NULL || MmGetMdlByteCount(mdl) == 0 || MmGetMdlByteOffset(mdl) != 0 ||
          (mdl->MdlFlags & MDL_PAGES_LOCKED) == 0))
