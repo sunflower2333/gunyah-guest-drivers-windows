@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='.native-surface-', dir=here) as temp:
             ('foreign-process', 'share->OwnerProcess != PsGetCurrentProcess()', 'false'),
             ('wrong-parent', 'resource != allocation->Resource', 'false'),
             ('foreign-device', 'opened->Device->Adapter == adapter', 'true'),
-            ('wide-parent', 'reinterpret_cast<ULONG_PTR>(parent) > MAXUINT', 'false'),
+            ('null-parent', 'if (parent == 0)', 'if (false)'),
         ]:
             if query.count(old) != 1:
                 raise RuntimeError('query mutation anchor changed: ' + name)

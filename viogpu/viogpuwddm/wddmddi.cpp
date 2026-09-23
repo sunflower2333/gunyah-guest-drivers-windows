@@ -5520,7 +5520,7 @@ static NTSTATUS QueryNativeSurfaceResource(_In_ VioGpuDod *adapter, _In_ const D
 
     UINT stage = 1;
     DXGKARGCB_GETHANDLEDATA lookup = {};
-    lookup.hObject = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(request.AllocationHandle));
+    lookup.hObject = request.AllocationHandle;
     lookup.Type = DXGK_HANDLE_ALLOCATION;
     lookup.Flags.DeviceSpecific = 1;
     DXGKARG_RELEASE_HANDLE allocationHandle = NULL;
@@ -5575,8 +5575,8 @@ static NTSTATUS QueryNativeSurfaceResource(_In_ VioGpuDod *adapter, _In_ const D
         /* WDDM2 lifetime pins surround the legacy parent lookup. A missing or
          * unsupported callback result is a refusal, never an allocation-handle
          * substitution. Prove the returned parent against our existing owner. */
-        HANDLE parent = dxgk->DxgkCbGetHandleParent(lookup.hObject);
-        if (parent == NULL || reinterpret_cast<ULONG_PTR>(parent) > MAXUINT)
+        const D3DKMT_HANDLE parent = dxgk->DxgkCbGetHandleParent(lookup.hObject);
+        if (parent == 0)
             status = STATUS_INVALID_HANDLE;
         else
         {
@@ -5594,7 +5594,7 @@ static NTSTATUS QueryNativeSurfaceResource(_In_ VioGpuDod *adapter, _In_ const D
             else
             {
                 stage = 7;
-                request.ResourceHandle = static_cast<UINT>(reinterpret_cast<ULONG_PTR>(parent));
+                request.ResourceHandle = parent;
                 __try
                 {
                     RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request));

@@ -16,21 +16,21 @@ using UINT=unsigned; using ULONG_PTR=uintptr_t; using BYTE=unsigned char;
 using LONG=int;
 LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }
 using NTSTATUS=int; using BOOLEAN=bool; using HANDLE=void*;
+using D3DKMT_HANDLE=uint32_t;
 using DXGKARG_RELEASE_HANDLE=void*;
-constexpr UINT MAXUINT=~0U;
 constexpr NTSTATUS STATUS_SUCCESS=0,STATUS_INVALID_PARAMETER=-1,STATUS_INVALID_USER_BUFFER=-2,
     STATUS_NOT_SUPPORTED=-3,STATUS_DEVICE_NOT_READY=-4,STATUS_INVALID_HANDLE=-5;
 constexpr UINT VIOGPU_WDDM_OPEN_ALLOCATION_SIGNATURE=101,VIOGPU_WDDM_RESOURCE_SIGNATURE=102;
-enum { DXGK_HANDLE_ALLOCATION,DXGK_HANDLE_RESOURCE };
+enum DXGK_HANDLE_TYPE { DXGK_HANDLE_ALLOCATION=1,DXGK_HANDLE_RESOURCE=2 };
 struct DXGKARGCB_GETHANDLEDATA {
-    HANDLE hObject{}; int Type{};
+    D3DKMT_HANDLE hObject{}; DXGK_HANDLE_TYPE Type{};
     union { UINT Value{}; struct { UINT DeviceSpecific:1; }; } Flags;
 };
-struct DXGKARGCB_RELEASEHANDLEDATA { HANDLE ReleaseHandle{}; int Type{}; };
+struct DXGKARGCB_RELEASEHANDLEDATA { DXGKARG_RELEASE_HANDLE ReleaseHandle{}; DXGK_HANDLE_TYPE Type{}; };
 struct DXGK_INTERFACE {
-    void *(*DxgkCbAcquireHandleData)(DXGKARGCB_GETHANDLEDATA*,DXGKARG_RELEASE_HANDLE*);
+    void *(*DxgkCbAcquireHandleData)(const DXGKARGCB_GETHANDLEDATA*,DXGKARG_RELEASE_HANDLE*);
     void (*DxgkCbReleaseHandleData)(DXGKARGCB_RELEASEHANDLEDATA);
-    HANDLE (*DxgkCbGetHandleParent)(HANDLE);
+    D3DKMT_HANDLE (*DxgkCbGetHandleParent)(D3DKMT_HANDLE);
 };
 class VioGpuDod {
 public:
@@ -64,7 +64,7 @@ struct DXGKARG_ESCAPE {
 static Share share;
 static int lifecycleStatus,allocationPins,resourcePins,parentCalls;
 static bool failLookup,wrongResource,registryAvailable=true;
-static uintptr_t parentValue=0x40008010;
+static D3DKMT_HANDLE parentValue=0x40008010;
 static VIOGPU_WDDM_OPEN_ALLOCATION *opened;
 bool IsCurrentAbiHeader(const VIOGPU_WDDM_ABI_HEADER *h,UINT size) {
     return h->Magic==VIOGPU_WDDM_ABI_MAGIC && h->Version==0 && h->Size==size && !h->Reserved;
@@ -84,14 +84,14 @@ int PsGetCurrentProcess() { return 1; }
 int AcquireAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a,VioGpuDod*) { ++a->References; return 0; }
 void ReleaseAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a) { assert(a->References>0); --a->References; }
 int ReadResourceAllocationCount(VIOGPU_WDDM_RESOURCE *r) { return r->Count; }
-void *Acquire(DXGKARGCB_GETHANDLEDATA *q,DXGKARG_RELEASE_HANDLE *pin) {
+void *Acquire(const DXGKARGCB_GETHANDLEDATA *q,DXGKARG_RELEASE_HANDLE *pin) {
     if(q->Type==DXGK_HANDLE_ALLOCATION) {
-        assert(q->Flags.Value==1 && uintptr_t(q->hObject)==0x40001240);
+        assert(q->Flags.Value==1 && q->hObject==0x40001240);
         if(failLookup) return nullptr;
         ++allocationPins; *pin=reinterpret_cast<void*>(1); return opened;
     }
     assert(q->Type==DXGK_HANDLE_RESOURCE && !q->Flags.Value && allocationPins==1 && opened->Allocation->References==1);
-    assert(uintptr_t(q->hObject)==parentValue);
+    assert(q->hObject==parentValue);
     ++resourcePins; *pin=reinterpret_cast<void*>(2);
     static VIOGPU_WDDM_RESOURCE unrelated;
     unrelated.Adapter=opened->Allocation->Adapter;
@@ -101,10 +101,10 @@ void Release(DXGKARGCB_RELEASEHANDLEDATA r) {
     if(r.Type==DXGK_HANDLE_ALLOCATION) { assert(r.ReleaseHandle==reinterpret_cast<void*>(1)); --allocationPins; }
     else { assert(r.Type==DXGK_HANDLE_RESOURCE && r.ReleaseHandle==reinterpret_cast<void*>(2)); --resourcePins; }
 }
-HANDLE Parent(HANDLE h) {
-    assert(uintptr_t(h)==0x40001240 && allocationPins==1 && opened->Device->References==1);
+D3DKMT_HANDLE Parent(D3DKMT_HANDLE h) {
+    assert(h==0x40001240 && allocationPins==1 && opened->Device->References==1);
     assert(opened->Allocation->References==1 && !opened->Allocation->LifecycleMutex);
-    ++parentCalls; return reinterpret_cast<HANDLE>(parentValue);
+    ++parentCalls; return parentValue;
 }
 // INSERT_QUERY
 int main() {
@@ -144,7 +144,7 @@ int main() {
     share.AllocationReferences=2; run(false); share.AllocationReferences=1;
     registryAvailable=false; run(false); registryAvailable=true;
     wrongResource=true; run(false); wrongResource=false;
-    parentValue=0; run(false); parentValue=0x100000001ULL; run(false); parentValue=0x40008010;
+    parentValue=0; run(false); parentValue=UINT32_MAX; run(true); parentValue=0x40008010;
     resource.Count=2; run(false); resource.Count=1;
     adapter.dxgk.DxgkCbGetHandleParent=nullptr; run(false); adapter.dxgk.DxgkCbGetHandleParent=Parent;
     lifecycleStatus=0x102; run(false); lifecycleStatus=0;
