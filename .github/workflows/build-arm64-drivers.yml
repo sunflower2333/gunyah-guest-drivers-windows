@@ -395,18 +395,24 @@ jobs:
             '-Dwerror=false',
             "-Dprefix=$installDir"
           )
-          # Keep the explicit clang-cl target in the cross file, but route the
-          # compiler executable through sccache. The MSVC developer environment
-          # otherwise supplies an unwrapped CC/CXX and bypasses object caching.
-          $env:CC = 'sccache clang-cl'
-          $env:CXX = 'sccache clang-cl'
+          # Put a small clang-cl shim first on PATH so every actual
+          # translation-unit invocation is unambiguously routed through the
+          # pinned sccache client, even when Meson normalizes the cross-file
+          # compiler display.
+          $env:CC = 'clang-cl'
+          $env:CXX = 'clang-cl'
+          $clang = (Get-Command clang-cl.exe -ErrorAction Stop).Source
+          $shimDir = Join-Path $env:RUNNER_TEMP 'sccache-clang-shim'
+          New-Item -ItemType Directory -Force $shimDir | Out-Null
+          @('@echo off', "sccache.exe `\"$clang`\" %*") | Set-Content (Join-Path $shimDir 'clang-cl.cmd') -Encoding ascii
+          $env:Path = "$shimDir;$env:Path"
           $env:AR = 'llvm-lib'
           # Meson must not execute ARM64 sanity binaries on the x64 runner.
           $crossFile = Join-Path $env:RUNNER_TEMP 'mesa-d3d10-zink-arm64-cross.ini'
           $crossFileLines = @(
             '[binaries]'
-            "c = ['sccache', 'clang-cl', '--target=aarch64-pc-windows-msvc']"
-            "cpp = ['sccache', 'clang-cl', '--target=aarch64-pc-windows-msvc']"
+            "c = ['clang-cl', '--target=aarch64-pc-windows-msvc']"
+            "cpp = ['clang-cl', '--target=aarch64-pc-windows-msvc']"
             "ar = 'llvm-lib'"
             ''
             '[host_machine]'
@@ -677,11 +683,16 @@ jobs:
           $env:CC = 'clang-cl'
           $env:CXX = 'clang-cl'
           $env:AR = 'llvm-lib'
+          $clang = (Get-Command clang-cl.exe -ErrorAction Stop).Source
+          $shimDir = Join-Path $env:RUNNER_TEMP 'sccache-clang-shim'
+          New-Item -ItemType Directory -Force $shimDir | Out-Null
+          @('@echo off', "sccache.exe `\"$clang`\" %*") | Set-Content (Join-Path $shimDir 'clang-cl.cmd') -Encoding ascii
+          $env:Path = "$shimDir;$env:Path"
           $crossFile = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-$arch-cross.ini"
           @(
             '[binaries]'
-            "c = ['sccache', 'clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
-            "cpp = ['sccache', 'clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
+            "c = ['clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
+            "cpp = ['clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
             "ar = 'llvm-lib'"
             ''
             '[host_machine]'
