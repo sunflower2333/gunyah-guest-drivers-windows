@@ -350,6 +350,25 @@ jobs:
         with:
           architecture: arm64
           flavor: d3d10
+      - name: Identify generated Mesa build cache
+        id: mesa_build_identity
+        shell: pwsh
+        run: |
+          $clang = (Get-Command clang-cl.exe -ErrorAction Stop).Source
+          $clangHash = (Get-FileHash -LiteralPath $clang -Algorithm SHA256).Hash
+          $identity = "$clangHash|$env:VCToolsVersion|$env:WindowsSDKVersion|$env:ImageOS|meson-1.9.1"
+          $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+            [Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant()
+          "digest=$digest" >> $env:GITHUB_OUTPUT
+          Write-Host "Generated build cache toolchain identity: $digest"
+      - name: Cache generated Mesa build tree
+        id: mesa_build_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\mesa-d3d10-zink-arm64
+          key: mesa-d3d10-build-v2-${{ runner.os }}-${{ runner.arch }}-arm64-${{ steps.mesa_build_identity.outputs.digest }}-${{ github.sha }}
+          restore-keys: |
+            mesa-d3d10-build-v2-${{ runner.os }}-${{ runner.arch }}-arm64-${{ steps.mesa_build_identity.outputs.digest }}-
 
       - name: Configure D3D10 UMD on zink
         shell: pwsh
@@ -357,7 +376,6 @@ jobs:
         run: |
           $buildDir = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-arm64"
           $installDir = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-install-arm64"
-          if (Test-Path $buildDir) { Remove-Item -Recurse -Force $buildDir }
           if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
           $mesonOptions = @(
             '--backend=ninja',
@@ -433,11 +451,20 @@ jobs:
             "cpp_link_args = ['/DEBUG']"
           )
           Set-Content -LiteralPath $crossFile -Value $crossFileLines -Encoding ascii
-          $setupArgs = @('setup', $buildDir, '.', '--cross-file', $crossFile) + $mesonOptions
+          $setupArgs = @('setup')
+          if (Test-Path -LiteralPath (Join-Path $buildDir 'meson-private/coredata.dat')) {
+            $setupArgs += '--reconfigure'
+          }
+          $setupArgs += @($buildDir, '.', '--cross-file', $crossFile) + $mesonOptions
           & meson @setupArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Select-String -LiteralPath (Join-Path $buildDir 'build.ninja') -SimpleMatch -Pattern 'sccache.exe' -Quiet)) {
             throw 'Mesa source compile rules are not routed through sccache'
+          }
+          if ('${{ steps.mesa_build_cache.outputs.cache-hit }}' -eq 'true') {
+            $objects = @(Get-ChildItem -LiteralPath $buildDir -Recurse -File -Include '*.obj', '*.o' -ErrorAction SilentlyContinue)
+            if ($objects.Count -eq 0) { throw 'Generated Mesa cache hit contained no compiled objects' }
+            Write-Host "Generated Mesa cache restored $($objects.Count) compiled objects"
           }
 
       - name: Compile and link the D3D10 UMD
@@ -479,9 +506,12 @@ jobs:
           $misses = [long](($stats.cache_misses.counts.Values | Measure-Object -Sum).Sum)
           Write-Host "Source compiler cache: $hits hits, $misses misses, $($stats.cache_writes) writes"
           if ($stats.requests_executed -le 0 -or ($hits + $misses) -le 0) {
-            throw 'sccache saw no cacheable source compilations'
+            if ('${{ steps.mesa_build_cache.outputs.cache-hit }}' -ne 'true') {
+              throw 'sccache saw no cacheable source compilations and no generated-tree cache restore'
+            }
+            Write-Host 'Generated build-tree cache supplied all source outputs for this build.'
           }
-          if ($hits -le 0 -and $stats.cache_writes -le 0) {
+          if ($hits -le 0 -and $stats.cache_writes -le 0 -and '${{ steps.mesa_build_cache.outputs.cache-hit }}' -ne 'true') {
             throw 'sccache neither restored nor stored any source compiler objects'
           }
 
@@ -503,6 +533,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Mesa UMD/PDB identity mismatch' }
           Copy-Item $symbols.FullName (Join-Path 'mesa-umd' 'viogpud3d.pdb') -Force
           Get-FileHash (Join-Path 'mesa-umd' 'viogpud3d.dll') -Algorithm SHA256 | Format-List
+
+      - name: Remove final binaries before generated-tree cache save
+        shell: pwsh
+        run: |
+          Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'mesa-d3d10-zink-arm64') -Recurse -File -Include '*.dll', '*.pdb', '*.lib', '*.exe' |
+            Remove-Item -Force -ErrorAction SilentlyContinue
 
       - name: Upload the Mesa user-mode driver
         uses: actions/upload-artifact@v4
@@ -662,6 +698,25 @@ jobs:
         with:
           architecture: ${{ matrix.arch }}
           flavor: d3d10
+      - name: Identify generated Mesa build cache
+        id: mesa_build_identity
+        shell: pwsh
+        run: |
+          $clang = (Get-Command clang-cl.exe -ErrorAction Stop).Source
+          $clangHash = (Get-FileHash -LiteralPath $clang -Algorithm SHA256).Hash
+          $identity = "$clangHash|$env:VCToolsVersion|$env:WindowsSDKVersion|$env:ImageOS|meson-1.9.1"
+          $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
+            [Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant()
+          "digest=$digest" >> $env:GITHUB_OUTPUT
+          Write-Host "Generated build cache toolchain identity: $digest"
+      - name: Cache generated Mesa build tree
+        id: mesa_build_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\mesa-d3d10-zink-${{ matrix.arch }}
+          key: mesa-d3d10-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-${{ steps.mesa_build_identity.outputs.digest }}-${{ github.sha }}
+          restore-keys: |
+            mesa-d3d10-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.arch }}-${{ steps.mesa_build_identity.outputs.digest }}-
 
       - name: Configure D3D10 UMD on zink
         shell: pwsh
@@ -731,7 +786,11 @@ jobs:
             "c_link_args = ['/DEBUG']"
             "cpp_link_args = ['/DEBUG']"
           ) | Set-Content -LiteralPath $crossFile -Encoding ascii
-          $setupArgs = @('setup', $buildDir, '.', '--cross-file', $crossFile) + $mesonOptions
+          $setupArgs = @('setup')
+          if (Test-Path -LiteralPath (Join-Path $buildDir 'meson-private/coredata.dat')) {
+            $setupArgs += '--reconfigure'
+          }
+          $setupArgs += @($buildDir, '.', '--cross-file', $crossFile) + $mesonOptions
           & meson @setupArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Select-String -LiteralPath (Join-Path $buildDir 'build.ninja') -SimpleMatch -Pattern 'sccache.exe' -Quiet)) {
@@ -739,6 +798,11 @@ jobs:
           }
           if (!(Select-String -LiteralPath (Join-Path $buildDir 'build.ninja') -SimpleMatch "ZINK_PRIVATE_VK_LIBNAME" -Quiet)) {
             throw "zink is not configured for the private $arch Vulkan loader"
+          }
+          if ('${{ steps.mesa_build_cache.outputs.cache-hit }}' -eq 'true') {
+            $objects = @(Get-ChildItem -LiteralPath $buildDir -Recurse -File -Include '*.obj', '*.o' -ErrorAction SilentlyContinue)
+            if ($objects.Count -eq 0) { throw 'Generated Mesa cache hit contained no compiled objects' }
+            Write-Host "Generated Mesa cache restored $($objects.Count) compiled objects"
           }
 
       - name: Compile, link and validate the D3D10 UMD
@@ -778,6 +842,12 @@ jobs:
           Copy-Item $library.FullName, $symbols mesa-umd -Force
           Get-FileHash "mesa-umd/$name" -Algorithm SHA256 | Format-List
 
+      - name: Remove final binaries before generated-tree cache save
+        shell: pwsh
+        run: |
+          Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-${{ matrix.arch }}") -Recurse -File -Include '*.dll', '*.pdb', '*.lib', '*.exe' |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+
       - name: Verify source compiler cache activity
         shell: pwsh
         run: |
@@ -789,9 +859,12 @@ jobs:
           $misses = [long](($stats.cache_misses.counts.Values | Measure-Object -Sum).Sum)
           Write-Host "Source compiler cache: $hits hits, $misses misses, $($stats.cache_writes) writes"
           if ($stats.requests_executed -le 0 -or ($hits + $misses) -le 0) {
-            throw 'sccache saw no cacheable source compilations'
+            if ('${{ steps.mesa_build_cache.outputs.cache-hit }}' -ne 'true') {
+              throw 'sccache saw no cacheable source compilations and no generated-tree cache restore'
+            }
+            Write-Host 'Generated build-tree cache supplied all source outputs for this build.'
           }
-          if ($hits -le 0 -and $stats.cache_writes -le 0) {
+          if ($hits -le 0 -and $stats.cache_writes -le 0 -and '${{ steps.mesa_build_cache.outputs.cache-hit }}' -ne 'true') {
             throw 'sccache neither restored nor stored any source compiler objects'
           }
 
