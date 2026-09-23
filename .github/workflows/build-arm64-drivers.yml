@@ -345,6 +345,12 @@ jobs:
           Write-Host "win_flex -> $($flex.Path)"
           Write-Host "win_bison -> $($bison.Path)"
 
+      - name: Cache compiled Mesa objects
+        uses: ./.github/actions/compiler-cache
+        with:
+          architecture: arm64
+          flavor: d3d10
+
       - name: Configure D3D10 UMD on zink
         shell: pwsh
         working-directory: external/mesa
@@ -391,14 +397,20 @@ jobs:
           )
           $env:CC = 'clang-cl'
           $env:CXX = 'clang-cl'
+          $sccache = (Get-Command sccache.exe -ErrorAction Stop).Source
+          $clang = (Get-Command clang-cl.exe -ErrorAction Stop).Source
+          $sccache = $sccache.Replace('\', '/')
+          $clang = $clang.Replace('\', '/')
           $env:AR = 'llvm-lib'
           # Meson must not execute ARM64 sanity binaries on the x64 runner.
           $crossFile = Join-Path $env:RUNNER_TEMP 'mesa-d3d10-zink-arm64-cross.ini'
           $crossFileLines = @(
             '[binaries]'
-            "c = ['clang-cl', '--target=aarch64-pc-windows-msvc']"
-            "cpp = ['clang-cl', '--target=aarch64-pc-windows-msvc']"
+            "c = ['$sccache', '$clang', '--target=aarch64-pc-windows-msvc']"
+            "cpp = ['$sccache', '$clang', '--target=aarch64-pc-windows-msvc']"
             "ar = 'llvm-lib'"
+            "c_ld = 'lld-link'"
+            "cpp_ld = 'lld-link'"
             ''
             '[host_machine]'
             "system = 'windows'"
@@ -424,6 +436,9 @@ jobs:
           $setupArgs = @('setup', $buildDir, '.', '--cross-file', $crossFile) + $mesonOptions
           & meson @setupArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Select-String -LiteralPath (Join-Path $buildDir 'build.ninja') -SimpleMatch -Pattern 'sccache.exe' -Quiet)) {
+            throw 'Mesa source compile rules are not routed through sccache'
+          }
 
       - name: Compile and link the D3D10 UMD
         shell: pwsh
@@ -449,6 +464,19 @@ jobs:
             }
           }
           Write-Host 'ARM64 D3D10 UMD links and exports its adapter entry points.'
+
+      - name: Verify source compiler cache activity
+        shell: pwsh
+        run: |
+          $stats = sccache --show-stats 2>&1
+          $stats
+          if ($LASTEXITCODE) { throw 'Unable to read sccache statistics' }
+          $text = $stats -join "`n"
+          $requests = [regex]::Match($text, '(?im)^\s*Compile requests\s*:\s*(\d+)').Groups[1].Value
+          $hits = [regex]::Match($text, '(?im)^\s*Cache hits\s*:\s*(\d+)').Groups[1].Value
+          $misses = [regex]::Match($text, '(?im)^\s*Cache misses\s*:\s*(\d+)').Groups[1].Value
+          if ([string]::IsNullOrWhiteSpace($requests) -or [int]$requests -le 0) { throw 'sccache saw no source compile requests' }
+          if (([string]::IsNullOrWhiteSpace($hits) -or [int]$hits -le 0) -and ([string]::IsNullOrWhiteSpace($misses) -or [int]$misses -le 0)) { throw 'sccache saw no cache hits or misses on this build' }
 
       - name: Stage the Mesa user-mode driver
         shell: pwsh
@@ -622,6 +650,12 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $flexBin
           Write-Host "win_flex -> $flexBin"
 
+      - name: Cache compiled Mesa objects
+        uses: ./.github/actions/compiler-cache
+        with:
+          architecture: ${{ matrix.arch }}
+          flavor: d3d10
+
       - name: Configure D3D10 UMD on zink
         shell: pwsh
         working-directory: external/mesa
@@ -662,12 +696,18 @@ jobs:
           $env:CC = 'clang-cl'
           $env:CXX = 'clang-cl'
           $env:AR = 'llvm-lib'
+          $sccache = (Get-Command sccache.exe -ErrorAction Stop).Source
           $crossFile = Join-Path $env:RUNNER_TEMP "mesa-d3d10-zink-$arch-cross.ini"
+          $clang = (Get-Command clang-cl.exe -ErrorAction Stop).Source
+          $sccache = $sccache.Replace('\', '/')
+          $clang = $clang.Replace('\', '/')
           @(
             '[binaries]'
-            "c = ['clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
-            "cpp = ['clang-cl', '--target=${{ matrix.triple }}-pc-windows-msvc']"
+            "c = ['$sccache', '$clang', '--target=${{ matrix.triple }}-pc-windows-msvc']"
+            "cpp = ['$sccache', '$clang', '--target=${{ matrix.triple }}-pc-windows-msvc']"
             "ar = 'llvm-lib'"
+            "c_ld = 'lld-link'"
+            "cpp_ld = 'lld-link'"
             ''
             '[host_machine]'
             "system = 'windows'"
@@ -687,6 +727,9 @@ jobs:
           $setupArgs = @('setup', $buildDir, '.', '--cross-file', $crossFile) + $mesonOptions
           & meson @setupArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Select-String -LiteralPath (Join-Path $buildDir 'build.ninja') -SimpleMatch -Pattern 'sccache.exe' -Quiet)) {
+            throw 'Mesa source compile rules are not routed through sccache'
+          }
           if (!(Select-String -LiteralPath (Join-Path $buildDir 'build.ninja') -SimpleMatch "ZINK_PRIVATE_VK_LIBNAME" -Quiet)) {
             throw "zink is not configured for the private $arch Vulkan loader"
           }
@@ -724,6 +767,19 @@ jobs:
           New-Item -ItemType Directory -Force mesa-umd | Out-Null
           Copy-Item $library.FullName, $symbols mesa-umd -Force
           Get-FileHash "mesa-umd/$name" -Algorithm SHA256 | Format-List
+
+      - name: Verify source compiler cache activity
+        shell: pwsh
+        run: |
+          $stats = sccache --show-stats 2>&1
+          $stats
+          if ($LASTEXITCODE) { throw 'Unable to read sccache statistics' }
+          $text = $stats -join "`n"
+          $requests = [regex]::Match($text, '(?im)^\s*Compile requests\s*:\s*(\d+)').Groups[1].Value
+          $hits = [regex]::Match($text, '(?im)^\s*Cache hits\s*:\s*(\d+)').Groups[1].Value
+          $misses = [regex]::Match($text, '(?im)^\s*Cache misses\s*:\s*(\d+)').Groups[1].Value
+          if ([string]::IsNullOrWhiteSpace($requests) -or [int]$requests -le 0) { throw 'sccache saw no source compile requests' }
+          if (([string]::IsNullOrWhiteSpace($hits) -or [int]$hits -le 0) -and ([string]::IsNullOrWhiteSpace($misses) -or [int]$misses -le 0)) { throw 'sccache saw no cache hits or misses on this build' }
 
       - name: Upload the Mesa user-mode driver
         uses: actions/upload-artifact@v4
