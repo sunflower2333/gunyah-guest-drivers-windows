@@ -5503,15 +5503,21 @@ static NTSTATUS QueryNativeSurfaceResource(_In_ VioGpuDod *adapter, _In_ const D
         request.AllocationHandle == 0 || request.ResourceHandle != 0 || request.ShareKey == 0 ||
         request.Size == 0 || request.ResetGeneration == 0 || request.Reserved != 0)
         return STATUS_INVALID_PARAMETER;
+    static volatile LONG queryCount = 0;
+    const LONG queryNumber = InterlockedIncrement(&queryCount);
     auto dxgk = adapter->GetDxgkInterface();
     if (dxgk == NULL || dxgk->DxgkCbAcquireHandleData == NULL || dxgk->DxgkCbReleaseHandleData == NULL ||
         dxgk->DxgkCbGetHandleParent == NULL)
+    {
+        adapter->RecordNativeSurfaceResourceDiagnostic(queryNumber, 0, STATUS_NOT_SUPPORTED);
         return STATUS_NOT_SUPPORTED;
+    }
     if (!adapter->IsDriverActive() || adapter->IsHardwareResetRequested())
+    {
+        adapter->RecordNativeSurfaceResourceDiagnostic(queryNumber, 0, STATUS_DEVICE_NOT_READY);
         return STATUS_DEVICE_NOT_READY;
+    }
 
-    static volatile LONG queryCount = 0;
-    const LONG queryNumber = InterlockedIncrement(&queryCount);
     UINT stage = 1;
     DXGKARGCB_GETHANDLEDATA lookup = {};
     lookup.hObject = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(request.AllocationHandle));
@@ -5623,6 +5629,7 @@ static NTSTATUS QueryNativeSurfaceResource(_In_ VioGpuDod *adapter, _In_ const D
             "VIOGPU AHB parent query=%ld stage=%u status=%08x allocation=%x resource=%x key=%I64x generation=%I64u\n",
             queryNumber, stage, status, request.AllocationHandle, request.ResourceHandle,
             request.ShareKey, request.ResetGeneration);
+    adapter->RecordNativeSurfaceResourceDiagnostic(queryNumber, stage, status);
     return status != STATUS_SUCCESS && NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
 }
 
@@ -8895,6 +8902,31 @@ BOOLEAN ValidatePagingTransactionReference(_Inout_ VIOGPU_WDDM_PAGING_TRANSACTIO
     return TRUE;
 }
 
+BOOLEAN ReferencePagingContext(_In_ VioGpuDod *adapter, _In_opt_ HANDLE handle,
+                               _Out_ VIOGPU_WDDM_CONTEXT **referenced)
+{
+    *referenced = NULL;
+    if (adapter == NULL)
+        return FALSE;
+    /* This miniport implements CreateContext: the Patch/Submit union contains
+     * hContext, never hDevice. VidMm may supply NULL for adapter-wide paging;
+     * each nonempty batch still authenticates its pinned allocation owners. */
+    if (handle == NULL)
+        return TRUE;
+    auto context = reinterpret_cast<VIOGPU_WDDM_CONTEXT *>(handle);
+    if (context->Signature != VIOGPU_WDDM_CONTEXT_SIGNATURE ||
+        !ExAcquireRundownProtection(&context->Operations))
+        return FALSE;
+    if (context->Device == NULL || context->Device->Signature != VIOGPU_WDDM_DEVICE_SIGNATURE ||
+        context->Device->Adapter != adapter || context->NodeOrdinal != 0 || context->EngineAffinity != 1)
+    {
+        ExReleaseRundownProtection(&context->Operations);
+        return FALSE;
+    }
+    *referenced = context;
+    return TRUE;
+}
+
 BOOLEAN IsPatchOffsetForSubmission(_In_ UINT patchOffset,
                                    _In_ UINT expectedRelativeOffset,
                                    _In_ UINT submissionStartOffset)
@@ -11335,9 +11367,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
 
     if (patchArguments->Flags.Value == 1)
     {
-        VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(patchArguments->hDevice);
-        BOOLEAN deviceReferenced = ReferenceDevice(device);
-        BOOLEAN deviceValid = deviceReferenced && device->Adapter == adapter;
+        VIOGPU_WDDM_CONTEXT *pagingContext = NULL;
+        BOOLEAN contextValid = ReferencePagingContext(adapter, patchArguments->hContext, &pagingContext);
         BOOLEAN emptyDmaRange = patchArguments->DmaBufferSubmissionStartOffset ==
                                 patchArguments->DmaBufferSubmissionEndOffset;
         BOOLEAN emptyPrivateRange = patchArguments->DmaBufferPrivateDataSubmissionStartOffset ==
@@ -11345,7 +11376,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
         BOOLEAN emptySubmission = emptyDmaRange && emptyPrivateRange;
         VIOGPU_WDDM_PAGING_PRIVATE *firstPrivate = NULL;
         UINT recordCount = 0;
-        BOOLEAN exact = deviceValid && patchArguments->pAllocationList == NULL &&
+        BOOLEAN exact = contextValid && patchArguments->pAllocationList == NULL &&
                         patchArguments->AllocationListSize == 0 && patchArguments->pPatchLocationList == NULL &&
                         patchArguments->PatchLocationListSize == 0 &&
                         patchArguments->PatchLocationListSubmissionStart == 0 &&
@@ -11363,10 +11394,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmPatch(CONST HANDLE hAdapter, 
                                             VioGpuWddmPagingTransactionBuilt,
                                             &firstPrivate,
                                             &recordCount));
-        if (deviceReferenced)
-        {
-            DereferenceDevice(device);
-        }
+        if (pagingContext != NULL)
+            ExReleaseRundownProtection(&pagingContext->Operations);
         UNREFERENCED_PARAMETER(firstPrivate);
         UNREFERENCED_PARAMETER(recordCount);
         if (!exact)
@@ -12371,10 +12400,10 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
 
     if (pagingSubmission)
     {
-        VIOGPU_WDDM_DEVICE *device = reinterpret_cast<VIOGPU_WDDM_DEVICE *>(submitCommand->hDevice);
-        BOOLEAN deviceReferenced = ReferenceDevice(device);
+        VIOGPU_WDDM_CONTEXT *pagingContext = NULL;
+        BOOLEAN contextValid = ReferencePagingContext(adapter, submitCommand->hContext, &pagingContext);
         BOOLEAN valid = NT_SUCCESS(status) && privateData->Kind == VioGpuWddmDmaKindPaging &&
-                        submitCommand->Flags.Value == 1 && deviceReferenced && device->Adapter == adapter;
+                        submitCommand->Flags.Value == 1 && contextValid;
         VIOGPU_WDDM_PAGING_PRIVATE *firstPrivate = NULL;
         UINT recordCount = 0;
         UINT recordLimit = privateEnd >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE) ? privateEnd - sizeof(VIOGPU_WDDM_PAGING_PRIVATE)
@@ -12483,7 +12512,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
         }
         if (queued)
         {
-            DereferenceDevice(device);
+            if (pagingContext != NULL)
+                ExReleaseRundownProtection(&pagingContext->Operations);
             adapter->ReleaseNativeSubmissionOperation();
             return STATUS_SUCCESS;
         }
@@ -12504,10 +12534,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
             CancelRecognizedPagingTransaction(pagingPrivate, adapter);
             ReleasePagingTransactionReference(&pagingPrivate->Transaction);
         }
-        if (deviceReferenced)
-        {
-            DereferenceDevice(device);
-        }
+        if (pagingContext != NULL)
+            ExReleaseRundownProtection(&pagingContext->Operations);
         adapter->QueueNativeSoftwareSubmissionCompletion(submitCommand->SubmissionFenceId,
                                                          submitCommand->NodeOrdinal,
                                                          submitCommand->EngineOrdinal);
@@ -12815,7 +12843,14 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
         UINT privateStart = cancelCommand->DmaBufferPrivateDataSubmissionStartOffset;
         UINT privateEnd = cancelCommand->DmaBufferPrivateDataSubmissionEndOffset;
         UINT privateLength = privateEnd - privateStart;
-        if (cancelCommand->hContext == NULL && cancelCommand->pDmaBuffer != NULL &&
+        auto privateHeader = reinterpret_cast<VIOGPU_WDDM_KMD_DMA_PRIVATE *>(
+            static_cast<BYTE *>(cancelCommand->pDmaBufferPrivateData) + privateStart);
+        const BOOLEAN pagingOwner = privateLength >= sizeof(VIOGPU_WDDM_PAGING_PRIVATE) &&
+                                    privateHeader->Kind == VioGpuWddmDmaKindPaging;
+        VIOGPU_WDDM_CONTEXT *pagingContext = NULL;
+        const BOOLEAN pagingContextValid = !pagingOwner ||
+            ReferencePagingContext(adapter, cancelCommand->hContext, &pagingContext);
+        if (pagingOwner && pagingContextValid && cancelCommand->pDmaBuffer != NULL &&
             cancelCommand->DmaBufferSubmissionStartOffset <= cancelCommand->DmaBufferSubmissionEndOffset &&
             cancelCommand->DmaBufferSubmissionEndOffset <= cancelCommand->DmaBufferSize)
         {
@@ -13007,6 +13042,8 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCancelCommand(CONST HANDLE hA
                 }
             }
         }
+        if (pagingContext != NULL)
+            ExReleaseRundownProtection(&pagingContext->Operations);
     }
 
     if (!cleaned && adapter != NULL)

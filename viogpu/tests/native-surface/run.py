@@ -90,3 +90,4 @@ with tempfile.TemporaryDirectory(prefix='.native-surface-', dir=here) as temp:
         if (result.returncode == 0) != (name == 'production'):
             raise SystemExit('query-' + name + ': unexpected result\n' + result.stdout + result.stderr)
         print('PASS resource query ' + name + (' rejected' if name != 'production' else ''))
+subprocess.run(['python3', str(here / 'paging_context.py')], check=True)

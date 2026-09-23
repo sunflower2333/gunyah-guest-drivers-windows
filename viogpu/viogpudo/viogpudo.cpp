@@ -8426,6 +8426,31 @@ VOID VioGpuDod::RecordNativeSubmitQueueCloseDiagnostic(_In_ ULONG queueId,
     }
 }
 
+VOID VioGpuDod::RecordNativeSurfaceResourceDiagnostic(_In_ ULONG sequence, _In_ ULONG stage, _In_ NTSTATUS status)
+{
+    PAGED_CODE();
+    if (sequence == 0 || sequence > 64)
+        return;
+    if (KeWaitForSingleObject(&m_NativeActivationTraceMutex, Executive, KernelMode, FALSE, NULL) != STATUS_SUCCESS)
+        return;
+    HANDLE deviceKey = NULL;
+    if (NT_SUCCESS(IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &deviceKey)))
+    {
+        DWORD marker = 0;
+        DWORD stageValue = stage;
+        DWORD statusValue = static_cast<DWORD>(status);
+        if (NT_SUCCESS(WriteRegistryDWORD(deviceKey, L"NativeSurfaceResourceQuerySequence", &marker)) &&
+            NT_SUCCESS(WriteRegistryDWORD(deviceKey, L"NativeSurfaceResourceQueryStage", &stageValue)) &&
+            NT_SUCCESS(WriteRegistryDWORD(deviceKey, L"NativeSurfaceResourceQueryStatus", &statusValue)))
+        {
+            marker = sequence;
+            WriteRegistryDWORD(deviceKey, L"NativeSurfaceResourceQuerySequence", &marker);
+        }
+        ZwClose(deviceKey);
+    }
+    KeReleaseMutex(&m_NativeActivationTraceMutex, FALSE);
+}
+
 VOID VioGpuDod::RecordNativeShareDiagnostic(_In_ ULONG opcode,
                                             _In_ NTSTATUS status,
                                             _In_ ULONG stage,

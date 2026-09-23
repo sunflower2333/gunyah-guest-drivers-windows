@@ -38,6 +38,7 @@ public:
     DXGK_INTERFACE *GetDxgkInterface() { return &dxgk; }
     bool IsDriverActive() { return active; }
     bool IsHardwareResetRequested() { return reset; }
+    void RecordNativeSurfaceResourceDiagnostic(UINT,UINT,NTSTATUS) {}
 };
 struct VIOGPU_WDDM_DEVICE { VioGpuDod *Adapter{}; int References{}; bool Closing{}; };
 struct VIOGPU_WDDM_RESOURCE { UINT Signature=VIOGPU_WDDM_RESOURCE_SIGNATURE; VioGpuDod *Adapter{}; int Count=1; };

@@ -8445,6 +8445,17 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT32 LayoutFlags;
             VIOGPU_WDDM_UINT64 Reserved[3];
         """,
+        "VIOGPU_WDDM_NATIVE_SURFACE_RESOURCE": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            VIOGPU_WDDM_UINT32 Opcode;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT32 AllocationHandle;
+            VIOGPU_WDDM_UINT32 ResourceHandle;
+            VIOGPU_WDDM_UINT64 ShareKey;
+            VIOGPU_WDDM_UINT64 Size;
+            VIOGPU_WDDM_UINT64 ResetGeneration;
+            VIOGPU_WDDM_UINT64 Reserved;
+        """,
         "VIOGPU_WDDM_ALLOCATION_REFERENCE": """
             VIOGPU_WDDM_UINT32 AllocationIndex;
             VIOGPU_WDDM_UINT32 Flags;
@@ -11698,9 +11709,8 @@ def check_wddm_submission_lifetime() -> None:
         fail("Patch must expose one exact paging no-op branch")
     paging_patch = paging_patch_blocks[0]
     for fragment in (
-        "reinterpret_cast<VIOGPU_WDDM_DEVICE*>(patchArguments->hDevice)",
-        "ReferenceDevice(device)",
-        "deviceReferenced&&device->Adapter==adapter",
+        "ReferencePagingContext(adapter,patchArguments->hContext,&pagingContext)",
+        "contextValid",
         "patchArguments->DmaBufferSubmissionStartOffset==patchArguments->DmaBufferSubmissionEndOffset",
         "patchArguments->DmaBufferPrivateDataSubmissionStartOffset==patchArguments->DmaBufferPrivateDataSubmissionEndOffset",
         "emptySubmission=emptyDmaRange&&emptyPrivateRange",
@@ -11713,8 +11723,8 @@ def check_wddm_submission_lifetime() -> None:
         "emptySubmission||ResolvePagingBatch(",
         "ResolvePagingBatch(",
         "VioGpuWddmPagingTransactionBuilt",
-        "if(deviceReferenced)",
-        "DereferenceDevice(device);",
+        "if(pagingContext!=NULL)",
+        "ExReleaseRundownProtection(&pagingContext->Operations);",
         "if(!exact)",
         "RetirePatchDmaOwner(adapter,patchArguments);",
         "returnSTATUS_SUCCESS;",
@@ -11727,16 +11737,15 @@ def check_wddm_submission_lifetime() -> None:
     require_order(
         paging_patch,
         (
-            "deviceReferenced=ReferenceDevice(device);",
-            "deviceValid=deviceReferenced&&device->Adapter==adapter;",
-            "BOOLEANexact=deviceValid",
+            "contextValid=ReferencePagingContext(adapter,patchArguments->hContext,&pagingContext);",
+            "BOOLEANexact=contextValid",
             "emptySubmission||ResolvePagingBatch(",
-            "if(deviceReferenced)",
-            "DereferenceDevice(device);",
+            "if(pagingContext!=NULL)",
+            "ExReleaseRundownProtection(&pagingContext->Operations);",
             "if(!exact)",
             "RetirePatchDmaOwner(adapter,patchArguments);",
         ),
-        "paging Patch must hold the device reference through batch validation and retire invalid KMD ownership afterward",
+        "paging Patch must pin a supplied context through batch validation and retire invalid KMD ownership afterward",
     )
     require_order(
         patch,
@@ -11851,9 +11860,8 @@ def check_wddm_submission_lifetime() -> None:
     paging_worker = canonical_code(function_body("NativePagingBatchWorker", WDDM_DDI_CODE))
     for fragment in (
         "privateData->Kind==VioGpuWddmDmaKindPaging",
-        "reinterpret_cast<VIOGPU_WDDM_DEVICE*>(submitCommand->hDevice)",
-        "deviceReferenced=ReferenceDevice(device)",
-        "deviceReferenced&&device->Adapter==adapter",
+        "ReferencePagingContext(adapter,submitCommand->hContext,&pagingContext)",
+        "submitCommand->Flags.Value==1&&contextValid",
         "ResolvePagingBatch(",
         "packet->ContextId!=0&&!adapter->IsNativeContextGenerationCurrent(packet->ContextGeneration,packet->ResetGeneration)",
         "adapter->QueueNativePassiveWork(&firstPrivate->Work,submitCommand->SubmissionFenceId)",

@@ -36,6 +36,7 @@ production = '\n'.join(definition(n) for n in
      'RepackNativeSubmitImports', 'PublishStandardPlacement', 'ClearNativePlacement', 'ExecuteHostSurfacePaging',
      'NativeAhbPresentAccepted', 'PresentHostSurface', 'PresentResidentHostSurface'])
 production += '\n' + definition('VioGpuDod::NativePassiveDispatchReadyLocked', adapter)
+production += '\n' + definition('VioGpuDod::TryResumeNativePassiveDispatch', adapter)
 fixture = (here / 'ownership_test.cpp').read_text().replace('// INSERT_STRUCTS', structs)
 variants = [('production', production)]
 for name, old, new in [

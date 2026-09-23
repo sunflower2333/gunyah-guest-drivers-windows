@@ -150,11 +150,8 @@ public:
     UINT pagingCalls{},failPagingCall{};
     UINT scanouts{};
     ULONGLONG crtcAddress{};
-    bool slots=true,queueOk=true,reset=false;
-    bool TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *work) {
-        if(slots) work->DisplayReleaseWait=false;
-        return slots;
-    }
+    bool queueOk=true,reset=false;
+    BOOLEAN TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *work);
     bool QueueNativeAhbOperation(UINT id,ULONGLONG,ULONGLONG sequence,bool present,
         void (*cb)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG),PVOID context) {
         if(!queueOk) return false;
@@ -165,6 +162,7 @@ public:
         assert(grow); packet.assign(static_cast<const BYTE*>(data),static_cast<const BYTE*>(data)+size); return true;
     }
     bool m_NativePassiveClosing{},m_NativePassiveWorkerRunning{},m_NativePassiveWorkerQueued{};
+    KSPIN_LOCK m_NativePassiveLock{};
     VIOGPU_NATIVE_PASSIVE_WORK *m_NativePassiveActiveWork{};
     LIST_ENTRY m_NativePassiveHostPending{},m_NativePassiveQueue{};
     bool IsHardwareResetRequested() { return reset; }

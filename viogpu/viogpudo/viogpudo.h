@@ -2705,6 +2705,7 @@ class VioGpuDod
                                                 _In_ ULONG detail);
     /* Native share escape outcome: counters for every request, and the stage,
      * status and sizes of the most recent refusal (NativeShareFail*). */
+    VOID RecordNativeSurfaceResourceDiagnostic(_In_ ULONG sequence, _In_ ULONG stage, _In_ NTSTATUS status);
     VOID RecordNativeShareDiagnostic(_In_ ULONG opcode,
                                      _In_ NTSTATUS status,
                                      _In_ ULONG stage,
