@@ -320,7 +320,8 @@ int VioGpuDod::QueueNativeSubmit(PGPU_VBUFFER b, UINT fence)
     }
     return 0;
 }
-void VioGpuWddmWakeNativeImportWaiters(VioGpuDod *) {}
+static unsigned importWakes;
+void VioGpuWddmWakeNativeImportWaiters(VioGpuDod *) { ++importWakes; }
 NTSTATUS AdmitNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *) { return STATUS_SUCCESS; }
 BOOLEAN RepackNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *) { return true; }
 VOID QueueAdmittedNativeSubmission(VIOGPU_WDDM_SUBMISSION *submission);
@@ -385,10 +386,17 @@ int main()
         {
             submit(a, i);
         }
+        importWakes = 0;
         pump();
         assert(a.issued.size() == VIOGPU_NATIVE_PIPELINE_WINDOW);
         assert(a.m_NativePassiveHostPendingCount == VIOGPU_NATIVE_PIPELINE_WINDOW);
         assert(a.m_NativePassivePendingCount == 3);
+        // Every hand-off frees the dispatcher: a waiter it refused must be woken.
+        assert(importWakes == a.m_NativeSubmitPerf.PipelineHandoffs && importWakes != 0);
+        // Releasing work that is not the active one frees nothing.
+        auto *pending = CONTAINING_RECORD(a.m_NativePassiveHostPending.Flink, VIOGPU_NATIVE_PASSIVE_WORK, Link);
+        a.ReleaseNativePassiveDispatch(pending);
+        assert(importWakes == a.m_NativeSubmitPerf.PipelineHandoffs);
         finish(a);
         assert(a.m_NativeSubmitPerf.Accepted == n && a.m_NativeSubmitPerf.Retired == n);
         assert(a.m_NativeSubmitPerf.RenderBytes == n * 128ULL);

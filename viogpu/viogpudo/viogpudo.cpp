@@ -1858,11 +1858,13 @@ BOOLEAN VioGpuDod::NativePassiveIdleLocked(void)
 VOID VioGpuDod::ReleaseNativePassiveDispatch(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK *work)
 {
     KIRQL oldIrql;
+    BOOLEAN handedOff = FALSE;
     KeAcquireSpinLock(&m_NativePassiveLock, &oldIrql);
     if (work != NULL && work->PipelineEligible && m_NativePassiveActiveWork == work &&
         work->State == VioGpuNativePassiveWorkWorkerOwned)
     {
         NT_ASSERT(m_NativePassiveWorkerRunning);
+        handedOff = TRUE;
         m_NativePassiveActiveWork = NULL;
         InterlockedExchange(&work->State, VioGpuNativePassiveWorkHostPending);
         InsertTailList(&m_NativePassiveHostPending, &work->Link);
@@ -1874,8 +1876,14 @@ VOID VioGpuDod::ReleaseNativePassiveDispatch(_Inout_ VIOGPU_NATIVE_PASSIVE_WORK 
         }
     }
     KeReleaseSpinLock(&m_NativePassiveLock, oldIrql);
-    /* RunNativePassiveWorker continues its loop; never free the Work reference
+    /* A release waiter refused only because this work was active is admissible
+     * now. Retirement alone is not enough: when the handed-off work is itself
+     * parked behind that waiter (same context), nothing ever retires. Resumed
+     * waiters are host-pending, so they never reach this hand-off again.
+     * RunNativePassiveWorker continues its loop; never free the Work reference
      * here or queue another dispatcher from inside the active dispatcher. */
+    if (handedOff)
+        VioGpuWddmWakeNativeImportWaiters(this);
 }
 
 BOOLEAN VioGpuDod::TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *work)
