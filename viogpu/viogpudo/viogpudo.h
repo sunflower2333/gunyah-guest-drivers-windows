@@ -1339,6 +1339,8 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuMemSegment m_CursorSegment;
     VioGpuMemSegment m_FrameSegment;
     volatile ULONG m_PendingWorks;
+    /* QPC of the first control-queue interrupt not yet seen by the DPC. */
+    volatile LONG64 m_DisplayIsrTicks;
     KEVENT m_ConfigUpdateEvent;
     PETHREAD m_pWorkThread;
     BOOLEAN m_bStopWorkThread;

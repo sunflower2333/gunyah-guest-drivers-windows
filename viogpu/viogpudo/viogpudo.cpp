@@ -3664,11 +3664,18 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
 
 BOOLEAN VioGpuDod::CrtcVsyncDue(void)
 {
-    const LONGLONG now = KeQueryPerformanceCounter(NULL).QuadPart;
+    LARGE_INTEGER frequency;
+    const LONGLONG now = KeQueryPerformanceCounter(&frequency).QuadPart;
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
+    const LONGLONG dueAt = m_CrtcNextDueTicks;
     const BOOLEAN due = VioGpuVsyncDue(now, m_CrtcPeriodTicks, &m_CrtcNextDueTicks);
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
+    /* A late vsync delays every compositor frame that waits on it. */
+    if (due && now - dueAt > frequency.QuadPart / 1000)
+    {
+        CountDisplayEvent(VioGpuVsyncLateOver1ms);
+    }
     return due;
 }
 
@@ -8011,6 +8018,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &flipDiagnostics[21]},
                                                                                                         {L"NativeSurfaceWriterRetireOver2ms",
                                                                                                          &flipDiagnostics[22]},
+                                                                                                        {L"NativeIsrToDpcOver1ms",
+                                                                                                         &flipDiagnostics[23]},
+                                                                                                        {L"NativeDpcRunOver1ms",
+                                                                                                         &flipDiagnostics[24]},
+                                                                                                        {L"NativeVsyncLateOver1ms",
+                                                                                                         &flipDiagnostics[25]},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPre"
                                                                                                          L"s"
@@ -10066,6 +10079,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_ScanoutRefreshRequested = 0;
     m_pCursorBuf = NULL;
     m_PendingWorks = 0;
+    m_DisplayIsrTicks = 0;
     m_bStopWorkThread = FALSE;
     m_pWorkThread = NULL;
     m_ResolutionEvent = NULL;
@@ -15831,6 +15845,10 @@ BOOLEAN VioGpuAdapter::InterruptRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface, 
         }
 
         InterlockedOr((PLONG)&m_PendingWorks, intReason);
+        if ((intReason & ISR_REASON_DISPLAY) != 0)
+        {
+            (VOID) InterlockedCompareExchange64(&m_DisplayIsrTicks, KeQueryPerformanceCounter(NULL).QuadPart, 0);
+        }
         pDxgkInterface->DxgkCbQueueDpc(pDxgkInterface->DeviceHandle);
     }
 
@@ -15966,6 +15984,9 @@ void VioGpuAdapter::RefreshActiveScanout(void)
 void VioGpuAdapter::ThreadWorkRoutine(void)
 {
     KeSetPriorityThread(KeGetCurrentThread(), LOW_REALTIME_PRIORITY);
+    /* The flip path polls the control queue with half-millisecond waits;
+     * at the default 15.6 ms clock those would not poll at all. */
+    (VOID) ExSetTimerResolution(5000, TRUE);
 
     for (;;)
     {
@@ -15973,6 +15994,7 @@ void VioGpuAdapter::ThreadWorkRoutine(void)
 
         if (m_bStopWorkThread)
         {
+            (VOID) ExSetTimerResolution(0, FALSE);
             PsTerminateSystemThread(STATUS_SUCCESS);
             break;
         }
@@ -16109,6 +16131,16 @@ VOID VioGpuAdapter::DpcRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface)
     PGPU_VBUFFER pvbuf = NULL;
     UINT len = 0;
     ULONG reason;
+    /* Time from the control-queue interrupt to this DPC, and this DPC's own
+     * run: every host answer and fence completion the guest waits on passes
+     * through both. */
+    LARGE_INTEGER frequency;
+    const LONGLONG dpcStart = KeQueryPerformanceCounter(&frequency).QuadPart;
+    const LONGLONG isrTicks = InterlockedExchange64(&m_DisplayIsrTicks, 0);
+    if (isrTicks != 0 && dpcStart - isrTicks > frequency.QuadPart / 1000)
+    {
+        m_pVioGpuDod->CountDisplayEvent(VioGpuIsrToDpcOver1ms);
+    }
     while ((reason = InterlockedExchange((PLONG)&m_PendingWorks, 0)) != 0)
     {
         if ((reason & ISR_REASON_DISPLAY))
@@ -16186,6 +16218,10 @@ VOID VioGpuAdapter::DpcRoutine(_In_ PDXGKRNL_INTERFACE pDxgkInterface)
         }
     }
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+    if (KeQueryPerformanceCounter(NULL).QuadPart - dpcStart > frequency.QuadPart / 1000)
+    {
+        m_pVioGpuDod->CountDisplayEvent(VioGpuDpcRunOver1ms);
+    }
 }
 
 __declspec(noinline) VOID VioGpuAdapter::ResetDevice(VOID)

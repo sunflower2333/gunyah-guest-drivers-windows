@@ -227,5 +227,10 @@ enum : unsigned
     VioGpuSurfaceWriterVidSchOver2ms = 112,
     VioGpuSurfaceWriterDispatchOver1ms = 113,
     VioGpuSurfaceWriterRetireOver2ms = 114,
-    VioGpuDisplayCounterCount = 115,
+    /* Guest interrupt timing: control-queue ISR to DPC, the DPC's own run,
+     * and the vsync timer firing more than 1 ms after its due time. */
+    VioGpuIsrToDpcOver1ms = 115,
+    VioGpuDpcRunOver1ms = 116,
+    VioGpuVsyncLateOver1ms = 117,
+    VioGpuDisplayCounterCount = 118,
 };
