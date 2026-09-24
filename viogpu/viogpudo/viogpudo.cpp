@@ -830,6 +830,24 @@ BOOLEAN VioGpuDod::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedRe
     return queued;
 }
 
+/* Drain the control queue from a DPC on this processor. A flip waiting on a
+ * host answer polls with this: the answer is in the used ring well before its
+ * interrupt reaches the guest when the vCPU it targets is not running. */
+VOID VioGpuDod::PollControlQueue(void)
+{
+    if (!AcquireNativeSubmissionOperation())
+    {
+        return;
+    }
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (adapter != NULL && m_DxgkInterface.DxgkCbQueueDpc != NULL)
+    {
+        adapter->RequestDisplayQueueDrain();
+        m_DxgkInterface.DxgkCbQueueDpc(m_DxgkInterface.DeviceHandle);
+    }
+    ReleaseNativeSubmissionOperation();
+}
+
 PGPU_VBUFFER VioGpuDod::PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize)
 {
     if (command == NULL || commandSize == 0 || !ExAcquireRundownProtection(&m_HardwareOperations))
@@ -7985,6 +8003,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &flipDiagnostics[17]},
                                                                                                         {L"NativeFlipArrivalOver4ms",
                                                                                                          &flipDiagnostics[18]},
+                                                                                                        {L"NativeHostSurfaceControlPolls",
+                                                                                                         &flipDiagnostics[19]},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPre"
                                                                                                          L"s"

@@ -5486,6 +5486,30 @@ static LONG FlipTicksToUsec(LONGLONG ticks, LONGLONG frequency)
  * them into the Last* counters when its flip was slow. */
 static volatile LONG g_VioGpuHostSurfacePhaseUsec[3];
 
+/* Wait for an event signalled from the control-queue DPC, draining the queue
+ * ourselves every half millisecond: the host has usually answered long before
+ * its interrupt is delivered to a busy guest. timeout is a relative 100 ns
+ * interval, as KeWaitForSingleObject takes it. */
+static NTSTATUS WaitPollingControlQueue(_In_ VioGpuDod *adapter, _In_ PKEVENT event, _In_ LONGLONG timeout)
+{
+    PAGED_CODE();
+    LARGE_INTEGER frequency;
+    const LONGLONG start = KeQueryPerformanceCounter(&frequency).QuadPart;
+    LARGE_INTEGER slice;
+    slice.QuadPart = -5000;
+    for (;;)
+    {
+        NTSTATUS status = KeWaitForSingleObject(event, Executive, KernelMode, FALSE, &slice);
+        if (status != STATUS_TIMEOUT)
+            return status;
+        const LONGLONG elapsed100ns = (KeQueryPerformanceCounter(NULL).QuadPart - start) * 10000000LL / frequency.QuadPart;
+        if (elapsed100ns >= -timeout)
+            return STATUS_TIMEOUT;
+        adapter->CountDisplayEvent(VioGpuHostSurfaceControlPolls);
+        adapter->PollControlQueue();
+    }
+}
+
 NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocation)
 {
     PAGED_CODE();
@@ -5561,7 +5585,7 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
             NativeAhbReleaseObserved(share, VioGpuHostContextNotSubmitted, share->ResourceId, sequence);
         if (!usable || front || reserved || status != STATUS_SUCCESS || (!queueWait && !held && !writersPending))
             break;
-        status = KeWaitForSingleObject(&share->AccessChanged, Executive, KernelMode, FALSE, &timeout);
+        status = WaitPollingControlQueue(adapter, &share->AccessChanged, timeout.QuadPart);
     }
     LONGLONG phaseEnd = KeQueryPerformanceCounter(NULL).QuadPart;
     LONG phaseUsec = FlipTicksToUsec(phaseEnd - phaseStart, phaseFrequency.QuadPart);
@@ -5628,7 +5652,7 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
             if (!adapter->QueueNativeAhbOperation(share->ResourceId, share->SurfaceResetGeneration, 0, TRUE,
                                                   NativeAhbPresentAccepted, pending))
                 NativeAhbPresentAccepted(pending, VioGpuHostContextNotSubmitted, share->ResourceId, 0);
-            status = KeWaitForSingleObject(&pending->Event, Executive, KernelMode, FALSE, &timeout);
+            status = WaitPollingControlQueue(adapter, &pending->Event, timeout.QuadPart);
             const LONGLONG wokeTicks = KeQueryPerformanceCounter(NULL).QuadPart;
             phaseUsec = FlipTicksToUsec(wokeTicks - phaseEnd, phaseFrequency.QuadPart);
             InterlockedExchange(&g_VioGpuHostSurfacePhaseUsec[2], phaseUsec);

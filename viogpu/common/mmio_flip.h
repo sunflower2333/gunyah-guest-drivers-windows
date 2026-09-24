@@ -218,5 +218,8 @@ enum : unsigned
     /* MMIO flips published more than 4 ms after the last vsync: the
      * compositor itself was late, whatever the flip path then took. */
     VioGpuFlipArrivalOver4ms = 110,
-    VioGpuDisplayCounterCount = 111,
+    /* Control-queue drains a HostSurface flip requested itself while its host
+     * answer had not yet arrived by interrupt. */
+    VioGpuHostSurfaceControlPolls = 111,
+    VioGpuDisplayCounterCount = 112,
 };

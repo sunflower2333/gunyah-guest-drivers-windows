@@ -1103,6 +1103,11 @@ class VioGpuAdapter : IVioGpuPCI
 #if defined(VIOGPU_NATIVE_CONTEXT)
     __declspec(code_seg(".text")) BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
                                     BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
+    /* Make the next DPC drain the control queue as if its interrupt fired. */
+    VOID RequestDisplayQueueDrain(void)
+    {
+        InterlockedOr(reinterpret_cast<volatile LONG *>(&m_PendingWorks), ISR_REASON_DISPLAY);
+    }
     BOOLEAN SupportsNativeAhbPaging() const;
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
                                             ULONGLONG offset, UINT length, UINT pattern, PVOID data);
@@ -1958,6 +1963,7 @@ class VioGpuDod
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
     BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
                                     BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
+    VOID PollControlQueue(void);
     BOOLEAN SupportsNativeAhbPaging() const;
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
                                             ULONGLONG offset, UINT length, UINT pattern, PVOID data);
