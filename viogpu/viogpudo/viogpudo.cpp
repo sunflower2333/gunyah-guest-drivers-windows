@@ -285,6 +285,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_ChildDescriptorMode = VioGpuDefaultChildDescriptorMode(DXGKDDI_INTERFACE_VERSION >=
                                                              DXGKDDI_INTERFACE_VERSION_WDDM2_0);
     m_PendingFlipAllocation = NULL;
+    m_PendingFlipTicks = 0;
     KeInitializeDpc(&m_FlipKickDpc, VioGpuFlipKickDpcRoutine, this);
     KeInitializeMutex(&m_FlipApplyMutex, 0);
     m_NativeFenceHead = 0;
@@ -1271,6 +1272,7 @@ VOID VioGpuDod::SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address)
 
 VOID VioGpuDod::PublishPendingFlip(_In_ PVOID allocation)
 {
+    InterlockedExchange64(&m_PendingFlipTicks, KeQueryPerformanceCounter(NULL).QuadPart);
     InterlockedExchangePointer(&m_PendingFlipAllocation, allocation);
 }
 
@@ -7226,6 +7228,9 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD displayMmioFlipLastApplyStatus = ReadDisplayCounter(VioGpuDisplayMmioFlipLastApplyStatus);
     DWORD displayFlipPresentCalls = ReadDisplayCounter(VioGpuDisplayFlipPresentCalls);
     DWORD displayFlipPresentRejects = ReadDisplayCounter(VioGpuDisplayFlipPresentRejects);
+    DWORD flipDiagnostics[VioGpuDisplayCounterCount - VioGpuFlipLatencyOver3ms];
+    for (ULONG i = 0; i < ARRAYSIZE(flipDiagnostics); ++i)
+        flipDiagnostics[i] = ReadDisplayCounter(VioGpuFlipLatencyOver3ms + i);
     DWORD nativeContextFailCallerRva = ReadNativeContextFailCallerRva();
     DWORD submissionFaultCallerRva = ReadNativeSubmissionFaultCallerRva();
     DWORD submissionFaultPresentStage = ReadNativeSubmissionFaultPresentSubmitStage();
@@ -7933,6 +7938,34 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          L"yFlipPresent"
                                                                                                          L"Rejects",
                                                                                                          &displayFlipPresentRejects},
+                                                                                                        {L"NativeFlipLatencyOver3ms",
+                                                                                                         &flipDiagnostics[0]},
+                                                                                                        {L"NativeFlipLatencyOver6ms",
+                                                                                                         &flipDiagnostics[1]},
+                                                                                                        {L"NativeFlipPickupOver2ms",
+                                                                                                         &flipDiagnostics[2]},
+                                                                                                        {L"NativeHostSurfaceReleaseWaitOver2ms",
+                                                                                                         &flipDiagnostics[3]},
+                                                                                                        {L"NativeHostSurfaceWriterWaits",
+                                                                                                         &flipDiagnostics[4]},
+                                                                                                        {L"NativeHostSurfaceIdleWaitOver1ms",
+                                                                                                         &flipDiagnostics[5]},
+                                                                                                        {L"NativeHostSurfaceScanoutOver2ms",
+                                                                                                         &flipDiagnostics[6]},
+                                                                                                        {L"NativeHostSurfaceAcceptOver2ms",
+                                                                                                         &flipDiagnostics[7]},
+                                                                                                        {L"NativeFlipLastSlowPickupUsec",
+                                                                                                         &flipDiagnostics[8]},
+                                                                                                        {L"NativeFlipLastSlowReleaseUsec",
+                                                                                                         &flipDiagnostics[9]},
+                                                                                                        {L"NativeFlipLastSlowScanoutUsec",
+                                                                                                         &flipDiagnostics[10]},
+                                                                                                        {L"NativeFlipLastSlowAcceptUsec",
+                                                                                                         &flipDiagnostics[11]},
+                                                                                                        {L"NativeFlipLastSlowTotalUsec",
+                                                                                                         &flipDiagnostics[12]},
+                                                                                                        {L"NativeFlipLatencyMaxUsec",
+                                                                                                         &flipDiagnostics[13]},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPre"
                                                                                                          L"s"

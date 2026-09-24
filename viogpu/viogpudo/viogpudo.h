@@ -1471,6 +1471,8 @@ class VioGpuDod
      * under m_FlipApplyMutex, and primary destroy drains the slot under the
      * same mutex, so a published pointer is never used after it is freed. */
     volatile PVOID m_PendingFlipAllocation;
+    /* QPC of the MMIO flip that published m_PendingFlipAllocation. */
+    volatile LONG64 m_PendingFlipTicks;
     /* Wakes the display worker as soon as a HostSurface flip is published. */
     KDPC m_FlipKickDpc;
     KMUTEX m_FlipApplyMutex;
@@ -1705,6 +1707,10 @@ class VioGpuDod
     VOID AcquireFlipApply(void);
     VOID ReleaseFlipApply(void);
     PVOID TakePendingFlip(void);
+    LONG64 PendingFlipTicks(void)
+    {
+        return InterlockedCompareExchange64(&m_PendingFlipTicks, 0, 0);
+    }
     VOID CancelPendingFlip(_In_ PVOID allocation);
 #endif
     __declspec(noinline) __declspec(code_seg(".text")) NTSTATUS SetCrtcTiming(const VIOGPU_DISPLAY_TIMING &timing);

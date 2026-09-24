@@ -51,7 +51,9 @@ int main()
                       VioGpuOverlayFlipRejects == VioGpuOverlayFlipCalls + 1U &&
                       VioGpuOverlayFlipAccepts == VioGpuOverlayFlipRejects + 1U &&
                       VioGpuSynchronousLongestWaitSlices == VioGpuOverlayFlipAccepts + 1U &&
-                      VioGpuDisplayCounterCount == VioGpuSynchronousLongestWaitSlices + 1U,
+                      VioGpuFlipLatencyOver3ms == VioGpuSynchronousLongestWaitSlices + 1U &&
+                      VioGpuFlipLatencyMaxUsec == VioGpuFlipLatencyOver3ms + 13U &&
+                      VioGpuDisplayCounterCount == VioGpuFlipLatencyMaxUsec + 1U,
                   "new display counters follow the 64 historical slots");
     // Every slot is distinct and inside the published array.
     {
@@ -68,7 +70,14 @@ int main()
                             VioGpuMonitorLinkLastValue,       VioGpuMonitorLinkClaims,
                             VioGpuTimingPathCalls,            VioGpuTimingPathLastStatus,
                             VioGpuTimingPathWireFormat,       VioGpuTimingPathColorSpace,
-                            VioGpuTimingPathRejects,          VioGpuOverlayCapsQueries};
+                            VioGpuTimingPathRejects,          VioGpuOverlayCapsQueries,
+                            VioGpuFlipLatencyOver3ms,         VioGpuFlipLatencyOver6ms,
+                            VioGpuFlipPickupOver2ms,          VioGpuHostSurfaceReleaseWaitOver2ms,
+                            VioGpuHostSurfaceWriterWaits,     VioGpuHostSurfaceIdleWaitOver1ms,
+                            VioGpuHostSurfaceScanoutOver2ms,  VioGpuHostSurfaceAcceptOver2ms,
+                            VioGpuFlipLastSlowPickupUsec,     VioGpuFlipLastSlowReleaseUsec,
+                            VioGpuFlipLastSlowScanoutUsec,    VioGpuFlipLastSlowAcceptUsec,
+                            VioGpuFlipLastSlowTotalUsec,      VioGpuFlipLatencyMaxUsec};
         for (unsigned i = 0; i < sizeof(slots) / sizeof(slots[0]); ++i)
         {
             CHECK(slots[i] < VioGpuDisplayCounterCount);

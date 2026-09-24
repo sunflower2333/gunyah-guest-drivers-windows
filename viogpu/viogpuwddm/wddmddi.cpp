@@ -5469,9 +5469,26 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
     return status != STATUS_SUCCESS && NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
 }
 
+static LONG FlipTicksToUsec(LONGLONG ticks, LONGLONG frequency)
+{
+    if (ticks <= 0 || frequency <= 0)
+        return 0;
+    const LONGLONG usec = ticks * 1000000LL / frequency;
+    return usec > MAXLONG ? MAXLONG : static_cast<LONG>(usec);
+}
+
+/* Phases of the latest HostSurface present, in microseconds: release/writer
+ * wait, Set2DScanout, host accept. Diagnostics only; the flip worker copies
+ * them into the Last* counters when its flip was slow. */
+static volatile LONG g_VioGpuHostSurfacePhaseUsec[3];
+
 NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocation)
 {
     PAGED_CODE();
+    LARGE_INTEGER phaseFrequency;
+    const LONGLONG phaseStart = KeQueryPerformanceCounter(&phaseFrequency).QuadPart;
+    for (UINT i = 0; i < ARRAYSIZE(g_VioGpuHostSurfacePhaseUsec); ++i)
+        InterlockedExchange(&g_VioGpuHostSurfacePhaseUsec[i], 0);
     if (!allocation->HostSurface || !adapter->IsNativeAhbScanoutEnabled() ||
         !AcquireNativeShareRegistry(FALSE))
         return STATUS_DEVICE_NOT_READY;
@@ -5524,6 +5541,7 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
             else
             {
                 writersPending = TRUE;
+                adapter->CountDisplayEvent(VioGpuHostSurfaceWriterWaits);
             }
         }
         else if (usable && held && !share->Access.WaitPending)
@@ -5541,6 +5559,11 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
             break;
         status = KeWaitForSingleObject(&share->AccessChanged, Executive, KernelMode, FALSE, &timeout);
     }
+    LONGLONG phaseEnd = KeQueryPerformanceCounter(NULL).QuadPart;
+    LONG phaseUsec = FlipTicksToUsec(phaseEnd - phaseStart, phaseFrequency.QuadPart);
+    InterlockedExchange(&g_VioGpuHostSurfacePhaseUsec[0], phaseUsec);
+    if (phaseUsec > 2000)
+        adapter->CountDisplayEvent(VioGpuHostSurfaceReleaseWaitOver2ms);
     if (unchangedFront)
     {
         InterlockedDecrement(&share->AsyncReferences);
@@ -5551,7 +5574,11 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
         InterlockedDecrement(&share->AsyncReferences);
         return STATUS_DEVICE_NOT_READY;
     }
+    LONGLONG phaseBegin = KeQueryPerformanceCounter(NULL).QuadPart;
     status = KeWaitForSingleObject(&share->ProducersIdle, Executive, KernelMode, FALSE, &timeout);
+    phaseEnd = KeQueryPerformanceCounter(NULL).QuadPart;
+    if (FlipTicksToUsec(phaseEnd - phaseBegin, phaseFrequency.QuadPart) > 1000)
+        adapter->CountDisplayEvent(VioGpuHostSurfaceIdleWaitOver1ms);
     UINT format = 0;
     KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
     BOOLEAN idle = share->SurfaceResident && !share->Access.Poisoned &&
@@ -5569,8 +5596,16 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
         UINT previous = 0;
         VIOGPU_PRIMARY_SCANOUT_LAYOUT layout = {share->Surface.Width, share->Surface.Height, format,
                                                share->Surface.Stride, static_cast<SIZE_T>(share->Size)};
-        if (adapter->Set2DScanout(0, share->ResourceId, layout.Width, layout.Height, &previous,
-                                  &layout, FALSE, TRUE) != VioGpuHostContextConfirmed)
+        phaseBegin = KeQueryPerformanceCounter(NULL).QuadPart;
+        const BOOLEAN scanoutConfirmed = adapter->Set2DScanout(0, share->ResourceId, layout.Width, layout.Height,
+                                                               &previous, &layout, FALSE, TRUE) ==
+                                         VioGpuHostContextConfirmed;
+        phaseEnd = KeQueryPerformanceCounter(NULL).QuadPart;
+        phaseUsec = FlipTicksToUsec(phaseEnd - phaseBegin, phaseFrequency.QuadPart);
+        InterlockedExchange(&g_VioGpuHostSurfacePhaseUsec[1], phaseUsec);
+        if (phaseUsec > 2000)
+            adapter->CountDisplayEvent(VioGpuHostSurfaceScanoutOver2ms);
+        if (!scanoutConfirmed)
         {
             status = STATUS_DEVICE_NOT_READY;
             presentStage = 3;
@@ -5589,6 +5624,10 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
                                                   NativeAhbPresentAccepted, pending))
                 NativeAhbPresentAccepted(pending, VioGpuHostContextNotSubmitted, share->ResourceId, 0);
             status = KeWaitForSingleObject(&pending->Event, Executive, KernelMode, FALSE, &timeout);
+            phaseUsec = FlipTicksToUsec(KeQueryPerformanceCounter(NULL).QuadPart - phaseEnd, phaseFrequency.QuadPart);
+            InterlockedExchange(&g_VioGpuHostSurfacePhaseUsec[2], phaseUsec);
+            if (phaseUsec > 2000)
+                adapter->CountDisplayEvent(VioGpuHostSurfaceAcceptOver2ms);
             if (status != STATUS_SUCCESS || pending->Result != VioGpuHostContextConfirmed)
             {
                 presentStage = status != STATUS_SUCCESS ? 4 : 5;
@@ -14113,6 +14152,10 @@ VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter)
 #endif
     adapter->AcquireFlipApply();
     VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(adapter->TakePendingFlip());
+    /* Diagnostics only: a flip published after the take would shorten one sample. */
+    LARGE_INTEGER frequency;
+    const LONGLONG applyStart = KeQueryPerformanceCounter(&frequency).QuadPart;
+    const LONGLONG flipTicks = adapter->PendingFlipTicks();
     if (allocation != NULL)
     {
         const ULONGLONG address = allocation->PlacementOffset;
@@ -14129,6 +14172,26 @@ VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter)
         }
         adapter->CountDisplayEvent(status == STATUS_SUCCESS ? VioGpuDisplayMmioFlipApplied
                                                             : VioGpuDisplayMmioFlipApplyFailures);
+        const LONG pickupUsec = FlipTicksToUsec(applyStart - flipTicks, frequency.QuadPart);
+        const LONG totalUsec = FlipTicksToUsec(KeQueryPerformanceCounter(NULL).QuadPart - flipTicks,
+                                               frequency.QuadPart);
+        if (pickupUsec > 2000)
+            adapter->CountDisplayEvent(VioGpuFlipPickupOver2ms);
+        adapter->RecordDisplayMaximum(VioGpuFlipLatencyMaxUsec, totalUsec);
+        if (totalUsec > 3000)
+        {
+            adapter->CountDisplayEvent(VioGpuFlipLatencyOver3ms);
+            adapter->RecordDisplayValue(VioGpuFlipLastSlowPickupUsec, pickupUsec);
+            adapter->RecordDisplayValue(VioGpuFlipLastSlowReleaseUsec,
+                                        InterlockedCompareExchange(&g_VioGpuHostSurfacePhaseUsec[0], 0, 0));
+            adapter->RecordDisplayValue(VioGpuFlipLastSlowScanoutUsec,
+                                        InterlockedCompareExchange(&g_VioGpuHostSurfacePhaseUsec[1], 0, 0));
+            adapter->RecordDisplayValue(VioGpuFlipLastSlowAcceptUsec,
+                                        InterlockedCompareExchange(&g_VioGpuHostSurfacePhaseUsec[2], 0, 0));
+            adapter->RecordDisplayValue(VioGpuFlipLastSlowTotalUsec, totalUsec);
+        }
+        if (totalUsec > 6000)
+            adapter->CountDisplayEvent(VioGpuFlipLatencyOver6ms);
         adapter->RecordDisplayValue(VioGpuDisplayMmioFlipLastApplyStatus, static_cast<LONG>(status));
     }
     adapter->ReleaseFlipApply();

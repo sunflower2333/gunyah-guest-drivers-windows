@@ -189,5 +189,25 @@ enum : unsigned
      * one is a host stall that was waited out rather than turned into a
      * boot-long loss of the native transport. */
     VioGpuSynchronousLongestWaitSlices = 91,
-    VioGpuDisplayCounterCount = 92,
+    /* Where a late flip spends its time. A flip completes at the first vsync
+     * after the worker has bound it, so one that takes longer than the time
+     * left to that vsync shows a frame twice. Record time from the MMIO flip to
+     * the bind and the phases of a HostSurface present inside it. Counts
+     * are over thresholds so that a window can be diffed; the Last* values
+     * describe the most recent flip that took over 3 ms. */
+    VioGpuFlipLatencyOver3ms = 92,
+    VioGpuFlipLatencyOver6ms = 93,
+    VioGpuFlipPickupOver2ms = 94,
+    VioGpuHostSurfaceReleaseWaitOver2ms = 95,
+    VioGpuHostSurfaceWriterWaits = 96,
+    VioGpuHostSurfaceIdleWaitOver1ms = 97,
+    VioGpuHostSurfaceScanoutOver2ms = 98,
+    VioGpuHostSurfaceAcceptOver2ms = 99,
+    VioGpuFlipLastSlowPickupUsec = 100,
+    VioGpuFlipLastSlowReleaseUsec = 101,
+    VioGpuFlipLastSlowScanoutUsec = 102,
+    VioGpuFlipLastSlowAcceptUsec = 103,
+    VioGpuFlipLastSlowTotalUsec = 104,
+    VioGpuFlipLatencyMaxUsec = 105,
+    VioGpuDisplayCounterCount = 106,
 };
