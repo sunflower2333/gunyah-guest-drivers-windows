@@ -477,6 +477,8 @@ struct VIOGPU_WDDM_SUBMISSION_REFERENCE
     UINT AllocationIndex;
     UINT Flags;
     ULONGLONG AllocationOffset;
+    /* Counted in the exported allocation's OwnerWritesRendered until retire. */
+    BOOLEAN OwnerWriteCounted;
     ULONGLONG Length;
     UINT PatchOffset;
     UINT Reserved;
@@ -484,8 +486,6 @@ struct VIOGPU_WDDM_SUBMISSION_REFERENCE
     UINT PatchedResourceId;
     UINT PatchedReserved;
     ULONGLONG PatchedIova;
-    /* Counted in the exported allocation's OwnerWritesRendered until retire. */
-    BOOLEAN OwnerWriteCounted;
 };
 
 enum VIOGPU_WDDM_SUBMISSION_STATE : LONG
