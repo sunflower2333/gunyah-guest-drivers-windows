@@ -1649,6 +1649,7 @@ class VioGpuDod
     VIOGPU_DISPLAY_TIMING m_CrtcTiming;
     LONGLONG m_CrtcEpoch;
     LONGLONG m_CrtcPeriodTicks;
+    LONGLONG m_CrtcNextDueTicks;
     volatile LONG m_CrtcVsyncTimerArmed;
     volatile LONG m_CrtcVsyncDeliveredCount;
     volatile LONG64 m_CrtcVsyncPrimaryAddress;
@@ -1688,6 +1689,7 @@ class VioGpuDod
     // including optimized builds that would otherwise inline these routines.
     __declspec(noinline) __declspec(code_seg(".text")) NTSTATUS ArmCrtcVsyncTimer(void);
     VOID DisarmCrtcVsyncTimer(void);
+    BOOLEAN CrtcVsyncDue(void);
     VOID DeliverCrtcVsync(void);
     VOID SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address);
 #if defined(VIOGPU_NATIVE_CONTEXT)

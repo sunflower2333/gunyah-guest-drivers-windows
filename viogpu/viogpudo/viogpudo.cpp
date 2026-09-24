@@ -174,7 +174,7 @@ static VOID VioGpuCrtcVsyncDpcRoutine(_In_ PEX_TIMER timer, _In_opt_ PVOID conte
     UNREFERENCED_PARAMETER(timer);
 
     VioGpuDod *dod = static_cast<VioGpuDod *>(context);
-    if (dod != NULL)
+    if (dod != NULL && dod->CrtcVsyncDue())
     {
         dod->DeliverCrtcVsync();
     }
@@ -210,6 +210,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_CrtcTiming = VioGpuVirtualTiming(1024, 768, 60);
     m_CrtcEpoch = 0;
     m_CrtcPeriodTicks = 0;
+    m_CrtcNextDueTicks = 0;
 #if defined(VIOGPU_NATIVE_CONTEXT)
     InterlockedExchange(&m_NativeContextFailCallerRva, 0);
     InterlockedExchange(&m_ResetDeviceCallerRva, 0);
@@ -3615,6 +3616,7 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
         m_CrtcPeriodTicks = (frequency.QuadPart * m_CrtcTiming.TotalWidth * m_CrtcTiming.TotalHeight) /
                             m_CrtcTiming.PixelClock;
         m_CrtcEpoch = now.QuadPart;
+        m_CrtcNextDueTicks = now.QuadPart + m_CrtcPeriodTicks;
     }
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     if (period <= 0)
@@ -3625,9 +3627,20 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
         ExReleaseFastMutex(&m_CrtcTimerMutex);
         return STATUS_INVALID_PARAMETER;
     }
-    ExSetTimer(m_CrtcVsyncTimer, -period, period, NULL);
+    const LONGLONG tick = VioGpuVsyncTick100ns(period);
+    ExSetTimer(m_CrtcVsyncTimer, -tick, tick, NULL);
     ExReleaseFastMutex(&m_CrtcTimerMutex);
     return STATUS_SUCCESS;
+}
+
+BOOLEAN VioGpuDod::CrtcVsyncDue(void)
+{
+    const LONGLONG now = KeQueryPerformanceCounter(NULL).QuadPart;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
+    const BOOLEAN due = VioGpuVsyncDue(now, m_CrtcPeriodTicks, &m_CrtcNextDueTicks);
+    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
+    return due;
 }
 
 VOID VioGpuDod::DisarmCrtcVsyncTimer(void)

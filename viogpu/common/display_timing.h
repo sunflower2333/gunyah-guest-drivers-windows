@@ -316,3 +316,31 @@ static inline unsigned long long VioGpuTimingPeriod100ns(const VIOGPU_DISPLAY_TI
     }
     return (10000000ULL * t.TotalWidth * t.TotalHeight + t.PixelClock / 2) / t.PixelClock;
 }
+
+/* The kernel rounds a periodic timer to its resolution (0.5 ms here), so a
+ * 6.06 ms period fired every 6.5 ms: 153.6 vblanks/s for a 165 Hz mode. Tick
+ * finer than the frame and deliver a vblank each time the counter passes the
+ * next due time instead; the average rate is then exact and each vblank is at
+ * most one tick late. A stall longer than a frame resynchronises rather than
+ * delivering the missed vblanks in a burst. */
+static inline bool VioGpuVsyncDue(long long now, long long period, long long *nextDue)
+{
+    if (period <= 0 || now < *nextDue)
+    {
+        return false;
+    }
+    *nextDue += period;
+    if (now - *nextDue >= 0)
+    {
+        *nextDue = now + period;
+    }
+    return true;
+}
+
+/* Timer tick for VioGpuVsyncDue, in 100 ns units: the kernel's 0.5 ms
+ * resolution, or the whole frame when that is shorter. */
+static inline long long VioGpuVsyncTick100ns(long long period100ns)
+{
+    return period100ns < 5000 ? period100ns : 5000;
+}
+

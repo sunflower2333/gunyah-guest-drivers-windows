@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58583",
+        "$minor = 58584",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58583",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58584",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -3417,10 +3417,15 @@ def check_legacy_runtime_callback_contract() -> None:
     if "InterlockedExchange(&m_CrtcVsyncTimerArmed,1)==1" not in arm_vsync:
         fail("arming the software vertical-blank source must be idempotent")
     for fragment in ("EX_TIMER_HIGH_RESOLUTION", "VioGpuTimingPeriod100ns(m_CrtcTiming)",
-                     "ExSetTimer(m_CrtcVsyncTimer,-period,period,NULL);"):
+                     "m_CrtcNextDueTicks=now.QuadPart+m_CrtcPeriodTicks;",
+                     "constLONGLONGtick=VioGpuVsyncTick100ns(period);",
+                     "ExSetTimer(m_CrtcVsyncTimer,-tick,tick,NULL);"):
         if fragment not in arm_vsync:
             fail(f"vblank must use the selected timing at high resolution: {fragment}")
 
+    vsync_dpc = canonical_code(function_body("VioGpuCrtcVsyncDpcRoutine", VIOGPU_CODE))
+    if "if(dod!=NULL&&dod->CrtcVsyncDue()){dod->DeliverCrtcVsync();}" not in vsync_dpc:
+        fail("vblanks must be delivered on the counter's schedule, not on each quantized timer tick")
     disarm_vsync = canonical_code(function_body("VioGpuDod::DisarmCrtcVsyncTimer", VIOGPU_CODE))
     for fragment in (
         "InterlockedExchange(&m_CrtcVsyncTimerArmed,0)==0",

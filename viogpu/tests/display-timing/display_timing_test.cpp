@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "../../common/display_timing.h"
 #include "host_edid_fixtures.h"
 #include <cassert>
@@ -291,6 +292,28 @@ int main(int argc, char **argv)
                     rn,
                     rd,
                     VioGpuTimingPeriod100ns(t));
+    }
+    {
+        // 165 Hz on a 19.2 MHz counter, ticked at the kernel's 0.5 ms (9600 counts).
+        const long long frequency = 19200000, period = frequency * 60606 / 10000000, tick = 9600;
+        long long next = period, delivered = 0, last = 0, worst = 0;
+        for (long long now = 0; now <= frequency * 10; now += tick)
+        {
+            if (VioGpuVsyncDue(now, period, &next))
+            {
+                if (delivered++ != 0)
+                    worst = std::max(worst, now - last - period);
+                last = now;
+            }
+        }
+        assert(delivered >= 1649 && delivered <= 1651); // 165.0/s, not 153.6/s
+        assert(worst <= tick);
+        long long stalled = 5 * period;
+        next = period;
+        assert(VioGpuVsyncDue(stalled, period, &next) && next == stalled + period); // no burst
+        assert(!VioGpuVsyncDue(stalled + tick, period, &next));
+        assert(!VioGpuVsyncDue(1 << 20, 0, &next));
+        assert(VioGpuVsyncTick100ns(60606) == 5000 && VioGpuVsyncTick100ns(4000) == 4000);
     }
     puts("display timing: EDID/DisplayID/wide rational/capacity/malformed/CTA boundary PASS");
 }
