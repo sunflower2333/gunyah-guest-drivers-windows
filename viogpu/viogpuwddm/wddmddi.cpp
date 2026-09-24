@@ -13570,11 +13570,9 @@ VioGpuWddmGetMultiPlaneOverlayCaps(CONST HANDLE hAdapter, DXGKARG_GETMULTIPLANEO
 #include "advanced_color_ddi.inc"
 #endif
 
-/* DIRQL half of an MMIO flip (FlipOnVSyncMmIo). Only nonpaged allocation
- * fields are read and nothing is locked: the flipped primary is published for
- * the next CRTC vsync report, which is what completes the flip in dxgkrnl, and
- * left in the adapter's one-slot mailbox for the display worker to bind. A
- * newer flip replaces an unbound one, as a flip-pending register would. */
+/* DIRQL half of an MMIO flip (FlipOnVSyncMmIo). Queue the requested primary
+ * without reporting it as scanned out until the worker has Host acceptance.
+ * A newer flip replaces an unbound one, as a flip-pending register would. */
 static NTSTATUS QueueMmioFlip(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_SETVIDPNSOURCEADDRESS *setVidPnSourceAddress)
 {
     const VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<const VIOGPU_WDDM_ALLOCATION *>(setVidPnSourceAddress->hAllocation);
@@ -13609,11 +13607,9 @@ static NTSTATUS QueueMmioFlip(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_SETVID
         return STATUS_INVALID_PARAMETER;
     }
 
-    adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(target.Address));
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
-    /* The next vsync must report this flip's CRTC address, not a stale MPO3
-     * PresentId: an eight-bit flip ends any queued color presentation.
-     * Interlocked writes only, so this stays lock-free at DIRQL. */
+    /* The flip supersedes color presentation, but its address is not complete
+     * until the Host accepts it. */
     adapter->ClearColorPresentCompletion();
 #endif
     adapter->PublishPendingFlip(setVidPnSourceAddress->hAllocation);
@@ -13672,9 +13668,8 @@ static BOOLEAN TagHighPrecisionPrimaryColor(_In_ VioGpuDod *adapter, _In_ VIOGPU
 
 /* Binds a standard primary to the Host scanout at PASSIVE_LEVEL. Shared by
  * the mode-change DDI and by the worker that completes MMIO flips. The caller
- * holds the adapter's flip-apply mutex. A flip already published its vsync
- * address at DIRQL, and a newer flip may have replaced it since, so only a
- * mode change publishes the address here. */
+ * holds the adapter's flip-apply mutex. The worker publishes an accepted flip
+ * address after this function succeeds. */
 static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
                                            _In_ VIOGPU_WDDM_ALLOCATION *allocation,
                                            _In_ LONGLONG primaryAddress,
@@ -13820,12 +13815,6 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
                                                                                            nativeAhb);
         if (result == VioGpuHostContextConfirmed)
         {
-            /* The vsync report carries the primary dxgkrnl programmed here. */
-            if (modeChange)
-            {
-                adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));
-            }
-
             /* SET_SCANOUT only binds the resource: virtio-gpu has no autonomous
              * scanout of guest memory, so the host keeps showing whatever that
              * resource last received.  DWM flips through SetVidPnSourceAddress
@@ -13847,6 +13836,11 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
                                                                                              allocation->Height,
                                                                                              &allocation->Resource2DState,
                                                                                              &allocation->Resource2DResetGeneration);
+            result = flush;
+            if (modeChange && flush == VioGpuHostContextConfirmed)
+            {
+                adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));
+            }
             /* A mode change keeps the vsync republish: a compositor that
              * programs its primary once draws into it in place. A flipped
              * primary is final until the next flip replaces it. An empty one
@@ -13950,8 +13944,8 @@ VioGpuWddmSetVidPnSourceAddress(CONST HANDLE hAdapter, CONST DXGKARG_SETVIDPNSOU
     return status;
 }
 
-/* PASSIVE_LEVEL half of an MMIO flip, run by the display worker after the
- * vsync that reported the flip. */
+/* PASSIVE_LEVEL half of an MMIO flip. A subsequent vsync reports the address
+ * only after the Host has accepted the bind. */
 VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter)
 {
     if (adapter == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || !adapter->HasPendingFlip())
@@ -13967,10 +13961,18 @@ VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter)
     VIOGPU_WDDM_ALLOCATION *allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(adapter->TakePendingFlip());
     if (allocation != NULL)
     {
-        const NTSTATUS status = BindStandardPrimaryScanout(adapter,
-                                                           allocation,
-                                                           static_cast<LONGLONG>(allocation->PlacementOffset),
-                                                           FALSE);
+        const ULONGLONG address = allocation->PlacementOffset;
+        const ULONG epoch = adapter->QueryNativeFenceEpoch();
+        NTSTATUS status = adapter->IsHardwareResetRequested()
+                              ? STATUS_DEVICE_NOT_READY
+                              : BindStandardPrimaryScanout(adapter, allocation, static_cast<LONGLONG>(address), FALSE);
+        if (status == STATUS_SUCCESS)
+        {
+            if (adapter->IsHardwareResetRequested() || adapter->QueryNativeFenceEpoch() != epoch)
+                status = STATUS_DEVICE_NOT_READY;
+            else
+                adapter->SetCrtcVsyncPrimaryAddress(address);
+        }
         adapter->CountDisplayEvent(status == STATUS_SUCCESS ? VioGpuDisplayMmioFlipApplied
                                                             : VioGpuDisplayMmioFlipApplyFailures);
         adapter->RecordDisplayValue(VioGpuDisplayMmioFlipLastApplyStatus, static_cast<LONG>(status));

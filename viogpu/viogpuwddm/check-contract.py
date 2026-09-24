@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58585",
+        "$minor = 58586",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58585",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58586",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -5380,7 +5380,7 @@ def check_wddm2_start_queries() -> None:
             fail(f"{handler} must not return a status WDDM 2.0 start rejects")
 
 def check_mmio_flip_contract(native_caps: str) -> None:
-    """FlipOnVSyncMmIo: validate at Present, publish at DIRQL, bind at PASSIVE."""
+    """FlipOnVSyncMmIo: validate and queue at DIRQL, complete only after Host bind."""
 
     if "if(!renderOnly){driverCaps->FlipCaps.FlipOnVSyncMmIo=1;" not in native_caps:
         fail("a WDDM 2.0 display adapter must advertise FlipOnVSyncMmIo")
@@ -5406,11 +5406,12 @@ def check_mmio_flip_contract(native_caps: str) -> None:
         fail("the DIRQL flip half must admit owned HostSurface scanout allocations")
     for fragment in (
         "VioGpuValidateFlipTarget(target)",
-        "adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(target.Address));",
         "adapter->PublishPendingFlip(setVidPnSourceAddress->hAllocation);",
     ):
         if queue.count(fragment) != 1:
             fail(f"the DIRQL flip half must validate and publish exactly once: {fragment}")
+    if "SetCrtcVsyncPrimaryAddress" in queue:
+        fail("a DIRQL flip must not complete before Host acceptance")
     if queue.find("VioGpuValidateFlipTarget(target)") > queue.find("adapter->PublishPendingFlip("):
         fail("the DIRQL flip half must validate before publishing")
     kick = "if(allocation!=NULL&&allocation->HostSurface){adapter->KickPendingFlip();}"
@@ -5429,15 +5430,28 @@ def check_mmio_flip_contract(native_caps: str) -> None:
         "KeGetCurrentIrql()!=PASSIVE_LEVEL",
         "adapter->AcquireFlipApply();",
         "adapter->TakePendingFlip()",
-        "BindStandardPrimaryScanout(adapter,allocation,static_cast<LONGLONG>(allocation->PlacementOffset),FALSE)",
+        "BindStandardPrimaryScanout(adapter,allocation,static_cast<LONGLONG>(address),FALSE)",
         "adapter->ReleaseFlipApply();",
     )]
     if any(position < 0 for position in order) or order != sorted(order):
         fail("the flip worker must take and bind the mailbox under the flip-apply mutex at PASSIVE_LEVEL")
+    bind_position = apply_flip.find("BindStandardPrimaryScanout(adapter,allocation,static_cast<LONGLONG>(address),FALSE)")
+    reset_position = apply_flip.find("adapter->IsHardwareResetRequested()||adapter->QueryNativeFenceEpoch()!=epoch")
+    publish_position = apply_flip.find("adapter->SetCrtcVsyncPrimaryAddress(address);")
+    release_position = apply_flip.find("adapter->ReleaseFlipApply();")
+    if min(bind_position, reset_position, publish_position, release_position) < 0 or not (
+            bind_position < reset_position < publish_position < release_position):
+        fail("the worker must publish the CRTC address only after Host acceptance and reset validation")
 
     bind = canonical_code(function_body("BindStandardPrimaryScanout", WDDM_DDI_CODE))
-    if "if(modeChange){adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));}" not in bind:
-        fail("only a mode change may republish the vsync address from the PASSIVE bind")
+    if "if(modeChange&&flush==VioGpuHostContextConfirmed){adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));}" not in bind:
+        fail("a mode change may republish the vsync address only after a confirmed flush")
+    flush_position = bind.find("VIOGPU_HOST_CONTEXT_RESULTflush=")
+    result_position = bind.find("result=flush;")
+    publish_position = bind.find("adapter->SetCrtcVsyncPrimaryAddress(static_cast<ULONGLONG>(primaryAddress));")
+    if min(flush_position, result_position, publish_position) < 0 or not (
+            flush_position < result_position < publish_position):
+        fail("a failed primary flush must fail the bind before publishing the address")
 
     destroy = canonical_code(function_body("VioGpuWddmDestroyAllocation", WDDM_DDI_CODE))
     cancel = destroy.find("adapter->CancelPendingFlip(allocation);")
