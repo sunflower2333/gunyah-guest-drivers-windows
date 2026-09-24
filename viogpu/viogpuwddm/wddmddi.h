@@ -212,6 +212,13 @@ struct VIOGPU_WDDM_ALLOCATION
      * allocation, not in this one. */
     ULONGLONG ShareKey;
     UINT ShareStride;
+    /* Set once this native allocation is exported. Every write its owner
+     * renders is counted here from DxgkDdiRender and again when it retires, so
+     * a publish can hand importers "the writes so far" without the owner
+     * waiting for them on the CPU (VIOGPU_WDDM_NATIVE_PUBLISH). */
+    BOOLEAN NativeExported;
+    volatile LONG64 OwnerWritesRendered;
+    volatile LONG64 OwnerWritesRetired;
     /* A reference to an adapter-owned host surface, never an owned second BO. */
     BOOLEAN HostSurface;
 };
@@ -477,6 +484,8 @@ struct VIOGPU_WDDM_SUBMISSION_REFERENCE
     UINT PatchedResourceId;
     UINT PatchedReserved;
     ULONGLONG PatchedIova;
+    /* Counted in the exported allocation's OwnerWritesRendered until retire. */
+    BOOLEAN OwnerWriteCounted;
 };
 
 enum VIOGPU_WDDM_SUBMISSION_STATE : LONG

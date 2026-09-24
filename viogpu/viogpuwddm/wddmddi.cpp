@@ -1733,6 +1733,24 @@ NTSTATUS AcquireRenderAllocationReferences(const VIOGPU_WDDM_RENDER_COMMAND *hea
     return STATUS_INVALID_HANDLE;
 }
 
+/* Exactly once per counted reference: at retirement, or when the storage of a
+ * submission that never retired is freed. Returns whether anything retired. */
+__declspec(code_seg(".text"))
+static BOOLEAN RetireOwnerWrites(_Inout_ VIOGPU_WDDM_SUBMISSION *submission)
+{
+    BOOLEAN retired = FALSE;
+    for (UINT i = 0; submission->References != NULL && i < submission->AllocationCount; ++i)
+    {
+        auto &reference = submission->References[i];
+        if (!reference.OwnerWriteCounted)
+            continue;
+        reference.OwnerWriteCounted = FALSE;
+        InterlockedIncrement64(&reference.Allocation->OwnerWritesRetired);
+        retired = TRUE;
+    }
+    return retired;
+}
+
 VOID FreeRenderSubmissionStorage(_Inout_ VIOGPU_WDDM_SUBMISSION *submission)
 {
     if (submission == NULL)
@@ -1740,6 +1758,10 @@ VOID FreeRenderSubmissionStorage(_Inout_ VIOGPU_WDDM_SUBMISSION *submission)
         return;
     }
 
+    if (RetireOwnerWrites(submission) && submission->Adapter != NULL)
+    {
+        VioGpuWddmWakeNativeImportWaiters(submission->Adapter);
+    }
     delete[] submission->References;
     submission->References = NULL;
     UnpinNativeSubmitImports(submission);
@@ -1865,6 +1887,11 @@ NTSTATUS PublishPreparedSubmission(VIOGPU_WDDM_SUBMISSION *submission,
         submission->References[index].Length = reference->Length;
         submission->References[index].PatchOffset = reference->PatchOffset;
         submission->References[index].Reserved = 0;
+        if (deviceAllocation->Allocation->NativeExported && (reference->Flags & VIOGPU_WDDM_REFERENCE_WRITE) != 0)
+        {
+            InterlockedIncrement64(&deviceAllocation->Allocation->OwnerWritesRendered);
+            submission->References[index].OwnerWriteCounted = TRUE;
+        }
         ++submission->AllocationCount;
     }
 
@@ -2044,6 +2071,9 @@ BOOLEAN QuarantineSubmission(VIOGPU_WDDM_SUBMISSION *submission,
         return FALSE;
     }
 
+    /* Before the imports: their retirement wakes every import waiter, which
+     * then sees these owner writes retired too. */
+    (VOID) RetireOwnerWrites(submission);
     RetireNativeSubmitImports(submission, submission->ImportsGpuRetired);
 
     if (submission->DmaPrivateData != NULL && submission->DmaPrivateDataSize >= sizeof(VIOGPU_WDDM_KMD_DMA_PRIVATE))
@@ -4453,6 +4483,10 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
      * a flip that waits for zero covers writes VidSch has not dispatched yet;
      * ProducersIdle only sees admitted ones. Under g_VioGpuNativeAccessLock. */
     LONG PendingSurfaceWriters;
+    /* Owner writes to OwnerAllocation that the last VIOGPU_WDDM_NATIVE_PUBLISH
+     * handed to importers; an importer is admitted once they have retired.
+     * Under g_VioGpuNativeAccessLock. Zeroed when the share is rebound. */
+    LONG64 PublishedOwnerWrites;
     KEVENT ProducersIdle;
     KEVENT AccessChanged;
     BOOLEAN SurfaceResident;
@@ -5041,6 +5075,11 @@ NTSTATUS AdmitNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission)
             break;
         }
         if (!VioGpuNativeAhbCanAccess(&share->Access, access))
+            status = STATUS_PENDING;
+        /* Owner writes published before this import rendered must retire first:
+         * the owner published them without waiting (VIOGPU_WDDM_NATIVE_PUBLISH). */
+        if (!share->HostSurface && allocation != NULL && submission->ContextId != share->OwnerContextId &&
+            InterlockedCompareExchange64(&allocation->OwnerWritesRetired, 0, 0) < share->PublishedOwnerWrites)
             status = STATUS_PENDING;
         if ((access & VIOGPU_WDDM_REFERENCE_WRITE) != 0 && share->HostSurface &&
             !share->Access.PresentPending && share->Access.Sequence != share->Access.ReleasedSequence &&
@@ -6231,7 +6270,19 @@ static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
      * the context that owns it now, so an importer is never compared against a
      * previous owner. */
     share->OwnerContextId = snapshot->ContextId;
+    if (share->OwnerAllocation != ownerAllocation)
+    {
+        /* The published count belongs to the previous allocation's counters. */
+        KIRQL accessIrql;
+        KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &accessIrql);
+        share->PublishedOwnerWrites = 0;
+        KeReleaseSpinLock(&g_VioGpuNativeAccessLock, accessIrql);
+    }
     share->OwnerAllocation = ownerAllocation;
+    if (ownerAllocation != NULL)
+    {
+        ownerAllocation->NativeExported = TRUE;
+    }
     share->Size = length;
     request->ShareKey = share->Key;
     request->Size = share->Size;
@@ -7637,6 +7688,46 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
     return status;
 }
 
+/* An owner publishes its writes to a native share so far without waiting for
+ * them: importer submissions are admitted only after they retire. Adapter
+ * scoped, because the publishing runtime device holds no native context. A
+ * publish of someone else's share can only make its importers wait for writes
+ * that retire anyway, so no ownership check is needed for safety. */
+static NTSTATUS HandleNativePublishEscape(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+    static_assert(sizeof(VIOGPU_WDDM_NATIVE_PUBLISH) == 40, "native publish ABI width");
+    if (escape->hContext != NULL || escape->Flags.Value != 0)
+        return STATUS_INVALID_PARAMETER;
+    VIOGPU_WDDM_NATIVE_PUBLISH request = {};
+    __try
+    {
+        RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return STATUS_INVALID_USER_BUFFER;
+    }
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) || request.Opcode != VIOGPU_WDDM_ESCAPE_PUBLISH_NATIVE)
+        return STATUS_GRAPHICS_DRIVER_MISMATCH;
+    if (request.Flags != VIOGPU_WDDM_ESCAPE_FLAGS_NONE || request.ShareKey == 0 || request.Reserved != 0)
+        return STATUS_INVALID_PARAMETER;
+    if (!AcquireNativeShareRegistry(FALSE))
+        return STATUS_DEVICE_NOT_READY;
+    NTSTATUS status = STATUS_NOT_FOUND;
+    auto share = FindNativeShareByKeyLocked(adapter, request.ShareKey);
+    if (share != NULL && !share->HostSurface && share->OwnerAllocation != NULL)
+    {
+        KIRQL irql;
+        KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+        share->PublishedOwnerWrites = InterlockedCompareExchange64(&share->OwnerAllocation->OwnerWritesRendered, 0, 0);
+        KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+        status = STATUS_SUCCESS;
+    }
+    ReleaseNativeShareRegistry();
+    return status;
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter, CONST DXGKARG_ESCAPE *escape)
 {
     PAGED_CODE();
@@ -7676,6 +7767,22 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
     if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_NATIVE_SHARE))
     {
         return HandleNativeShareEscape(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
+    }
+    if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_NATIVE_PUBLISH) && escape->pPrivateDriverData != NULL)
+    {
+        /* Claim only a matching header and opcode; any other private escape of
+         * this size keeps reaching the display-only dispatcher below. */
+        VIOGPU_WDDM_NATIVE_PUBLISH probe = {};
+        __try
+        {
+            RtlCopyMemory(&probe, escape->pPrivateDriverData, sizeof(probe));
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return STATUS_INVALID_USER_BUFFER;
+        }
+        if (IsCurrentAbiHeader(&probe.Header, sizeof(probe)) && probe.Opcode == VIOGPU_WDDM_ESCAPE_PUBLISH_NATIVE)
+            return HandleNativePublishEscape(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
     }
     if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_NATIVE_SURFACE))
     {

@@ -24,7 +24,7 @@
 #define FALSE false
 #define NT_SUCCESS(x) ((x)>=0)
 #define DbgPrintEx(...) ((void)0)
-using UINT=unsigned; using ULONG=unsigned; using LONG=int; using ULONGLONG=unsigned long long;
+using UINT=unsigned; using ULONG=unsigned; using LONG=int; using ULONGLONG=unsigned long long; using LONG64=long long;
 using BOOLEAN=bool; using VOID=void; using BYTE=unsigned char; using PVOID=void*;
 using PEPROCESS=void*; using NTSTATUS=int; using SIZE_T=std::size_t;
 using ULONG_PTR=uintptr_t;
@@ -47,6 +47,10 @@ LONG InterlockedCompareExchange(volatile LONG *p,LONG value,LONG old) {
     LONG before=*p; if(before==old) *p=value; return before;
 }
 LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }
+LONG64 InterlockedIncrement64(volatile LONG64 *p) { return ++*p; }
+LONG64 InterlockedCompareExchange64(volatile LONG64 *p,LONG64 value,LONG64 old) {
+    LONG64 before=*p; if(before==old) *p=value; return before;
+}
 LONG InterlockedDecrement(volatile LONG *p) { return --*p; }
 LONG InterlockedExchange(volatile LONG *p,LONG v) { LONG old=*p; *p=v; return old; }
 struct LIST_ENTRY { LIST_ENTRY *Flink,*Blink; };
@@ -79,6 +83,7 @@ struct VIOGPU_WDDM_ALLOCATION {
     UINT ResourceId{},Signature{},Width{},Height{},Pitch{}; VioGpuDod *Adapter{};
     ULONGLONG ShareKey{},Resource2DResetGeneration{},PlacementOffset{};
     SIZE_T BackingSize{}; int LifecycleMutex{};
+    bool NativeExported{}; volatile LONG64 OwnerWritesRendered{},OwnerWritesRetired{};
 };
 struct VIOGPU_WDDM_OPEN_ALLOCATION {
     UINT Signature{}; VIOGPU_WDDM_DEVICE *Device{}; VIOGPU_WDDM_ALLOCATION *Allocation{}; bool ReadOnly{};
@@ -311,6 +316,36 @@ int main() {
     assert(PinNativeSubmitImports(&rejected,&p.header)==0);
     assert(AdmitNativeSubmitImports(&rejected)==STATUS_DEVICE_NOT_READY); finish(rejected,false);
     assert(share.SubmissionReferences==0 && entry.SubmissionReferences==0);
+    // An owner publishes a native share without waiting for its writes: an
+    // importer on another context is admitted only once they have retired.
+    {
+        VIOGPU_WDDM_ALLOCATION owner{};
+        owner.Signature=VIOGPU_WDDM_ALLOCATION_SIGNATURE; owner.Adapter=&adapter; owner.NativeExported=true;
+        owner.PrivateData.Size=0x4000; owner.ResourceId=31;
+        VIOGPU_WDDM_NATIVE_SHARE_ENTRY owned{};
+        owned.Adapter=&adapter; owned.Key=21; owned.ResourceId=31; owned.Size=0x4000;
+        owned.OwnerContextId=77; owned.OwnerAllocation=&owner;
+        InsertTailList(&g_VioGpuNativeShares,&owned.Link);
+        VIOGPU_WDDM_NATIVE_IMPORT_ENTRY imported{};
+        imported.Adapter=&adapter; imported.Context=&other; imported.Key=21; imported.Iova=0x20000;
+        imported.Size=0x4000; imported.ResetGeneration=7; imported.ResourceId=31;
+        InsertTailList(&g_VioGpuNativeImports,&imported.Link);
+        Packet r=make_packet(); r.refs[0]={21,0x20000,0x4000,7,1,0};
+        owner.OwnerWritesRendered=3; owned.PublishedOwnerWrites=3; owner.OwnerWritesRetired=2;
+        auto reader=make_submit(adapter,other,40); link_submit(reader);
+        assert(PinNativeSubmitImports(&reader,&r.header)==0 && owner.Pins==1);
+        assert(AdmitNativeSubmitImports(&reader)==STATUS_PENDING && reader.ImportWaiting);
+        owner.OwnerWritesRetired=3;
+        assert(AdmitNativeSubmitImports(&reader)==0);
+        finish(reader,true);
+        // Later writes than the publish never hold the importer.
+        owner.OwnerWritesRendered=9;
+        auto later=make_submit(adapter,other,41); link_submit(later);
+        assert(PinNativeSubmitImports(&later,&r.header)==0);
+        assert(AdmitNativeSubmitImports(&later)==0); finish(later,true);
+        RemoveEntryList(&imported.Link); RemoveEntryList(&owned.Link);
+        assert(owner.Pins==0);
+    }
     // Repacking adds authenticated resources, preserves owned IB indices/data.
     share.Access={}; auto packed=make_submit(adapter,context,7); link_submit(packed);
     assert(PinNativeSubmitImports(&packed,&p.header)==0);

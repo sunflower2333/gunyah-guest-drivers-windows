@@ -27,6 +27,7 @@ using UINT = unsigned int;
 using SIZE_T = std::size_t;
 using ULONG = unsigned int;
 using LONG = int;
+using LONG64 = long long;
 using KEVENT = bool;
 constexpr int NotificationEvent = 0;
 void KeInitializeEvent(KEVENT *event, int, bool value) { *event=value; }

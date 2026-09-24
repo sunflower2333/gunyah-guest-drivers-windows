@@ -62,6 +62,7 @@ typedef enum VIOGPU_WDDM_ESCAPE_OPCODE
     VIOGPU_WDDM_ESCAPE_ALLOCATE_NATIVE_SURFACE = 8,
     VIOGPU_WDDM_ESCAPE_FREE_NATIVE_SURFACE = 9,
     VIOGPU_WDDM_ESCAPE_QUERY_NATIVE_SURFACE_RESOURCE = 10,
+    VIOGPU_WDDM_ESCAPE_PUBLISH_NATIVE = 11,
 } VIOGPU_WDDM_ESCAPE_OPCODE;
 
 #pragma pack(push, 4)
@@ -149,6 +150,20 @@ typedef struct VIOGPU_WDDM_FENCE_INFO
     VIOGPU_WDDM_UINT32 ContextId;
     VIOGPU_WDDM_UINT32 Reserved;
 } VIOGPU_WDDM_FENCE_INFO;
+
+/* Additive owner publication of a native share; old KMDs reject this distinct
+ * size (40 bytes), and the owner then waits on the CPU as before. Adapter
+ * scoped: it names no context. The KMD snapshots the owner's writes to the
+ * shared allocation rendered so far; an importer submission is admitted only
+ * once those have retired, so the owner need not wait for them itself. */
+typedef struct VIOGPU_WDDM_NATIVE_PUBLISH
+{
+    VIOGPU_WDDM_ABI_HEADER Header;
+    VIOGPU_WDDM_UINT32 Opcode;
+    VIOGPU_WDDM_UINT32 Flags;
+    VIOGPU_WDDM_UINT64 ShareKey;
+    VIOGPU_WDDM_UINT64 Reserved;
+} VIOGPU_WDDM_NATIVE_PUBLISH;
 
 /* Additive context escape. Existing ABI v0 buffers and adapter capability bits
  * stay unchanged. A successful real read is the support probe; old KMDs reject

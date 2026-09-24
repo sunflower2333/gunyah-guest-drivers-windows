@@ -47,6 +47,7 @@ fixture = (here / 'ownership_test.cpp').read_text().replace('// INSERT_STRUCTS',
 variants = [('production', production)]
 for name, old, new in [
     ('forged-iova', 'candidate->Iova == ref.Iova', 'true'),
+    ('importer-before-published-writes', 'InterlockedCompareExchange64(&allocation->OwnerWritesRetired, 0, 0) < share->PublishedOwnerWrites', 'false'),
     ('present-before-rendered-write', 'if (share->PendingSurfaceWriters == 0)', 'if (true)'),
     ('pending-writer-double-release', 'if (!import->PendingWriterCounted)\n        return;', 'if (false)\n        return;'),
     ('early-retirement', 'submission->ImportsHostIssued && !confirmed', 'false'),

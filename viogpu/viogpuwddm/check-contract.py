@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58589",
+        "$minor = 58590",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58589",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58590",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -8508,6 +8508,13 @@ def check_wddm_private_abi(root: ET.Element) -> None:
             VIOGPU_WDDM_UINT64 ResetGeneration;
             VIOGPU_WDDM_UINT32 Access;
             VIOGPU_WDDM_UINT32 Reserved;
+        """,
+        "VIOGPU_WDDM_NATIVE_PUBLISH": """
+            VIOGPU_WDDM_ABI_HEADER Header;
+            VIOGPU_WDDM_UINT32 Opcode;
+            VIOGPU_WDDM_UINT32 Flags;
+            VIOGPU_WDDM_UINT64 ShareKey;
+            VIOGPU_WDDM_UINT64 Reserved;
         """,
     }
     declared_structs = re.findall(
