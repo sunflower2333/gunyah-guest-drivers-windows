@@ -8005,6 +8005,12 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &flipDiagnostics[18]},
                                                                                                         {L"NativeHostSurfaceControlPolls",
                                                                                                          &flipDiagnostics[19]},
+                                                                                                        {L"NativeSurfaceWriterVidSchOver2ms",
+                                                                                                         &flipDiagnostics[20]},
+                                                                                                        {L"NativeSurfaceWriterDispatchOver1ms",
+                                                                                                         &flipDiagnostics[21]},
+                                                                                                        {L"NativeSurfaceWriterRetireOver2ms",
+                                                                                                         &flipDiagnostics[22]},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPre"
                                                                                                          L"s"

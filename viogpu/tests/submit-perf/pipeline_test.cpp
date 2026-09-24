@@ -168,6 +168,14 @@ struct VIOGPU_WDDM_CONTEXT
     UINT NodeOrdinal = 0;
     int ImportSubmitMutex=0;
 };
+typedef long long LONGLONG;
+enum : unsigned { VioGpuSurfaceWriterDispatchOver1ms = 113 };
+union LARGE_INTEGER { LONGLONG QuadPart; };
+inline LARGE_INTEGER KeQueryPerformanceCounter(LARGE_INTEGER *frequency)
+{
+    if (frequency) frequency->QuadPart = 10000000;
+    return LARGE_INTEGER{0};
+}
 struct VioGpuDod
 {
     KSPIN_LOCK m_NativePassiveLock;
@@ -212,6 +220,7 @@ struct VioGpuDod
     BOOLEAN NativePassiveDispatchReadyLocked(VIOGPU_NATIVE_PASSIVE_WORK *incoming = nullptr);
     BOOLEAN NativePassiveIdleLocked();
     VOID ReleaseNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *);
+    VOID CountDisplayEvent(unsigned) {}
     VOID CompleteNativePassiveWork(VIOGPU_NATIVE_PASSIVE_WORK *);
     VIOGPU_NATIVE_PASSIVE_WORK_OWNERSHIP CancelNativePassiveWork(VIOGPU_NATIVE_PASSIVE_WORK *);
     VOID CloseNativePassiveQueue();
@@ -257,6 +266,7 @@ struct VIOGPU_WDDM_SUBMISSION
     int refs = 2;
     bool registry = true;
     bool ImportsHostIssued=false;
+    LONGLONG WriterEngineTicks = 0, WriterIssueTicks = 0;
 };
 std::unordered_set<VIOGPU_WDDM_SUBMISSION *> live;
 bool ReferenceRenderSubmission(VIOGPU_WDDM_SUBMISSION *s)

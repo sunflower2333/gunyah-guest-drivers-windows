@@ -537,6 +537,11 @@ struct VIOGPU_WDDM_SUBMISSION
     BOOLEAN ImportsGpuRetired;
     BOOLEAN ImportsHostIssued;
     UINT HostCommandStreamSize;
+    /* QPC stamps of a submission that writes a HostSurface, whose flip waits
+     * for it: DxgkDdiRender, SubmitCommand, host issue. Zero otherwise. */
+    LONGLONG WriterRenderTicks;
+    LONGLONG WriterEngineTicks;
+    LONGLONG WriterIssueTicks;
 };
 
 struct VIOGPU_WDDM_SUBMISSION_IMPORT

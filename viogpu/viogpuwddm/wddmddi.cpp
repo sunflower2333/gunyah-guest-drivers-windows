@@ -2427,6 +2427,13 @@ VOID QueueAdmittedNativeSubmission(VIOGPU_WDDM_SUBMISSION *submission)
     if (bindingStatus == STATUS_SUCCESS && RepackNativeSubmitImports(submission))
     {
         submission->ImportsHostIssued = TRUE;
+        if (submission->WriterEngineTicks != 0)
+        {
+            LARGE_INTEGER frequency;
+            submission->WriterIssueTicks = KeQueryPerformanceCounter(&frequency).QuadPart;
+            if (submission->WriterIssueTicks - submission->WriterEngineTicks > frequency.QuadPart / 1000)
+                adapter->CountDisplayEvent(VioGpuSurfaceWriterDispatchOver1ms);
+        }
         queueResult = adapter->QueueNativeSubmit(submission->VirtioBuffer, fenceId);
         if (queueResult < 0)
             submission->ImportsHostIssued = FALSE;
@@ -4946,6 +4953,7 @@ NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU
             ++share->PendingSurfaceWriters;
             KeReleaseSpinLock(&g_VioGpuNativeAccessLock, accessIrql);
             submission->Imports[i].PendingWriterCounted = TRUE;
+            submission->WriterRenderTicks = KeQueryPerformanceCounter(NULL).QuadPart;
         }
         ++submission->ImportCount;
     }
@@ -5129,6 +5137,14 @@ VOID RetireNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, BOOLEAN confi
 {
     if (InterlockedCompareExchange(&g_VioGpuNativeShareState, 0, 0) != VioGpuNativeShareRegistryReady)
         return;
+    if (submission->WriterIssueTicks != 0 && submission->Adapter != NULL)
+    {
+        LARGE_INTEGER frequency;
+        const LONGLONG now = KeQueryPerformanceCounter(&frequency).QuadPart;
+        if (now - submission->WriterIssueTicks > frequency.QuadPart * 2 / 1000)
+            submission->Adapter->CountDisplayEvent(VioGpuSurfaceWriterRetireOver2ms);
+        submission->WriterIssueTicks = 0;
+    }
     BOOLEAN releaseWaitReference = FALSE;
     KIRQL irql;
     KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
@@ -13293,6 +13309,13 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmSubmitCommand(CONST HANDLE hA
                                                   VioGpuWddmSubmissionEngineQueued,
                                                   VioGpuWddmSubmissionSubmitClaimed) ==
                        VioGpuWddmSubmissionSubmitClaimed;
+        if (engineQueued && submission->WriterRenderTicks != 0)
+        {
+            LARGE_INTEGER frequency;
+            submission->WriterEngineTicks = KeQueryPerformanceCounter(&frequency).QuadPart;
+            if (submission->WriterEngineTicks - submission->WriterRenderTicks > frequency.QuadPart * 2 / 1000)
+                adapter->CountDisplayEvent(VioGpuSurfaceWriterVidSchOver2ms);
+        }
         if (!engineQueued)
         {
             status = STATUS_DEVICE_NOT_READY;

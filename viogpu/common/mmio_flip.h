@@ -221,5 +221,11 @@ enum : unsigned
     /* Control-queue drains a HostSurface flip requested itself while its host
      * answer had not yet arrived by interrupt. */
     VioGpuHostSurfaceControlPolls = 111,
-    VioGpuDisplayCounterCount = 112,
+    /* Where a HostSurface write the flip waits on spends its time: VidSch
+     * (DxgkDdiRender to SubmitCommand), our dispatch (to host issue), and
+     * host execution plus fence delivery (to retirement). */
+    VioGpuSurfaceWriterVidSchOver2ms = 112,
+    VioGpuSurfaceWriterDispatchOver1ms = 113,
+    VioGpuSurfaceWriterRetireOver2ms = 114,
+    VioGpuDisplayCounterCount = 115,
 };
