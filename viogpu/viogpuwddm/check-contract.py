@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58582",
+        "$minor = 58583",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58582",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58583",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -5408,6 +5408,9 @@ def check_mmio_flip_contract(native_caps: str) -> None:
             fail(f"the DIRQL flip half must validate and publish exactly once: {fragment}")
     if queue.find("VioGpuValidateFlipTarget(target)") > queue.find("adapter->PublishPendingFlip("):
         fail("the DIRQL flip half must validate before publishing")
+    kick = "if(allocation!=NULL&&allocation->HostSurface){adapter->KickPendingFlip();}"
+    if queue.count(kick) != 1 or queue.find(kick) < queue.find("adapter->PublishPendingFlip("):
+        fail("a published HostSurface flip must wake the display worker, not wait for the next guest vsync")
     for forbidden in ("KeWaitForSingleObject", "KeAcquireSpinLock", "AcquireAllocationLifecycle", "Set2DScanout",
                       "Flush2DResource", "AcquireFlipApply", "IsOwnedAllocation", "ExAcquireRundownProtection"):
         if forbidden in queue:

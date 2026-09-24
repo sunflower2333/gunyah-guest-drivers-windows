@@ -13617,6 +13617,10 @@ static NTSTATUS QueueMmioFlip(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_SETVID
     adapter->ClearColorPresentCompletion();
 #endif
     adapter->PublishPendingFlip(setVidPnSourceAddress->hAllocation);
+    if (allocation != NULL && allocation->HostSurface)
+    {
+        adapter->KickPendingFlip();
+    }
     return STATUS_SUCCESS;
 }
 

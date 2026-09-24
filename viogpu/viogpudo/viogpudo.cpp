@@ -155,6 +155,20 @@ static BOOLEAN VioGpuNotifyNativeSchedulerAtDirql(_In_opt_ PVOID context)
 }
 #endif
 
+static VOID VioGpuFlipKickDpcRoutine(_In_ PKDPC dpc, _In_opt_ PVOID context, _In_opt_ PVOID argument1,
+                                     _In_opt_ PVOID argument2)
+{
+    UNREFERENCED_PARAMETER(dpc);
+    UNREFERENCED_PARAMETER(argument1);
+    UNREFERENCED_PARAMETER(argument2);
+
+    VioGpuDod *dod = static_cast<VioGpuDod *>(context);
+    if (dod != NULL)
+    {
+        dod->RunFlipKick();
+    }
+}
+
 static VOID VioGpuCrtcVsyncDpcRoutine(_In_ PEX_TIMER timer, _In_opt_ PVOID context)
 {
     UNREFERENCED_PARAMETER(timer);
@@ -270,6 +284,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_ChildDescriptorMode = VioGpuDefaultChildDescriptorMode(DXGKDDI_INTERFACE_VERSION >=
                                                              DXGKDDI_INTERFACE_VERSION_WDDM2_0);
     m_PendingFlipAllocation = NULL;
+    KeInitializeDpc(&m_FlipKickDpc, VioGpuFlipKickDpcRoutine, this);
     KeInitializeMutex(&m_FlipApplyMutex, 0);
     m_NativeFenceHead = 0;
     m_NativeFenceCount = 0;
@@ -335,6 +350,7 @@ VioGpuDod::~VioGpuDod(void)
     /* A queued vsync DPC must not outlive the adapter it notifies. */
     InterlockedExchange(&m_CrtcVsyncEnabled, 0);
     DisarmCrtcVsyncTimer();
+    CancelFlipKick();
     if (!m_HardwareRundownCompleted)
     {
         ExWaitForRundownProtectionRelease(&m_HardwareOperations);
@@ -729,6 +745,7 @@ NTSTATUS VioGpuDod::StopDevice(VOID)
     InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
     InterlockedExchange(&m_CrtcVsyncEnabled, 0);
     DisarmCrtcVsyncTimer();
+    CancelFlipKick();
 #if defined(VIOGPU_NATIVE_CONTEXT)
     RequestWddmSubmissionDrainAtAnyIrql();
     if (!WaitForWddmSubmissionDrain())
@@ -1259,6 +1276,31 @@ VOID VioGpuDod::PublishPendingFlip(_In_ PVOID allocation)
 BOOLEAN VioGpuDod::HasPendingFlip(void)
 {
     return InterlockedCompareExchangePointer(&m_PendingFlipAllocation, NULL, NULL) != NULL;
+}
+
+VOID VioGpuDod::KickPendingFlip(void)
+{
+    (VOID) KeInsertQueueDpc(&m_FlipKickDpc, NULL, NULL);
+}
+
+VOID VioGpuDod::RunFlipKick(void)
+{
+    if (!IsHardwareInterruptDispatchAllowed())
+    {
+        return;
+    }
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (adapter != NULL)
+    {
+        adapter->RequestScanoutRefresh();
+    }
+}
+
+VOID VioGpuDod::CancelFlipKick(void)
+{
+    /* A queued kick must not outlive the adapter whose worker it wakes. */
+    (VOID) KeRemoveQueueDpc(&m_FlipKickDpc);
+    KeFlushQueuedDpcs();
 }
 
 VOID VioGpuDod::AcquireFlipApply(void)

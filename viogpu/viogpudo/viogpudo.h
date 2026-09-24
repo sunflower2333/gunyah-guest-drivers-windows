@@ -1471,6 +1471,8 @@ class VioGpuDod
      * under m_FlipApplyMutex, and primary destroy drains the slot under the
      * same mutex, so a published pointer is never used after it is freed. */
     volatile PVOID m_PendingFlipAllocation;
+    /* Wakes the display worker as soon as a HostSurface flip is published. */
+    KDPC m_FlipKickDpc;
     KMUTEX m_FlipApplyMutex;
     KSPIN_LOCK m_NativeFenceLock;
     volatile LONG m_NativeFenceEpoch;
@@ -1692,6 +1694,11 @@ class VioGpuDod
     // Any IRQL up to DIRQL.
     __declspec(noinline) __declspec(code_seg(".text")) VOID PublishPendingFlip(_In_ PVOID allocation);
     __declspec(noinline) __declspec(code_seg(".text")) BOOLEAN HasPendingFlip(void);
+    /* Any IRQL. A HostSurface flip holds finished pixels; binding it at the
+     * next guest vsync instead cost a whole frame at 165 Hz. */
+    __declspec(noinline) __declspec(code_seg(".text")) VOID KickPendingFlip(void);
+    __declspec(noinline) __declspec(code_seg(".text")) VOID RunFlipKick(void);
+    VOID CancelFlipKick(void);
     // PASSIVE_LEVEL. Take returns the published primary with the mutex held.
     VOID AcquireFlipApply(void);
     VOID ReleaseFlipApply(void);
