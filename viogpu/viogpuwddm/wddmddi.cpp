@@ -4448,6 +4448,11 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
     volatile LONG SubmissionReferences;
     volatile LONG AsyncReferences;
     VIOGPU_NATIVE_AHB_ACCESS Access;
+    /* HostSurface writes rendered but not yet retired, counted from
+     * DxgkDdiRender. Render runs on the presenting thread before its flip, so
+     * a flip that waits for zero covers writes VidSch has not dispatched yet;
+     * ProducersIdle only sees admitted ones. Under g_VioGpuNativeAccessLock. */
+    LONG PendingSurfaceWriters;
     KEVENT ProducersIdle;
     KEVENT AccessChanged;
     BOOLEAN SurfaceResident;
@@ -4900,15 +4905,44 @@ NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU
         submission->Imports[i].Share = share;
         submission->Imports[i].Import = entry;
         submission->Imports[i].OwnerAllocation = pinnedAllocation;
+        if (share->HostSurface && (ref.Access & VIOGPU_WDDM_REFERENCE_WRITE) != 0)
+        {
+            KIRQL accessIrql;
+            KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &accessIrql);
+            ++share->PendingSurfaceWriters;
+            KeReleaseSpinLock(&g_VioGpuNativeAccessLock, accessIrql);
+            submission->Imports[i].PendingWriterCounted = TRUE;
+        }
         ++submission->ImportCount;
     }
     ReleaseNativeShareRegistry();
     return status;
 }
 
+/* Exactly once per counted import: at retirement, or at unpin when the
+ * submission never retired. Caller holds g_VioGpuNativeAccessLock. */
+__declspec(code_seg(".text"))
+static VOID ReleasePendingSurfaceWriterLocked(_Inout_ VIOGPU_WDDM_SUBMISSION_IMPORT *import)
+{
+    if (!import->PendingWriterCounted)
+        return;
+    import->PendingWriterCounted = FALSE;
+    auto share = static_cast<VIOGPU_WDDM_NATIVE_SHARE_ENTRY *>(import->Share);
+    if (--share->PendingSurfaceWriters == 0)
+        KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
+}
+
 __declspec(code_seg(".text"))
 VOID UnpinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission)
 {
+    if (submission->ImportCount != 0)
+    {
+        KIRQL irql;
+        KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+        for (UINT i = 0; i < submission->ImportCount; ++i)
+            ReleasePendingSurfaceWriterLocked(&submission->Imports[i]);
+        KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+    }
     for (UINT i = 0; i < submission->ImportCount; ++i)
     {
         auto entry = static_cast<VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *>(submission->Imports[i].Import);
@@ -5059,6 +5093,8 @@ VOID RetireNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, BOOLEAN confi
     BOOLEAN releaseWaitReference = FALSE;
     KIRQL irql;
     KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+    for (UINT i = 0; i < submission->ImportCount; ++i)
+        ReleasePendingSurfaceWriterLocked(&submission->Imports[i]);
     if (submission->ImportWaiting)
     {
         RemoveEntryList(&submission->ImportWaitLink);
@@ -5424,6 +5460,7 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
     for (;;)
     {
         BOOLEAN queueWait = FALSE;
+        BOOLEAN writersPending = FALSE;
         ULONGLONG sequence = 0;
         KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
         KeClearEvent(&share->AccessChanged);
@@ -5437,8 +5474,18 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
         }
         else if (usable && !held && !share->Access.WaitPending)
         {
-            share->Access.PresentPending = true;
-            reserved = TRUE;
+            /* A write rendered before this flip may still wait in VidSch.
+             * Reserving would refuse its admission (PresentPending), so let
+             * it retire first; its retirement signals AccessChanged. */
+            if (share->PendingSurfaceWriters == 0)
+            {
+                share->Access.PresentPending = true;
+                reserved = TRUE;
+            }
+            else
+            {
+                writersPending = TRUE;
+            }
         }
         else if (usable && held && !share->Access.WaitPending)
         {
@@ -5451,7 +5498,7 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
         if (queueWait && !adapter->QueueNativeAhbOperation(share->ResourceId, share->SurfaceResetGeneration,
                                                           sequence, FALSE, NativeAhbReleaseObserved, share))
             NativeAhbReleaseObserved(share, VioGpuHostContextNotSubmitted, share->ResourceId, sequence);
-        if (!usable || front || reserved || status != STATUS_SUCCESS || (!queueWait && !held))
+        if (!usable || front || reserved || status != STATUS_SUCCESS || (!queueWait && !held && !writersPending))
             break;
         status = KeWaitForSingleObject(&share->AccessChanged, Executive, KernelMode, FALSE, &timeout);
     }

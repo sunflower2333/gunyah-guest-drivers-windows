@@ -37,6 +37,7 @@ VIOGPU_HOST_SURFACE_PAGING_FAILURE g_VioGpuHostSurfacePagingFailure;'''
 production = '\n'.join(definition(n) for n in
     ['FindNativeShareByKeyLocked', 'RecordNativePoisonLocked', 'NativeAhbReleaseObserved',
      'ResolveKeyedHostSurfaceAllocation', 'ResolveHostImportAllocation', 'PinNativeSubmitImports',
+     'ReleasePendingSurfaceWriterLocked',
      'UnpinNativeSubmitImports', 'AdmitNativeSubmitImports', 'RetireNativeSubmitImports',
      'RepackNativeSubmitImports', 'PublishStandardPlacement', 'ClearNativePlacement', 'ExecuteHostSurfacePaging',
      'NativeAhbPresentAccepted', 'PresentHostSurface', 'PresentResidentHostSurface'])
@@ -46,6 +47,8 @@ fixture = (here / 'ownership_test.cpp').read_text().replace('// INSERT_STRUCTS',
 variants = [('production', production)]
 for name, old, new in [
     ('forged-iova', 'candidate->Iova == ref.Iova', 'true'),
+    ('present-before-rendered-write', 'if (share->PendingSurfaceWriters == 0)', 'if (true)'),
+    ('pending-writer-double-release', 'if (!import->PendingWriterCounted)\n        return;', 'if (false)\n        return;'),
     ('early-retirement', 'submission->ImportsHostIssued && !confirmed', 'false'),
     ('sequence-release', 'share->Access.ReleasedSequence = sequence;', 'share->Access.ReleasedSequence = 0;'),
     ('present-deadlock', 'InterlockedCompareExchange(&work->DisplayReleaseWait, 0, 0) == 0', '(work != nullptr)'),

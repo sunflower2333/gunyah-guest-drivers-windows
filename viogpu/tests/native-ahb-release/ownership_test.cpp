@@ -122,6 +122,7 @@ struct VIOGPU_WDDM_CONTEXT_SUBMISSION_ENTRY { LIST_ENTRY Link; int Kind; PVOID O
 struct VIOGPU_WDDM_SUBMISSION_IMPORT {
     VIOGPU_WDDM_IMPORTED_REFERENCE Reference; PVOID Share,Import;
     VIOGPU_WDDM_ALLOCATION *OwnerAllocation;
+    BOOLEAN PendingWriterCounted;
 };
 struct VIOGPU_WDDM_SUBMISSION {
     VioGpuDod *Adapter{}; VIOGPU_WDDM_CONTEXT *Context{};
@@ -411,6 +412,27 @@ int main() {
     assert(adapter.scanouts==beforePresent+2 && share.Access.ReleasedSequence==shown);
     assert(share.Access.Sequence!=shown && !share.Access.Poisoned && !adapter.reset && !share.AsyncReferences);
     share.Access.Sequence=share.Access.ReleasedSequence=0;
+    // A write rendered before its flip can still wait in VidSch, unadmitted.
+    // The flip must not reserve (that would refuse its admission) nor present
+    // before it retires.
+    {
+        auto late=make_submit(adapter,context,40); link_submit(late);
+        Packet w=make_packet(); w.refs[0].Size=bytes; entry.Size=bytes;
+        assert(PinNativeSubmitImports(&late,&w.header)==0 && share.PendingSurfaceWriters==1);
+        const auto beforeWrite=adapter.scanouts;
+        bool retiredFirst=false;
+        onWait=[&] {
+            assert(!share.Access.PresentPending && adapter.scanouts==beforeWrite);
+            finish(late,true); retiredFirst=true;
+        };
+        assert(PresentResidentHostSurface(&adapter,&wrapper,tx.PlacementOffset,false)==0);
+        assert(retiredFirst && adapter.scanouts==beforeWrite+1 && share.PendingSurfaceWriters==0);
+        assert(!share.Access.Poisoned && !adapter.reset && !share.AsyncReferences);
+        // Unpin after retirement releases nothing twice.
+        UnpinNativeSubmitImports(&late);
+        assert(share.PendingSurfaceWriters==0);
+        share.Access.Sequence=share.Access.ReleasedSequence=0; entry.Size=0x4000;
+    }
     const UINT beforeDiscard=adapter.pagingCalls;
     tx.Flags=VioGpuWddmPagingFlagDiscard; tx.TransferSize=0; tx.TransferAddress=nullptr;
     assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && adapter.pagingCalls==beforeDiscard);

@@ -536,6 +536,8 @@ struct VIOGPU_WDDM_SUBMISSION_IMPORT
     PVOID Share;
     PVOID Import;
     VIOGPU_WDDM_ALLOCATION *OwnerAllocation;
+    /* Counted in the share's PendingSurfaceWriters from Render until retire. */
+    BOOLEAN PendingWriterCounted;
 };
 
 VOID VioGpuWddmWakeNativeImportWaiters(VioGpuDod *adapter);
