@@ -1654,6 +1654,9 @@ class VioGpuDod
     LONGLONG m_CrtcNextDueTicks;
     volatile LONG m_CrtcVsyncTimerArmed;
     volatile LONG m_CrtcVsyncDeliveredCount;
+    /* QPC of the last vsync reported to dxgkrnl; a flip published late in the
+     * frame is DWM's lateness, not the flip path's. */
+    volatile LONG64 m_CrtcLastVsyncTicks;
     volatile LONG64 m_CrtcVsyncPrimaryAddress;
     /* Zero when no preemption is outstanding.  Only one may be in flight per
      * engine: dxgkrnl does not issue a second until the first is reported. */

@@ -209,5 +209,14 @@ enum : unsigned
     VioGpuFlipLastSlowAcceptUsec = 103,
     VioGpuFlipLastSlowTotalUsec = 104,
     VioGpuFlipLatencyMaxUsec = 105,
-    VioGpuDisplayCounterCount = 106,
+    /* A slow host accept split into the host answer reaching the guest
+     * callback (delivery) and the waiting worker running again (wake). */
+    VioGpuHostSurfaceAcceptSlowDelivery = 106,
+    VioGpuHostSurfaceAcceptSlowWake = 107,
+    VioGpuHostSurfaceLastSlowDeliveryUsec = 108,
+    VioGpuHostSurfaceLastSlowWakeUsec = 109,
+    /* MMIO flips published more than 4 ms after the last vsync: the
+     * compositor itself was late, whatever the flip path then took. */
+    VioGpuFlipArrivalOver4ms = 110,
+    VioGpuDisplayCounterCount = 111,
 };

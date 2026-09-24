@@ -5178,6 +5178,9 @@ struct VIOGPU_NATIVE_AHB_PRESENT_COMPLETION
     KEVENT Event;
     VIOGPU_HOST_CONTEXT_RESULT Result;
     VIOGPU_WDDM_NATIVE_SHARE_ENTRY *Share;
+    /* QPC when the host answer reached the guest, to split a slow accept
+     * into delivery and waiter wake-up. */
+    volatile LONG64 CallbackTicks;
 };
 
 __declspec(code_seg(".text"))
@@ -5185,6 +5188,7 @@ static VOID NativeAhbPresentAccepted(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT re
                                      UINT resourceId, ULONGLONG sequence)
 {
     auto pending = static_cast<VIOGPU_NATIVE_AHB_PRESENT_COMPLETION *>(opaque);
+    InterlockedExchange64(&pending->CallbackTicks, KeQueryPerformanceCounter(NULL).QuadPart);
     auto share = pending->Share;
     KIRQL irql;
     KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
@@ -5618,16 +5622,31 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
             pending->References = 2;
             pending->Result = VioGpuHostContextUnknown;
             pending->Share = share;
+            pending->CallbackTicks = 0;
             KeInitializeEvent(&pending->Event, NotificationEvent, FALSE);
             InterlockedIncrement(&share->AsyncReferences);
             if (!adapter->QueueNativeAhbOperation(share->ResourceId, share->SurfaceResetGeneration, 0, TRUE,
                                                   NativeAhbPresentAccepted, pending))
                 NativeAhbPresentAccepted(pending, VioGpuHostContextNotSubmitted, share->ResourceId, 0);
             status = KeWaitForSingleObject(&pending->Event, Executive, KernelMode, FALSE, &timeout);
-            phaseUsec = FlipTicksToUsec(KeQueryPerformanceCounter(NULL).QuadPart - phaseEnd, phaseFrequency.QuadPart);
+            const LONGLONG wokeTicks = KeQueryPerformanceCounter(NULL).QuadPart;
+            phaseUsec = FlipTicksToUsec(wokeTicks - phaseEnd, phaseFrequency.QuadPart);
             InterlockedExchange(&g_VioGpuHostSurfacePhaseUsec[2], phaseUsec);
             if (phaseUsec > 2000)
+            {
+                /* Delivery: host answer to the guest callback. Wake: callback
+                 * to this thread running again. */
+                const LONGLONG callbackTicks = InterlockedCompareExchange64(&pending->CallbackTicks, 0, 0);
+                const LONG deliveryUsec = callbackTicks != 0
+                                              ? FlipTicksToUsec(callbackTicks - phaseEnd, phaseFrequency.QuadPart) : -1;
+                const LONG wakeUsec = callbackTicks != 0
+                                          ? FlipTicksToUsec(wokeTicks - callbackTicks, phaseFrequency.QuadPart) : -1;
                 adapter->CountDisplayEvent(VioGpuHostSurfaceAcceptOver2ms);
+                adapter->CountDisplayEvent(deliveryUsec > wakeUsec ? VioGpuHostSurfaceAcceptSlowDelivery
+                                                                   : VioGpuHostSurfaceAcceptSlowWake);
+                adapter->RecordDisplayValue(VioGpuHostSurfaceLastSlowDeliveryUsec, deliveryUsec);
+                adapter->RecordDisplayValue(VioGpuHostSurfaceLastSlowWakeUsec, wakeUsec);
+            }
             if (status != STATUS_SUCCESS || pending->Result != VioGpuHostContextConfirmed)
             {
                 presentStage = status != STATUS_SUCCESS ? 4 : 5;

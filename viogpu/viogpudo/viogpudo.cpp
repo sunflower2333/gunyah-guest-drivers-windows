@@ -193,6 +193,7 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     RtlZeroMemory(&m_DxgkInterface, sizeof(m_DxgkInterface));
     InterlockedExchange(&m_CrtcVsyncTimerArmed, 0);
     InterlockedExchange(&m_CrtcVsyncDeliveredCount, 0);
+    InterlockedExchange64(&m_CrtcLastVsyncTicks, 0);
     InterlockedExchange(&m_NativePendingPreemptionFence, 0);
     InterlockedExchange(&m_NativePreemptDeferredCount, 0);
     InterlockedExchange(&m_NativePreemptReportedCount, 0);
@@ -1272,7 +1273,14 @@ VOID VioGpuDod::SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address)
 
 VOID VioGpuDod::PublishPendingFlip(_In_ PVOID allocation)
 {
-    InterlockedExchange64(&m_PendingFlipTicks, KeQueryPerformanceCounter(NULL).QuadPart);
+    LARGE_INTEGER frequency;
+    const LONGLONG now = KeQueryPerformanceCounter(&frequency).QuadPart;
+    const LONGLONG sinceVsync = now - InterlockedCompareExchange64(&m_CrtcLastVsyncTicks, 0, 0);
+    if (frequency.QuadPart > 0 && sinceVsync > frequency.QuadPart * 4 / 1000 && sinceVsync < frequency.QuadPart / 10)
+    {
+        CountDisplayEvent(VioGpuFlipArrivalOver4ms);
+    }
+    InterlockedExchange64(&m_PendingFlipTicks, now);
     InterlockedExchangePointer(&m_PendingFlipAllocation, allocation);
 }
 
@@ -1449,6 +1457,7 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
     if (NotifyNativeSchedulerInterrupt(&notify, TRUE, notificationEpoch))
     {
         InterlockedIncrement(&m_CrtcVsyncDeliveredCount);
+        InterlockedExchange64(&m_CrtcLastVsyncTicks, KeQueryPerformanceCounter(NULL).QuadPart);
     }
 
     /* Nothing else moves the desktop's pixels. The compositor programs its
@@ -7966,6 +7975,16 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &flipDiagnostics[12]},
                                                                                                         {L"NativeFlipLatencyMaxUsec",
                                                                                                          &flipDiagnostics[13]},
+                                                                                                        {L"NativeHostSurfaceAcceptSlowDelivery",
+                                                                                                         &flipDiagnostics[14]},
+                                                                                                        {L"NativeHostSurfaceAcceptSlowWake",
+                                                                                                         &flipDiagnostics[15]},
+                                                                                                        {L"NativeHostSurfaceLastSlowDeliveryUsec",
+                                                                                                         &flipDiagnostics[16]},
+                                                                                                        {L"NativeHostSurfaceLastSlowWakeUsec",
+                                                                                                         &flipDiagnostics[17]},
+                                                                                                        {L"NativeFlipArrivalOver4ms",
+                                                                                                         &flipDiagnostics[18]},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPre"
                                                                                                          L"s"
