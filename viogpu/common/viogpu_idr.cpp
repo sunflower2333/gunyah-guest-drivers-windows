@@ -70,16 +70,21 @@ ULONG VioGpuIdr::GetId(VOID)
     ULONG id = 0;
     FreeId *freeId = NULL;
 
+    /* Hand out never-used IDs first and recycle only once the range is spent.
+     * The host may keep a released resource's ID reserved while Android still
+     * reads its buffer (a DWM restart unrefs the displayed front), and it
+     * refuses to create anything under that ID until the reader lets go.  An
+     * immediate reuse turned that refusal into a hardware-reset latch. */
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_lock, &oldIrql);
-    if (m_endId != 0 && !IsListEmpty(&m_freeList))
+    if (m_nextId != 0 && m_nextId < m_endId)
+    {
+        id = m_nextId++;
+    }
+    else if (m_endId != 0 && !IsListEmpty(&m_freeList))
     {
         freeId = CONTAINING_RECORD(RemoveHeadList(&m_freeList), FreeId, list_entry);
         id = freeId->id;
-    }
-    else if (m_nextId != 0 && m_nextId < m_endId)
-    {
-        id = m_nextId++;
     }
     KeReleaseSpinLock(&m_lock, oldIrql);
 

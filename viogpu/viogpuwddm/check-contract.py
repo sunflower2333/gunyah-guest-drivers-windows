@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58586",
+        "$minor = 58587",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58586",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58587",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -6795,12 +6795,17 @@ def check_native_context_ownership() -> None:
     idr_get = canonical_code(function_body("VioGpuIdr::GetId", IDR_CODE))
     idr_get_sequence = (
         idr_get.find("KeAcquireSpinLock(&m_lock,&oldIrql);"),
-        idr_get.find("elseif(m_nextId!=0&&m_nextId<m_endId)"),
+        idr_get.find("if(m_nextId!=0&&m_nextId<m_endId)"),
         idr_get.find("id=m_nextId++;"),
+        idr_get.find("elseif(m_endId!=0&&!IsListEmpty(&m_freeList))"),
         idr_get.find("KeReleaseSpinLock(&m_lock,oldIrql);"),
     )
     if min(idr_get_sequence) < 0 or list(idr_get_sequence) != sorted(idr_get_sequence):
         fail("legacy resource ID allocation must increment under lock and stop before the native high range")
+    # The host can hold a released ID reserved while Android still reads its
+    # buffer; recycling before the fresh range is spent collides with it.
+    if idr_get.count("elseif(m_nextId!=0&&m_nextId<m_endId)") != 0:
+        fail("legacy resource ID allocation must prefer never-used IDs over recycled ones")
     if "ExInterlocked" in IDR_CODE:
         fail("legacy resource ID list and sequential counter must use one shared locking domain")
     native_resource_allocator = canonical_code(
