@@ -152,14 +152,15 @@ public:
     std::vector<BYTE> packet;
     std::vector<BYTE> ahb;
     UINT pagingCalls{},failPagingCall{};
-    UINT scanouts{};
+    UINT scanouts{},activeScanout{};
+    ULONGLONG presentSequence=100;
     ULONGLONG crtcAddress{};
     bool queueOk=true,reset=false;
     BOOLEAN TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *work);
     bool QueueNativeAhbOperation(UINT id,ULONGLONG,ULONGLONG sequence,bool present,
         void (*cb)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG),PVOID context) {
         if(!queueOk) return false;
-        if(present) { cb(context,VioGpuHostContextConfirmed,id,sequence+100); return true; }
+        if(present) { assert(!sequence); cb(context,VioGpuHostContextConfirmed,id,++presentSequence); return true; }
         waits.push_back({id,sequence,context,cb}); return true;
     }
     bool RefreshNativeSubmit(PVOID,const void *data,UINT size,bool grow) {
@@ -174,6 +175,7 @@ public:
     bool IsNativeAhbScanoutEnabled() const { return true; }
     void SetCrtcVsyncPrimaryAddress(ULONGLONG address) { crtcAddress=address; }
     void LatchFlippedScanout(UINT,UINT,UINT) {}
+    bool IsActiveScanoutResource(UINT id) { return id && id==activeScanout; }
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(UINT,UINT,UINT,UINT,UINT*,
         VIOGPU_PRIMARY_SCANOUT_LAYOUT*,bool,bool) { ++scanouts; return VioGpuHostContextConfirmed; }
     void RequestHardwareResetAtAnyIrql() { reset=true; }
@@ -346,31 +348,30 @@ int main() {
     for(SIZE_T i=0;i<bytes;i++) adapter.ahb[i]=static_cast<BYTE>((i*37)^(i>>9));
     const auto original=adapter.ahb;
     std::vector<BYTE> saved(bytes);
+    // Android may keep displaying an evicted surface: eviction and restore
+    // are residency bookkeeping that neither waits for release nor copies.
     share.Access.Sequence=73;
-    onWait=[&] {
-        assert(pagingWork.DisplayReleaseWait && !share.Access.Writer);
-        assert(adapter.NativePassiveDispatchReadyLocked(&present));
-        const auto release=adapter.waits.back();
-        release.callback(release.context,VioGpuHostContextConfirmed,release.resource,release.sequence);
-    };
+    onWait=[&] { assert(!"HostSurface eviction never waits for Android"); };
+    const UINT beforeEviction=adapter.pagingCalls;
     tx.Flags=VioGpuWddmPagingFlagPageOut|VioGpuWddmPagingFlagTransferStart;
     tx.TransferAddress=saved.data(); tx.TransferSize=65536;
-    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && waitCount==1);
+    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && waitCount==0);
     assert(!share.SurfaceResident && wrapper.PlacementValid && share.PagingNextOffset==65536);
     tx.Flags=VioGpuWddmPagingFlagPageOut|VioGpuWddmPagingFlagTransferEnd;
     tx.TransferOffset=65536; tx.TransferAddress=saved.data()+65536; tx.TransferSize=bytes-65536;
-    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && saved==original);
+    assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0);
     assert(!share.SurfaceResident && !wrapper.PlacementValid && share.PagingDirection==0);
-    std::memset(adapter.ahb.data(),0,bytes);
     tx.Flags=VioGpuWddmPagingFlagPageIn|VioGpuWddmPagingFlagTransferStart|VioGpuWddmPagingFlagTransferEnd;
     tx.TransferOffset=0; tx.TransferSize=bytes; tx.TransferAddress=saved.data();
     assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && adapter.ahb==original);
+    assert(adapter.pagingCalls==beforeEviction && share.Access.Sequence==73 && !share.Access.WaitPending);
     assert(share.SurfaceResident && wrapper.PlacementValid && !share.Access.Writer);
     lifecycleResult=0x102; // STATUS_TIMEOUT is positive, but owns no mutex.
     assert(PresentResidentHostSurface(&adapter,&wrapper,tx.PlacementOffset,true)==STATUS_DEVICE_NOT_READY);
     assert(!wrapper.Pins && !wrapper.LifecycleMutex);
     // Interleave an already-admitted paging writer with real production Present.
     // The writer needs LifecycleMutex before it can signal ProducersIdle.
+    share.Access.ReleasedSequence=share.Access.Sequence;
     share.Access.Writer=true; share.ProducersIdle=false;
     const auto beforePresent=adapter.scanouts;
     onWait=[&] {
@@ -389,6 +390,26 @@ int main() {
     // A normal resident Present retains its allocation until host acceptance.
     assert(PresentResidentHostSurface(&adapter,&wrapper,tx.PlacementOffset,true)==0);
     assert(adapter.scanouts==beforePresent+1 && wrapper.Pins==0 && adapter.crtcAddress==tx.PlacementOffset);
+    // Android still reads the accepted present. As the current scanout it is
+    // already on screen: a repeat is not sent, and nothing is poisoned.
+    const ULONGLONG shown=share.Access.Sequence;
+    const auto waitsBefore=adapter.waits.size();
+    assert(shown && shown!=share.Access.ReleasedSequence);
+    adapter.activeScanout=19;
+    onWait=[&] { assert(!"a front buffer is never released while it is shown"); };
+    assert(PresentResidentHostSurface(&adapter,&wrapper,tx.PlacementOffset,false)==0);
+    assert(adapter.scanouts==beforePresent+1 && adapter.waits.size()==waitsBefore);
+    assert(!share.Access.Poisoned && !adapter.reset && share.Access.Sequence==shown && !share.AsyncReferences);
+    // Held but no longer scanned out: the repeat waits for that release.
+    adapter.activeScanout=0;
+    onWait=[&] {
+        assert(share.Access.WaitPending && !share.Access.PresentPending && adapter.waits.size()==waitsBefore+1);
+        const auto release=adapter.waits.back();
+        release.callback(release.context,VioGpuHostContextConfirmed,release.resource,release.sequence);
+    };
+    assert(PresentResidentHostSurface(&adapter,&wrapper,tx.PlacementOffset,false)==0);
+    assert(adapter.scanouts==beforePresent+2 && share.Access.ReleasedSequence==shown);
+    assert(share.Access.Sequence!=shown && !share.Access.Poisoned && !adapter.reset && !share.AsyncReferences);
     share.Access.Sequence=share.Access.ReleasedSequence=0;
     const UINT beforeDiscard=adapter.pagingCalls;
     tx.Flags=VioGpuWddmPagingFlagDiscard; tx.TransferSize=0; tx.TransferAddress=nullptr;
@@ -443,7 +464,7 @@ int main() {
         assert(ExecuteHostSurfacePaging(&evict,&eviction)==STATUS_SUCCESS);
         assert(waitCount==beforeWait+1 && !share.SurfaceResident && !wrapper.PlacementValid);
         assert(!share.Access.Poisoned && !adapter.reset && !share.AsyncReferences);
-        if(operation==VioGpuWddmPagingFlagPageOut) assert(saved==adapter.ahb);
+        for(SIZE_T i=0;i<bytes;i+=4) assert(std::memcmp(adapter.ahb.data()+i,&fill.FillPattern,4)==0);
         RemoveEntryList(&eviction.Link);
     }
 

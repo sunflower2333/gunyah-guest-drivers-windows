@@ -993,6 +993,8 @@ class VioGpuAdapter : IVioGpuPCI
      * again while it is scanned out, so the vsync republish stands down for
      * it exactly as it does after a completed Present of the binding. */
     VOID LatchFlippedScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
+    /* True while resourceId is the last resource bound to the host scanout. */
+    BOOLEAN IsActiveScanoutResource(_In_ UINT resourceId);
     NTSTATUS PublishPresentBlit(_In_ UINT width,
                                 _In_ UINT height,
                                 _In_ UINT sourcePitch,
@@ -1786,6 +1788,8 @@ class VioGpuDod
                                                _Inout_ VIOGPU_2D_RESOURCE_STATE *resourceState,
                                                _Inout_ ULONGLONG *resourceResetGeneration);
     VOID LatchFlippedScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height);
+    /* True while resourceId is the last resource bound to the host scanout. */
+    BOOLEAN IsActiveScanoutResource(_In_ UINT resourceId);
     NTSTATUS PublishPresentBlit(_In_ UINT width,
                                 _In_ UINT height,
                                 _In_ UINT sourcePitch,

@@ -29,9 +29,14 @@ def definition(name, text=source, structure=False):
 
 structs = '\n'.join(definition(n, structure=True) for n in
                    ['VIOGPU_WDDM_NATIVE_SHARE_ENTRY', 'VIOGPU_WDDM_NATIVE_IMPORT_ENTRY',
-                    'VIOGPU_NATIVE_AHB_PRESENT_COMPLETION'])
+                    'VIOGPU_NATIVE_AHB_PRESENT_COMPLETION', 'VIOGPU_NATIVE_POISON_SAMPLE',
+                    'VIOGPU_NATIVE_POISON_RECORD', 'VIOGPU_HOST_SURFACE_PAGING_FAILURE'])
+structs += '''
+VIOGPU_NATIVE_POISON_RECORD g_VioGpuNativePoisonRecord;
+VIOGPU_HOST_SURFACE_PAGING_FAILURE g_VioGpuHostSurfacePagingFailure;'''
 production = '\n'.join(definition(n) for n in
-    ['FindNativeShareByKeyLocked', 'NativeAhbReleaseObserved', 'ResolveHostImportAllocation', 'PinNativeSubmitImports',
+    ['FindNativeShareByKeyLocked', 'RecordNativePoisonLocked', 'NativeAhbReleaseObserved',
+     'ResolveKeyedHostSurfaceAllocation', 'ResolveHostImportAllocation', 'PinNativeSubmitImports',
      'UnpinNativeSubmitImports', 'AdmitNativeSubmitImports', 'RetireNativeSubmitImports',
      'RepackNativeSubmitImports', 'PublishStandardPlacement', 'ClearNativePlacement', 'ExecuteHostSurfacePaging',
      'NativeAhbPresentAccepted', 'PresentHostSurface', 'PresentResidentHostSurface'])
@@ -48,11 +53,11 @@ for name, old, new in [
      'status = STATUS_SUCCESS;\n    }\n    KeReleaseSpinLockFromDpcLevel'),
     ('missing-residency', 'bos[index].Handle = share->ResourceId;', 'bos[index].Handle = 0;'),
     ('evicted-render', '!share->SurfaceResident || allocation == NULL', 'false || allocation == NULL'),
-    ('forged-vidmm-allocation', 'allocation->ShareKey != ref.ShareKey', 'false'),
+    ('forged-vidmm-allocation', 'allocation->ShareKey != ref.ShareKey || allocation->PrivateData.Size', 'false || allocation->PrivateData.Size'),
     ('paging-error-reuse', 'share->Access.Poisoned = true;\n        share->Access.Writer = false;',
      'share->Access.Poisoned = false;\n        share->Access.Writer = false;'),
-    ('paging-omit-transfer', 'while (status == STATUS_SUCCESS && !discard && completed < transaction->TransferSize)',
-     'while (false && status == STATUS_SUCCESS && !discard && completed < transaction->TransferSize)'),
+    ('paging-omit-transfer', 'while (status == STATUS_SUCCESS && !bookkeepingOnly && completed < transaction->TransferSize)',
+     'while (false && status == STATUS_SUCCESS && !bookkeepingOnly && completed < transaction->TransferSize)'),
     ('present-paging-mutex-cycle',
      'KeReleaseMutex(&allocation->LifecycleMutex, FALSE);\n    if (status == STATUS_SUCCESS)\n    {\n        status = PresentHostSurface(adapter, allocation);',
      'if (status == STATUS_SUCCESS)\n    {\n        status = PresentHostSurface(adapter, allocation);\n        KeReleaseMutex(&allocation->LifecycleMutex, FALSE);'),
@@ -60,6 +65,10 @@ for name, old, new in [
      'BOOLEAN idle = !share->Access.Poisoned &&'),
     ('paging-positive-wait',
      'return status != STATUS_SUCCESS && NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;', 'return status;'),
+    ('present-front-repeat', 'const BOOLEAN front = usable && held && adapter->IsActiveScanoutResource(share->ResourceId);',
+     'const BOOLEAN front = false;'),
+    ('present-held-no-release', 'else if (usable && !held && !share->Access.WaitPending)',
+     'else if (usable && !share->Access.WaitPending)'),
     ('paging-worker-reorder', '!orderingConflict && !m_NativePassiveClosing', '(orderingConflict || !orderingConflict) && !m_NativePassiveClosing'),
 ]:
     if production.count(old) != 1:

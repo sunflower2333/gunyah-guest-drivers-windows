@@ -2647,6 +2647,12 @@ VOID VioGpuDod::LatchFlippedScanout(_In_ UINT resourceId, _In_ UINT width, _In_ 
     }
 }
 
+BOOLEAN VioGpuDod::IsActiveScanoutResource(_In_ UINT resourceId)
+{
+    VioGpuAdapter *adapter = m_pHWDevice;
+    return adapter != NULL && adapter->IsActiveScanoutResource(resourceId);
+}
+
 NTSTATUS VioGpuDod::PublishPresentBlit(_In_ UINT width,
                                        _In_ UINT height,
                                        _In_ UINT sourcePitch,
@@ -15734,6 +15740,12 @@ VOID VioGpuAdapter::LatchFlippedScanout(_In_ UINT resourceId, _In_ UINT width, _
         InterlockedExchange(&m_ExplicitPresentResourceId, static_cast<LONG>(resourceId));
     }
     KeReleaseSpinLock(&m_ActiveScanoutLock, oldIrql);
+}
+
+BOOLEAN VioGpuAdapter::IsActiveScanoutResource(_In_ UINT resourceId)
+{
+    return resourceId != 0 &&
+           static_cast<UINT>(InterlockedCompareExchange(&m_ActiveScanoutResourceId, 0, 0)) == resourceId;
 }
 
 VOID VioGpuAdapter::RequestScanoutRefresh(void)

@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58580",
+        "$minor = 58581",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58580",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58581",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -8268,8 +8268,15 @@ def check_wddm_private_abi(root: ET.Element) -> None:
         "share->Access.PresentPending=TRUE;",
         "KeWaitForSingleObject(&share->ProducersIdle",
         "adapter->Set2DScanout(",
-        "adapter->QueueNativeAhbOperation(",
+        "adapter->QueueNativeAhbOperation(share->ResourceId,share->SurfaceResetGeneration,0,TRUE,",
     ), "native surface publication must reserve ownership, retire producers and bind before PRESENT")
+    for fragment in (
+        "constBOOLEANheld=share->Access.Sequence!=share->Access.ReleasedSequence;",
+        "constBOOLEANfront=usable&&held&&adapter->IsActiveScanoutResource(share->ResourceId);",
+        "elseif(usable&&!held&&!share->Access.WaitPending)",
+    ):
+        if fragment not in host_present:
+            fail("native surface Present must not re-present a buffer Android still reads: " + fragment)
     if "Flush2DResource" in host_present or "CopyPresentRow" in host_present:
         fail("native surface publication cannot copy pixels or wait for front-buffer release")
     present = canonical_code(function_body("ExecutePresentTransaction", WDDM_DDI_CODE))

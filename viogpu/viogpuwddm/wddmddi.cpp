@@ -5412,20 +5412,60 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
     InterlockedIncrement(&share->AsyncReferences);
     ReleaseNativeShareRegistry();
     KIRQL irql;
-    KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
-    BOOLEAN reserved = share->SurfaceResident && !share->Access.Poisoned &&
-                       !share->Access.PresentPending && !share->Access.WaitPending;
-    if (reserved)
-        share->Access.PresentPending = true;
-    KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -5LL * 1000 * 1000 * 10;
+    /* Android keeps reading the last accepted present until a WAIT observes
+     * its release, and the host refuses to present a buffer it still reads.
+     * Only a release lets a writer in, so a held buffer is unchanged: as the
+     * scanout it is already on screen, otherwise it is shown once released. */
+    BOOLEAN reserved = FALSE;
+    BOOLEAN unchangedFront = FALSE;
+    NTSTATUS status = STATUS_SUCCESS;
+    for (;;)
+    {
+        BOOLEAN queueWait = FALSE;
+        ULONGLONG sequence = 0;
+        KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+        KeClearEvent(&share->AccessChanged);
+        const BOOLEAN usable = share->SurfaceResident && !share->Access.Poisoned &&
+                               !share->Access.PresentPending;
+        const BOOLEAN held = share->Access.Sequence != share->Access.ReleasedSequence;
+        const BOOLEAN front = usable && held && adapter->IsActiveScanoutResource(share->ResourceId);
+        if (front)
+        {
+            unchangedFront = !share->Access.WaitPending && !share->Access.Writer;
+        }
+        else if (usable && !held && !share->Access.WaitPending)
+        {
+            share->Access.PresentPending = true;
+            reserved = TRUE;
+        }
+        else if (usable && held && !share->Access.WaitPending)
+        {
+            share->Access.WaitPending = true;
+            sequence = share->Access.Sequence;
+            InterlockedIncrement(&share->AsyncReferences);
+            queueWait = TRUE;
+        }
+        KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+        if (queueWait && !adapter->QueueNativeAhbOperation(share->ResourceId, share->SurfaceResetGeneration,
+                                                          sequence, FALSE, NativeAhbReleaseObserved, share))
+            NativeAhbReleaseObserved(share, VioGpuHostContextNotSubmitted, share->ResourceId, sequence);
+        if (!usable || front || reserved || status != STATUS_SUCCESS || (!queueWait && !held))
+            break;
+        status = KeWaitForSingleObject(&share->AccessChanged, Executive, KernelMode, FALSE, &timeout);
+    }
+    if (unchangedFront)
+    {
+        InterlockedDecrement(&share->AsyncReferences);
+        return STATUS_SUCCESS;
+    }
     if (!reserved)
     {
         InterlockedDecrement(&share->AsyncReferences);
         return STATUS_DEVICE_NOT_READY;
     }
-    LARGE_INTEGER timeout;
-    timeout.QuadPart = -5LL * 1000 * 1000 * 10;
-    NTSTATUS status = KeWaitForSingleObject(&share->ProducersIdle, Executive, KernelMode, FALSE, &timeout);
+    status = KeWaitForSingleObject(&share->ProducersIdle, Executive, KernelMode, FALSE, &timeout);
     UINT format = 0;
     KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
     BOOLEAN idle = share->SurfaceResident && !share->Access.Poisoned &&
