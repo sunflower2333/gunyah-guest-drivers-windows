@@ -8024,6 +8024,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &flipDiagnostics[24]},
                                                                                                         {L"NativeVsyncLateOver1ms",
                                                                                                          &flipDiagnostics[25]},
+                                                                                                        {L"NativeRevokedImportsKept",
+                                                                                                         &flipDiagnostics[26]},
+                                                                                                        {L"NativeRevokedImportRefsSkipped",
+                                                                                                         &flipDiagnostics[27]},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPre"
                                                                                                          L"s"

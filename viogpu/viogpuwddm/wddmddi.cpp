@@ -4542,6 +4542,11 @@ struct VIOGPU_WDDM_NATIVE_IMPORT_ENTRY
     BOOLEAN HostSurface;
     ULONGLONG ResetGeneration;
     volatile LONG SubmissionReferences;
+    /* The owner destroyed the shared allocation while this import was live.
+     * The host mapping is already released; the record stays until the
+     * importer releases it, so a compositor still drawing the owner's last
+     * frame (a window closing) neither fails its submissions nor its release. */
+    BOOLEAN Revoked;
 };
 
 static KMUTEX g_VioGpuNativeShareMutex;
@@ -4618,6 +4623,21 @@ static VIOGPU_WDDM_NATIVE_SHARE_ENTRY *FindNativeShareByKeyLocked(_In_ VioGpuDod
     return NULL;
 }
 
+/* A revoked import keeps its key until the importer releases it; a new share
+ * must not reuse that key or the importer would resolve it to the wrong pixels. */
+static BOOLEAN NativeImportKeyHeldLocked(_In_ VioGpuDod *adapter, _In_ ULONGLONG key)
+{
+    for (PLIST_ENTRY link = g_VioGpuNativeImports.Flink; link != &g_VioGpuNativeImports; link = link->Flink)
+    {
+        VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *entry = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_IMPORT_ENTRY, Link);
+        if (entry->Adapter == adapter && entry->Key == key)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 static ULONGLONG NewNativeShareKeyLocked(_In_ VioGpuDod *adapter)
 {
     for (;;)
@@ -4632,7 +4652,7 @@ static ULONGLONG NewNativeShareKeyLocked(_In_ VioGpuDod *adapter)
         state ^= state >> 27;
         g_VioGpuNativeShareSeed = state;
         ULONGLONG key = (state * 0x2545F4914F6CDD1DULL) >> 32;
-        if (key != 0 && FindNativeShareByKeyLocked(adapter, key) == NULL)
+        if (key != 0 && FindNativeShareByKeyLocked(adapter, key) == NULL && !NativeImportKeyHeldLocked(adapter, key))
         {
             return key;
         }
@@ -4898,6 +4918,7 @@ NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU
             break;
         auto share = FindNativeShareByKeyLocked(submission->Adapter, ref.ShareKey);
         VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *entry = NULL;
+        auto &slot = submission->Imports[submission->ImportCount];
         for (PLIST_ENTRY link = g_VioGpuNativeImports.Flink; link != &g_VioGpuNativeImports; link = link->Flink)
         {
             auto candidate = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_IMPORT_ENTRY, Link);
@@ -4908,6 +4929,13 @@ NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU
                 entry = candidate;
                 break;
             }
+        }
+        if (share == NULL && entry != NULL && entry->Revoked)
+        {
+            /* The owner is gone; nothing is left to pin or to order against.
+             * Drop the reference rather than fail the importer's submission. */
+            submission->Adapter->CountDisplayEvent(VioGpuRevokedImportRefsSkipped);
+            continue;
         }
         const BOOLEAN ownerAlias = share != NULL && !share->HostSurface && share->OwnerAllocation != NULL &&
             share->OwnerContextId == submission->ContextId &&
@@ -4942,17 +4970,17 @@ NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU
         if (entry != NULL)
             InterlockedIncrement(&entry->SubmissionReferences);
         InterlockedIncrement(&share->SubmissionReferences);
-        submission->Imports[i].Reference = ref;
-        submission->Imports[i].Share = share;
-        submission->Imports[i].Import = entry;
-        submission->Imports[i].OwnerAllocation = pinnedAllocation;
+        slot.Reference = ref;
+        slot.Share = share;
+        slot.Import = entry;
+        slot.OwnerAllocation = pinnedAllocation;
         if (share->HostSurface && (ref.Access & VIOGPU_WDDM_REFERENCE_WRITE) != 0)
         {
             KIRQL accessIrql;
             KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &accessIrql);
             ++share->PendingSurfaceWriters;
             KeReleaseSpinLock(&g_VioGpuNativeAccessLock, accessIrql);
-            submission->Imports[i].PendingWriterCounted = TRUE;
+            slot.PendingWriterCounted = TRUE;
             submission->WriterRenderTicks = KeQueryPerformanceCounter(NULL).QuadPart;
         }
         ++submission->ImportCount;
@@ -6236,11 +6264,10 @@ VOID RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
         {
             VIOGPU_WDDM_NATIVE_IMPORT_ENTRY *entry = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_IMPORT_ENTRY, Link);
             link = link->Flink;
-            if (entry->Adapter != adapter || entry->Key != share->Key)
+            if (entry->Adapter != adapter || entry->Key != share->Key || entry->Revoked)
             {
                 continue;
             }
-            RemoveEntryList(&entry->Link);
             VIOGPU_WDDM_CONTEXT *context = entry->Context;
             if (context->Signature == VIOGPU_WDDM_CONTEXT_SIGNATURE && ExAcquireRundownProtection(&context->Operations))
             {
@@ -6256,7 +6283,12 @@ VOID RevokeNativeShares(_In_ VioGpuDod *adapter, _In_ UINT resourceId)
                 }
                 ExReleaseRundownProtection(&context->Operations);
             }
-            delete entry;
+            /* The importer still holds this key and may still render from the
+             * owner's last frame (DWM animating a closing window). Its range
+             * stays mapped on the host until the importer reuses the VA, so
+             * keep the record until the importer releases it. */
+            entry->Revoked = TRUE;
+            adapter->CountDisplayEvent(VioGpuRevokedImportsKept);
         }
         RemoveEntryList(&share->Link);
         delete share;
@@ -6519,6 +6551,14 @@ static NTSTATUS ReleaseNativeShareLocked(_In_ VioGpuDod *adapter,
         {
             *stage = 44;
             return STATUS_GRAPHICS_ALLOCATION_BUSY;
+        }
+        if (entry->Revoked)
+        {
+            /* RevokeNativeShares already released the host side. */
+            RemoveEntryList(&entry->Link);
+            delete entry;
+            *stage = 0;
+            return STATUS_SUCCESS;
         }
         if (adapter->AcquireNativeSubmissionOperation())
         {

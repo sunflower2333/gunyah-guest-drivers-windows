@@ -232,5 +232,10 @@ enum : unsigned
     VioGpuIsrToDpcOver1ms = 115,
     VioGpuDpcRunOver1ms = 116,
     VioGpuVsyncLateOver1ms = 117,
-    VioGpuDisplayCounterCount = 118,
+    /* Imports whose owner destroyed the shared allocation first: kept as
+     * tombstones until the importer releases them, and the render references
+     * to them dropped instead of failing the importer's submission. */
+    VioGpuRevokedImportsKept = 118,
+    VioGpuRevokedImportRefsSkipped = 119,
+    VioGpuDisplayCounterCount = 120,
 };
