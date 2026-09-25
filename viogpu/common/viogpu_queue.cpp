@@ -4289,9 +4289,12 @@ PVOID CrsrQueue::AllocCursor(PGPU_VBUFFER *buf)
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
+    /* The cursor queue carries no response, but GetBuf refuses a zero response
+     * size, so ask for a header-sized slot that is never posted to the host.
+     * Passing 0 made every allocation fail, and both pointer DDIs then wrote
+     * the command through a NULL buffer. */
     PGPU_VBUFFER vbuf;
-    vbuf = m_pBuf->GetBuf(sizeof(GPU_UPDATE_CURSOR), 0, NULL);
-    ASSERT(vbuf);
+    vbuf = m_pBuf->GetBuf(sizeof(GPU_UPDATE_CURSOR), sizeof(GPU_CTRL_HDR), NULL);
     *buf = vbuf;
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s  vbuf = %p\n", __FUNCTION__, vbuf));
@@ -4318,7 +4321,8 @@ UINT CrsrQueue::QueueCursor(PGPU_VBUFFER buf)
     if (outcnt == 0)
     {
         DbgPrint(TRACE_LEVEL_ERROR, ("<--> %s invalid cursor DMA address %p\n", __FUNCTION__, buf->buf));
-        return 0;
+        ReleaseBuffer(buf);
+        return 1;
     }
     Lock(&SavedIrql);
     ret = AddBuf(&sg[0], outcnt, 0, buf, NULL, 0);
@@ -4327,6 +4331,12 @@ UINT CrsrQueue::QueueCursor(PGPU_VBUFFER buf)
         Kick();
     }
     Unlock(SavedIrql);
+    if (ret < 0)
+    {
+        /* A full ring never returns this buffer through DequeueCursor. */
+        ReleaseBuffer(buf);
+        res = 1;
+    }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s vbuf = %p outcnt = %d, ret = %d\n", __FUNCTION__, buf, outcnt, ret));
     return res;

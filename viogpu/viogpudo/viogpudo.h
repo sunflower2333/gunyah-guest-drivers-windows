@@ -1230,6 +1230,7 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN CreateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape, _In_ CONST CURRENT_MODE *pCurrentMode);
     BOOLEAN UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape, _In_ CONST CURRENT_MODE *pCurrentMode);
     void DestroyCursor(void);
+    BOOLEAN SendCursorUpdate(UINT resourceId, INT x, INT y);
     BOOLEAN GpuObjectAttach(UINT res_id, VioGpuObj *obj);
     void static ThreadWork(_In_ PVOID Context);
     void ThreadWorkRoutine(void);
@@ -1336,6 +1337,15 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN m_ActiveScanoutNativeAhb;
     volatile LONG m_ScanoutRefreshRequested;
     VioGpuObj *m_pCursorBuf;
+    /* Last cursor position the host accepted, valid while
+     * m_CursorPositionSent is set. */
+    BOOLEAN m_CursorPositionSent;
+    /* The host was sent UPDATE_CURSOR with resource 0. */
+    BOOLEAN m_CursorHidden;
+    INT m_CursorLastX;
+    INT m_CursorLastY;
+    UINT m_CursorHotX;
+    UINT m_CursorHotY;
     VioGpuMemSegment m_CursorSegment;
     VioGpuMemSegment m_FrameSegment;
     volatile ULONG m_PendingWorks;

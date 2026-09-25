@@ -10082,6 +10082,12 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_ActiveScanoutNativeAhb = FALSE;
     m_ScanoutRefreshRequested = 0;
     m_pCursorBuf = NULL;
+    m_CursorPositionSent = FALSE;
+    m_CursorHidden = FALSE;
+    m_CursorLastX = 0;
+    m_CursorLastY = 0;
+    m_CursorHotX = 0;
+    m_CursorHotY = 0;
     m_PendingWorks = 0;
     m_DisplayIsrTicks = 0;
     m_bStopWorkThread = FALSE;
@@ -15033,84 +15039,125 @@ NTSTATUS VioGpuAdapter::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSet
 
     if (UpdateCursor(pSetPointerShape, pModeCur))
     {
-        PGPU_UPDATE_CURSOR crsr;
-        PGPU_VBUFFER vbuf;
-        UINT ret = 0;
-        crsr = (PGPU_UPDATE_CURSOR)m_CursorQueue.AllocCursor(&vbuf);
-        RtlZeroMemory(crsr, sizeof(*crsr));
-
-        crsr->hdr.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
-        crsr->resource_id = m_pCursorBuf->GetId();
-        crsr->pos.x = 0;
-        crsr->pos.y = 0;
-        crsr->hot_x = pSetPointerShape->XHot;
-        crsr->hot_y = pSetPointerShape->YHot;
-        ret = m_CursorQueue.QueueCursor(vbuf);
-        DbgPrint(TRACE_LEVEL_INFORMATION, ("<--- %s vbuf = %p, ret = %d\n", __FUNCTION__, vbuf, ret));
-        if (ret == 0)
+        m_CursorHotX = pSetPointerShape->XHot;
+        m_CursorHotY = pSetPointerShape->YHot;
+        /* A hidden pointer gets its image when it is shown again; an
+         * UPDATE_CURSOR now would make the host show it. */
+        if (m_CursorHidden)
         {
             return STATUS_SUCCESS;
         }
-        VioGpuDbgBreak();
+        /* The shape carries no position: keep the pointer where it is rather
+         * than jumping to the origin until the next move. */
+        if (SendCursorUpdate(m_pCursorBuf->GetId(), m_CursorLastX, m_CursorLastY))
+        {
+            return STATUS_SUCCESS;
+        }
     }
+    /* Failing the DDI makes Windows draw this shape in software. */
     DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s Failed to create cursor\n", __FUNCTION__));
     return STATUS_UNSUCCESSFUL;
+}
+
+BOOLEAN VioGpuAdapter::SendCursorUpdate(UINT resourceId, INT x, INT y)
+{
+    PAGED_CODE();
+
+    PGPU_VBUFFER vbuf;
+    PGPU_UPDATE_CURSOR crsr = (PGPU_UPDATE_CURSOR)m_CursorQueue.AllocCursor(&vbuf);
+    if (crsr == NULL)
+    {
+        return FALSE;
+    }
+    RtlZeroMemory(crsr, sizeof(*crsr));
+
+    crsr->hdr.type = VIRTIO_GPU_CMD_UPDATE_CURSOR;
+    crsr->resource_id = resourceId;
+    /* The host reads the position as the signed top-left corner of the image,
+     * the same convention as DXGKARG_SETPOINTERPOSITION. */
+    crsr->pos.x = static_cast<ULONG>(x);
+    crsr->pos.y = static_cast<ULONG>(y);
+    crsr->hot_x = m_CursorHotX;
+    crsr->hot_y = m_CursorHotY;
+    UINT ret = m_CursorQueue.QueueCursor(vbuf);
+    DbgPrint(TRACE_LEVEL_INFORMATION,
+             ("<--- %s res = %u (%d, %d) ret = %u\n", __FUNCTION__, resourceId, x, y, ret));
+    return ret == 0;
 }
 
 NTSTATUS VioGpuAdapter::SetPointerPosition(_In_ CONST DXGKARG_SETPOINTERPOSITION *pSetPointerPosition,
                                            _In_ CONST CURRENT_MODE *pModeCur)
 {
     PAGED_CODE();
-    if (m_pCursorBuf != NULL)
+    UNREFERENCED_PARAMETER(pModeCur);
+    if (m_pCursorBuf == NULL)
     {
-        PGPU_UPDATE_CURSOR crsr;
-        PGPU_VBUFFER vbuf;
-        UINT ret = 0;
-        crsr = (PGPU_UPDATE_CURSOR)m_CursorQueue.AllocCursor(&vbuf);
-        RtlZeroMemory(crsr, sizeof(*crsr));
-
-        crsr->hdr.type = VIRTIO_GPU_CMD_MOVE_CURSOR;
-        crsr->resource_id = m_pCursorBuf->GetId();
-
-        if (!pSetPointerPosition->Flags.Visible || (UINT)pSetPointerPosition->X > pModeCur->SrcModeWidth ||
-            (UINT)pSetPointerPosition->Y > pModeCur->SrcModeHeight || pSetPointerPosition->X < 0 ||
-            pSetPointerPosition->Y < 0)
-        {
-            DbgPrint(TRACE_LEVEL_VERBOSE,
-                     ("---> %s (%d - %d) Visiable = %d Value = %x VidPnSourceId = %d\n",
-                      __FUNCTION__,
-                      pSetPointerPosition->X,
-                      pSetPointerPosition->Y,
-                      pSetPointerPosition->Flags.Visible,
-                      pSetPointerPosition->Flags.Value,
-                      pSetPointerPosition->VidPnSourceId));
-            crsr->pos.x = 0;
-            crsr->pos.y = 0;
-        }
-        else
-        {
-            DbgPrint(TRACE_LEVEL_VERBOSE,
-                     ("---> %s (%d - %d) Visiable = %d Value = %x VidPnSourceId = %d posX = %d, psY = %d\n",
-                      __FUNCTION__,
-                      pSetPointerPosition->X,
-                      pSetPointerPosition->Y,
-                      pSetPointerPosition->Flags.Visible,
-                      pSetPointerPosition->Flags.Value,
-                      pSetPointerPosition->VidPnSourceId,
-                      pSetPointerPosition->X,
-                      pSetPointerPosition->Y));
-            crsr->pos.x = pSetPointerPosition->X;
-            crsr->pos.y = pSetPointerPosition->Y;
-        }
-        ret = m_CursorQueue.QueueCursor(vbuf);
-        DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s vbuf = %p, ret = %d\n", __FUNCTION__, vbuf, ret));
-        if (ret == 0)
-        {
-            return STATUS_SUCCESS;
-        }
-        VioGpuDbgBreak();
+        return STATUS_UNSUCCESSFUL;
     }
-    return STATUS_UNSUCCESSFUL;
+
+    /* Resource 0 is virtio-gpu's hide. Sending the old (0,0) instead left a
+     * visible pointer in the corner of the hardware plane. */
+    if (!pSetPointerPosition->Flags.Visible)
+    {
+        if (!m_CursorHidden)
+        {
+            if (!SendCursorUpdate(0, 0, 0))
+            {
+                return STATUS_UNSUCCESSFUL;
+            }
+            m_CursorHidden = TRUE;
+        }
+        return STATUS_SUCCESS;
+    }
+
+    /* X and Y are the image's top-left corner and go negative when the
+     * hotspot is near the left or top edge; the host takes them signed. */
+    const INT x = pSetPointerPosition->X;
+    const INT y = pSetPointerPosition->Y;
+    if (m_CursorHidden)
+    {
+        if (!SendCursorUpdate(m_pCursorBuf->GetId(), x, y))
+        {
+            return STATUS_UNSUCCESSFUL;
+        }
+        m_CursorHidden = FALSE;
+        m_CursorLastX = x;
+        m_CursorLastY = y;
+        m_CursorPositionSent = TRUE;
+        return STATUS_SUCCESS;
+    }
+
+    /* Windows repeats unchanged positions; each one would otherwise cost a
+     * queue kick, a VM exit and a host cursor commit. */
+    if (m_CursorPositionSent && m_CursorLastX == x && m_CursorLastY == y)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    PGPU_UPDATE_CURSOR crsr;
+    PGPU_VBUFFER vbuf;
+    crsr = (PGPU_UPDATE_CURSOR)m_CursorQueue.AllocCursor(&vbuf);
+    if (crsr == NULL)
+    {
+        return STATUS_UNSUCCESSFUL;
+    }
+    RtlZeroMemory(crsr, sizeof(*crsr));
+
+    crsr->hdr.type = VIRTIO_GPU_CMD_MOVE_CURSOR;
+    crsr->resource_id = m_pCursorBuf->GetId();
+    crsr->pos.x = static_cast<ULONG>(x);
+    crsr->pos.y = static_cast<ULONG>(y);
+    UINT ret = m_CursorQueue.QueueCursor(vbuf);
+    DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s (%d, %d) ret = %u\n", __FUNCTION__, x, y, ret));
+    if (ret != 0)
+    {
+        m_CursorPositionSent = FALSE;
+        return STATUS_UNSUCCESSFUL;
+    }
+    m_CursorLastX = x;
+    m_CursorLastY = y;
+    m_CursorPositionSent = TRUE;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS VioGpuAdapter::Escape(_In_ CONST DXGKARG_ESCAPE *pEscape)
@@ -16539,6 +16586,8 @@ void VioGpuAdapter::DestroyCursor()
         }
         delete m_pCursorBuf;
         m_pCursorBuf = NULL;
+        m_CursorPositionSent = FALSE;
+        m_CursorHidden = FALSE;
         m_Idr.PutId(id);
     }
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));

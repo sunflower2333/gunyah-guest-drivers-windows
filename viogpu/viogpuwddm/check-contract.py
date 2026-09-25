@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58598",
+        "$minor = 58599",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58598",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58599",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -3310,6 +3310,31 @@ def check_vidpn_mode_contract() -> None:
     ):
         if fragment not in update_cursor:
             fail(f"UpdateCursor must convert bounded monochrome AND/XOR masks: {fragment}")
+
+    # A software cursor makes DWM compose and present a full frame for every
+    # mouse move; the hardware plane turns a move into one cursor-queue command.
+    if not re.search(r"^HKR,,HWCursor,%REG_DWORD%,1\s*$", INF_TEMPLATE.read_text(encoding="utf-8"), re.M):
+        fail("the display INF must enable the hardware cursor plane (HWCursor=1)")
+    alloc_cursor = canonical_code(function_body("CrsrQueue::AllocCursor", QUEUE_CODE))
+    if "GetBuf(sizeof(GPU_UPDATE_CURSOR),sizeof(GPU_CTRL_HDR),NULL)" not in alloc_cursor:
+        fail("AllocCursor must request a nonzero response size, which GetBuf requires")
+    queue_cursor = canonical_code(function_body("CrsrQueue::QueueCursor", QUEUE_CODE))
+    if queue_cursor.count("ReleaseBuffer(buf);") != 2:
+        fail("QueueCursor must return a buffer the ring refused to its pool")
+    for method_name in ("VioGpuAdapter::SendCursorUpdate", "VioGpuAdapter::SetPointerPosition"):
+        pointer = canonical_code(function_body(method_name, VIOGPU_CODE))
+        if "if(crsr==NULL)" not in pointer:
+            fail(f"{method_name} must fail, not write through, when no cursor buffer is available")
+    shape = canonical_code(function_body("VioGpuAdapter::SetPointerShape", VIOGPU_CODE))
+    if "VioGpuDbgBreak();" in shape or "SendCursorUpdate(m_pCursorBuf->GetId(),m_CursorLastX,m_CursorLastY)" not in shape:
+        fail("SetPointerShape must restate the current position and fail over to a software cursor")
+    position = canonical_code(function_body("VioGpuAdapter::SetPointerPosition", VIOGPU_CODE))
+    if "VioGpuDbgBreak();" in position:
+        fail("SetPointerPosition must fail over to a software cursor, not break")
+    if "if(!pSetPointerPosition->Flags.Visible)" not in position or "SendCursorUpdate(0,0,0)" not in position:
+        fail("SetPointerPosition must hide the hardware cursor with resource 0, not park it at the origin")
+    if "if(m_CursorPositionSent&&m_CursorLastX==x&&m_CursorLastY==y)" not in position:
+        fail("SetPointerPosition must not resend an unchanged position")
 
 
 def check_legacy_runtime_callback_contract() -> None:
