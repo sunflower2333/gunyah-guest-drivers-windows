@@ -1008,9 +1008,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58599",
+        "$minor = 58600",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58599",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58600",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -3328,6 +3328,8 @@ def check_vidpn_mode_contract() -> None:
     shape = canonical_code(function_body("VioGpuAdapter::SetPointerShape", VIOGPU_CODE))
     if "VioGpuDbgBreak();" in shape or "SendCursorUpdate(m_pCursorBuf->GetId(),m_CursorLastX,m_CursorLastY)" not in shape:
         fail("SetPointerShape must restate the current position and fail over to a software cursor")
+    if "m_CtrlQueue.TransferToHost2DSynchronous(m_pCursorBuf->GetId()," not in update_cursor:
+        fail("UpdateCursor must land the image on the host before UPDATE_CURSOR flushes it")
     position = canonical_code(function_body("VioGpuAdapter::SetPointerPosition", VIOGPU_CODE))
     if "VioGpuDbgBreak();" in position:
         fail("SetPointerPosition must fail over to a software cursor, not break")

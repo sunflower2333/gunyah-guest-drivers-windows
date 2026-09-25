@@ -16557,14 +16557,19 @@ BOOLEAN VioGpuAdapter::UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
         BltBits(&DstBltInfo, &SrcBltInfo, &Rect);
     }
 
-    if (!m_CtrlQueue.TransferToHost2D(m_pCursorBuf->GetId(),
-                                      0,
-                                      pSetPointerShape->Width,
-                                      pSetPointerShape->Height,
-                                      0,
-                                      0))
+    /* The image travels on the control queue and UPDATE_CURSOR on the cursor
+     * queue, which the host services independently. With a queued transfer the
+     * host flushed the cursor before the new pixels arrived, so the plane always
+     * showed the previous shape -- and kept a busy ring after the arrow came
+     * back. Wait for the transfer before the caller sends UPDATE_CURSOR. */
+    if (m_CtrlQueue.TransferToHost2DSynchronous(m_pCursorBuf->GetId(),
+                                                0,
+                                                pSetPointerShape->Width,
+                                                pSetPointerShape->Height,
+                                                0,
+                                                0) != VioGpuHostContextConfirmed)
     {
-        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s failed to queue cursor transfer\n", __FUNCTION__));
+        DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s cursor transfer failed\n", __FUNCTION__));
         return FALSE;
     }
 
