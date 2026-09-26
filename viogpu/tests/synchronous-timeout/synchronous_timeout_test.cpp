@@ -52,6 +52,7 @@ constexpr int Executive = 0, KernelMode = 0, PASSIVE_LEVEL = 0;
 #endif
 #define PAGED_CODE()  ((void)0)
 #define DbgPrint(...) ((void)0)
+#define NT_SUCCESS(status) ((status) >= 0)
 #define NT_ASSERT(value)                                                                                               \
     do                                                                                                                 \
     {                                                                                                                  \
@@ -116,8 +117,10 @@ static void KeClearEvent(KEVENT *event)
 {
     event->signaled = false;
 }
+static unsigned mutexReleases = 0;
 static void KeReleaseMutex(int *, bool)
 {
+    ++mutexReleases;
 }
 static void NotifyEventCompleteCB(void *ctx)
 {
@@ -125,10 +128,11 @@ static void NotifyEventCompleteCB(void *ctx)
 }
 static NTSTATUS waitResult = STATUS_SUCCESS;
 static unsigned waits = 0;
+static LONG64 expectedWaitInterval = -50000000LL;
 static std::function<void()> waitAction;
 static NTSTATUS KeWaitForSingleObject(void *, int, int, bool, LARGE_INTEGER *timeout)
 {
-    check(timeout->QuadPart == -50000000LL, "five second wait unchanged");
+    check(timeout->QuadPart == expectedWaitInterval, "wait interval unchanged");
     ++waits;
     if (waitAction)
     {
@@ -175,6 +179,7 @@ struct CtrlQueue
     BOOLEAN IsNativeSynchronousRequestsHealthy();
     BOOLEAN EnableNativeSynchronousRequests();
     NTSTATUS QuiesceNativeSynchronousRequests();
+    NTSTATUS QuiesceSynchronousRequests();
     ULONG NativeSynchronousLongestWaitSlices();
     BOOLEAN SubmitNativeSynchronousLocked(PGPU_VBUFFER, PBOOLEAN, PBOOLEAN);
 };
@@ -476,11 +481,60 @@ static void channel_isolation()
     check(!queue.IsSynchronousRequestsHealthy() && !queue.IsNativeSynchronousRequestsHealthy(),
           "teardown takes both epochs offline");
 }
+static void quiesce_failures()
+{
+    // A positive timeout satisfies NT_SUCCESS but proves no mutex ownership.
+    // Exercise the same status predicate used by StopNativeContextTransportLocked.
+    for (unsigned failedChannel = 0; failedChannel < 3; ++failedChannel)
+    {
+        CtrlQueue queue;
+        enable(queue);
+        check(queue.EnableNativeSynchronousRequests(), "native epoch enabled for quiesce");
+        const unsigned beforeWaits = waits;
+        const unsigned beforeReleases = mutexReleases;
+        expectedWaitInterval = -60000000LL;
+        waitAction = [&] {
+            const unsigned channel = waits - beforeWaits;
+            waitResult = (failedChannel == 0 && channel == 1) ||
+                                 (failedChannel == 1 && channel == 2) || failedChannel == 2
+                             ? STATUS_TIMEOUT : STATUS_SUCCESS;
+        };
+        const NTSTATUS result = queue.QuiesceSynchronousRequests();
+        check(!NT_SUCCESS(result), failedChannel == 0
+                  ? "native quiesce timeout prevents successful transport teardown"
+                  : "adapter quiesce timeout prevents successful transport teardown");
+        check(waits == beforeWaits + 2, "both channels are quiesced after either timeout");
+        check(mutexReleases == beforeReleases + (failedChannel == 2 ? 0 : 1),
+              "quiesce never releases a mutex it did not acquire");
+        check(!queue.IsSynchronousRequestsHealthy() && !queue.IsNativeSynchronousRequestsHealthy(),
+              "failed quiesce closes admission on both channels");
+        waitAction = {};
+        waitResult = STATUS_SUCCESS;
+        check(queue.QuiesceSynchronousRequests() == STATUS_SUCCESS,
+              "retry drains both previously poisoned channels before teardown");
+        queue.CompleteSynchronousRequestTeardown();
+        expectedWaitInterval = -50000000LL;
+    }
+    // Even when adapter control is already offline, a native waiter must drain.
+    CtrlQueue offline;
+    waitAction = {};
+    waitResult = STATUS_SUCCESS;
+    check(offline.EnableNativeSynchronousRequests(), "native-only epoch enabled");
+    expectedWaitInterval = -60000000LL;
+    waitResult = STATUS_TIMEOUT;
+    check(!NT_SUCCESS(offline.QuiesceSynchronousRequests()), "offline adapter does not hide native quiesce failure");
+    waitResult = STATUS_SUCCESS;
+    check(offline.QuiesceSynchronousRequests() == STATUS_SUCCESS, "native-only retry drains safely");
+    offline.CompleteSynchronousRequestTeardown();
+    expectedWaitInterval = -50000000LL;
+}
+
 int main()
 {
     lifecycle();
     decoding();
     publication();
     channel_isolation();
+    quiesce_failures();
     std::printf("PASS synchronous timeout lifecycle and boundaries: %d checks\n", checks);
 }

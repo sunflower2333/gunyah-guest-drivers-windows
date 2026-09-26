@@ -9,6 +9,7 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--negative-control-overwrite', action='store_true')
+parser.add_argument('--negative-control-quiesce', choices=('native-result', 'native-timeout', 'adapter-timeout'))
 args = parser.parse_args()
 here = Path(__file__).resolve().parent
 root = here.parents[2]
@@ -29,7 +30,7 @@ production = span(queue, 'static LONG64 VioGpuMakeSynchronousEpochState', 'stati
 # production file so this one span covers exactly what the fixture links against.
 production += span(queue, '__declspec(noinline) void CtrlQueue::PoisonNativeSynchronousRequests',
                    'ULONG CtrlQueue::NativeSynchronousPoisonCallerRva')
-production += span(queue, 'static void VioGpuDecodeSynchronousTimeoutCommand', 'NTSTATUS CtrlQueue::QuiesceSynchronousRequests')
+production += span(queue, 'static void VioGpuDecodeSynchronousTimeoutCommand', 'static void VioGpuCompleteSynchronousEpochTeardown')
 # Starts at the shared epoch-teardown helper rather than at
 # CompleteSynchronousRequestTeardown itself: the helper is defined just above it and
 # the teardown now calls it for both channels.
@@ -40,6 +41,22 @@ if args.negative_control_overwrite:
     guard = 'if (InterlockedCompareExchange(&m_SynchronousTimeoutPublication, 1, 0) != 0)'
     assert production.count(guard) == 1
     production = production.replace(guard, 'if (false)')
+quiesce_failure = None
+if args.negative_control_quiesce:
+    if args.negative_control_quiesce == 'native-result':
+        guard = 'const NTSTATUS nativeStatus = QuiesceNativeSynchronousRequests();'
+        assert production.count(guard) == 1
+        production = production.replace(guard, 'QuiesceNativeSynchronousRequests(); const NTSTATUS nativeStatus = STATUS_SUCCESS;')
+        quiesce_failure = 'FAIL native quiesce timeout prevents successful transport teardown'
+    else:
+        function = ('NTSTATUS CtrlQueue::QuiesceNativeSynchronousRequests' if args.negative_control_quiesce == 'native-timeout'
+                    else 'NTSTATUS CtrlQueue::QuiesceSynchronousRequests')
+        start = production.index(function)
+        guard = 'return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;'
+        index = production.index(guard, start)
+        production = production[:index] + production[index:].replace(guard, 'return status;', 1)
+        quiesce_failure = ('FAIL native quiesce timeout prevents successful transport teardown' if args.negative_control_quiesce == 'native-timeout'
+                           else 'FAIL adapter quiesce timeout prevents successful transport teardown')
 fixture = (here / 'synchronous_timeout_test.cpp').read_text()
 fixture = fixture.replace('// INSERT_DEFINITIONS', definitions).replace('// INSERT_PRODUCTION', production)
 with tempfile.TemporaryDirectory(prefix='viogpu-synchronous-timeout-') as temporary:
@@ -66,7 +83,11 @@ with tempfile.TemporaryDirectory(prefix='viogpu-synchronous-timeout-') as tempor
             if attempt == 20:
                 raise
             time.sleep(0.25)
-    if args.negative_control_overwrite:
+    if quiesce_failure:
+        if result.returncode != 1 or quiesce_failure not in result.stdout:
+            raise SystemExit('Negative control did not detect unsafe quiesce success')
+        print(f'PASS negative control: {args.negative_control_quiesce} detected')
+    elif args.negative_control_overwrite:
         if result.returncode != 1 or 'FAIL first submitted failure retained after recovery' not in result.stdout:
             raise SystemExit('Negative control did not detect first-failure overwrite')
         print('PASS negative control: first-failure overwrite detected')

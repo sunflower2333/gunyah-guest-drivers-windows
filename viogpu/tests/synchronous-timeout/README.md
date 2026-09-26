@@ -19,3 +19,14 @@ failure survives teardown/re-enable; unrelated failures are not accepted.
 
 These fixtures and the WDK build validate source behavior and compilation, not
 host completion latency, physical-device rendering, or the 165 Hz mode change.
+
+The fixture also runs both production quiesce functions with native, adapter,
+and simultaneous mutex timeouts. Teardown must fail the caller's `NT_SUCCESS`
+check unless both mutexes actually drained; `STATUS_TIMEOUT` is a positive
+status and must never be returned as successful quiescence. An offline adapter
+channel cannot hide a still-active native waiter. A later successful retry may
+drain both poisoned channels and finish teardown.
+
+`--negative-control-quiesce native-result`, `native-timeout`, and
+`adapter-timeout` independently restore the discarded native status or either
+raw positive timeout. Each must fail its specific teardown-safety assertion.

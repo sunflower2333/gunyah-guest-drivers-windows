@@ -955,7 +955,9 @@ NTSTATUS CtrlQueue::QuiesceNativeSynchronousRequests(void)
     if (status != STATUS_SUCCESS)
     {
         PoisonNativeSynchronousRequests();
-        return status;
+        // STATUS_TIMEOUT is success-severity but proves no mutex ownership.
+        // Callers use NT_SUCCESS to decide whether queue teardown is safe.
+        return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
     }
     KeReleaseMutex(&m_NativeSynchronousMutex, FALSE);
     return STATUS_SUCCESS;
@@ -977,14 +979,14 @@ NTSTATUS CtrlQueue::QuiesceSynchronousRequests(void)
      * has to have left Enabled before any of those returns.  The two mutexes are
      * taken sequentially here, never nested, so this does not engage the
      * adapter-then-native order. */
-    QuiesceNativeSynchronousRequests();
+    const NTSTATUS nativeStatus = QuiesceNativeSynchronousRequests();
     for (;;)
     {
         LONG64 current = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
         VIOGPU_SYNCHRONOUS_STATE state = VioGpuSynchronousState(current);
         if (state == VioGpuSynchronousOffline)
         {
-            return STATUS_SUCCESS;
+            return nativeStatus;
         }
         if (state == VioGpuSynchronousQuiescing || state == VioGpuSynchronousPoisoned)
         {
@@ -1009,10 +1011,12 @@ NTSTATUS CtrlQueue::QuiesceSynchronousRequests(void)
     if (status != STATUS_SUCCESS)
     {
         PoisonSynchronousRequests();
-        return status;
+        return NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;
     }
     KeReleaseMutex(&m_SynchronousMutex, FALSE);
-    return STATUS_SUCCESS;
+    // Always close both admission gates, but never hide a native waiter that
+    // failed to drain merely because the adapter channel was idle.
+    return nativeStatus;
 }
 
 /* Both channels go Offline together.  Factored on an epoch pointer because
