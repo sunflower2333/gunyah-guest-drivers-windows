@@ -13,6 +13,8 @@
 #include "viogpu_3d_wire.h"
 #include "viogpu_native_ahb_access.h"
 #include "viogpu_native_surface_policy.h"
+#include "viogpu_scanout_geometry_wire.h"
+#include "viogpu_native_scanout_mode.h"
 
 #define _In_
 #define _Inout_
@@ -20,6 +22,7 @@
 #define PAGED_CODE() ((void)0)
 #define RtlZeroMemory(p,n) std::memset(p,0,n)
 #define RtlCopyMemory(p,q,n) std::memcpy(p,q,n)
+#define RtlCompareMemory(p,q,n) (std::memcmp(p,q,n)==0 ? (n) : 0U)
 #define ARRAYSIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define TRUE true
 #define FALSE false
@@ -96,6 +99,7 @@ struct VIOGPU_WDDM_ALLOCATION {
     ULONGLONG ShareKey{},Resource2DResetGeneration{},PlacementOffset{};
     SIZE_T BackingSize{}; int LifecycleMutex{};
     bool NativeExported{}; volatile LONG64 OwnerWritesRendered{},OwnerWritesRetired{};
+    VIOGPU_SCANOUT_BINDING ScanoutBinding{};
 };
 struct VIOGPU_WDDM_OPEN_ALLOCATION {
     UINT Signature{}; VIOGPU_WDDM_DEVICE *Device{}; VIOGPU_WDDM_ALLOCATION *Allocation{}; bool ReadOnly{};
@@ -193,10 +197,33 @@ public:
     ULONGLONG presentSequence=100;
     ULONGLONG crtcAddress{};
     bool queueOk=true,reset=false;
+    bool bindingCurrent=true;
+    bool modeEligible=true,modeCommitted=false;
+    unsigned bindings{};
+    VIOGPU_HOST_CONTEXT_RESULT bindResult=VioGpuHostContextConfirmed;
+    unsigned bindingChecks{},revokeCheck{},geometryQueues{};
+    VIOGPU_SCANOUT_GEOMETRY queuedGeometry{};
+    bool NativeScanoutModeEligible(const VIOGPU_NATIVE_SCANOUT_MODE *mode,bool committedOnly) {
+        assert(!spinlocksHeld);
+        return modeEligible && VioGpuNativeScanoutModeValid(mode) && (!committedOnly || modeCommitted);
+    }
+    VIOGPU_HOST_CONTEXT_RESULT BindNativeScanoutProfile(UINT id,ULONGLONG key,ULONGLONG reset,
+        const VIOGPU_SCANOUT_GEOMETRY *geometry,const VIOGPU_SCANOUT_PROFILE *profile,VIOGPU_SCANOUT_BINDING *out) {
+        assert(!spinlocksHeld && modeCommitted); ++bindings;
+        if(bindResult==VioGpuHostContextConfirmed)
+            *out={id,key,reset,profile->EndpointGeneration,profile->ProfileGeneration,*geometry};
+        return bindResult;
+    }
+    bool NativeScanoutBindingCurrent(const VIOGPU_SCANOUT_BINDING*) {
+        assert(!spinlocksHeld); ++bindingChecks;
+        return bindingCurrent && (!revokeCheck || bindingChecks<revokeCheck);
+    }
     BOOLEAN TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *work);
     bool QueueNativeAhbOperation(UINT id,ULONGLONG,ULONGLONG sequence,bool present,
-        void (*cb)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG),PVOID context,bool refresh=false) {
+        void (*cb)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG),PVOID context,bool refresh=false,
+        const VIOGPU_SCANOUT_GEOMETRY *geometry=nullptr) {
         if(!queueOk) return false;
+        if(geometry) { ++geometryQueues; queuedGeometry=*geometry; }
         if(refresh) { assert(!present && sequence); refreshes.push_back({id,sequence,context,cb}); return true; }
         if(present) { assert(!sequence); cb(context,VioGpuHostContextConfirmed,id,++presentSequence); return true; }
         waits.push_back({id,sequence,context,cb}); return true;
@@ -655,6 +682,51 @@ int main() {
     onWait=[&] { replyRefresh(502); };
     assert(PresentHostSurface(&adapter,&wrapper)==STATUS_SUCCESS);
     assert(adapter.scanouts==oldScanouts && share.Access.Sequence==502 && share.Access.ReleasedSequence==499);
+    // Revocation refuses unchanged-front success and queued refresh without
+    // fabricating release or poisoning a healthy transport.
+    share.Surface.Width=wrapper.Width=64; share.Surface.Height=wrapper.Height=16;
+    share.Surface.Stride=wrapper.Pitch=256;
+    VIOGPU_SCANOUT_GEOMETRY geometry{1,64,64,16,64,16,0,0,83,31,{0,0}};
+    share.ScanoutBinding={19,11,7,23,29,geometry}; wrapper.ScanoutBinding=share.ScanoutBinding;
+    ++wrapper.ScanoutBinding.ProfileGeneration;
+    assert(PresentHostSurface(&adapter,&wrapper)==STATUS_INVALID_HANDLE);
+    --wrapper.ScanoutBinding.ProfileGeneration;
+    adapter.bindingChecks=0; adapter.revokeCheck=2;
+    assert(PresentHostSurface(&adapter,&wrapper)==STATUS_DEVICE_NOT_READY);
+    assert(adapter.scanouts==oldScanouts && !share.AsyncReferences && !adapter.reset);
+    adapter.revokeCheck=0; adapter.bindingCurrent=false;
+    share.RefreshRequested=true;
+    VioGpuWddmRefreshNativeScanout(&adapter,false);
+    assert(adapter.refreshes.empty() && !share.RefreshRequested && !share.RefreshPending);
+    assert(share.Access.Sequence==502 && share.Access.ReleasedSequence==499);
+    adapter.bindingCurrent=true;
+    share.Access.ReleasedSequence=share.Access.Sequence;
+    assert(PresentHostSurface(&adapter,&wrapper)==STATUS_SUCCESS);
+    assert(adapter.geometryQueues==1 && VioGpuScanoutGeometryEqual(&adapter.queuedGeometry,&geometry));
+    VioGpuWddmRefreshNativeScanout(&adapter,true);
+    assert(adapter.geometryQueues==2 && VioGpuScanoutGeometryEqual(&adapter.queuedGeometry,&geometry));
+    replyRefresh(share.Access.Sequence);
+    // A real candidate wrapper may render before mode commit, but cannot
+    // BIND/Present until that exact mode is confirmed. Failure retains ownership.
+    share.ScanoutMode={7,geometry,{1,64,7,0,64,16,64,16,23,29,{0,0}}};
+    share.ScanoutBindPending=1;
+    const auto heldSequence=share.Access.Sequence;
+    assert(PresentHostSurface(&adapter,&wrapper)==STATUS_INVALID_HANDLE && adapter.bindings==0);
+    assert(share.ScanoutBindPending && share.Access.Sequence==heldSequence);
+    adapter.modeCommitted=true; adapter.bindResult=VioGpuHostContextRejected;
+    assert(PresentHostSurface(&adapter,&wrapper)==STATUS_INVALID_HANDLE && adapter.bindings==1);
+    assert(share.ScanoutBindPending && !share.Access.Poisoned);
+    adapter.bindResult=VioGpuHostContextConfirmed;
+    assert(PresentHostSurface(&adapter,&wrapper)==STATUS_SUCCESS && adapter.bindings==2);
+    assert(!share.ScanoutBindPending && share.Access.Sequence==heldSequence);
+    assert(PresentHostSurface(&adapter,&wrapper)==STATUS_SUCCESS && adapter.bindings==2);
+    VIOGPU_WDDM_NATIVE_SHARE_ENTRY uncertain=share;
+    uncertain.ScanoutBindPending=1;
+    adapter.bindResult=VioGpuHostContextUnknown;
+    assert(!EnsureNativeHostSurfaceBinding(&uncertain) && uncertain.ScanoutBindPending && uncertain.Access.Poisoned);
+    assert(uncertain.Access.Sequence==share.Access.Sequence &&
+           uncertain.Access.ReleasedSequence==share.Access.ReleasedSequence);
+    adapter.bindResult=VioGpuHostContextConfirmed;
     VioGpuWddmRefreshNativeScanout(&adapter,true);
     replyRefresh(502,VioGpuHostContextUnknown);
     assert(share.Access.Poisoned && adapter.reset && !share.AsyncReferences);

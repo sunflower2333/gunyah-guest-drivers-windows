@@ -80,6 +80,9 @@ enum virtio_gpu_ctrl_type
 #define VIRTIO_GPU_F_NATIVE_AHB_V2               7
 #define VIRTIO_GPU_F_NATIVE_AHB_RELEASE          8
 #define VIRTIO_GPU_F_NATIVE_AHB_PAGING           9
+/* Feature 10 belongs to display timing. Geometry stays unacknowledged until
+ * producer/mode/update/resource admission is complete, even on a new host. */
+#define VIRTIO_GPU_F_NATIVE_SCANOUT_GEOMETRY     11
 
 #define VIRTIO_GPU_FLAG_FENCE                    (1U << 0)
 #define VIRTIO_GPU_FLAG_INFO_RING_IDX            (1U << 1)
@@ -114,6 +117,16 @@ enum virtio_gpu_ctrl_type
 #define VIRTIO_GPU_NATIVE_AHB_PAGE_READ         1U
 #define VIRTIO_GPU_NATIVE_AHB_PAGE_WRITE        2U
 #define VIRTIO_GPU_NATIVE_AHB_PAGE_FILL         3U
+
+#define VIRTIO_GPU_CMD_CONFIGURE_SCANOUT_GEOMETRY 0xd21bU
+#define VIRTIO_GPU_CMD_BIND_SCANOUT_GEOMETRY      0xd21cU
+#define VIRTIO_GPU_CMD_PRESENT_SCANOUT_GEOMETRY   0xd21dU
+#define VIRTIO_GPU_CMD_REFRESH_SCANOUT_GEOMETRY   0xd21eU
+#define VIRTIO_GPU_CMD_QUERY_SCANOUT_GEOMETRY     0xd21fU
+#define VIRTIO_GPU_RESP_OK_SCANOUT_GEOMETRY       0xd220U
+#define VIRTIO_GPU_CMD_QUERY_SCANOUT_PROFILE     0xd221U
+#define VIRTIO_GPU_RESP_OK_SCANOUT_PROFILE       0xd222U
+#define VIRTIO_GPU_CMD_CONFIGURE_SCANOUT_PROFILE 0xd223U
 
 #define VIRTGPU_DRM_CAPSET_DRM                   6
 #define VIRTGPU_DRM_CONTEXT_MSM                  1

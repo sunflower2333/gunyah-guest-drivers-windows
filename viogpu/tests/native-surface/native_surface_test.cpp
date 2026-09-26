@@ -5,7 +5,10 @@
 #include <cstdlib>
 #include <initializer_list>
 #include "viogpu_native_surface_policy.h"
+#include "../shared/viogpu_wddm_scanout.h"
+#include "../shared/viogpu_wddm_scanout_diagnostic.h"
 #include "viogpu_native_ahb_access.h"
+#include "viogpu_native_scanout_mode.h"
 
 #define _In_
 #define _Out_
@@ -21,6 +24,7 @@
 #define NT_SUCCESS(x) ((x) == 0)
 #define RtlZeroMemory(p, n) std::memset(p, 0, n)
 #define RtlCopyMemory(p, q, n) std::memcpy(p, q, n)
+#define RtlCompareMemory(p,q,n) (std::memcmp(p,q,n)==0 ? (n) : 0U)
 #define TRUE true
 #define FALSE false
 using UINT = unsigned int;
@@ -47,12 +51,13 @@ int KeGetCurrentIrql() { return PASSIVE_LEVEL; }
 void KeAcquireSpinLock(KSPIN_LOCK*,KIRQL *irql) { *irql=0; }
 void KeReleaseSpinLock(KSPIN_LOCK*,KIRQL) {}
 LONG InterlockedDecrement(volatile LONG *p) { return --*p; }
+LONG InterlockedExchange(volatile LONG *p,LONG value) { const auto old=*p; *p=value; return old; }
 using PEPROCESS = int *;
 constexpr UINT VIOGPU_NATIVE_RESOURCE_ID_START = 0x80000000U;
 constexpr UINT MAXUINT = ~0U;
 constexpr int STATUS_SUCCESS = 0, STATUS_INVALID_PARAMETER = -1, STATUS_INVALID_USER_BUFFER = -2,
     STATUS_DEVICE_NOT_READY = -3, STATUS_INVALID_HANDLE = -4, STATUS_INSUFFICIENT_RESOURCES = -5, STATUS_NO_MEMORY = -6,
-    STATUS_GRAPHICS_ALLOCATION_BUSY = -7, STATUS_DEVICE_BUSY = -8;
+    STATUS_GRAPHICS_ALLOCATION_BUSY = -7, STATUS_DEVICE_BUSY = -8, STATUS_NOT_SUPPORTED = -9;
 constexpr int NonPagedPoolNx = 0;
 void *operator new(std::size_t size, int) { return ::operator new(size); }
 enum VIOGPU_HOST_CONTEXT_RESULT { VioGpuHostContextNotSubmitted, VioGpuHostContextConfirmed,
@@ -90,7 +95,15 @@ struct VIOGPU_WDDM_ALLOCATION {
     void *NativeAhbAddress{}; int HostState{},LifecycleMutex{}; KSPIN_LOCK SubmissionLock{};
     LONG SubmissionReferences{},OpenReferences{};
     VIOGPU_2D_RESOURCE_STATE Resource2DState{}; ULONGLONG Resource2DResetGeneration{};
+    UINT Width{},Height{},Pitch{},Format{}; ULONGLONG BackingSize{};
+    VIOGPU_SCANOUT_BINDING ScanoutBinding{};
 };
+constexpr UINT D3DDDIFMT_A8R8G8B8=21,D3DDDIFMT_X8R8G8B8=22;
+int AcquireAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a,VioGpuDod*) {
+    if(a->Destroying)return -1;
+    ++a->SubmissionReferences; return 0;
+}
+void ReleaseAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a) { assert(a->SubmissionReferences>0); --a->SubmissionReferences; }
 struct DXGKARG_DESTROYALLOCATION {
     UINT NumAllocations{}; HANDLE *pAllocationList{}; HANDLE hResource{};
     union { UINT Value{}; struct { UINT DestroyResource:1; }; } Flags;
@@ -116,6 +129,57 @@ public:
     UINT nextId=1, created=0, destroyed=0, imported=0, detached=0;
     UINT scanoutId=999,scanoutDetaches=0,unmaps=0,releasedIds=0;
     bool enabled=true, busy=false, failRelease=false, failImport=false;
+    bool geometryEnabled=false, profileReady=false, bindingCurrent=true;
+    bool diagnostic=false,modeEligible=true,modeCommitted=false,bootstrap=false;
+    bool hasReserved=false,diagnosticPhysical=false;
+    unsigned reserves=0,queryActiveMode=31;
+    VIOGPU_HOST_CONTEXT_RESULT bindResult=VioGpuHostContextConfirmed;
+    UINT bindings=0;
+    bool SupportsNativeScanoutGeometry() { return geometryEnabled; }
+    bool NativeScanoutProfileReady() { return profileReady; }
+    bool NativeScanoutDiagnosticEnabled() { return diagnostic; }
+    UINT NativeScanoutDiagnosticMechanisms() { return 7; }
+    bool ReserveNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode) {
+        if(!diagnostic || !modeEligible)return false;
+        ++reserves; hasReserved=true;
+        FillMode(mode);
+        return true;
+    }
+    void FillMode(VIOGPU_NATIVE_SCANOUT_MODE *mode) {
+        mode->LocalResetGeneration=generation;
+        mode->Geometry={1,64,64,16,64,16,0,0,83,31,{0,0}};
+        mode->Profile={1,64,7,0,64,16,64,16,23,29,{0,0}};
+        if(diagnosticPhysical) {
+            mode->Geometry.StorageWidth=16; mode->Geometry.StorageHeight=64; mode->Geometry.ContentRotationCw=3;
+            mode->Profile.StorageWidth=16; mode->Profile.StorageHeight=64; mode->Profile.ContentRotationCw=3;
+        }
+    }
+    bool QueryReservedNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode,bool *committed) {
+        if(!hasReserved || !modeEligible)return false;
+        FillMode(mode); *committed=modeCommitted;
+        return true;
+    }
+    bool NativeScanoutModeEligible(const VIOGPU_NATIVE_SCANOUT_MODE *mode,bool committedOnly) {
+        return modeEligible && VioGpuNativeScanoutModeValid(mode) && mode->LocalResetGeneration==generation &&
+            (!committedOnly || modeCommitted);
+    }
+    bool QueryNativeScanoutState(VIOGPU_SCANOUT_GEOMETRY *g,VIOGPU_SCANOUT_PROFILE *p,ULONGLONG *local) {
+        if(!geometryEnabled)return false;
+        *g={1,64,64,16,64,16,0,0,83,31,{0,0}};
+        g->ModeGeneration=queryActiveMode;
+        *p={1,64,7,0,64,16,64,16,23,29,{0,0}};
+        *local=generation;
+        return true;
+    }
+    bool NativeScanoutBindingCurrent(const VIOGPU_SCANOUT_BINDING *b) {
+        return b && b->ResourceId ? bindingCurrent : !geometryEnabled || bootstrap;
+    }
+    VIOGPU_HOST_CONTEXT_RESULT BindNativeScanoutProfile(UINT id, ULONGLONG key, ULONGLONG reset,
+        const VIOGPU_SCANOUT_GEOMETRY *g, const VIOGPU_SCANOUT_PROFILE *p, VIOGPU_SCANOUT_BINDING *out) {
+        ++bindings;
+        if(bindResult==VioGpuHostContextConfirmed) *out={id,key,reset,p->EndpointGeneration,p->ProfileGeneration,*g};
+        return bindResult;
+    }
     bool IsDriverActive() { return true; }
     bool IsNativeAhbScanoutEnabled() { return enabled; }
     bool SupportsNativeAhbPaging() { return enabled; }
@@ -168,6 +232,15 @@ bool AcquireNativeShareRegistry(bool) {
 void ReleaseNativeShareRegistry() {}
 ULONGLONG NewNativeShareKeyLocked(VioGpuDod *) { static ULONGLONG key=10; return ++key; }
 // INSERT_PRODUCTION
+
+// Legacy cases keep their original call shape, while profile cases inspect
+// the exact copied binding using the full production signature below.
+static NTSTATUS ReferenceHostSurfaceAllocation(VioGpuDod *adapter,
+    const VIOGPU_WDDM_RESOURCE_SHARE *resource, const VIOGPU_WDDM_ALLOCATION_INFO *info,
+    UINT *id, ULONGLONG *generation) {
+    VIOGPU_SCANOUT_BINDING binding{};
+    return ReferenceHostSurfaceAllocation(adapter,resource,info,id,generation,&binding);
+}
 
 static VIOGPU_WDDM_NATIVE_SURFACE allocate(VioGpuDod &adapter) {
     VIOGPU_WDDM_NATIVE_SURFACE s{};
@@ -292,4 +365,166 @@ int main() {
         assert(adapter.scanoutId==999 && !adapter.scanoutDetaches && !adapter.unmaps && objectReferences==0);
         assert(FindNativeShareByKeyLocked(&adapter,s.ShareKey)==nullptr);
     }
+    VIOGPU_WDDM_NATIVE_PROFILE_SURFACE profileRequest{};
+    profileRequest.Header={VIOGPU_WDDM_ABI_MAGIC,0,sizeof(profileRequest),0};
+    profileRequest.Opcode=VIOGPU_WDDM_ESCAPE_ALLOCATE_PROFILE_SURFACE;
+    profileRequest.ExpectedLocalResetGeneration=adapter.generation;
+    profileRequest.Geometry={1,64,64,16,64,16,0,0,83,31,{0,0}};
+    profileRequest.Profile={1,64,7,0,64,16,64,16,23,29,{0,0}};
+    profileRequest.Surface.Header={VIOGPU_WDDM_ABI_MAGIC,0,128,0};
+    profileRequest.Surface.Opcode=8;
+    profileRequest.Surface.Width=64; profileRequest.Surface.Height=16;
+    profileRequest.Surface.Fourcc=VIOGPU_NATIVE_AHB_FOURCC_AR24;
+    const auto original=profileRequest;
+    DXGKARG_ESCAPE profiledEscape{};
+    profiledEscape.pPrivateDriverData=&profileRequest; profiledEscape.PrivateDriverDataSize=sizeof(profileRequest);
+    const auto beforeCreate=adapter.created;
+    VIOGPU_WDDM_SCANOUT_STATE observed{};
+    observed.Header={VIOGPU_WDDM_ABI_MAGIC,0,sizeof(observed),0};
+    observed.Opcode=VIOGPU_WDDM_ESCAPE_QUERY_SCANOUT_PROFILE;
+    const auto query=observed;
+    DXGKARG_ESCAPE queryEscape{};
+    queryEscape.pPrivateDriverData=&observed; queryEscape.PrivateDriverDataSize=sizeof(observed);
+    assert(QueryNativeScanoutProfileEscape(&adapter,&queryEscape)==STATUS_NOT_SUPPORTED);
+    adapter.geometryEnabled=true;
+    assert(QueryNativeScanoutProfileEscape(&adapter,&queryEscape)==STATUS_SUCCESS);
+    assert(observed.ReadyFlags==0 && observed.Profile.Flags==7 && observed.LocalResetGeneration==adapter.generation);
+    assert(observed.Geometry.HostResetGeneration==83 && !observed.ModeWidth && !observed.ModeRotation);
+    // Request side cannot supply readiness or recycle a prior response.
+    assert(QueryNativeScanoutProfileEscape(&adapter,&queryEscape)==STATUS_INVALID_PARAMETER);
+    observed=query; observed.ReadyFlags=VIOGPU_WDDM_SCANOUT_READY_ALL;
+    assert(QueryNativeScanoutProfileEscape(&adapter,&queryEscape)==STATUS_INVALID_PARAMETER);
+    assert(HandleNativeSurfaceEscape(&adapter,&profiledEscape)==STATUS_NOT_SUPPORTED);
+    assert(adapter.created==beforeCreate);
+    adapter.geometryEnabled=adapter.profileReady=true;
+    for(unsigned fault=0;fault<5;++fault) {
+        profileRequest=original;
+        switch(fault) {
+        case 0: profileRequest.Flags=1; break;
+        case 1: profileRequest.Geometry.StorageWidth=63; break;
+        case 2: profileRequest.Profile.ProfileGeneration=0; break;
+        case 3: profileRequest.ExpectedLocalResetGeneration++; break;
+        case 4: profileRequest.Surface.Opcode=9; break;
+        }
+        assert(HandleNativeSurfaceEscape(&adapter,&profiledEscape)!=STATUS_SUCCESS);
+        assert(adapter.created==beforeCreate);
+    }
+    profileRequest=original;
+    assert(HandleNativeSurfaceEscape(&adapter,&profiledEscape)==STATUS_SUCCESS);
+    assert(adapter.bindings==1 && profileRequest.Surface.ShareKey);
+    auto share=FindNativeShareByKeyLocked(&adapter,profileRequest.Surface.ShareKey);
+    assert(share && share->ScanoutBinding.ResourceId==share->ResourceId);
+    resource.ShareKey=share->Key; resource.Stride=share->Surface.Stride;
+    VIOGPU_SCANOUT_BINDING copied{};
+    adapter.bindingCurrent=false;
+    assert(ReferenceHostSurfaceAllocation(&adapter,&resource,&info,&id,&generation,&copied)!=STATUS_SUCCESS);
+    assert(!copied.ResourceId && !share->AllocationReferences);
+    adapter.bindingCurrent=true;
+    assert(ReferenceHostSurfaceAllocation(&adapter,&resource,&info,&id,&generation,&copied)==STATUS_SUCCESS);
+    assert(copied.ResourceId==share->ResourceId && copied.ShareKey==share->Key);
+    assert(copied.LocalResetGeneration==adapter.generation && copied.Geometry.HostResetGeneration==83);
+    assert(copied.EndpointGeneration==23 && copied.ProfileGeneration==29 && copied.Geometry.ModeGeneration==31);
+    share->AllocationReferences=0;
+    assert(free_surface(adapter,profileRequest.Surface)==STATUS_SUCCESS);
+    assert(objectReferences==0);
+    for(auto outcome : {VioGpuHostContextRejected,VioGpuHostContextUnknown}) {
+        profileRequest=original; adapter.bindResult=outcome; adapter.busy=true;
+        const auto released=adapter.releasedIds;
+        assert(HandleNativeSurfaceEscape(&adapter,&profiledEscape)==STATUS_DEVICE_NOT_READY);
+        assert(adapter.releasedIds==released && objectReferences==1);
+        adapter.busy=false;
+        CollectNativeSurfacesLocked(&adapter);
+        assert(adapter.releasedIds==released+1 && objectReferences==0);
+    }
+    adapter.bindResult=VioGpuHostContextConfirmed;
+    adapter.diagnostic=true; adapter.profileReady=false;
+    const auto priorBinds=adapter.bindings;
+    profileRequest=original; profileRequest.Flags=VIOGPU_WDDM_PROFILE_SURFACE_CANDIDATE;
+    assert(HandleNativeSurfaceEscape(&adapter,&profiledEscape)==STATUS_SUCCESS);
+    share=FindNativeShareByKeyLocked(&adapter,profileRequest.Surface.ShareKey);
+    assert(share && share->ScanoutBindPending && adapter.bindings==priorBinds);
+    assert(!adapter.modeCommitted && VioGpuNativeScanoutModeValid(&share->ScanoutMode));
+    resource.ShareKey=share->Key;
+    assert(ReferenceHostSurfaceAllocation(&adapter,&resource,&info,&id,&generation,&copied)==STATUS_SUCCESS);
+    assert(copied.ResourceId==share->ResourceId && copied.Geometry.ModeGeneration==31);
+    VIOGPU_WDDM_ALLOCATION primary{};
+    primary.Adapter=&adapter; primary.Signature=VIOGPU_WDDM_ALLOCATION_SIGNATURE;
+    primary.Flags=VIOGPU_WDDM_ALLOCATION_PRIMARY; primary.HostSurface=true;
+    primary.ResourceId=share->ResourceId; primary.ShareKey=share->Key; primary.ScanoutBinding=copied;
+    primary.Width=64; primary.Height=16; primary.Pitch=info.Pitch; primary.BackingSize=info.Size;
+    primary.Format=D3DDDIFMT_A8R8G8B8;
+    assert(VioGpuWddmValidateDiagnosticPrimary(&adapter,nullptr,&share->ScanoutMode));
+    assert(VioGpuWddmValidateDiagnosticPrimary(&adapter,&primary,&share->ScanoutMode));
+    for(unsigned failure=0;failure<9;++failure) {
+        auto bad=primary;
+        if(failure==0)bad.Width=16;
+        if(failure==1)bad.Height=64;
+        if(failure==2)bad.Pitch=0;
+        if(failure==3)bad.Format=99;
+        if(failure==4)bad.BackingSize=1;
+        if(failure==5)bad.Destroying=true;
+        if(failure==6)bad.ResourceId++;
+        if(failure==7)bad.ScanoutBinding.Geometry.ModeGeneration++;
+        if(failure==8)bad.ShareKey++;
+        assert(!VioGpuWddmValidateDiagnosticPrimary(&adapter,&bad,&share->ScanoutMode));
+        assert(!bad.SubmissionReferences);
+    }
+    auto standard=primary; standard.HostSurface=false; standard.ShareKey=0;
+    assert(VioGpuWddmValidateDiagnosticPrimary(&adapter,&standard,&share->ScanoutMode));
+    standard.Width=16;
+    assert(!VioGpuWddmValidateDiagnosticPrimary(&adapter,&standard,&share->ScanoutMode));
+    standard.Width=64;
+    standard.Flags=0;
+    assert(!VioGpuWddmValidateDiagnosticPrimary(&adapter,&standard,&share->ScanoutMode));
+    share->AllocationReferences=0;
+    adapter.modeEligible=false;
+    assert(!VioGpuWddmValidateDiagnosticPrimary(&adapter,&primary,&share->ScanoutMode));
+    assert(ReferenceHostSurfaceAllocation(&adapter,&resource,&info,&id,&generation,&copied)!=STATUS_SUCCESS);
+    assert(free_surface(adapter,profileRequest.Surface)==STATUS_SUCCESS);
+    profileRequest=original; profileRequest.Flags=VIOGPU_WDDM_PROFILE_SURFACE_CANDIDATE;
+    const auto priorCreates=adapter.created;
+    assert(HandleNativeSurfaceEscape(&adapter,&profiledEscape)==STATUS_DEVICE_NOT_READY);
+    assert(adapter.created==priorCreates && adapter.bindings==priorBinds && objectReferences==0);
+    VIOGPU_WDDM_SCANOUT_DIAGNOSTIC diagnostic{};
+    diagnostic.Header={VIOGPU_WDDM_ABI_MAGIC,0,sizeof(diagnostic),0};
+    diagnostic.Opcode=VIOGPU_WDDM_ESCAPE_SCANOUT_DIAGNOSTIC;
+    diagnostic.Version=VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_VERSION;
+    const auto emptyDiagnostic=diagnostic;
+    DXGKARG_ESCAPE diagnosticEscape{};
+    diagnosticEscape.pPrivateDriverData=&diagnostic; diagnosticEscape.PrivateDriverDataSize=sizeof(diagnostic);
+    adapter.diagnostic=false;
+    assert(QueryNativeScanoutDiagnosticEscape(&adapter,&diagnosticEscape)==STATUS_NOT_SUPPORTED);
+    adapter.diagnostic=true;
+    adapter.queryActiveMode=0; adapter.diagnosticPhysical=true;
+    assert(QueryNativeScanoutDiagnosticEscape(&adapter,&diagnosticEscape)==STATUS_SUCCESS);
+    assert(diagnostic.Mechanisms==7 && diagnostic.StateFlags==VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_PROFILE_AVAILABLE);
+    assert(!diagnostic.ModeWidth && !diagnostic.ModeHeight && !diagnostic.ModeRotation);
+    assert(QueryNativeScanoutDiagnosticEscape(&adapter,&diagnosticEscape)==STATUS_INVALID_PARAMETER);
+    diagnostic=emptyDiagnostic; diagnostic.Version=2;
+    assert(QueryNativeScanoutDiagnosticEscape(&adapter,&diagnosticEscape)==STATUS_INVALID_PARAMETER);
+    diagnostic=emptyDiagnostic; diagnostic.Mechanisms=63;
+    assert(QueryNativeScanoutDiagnosticEscape(&adapter,&diagnosticEscape)==STATUS_INVALID_PARAMETER);
+    diagnostic=emptyDiagnostic; diagnostic.RequestFlags=VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_RESERVE;
+    assert(QueryNativeScanoutDiagnosticEscape(&adapter,&diagnosticEscape)==STATUS_DEVICE_NOT_READY);
+    adapter.modeEligible=true;
+    assert(QueryNativeScanoutDiagnosticEscape(&adapter,&diagnosticEscape)==STATUS_SUCCESS);
+    assert(diagnostic.StateFlags==(VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_PROFILE_AVAILABLE |
+                                  VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_CANDIDATE));
+    assert(diagnostic.ModeWidth==16 && diagnostic.ModeHeight==64 && diagnostic.ModeRotation==2);
+    const auto reservedDiagnostic=diagnostic;
+    const auto reserveCount=adapter.reserves;
+    diagnostic=emptyDiagnostic;
+    assert(QueryNativeScanoutDiagnosticEscape(&adapter,&diagnosticEscape)==STATUS_SUCCESS);
+    assert(diagnostic.StateFlags==3 && adapter.reserves==reserveCount);
+    assert(VioGpuScanoutGeometryEqual(&diagnostic.Geometry,&reservedDiagnostic.Geometry));
+    adapter.modeCommitted=true; diagnostic=emptyDiagnostic;
+    assert(QueryNativeScanoutDiagnosticEscape(&adapter,&diagnosticEscape)==STATUS_SUCCESS);
+    assert(diagnostic.StateFlags==5 && adapter.reserves==reserveCount);
+    adapter.hasReserved=false; adapter.queryActiveMode=31; diagnostic=emptyDiagnostic;
+    assert(QueryNativeScanoutDiagnosticEscape(&adapter,&diagnosticEscape)==STATUS_DEVICE_NOT_READY);
+    adapter.bootstrap=true;
+    auto bootSurface=allocate(adapter);
+    assert(bootSurface.ShareKey && free_surface(adapter,bootSurface)==STATUS_SUCCESS);
+    adapter.bootstrap=false;
+    assert(objectReferences==0);
 }

@@ -4,14 +4,18 @@ from pathlib import Path
 import argparse
 import os
 import re
-import resource
+try:
+    import resource
+except ImportError:  # Windows has no POSIX resource limits.
+    resource = None
 import subprocess
 import tempfile
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--negative-controls', action='store_true')
 args = parser.parse_args()
-resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+if resource is not None:
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 here = Path(__file__).resolve().parent
 root = here.parents[2]
 source = (root / 'viogpu/common/viogpu_queue.cpp').read_text()
@@ -44,6 +48,9 @@ fixture = (here / 'native_ahb_release_test.cpp').read_text().replace('// INSERT_
 variants = [('production', production)]
 if args.negative_controls:
     for name, old, new in [
+        ('geometry-negotiation', '!geometryNegotiated ||', '(geometryNegotiated && false) ||'),
+        ('geometry-mode-restamp', 'oriented->ModeGeneration = geometry->ModeGeneration;',
+         'oriented->ModeGeneration = geometry->ModeGeneration + 1;'),
         ('refresh-stale-sequence', 'response->sequence >= pending->Sequence', 'true'),
         ('short-response', 'buffer->response_size == sizeof(*response)', 'buffer->response_size >= sizeof(GPU_CTRL_HDR)'),
         ('stale-epoch', 'VioGpuReadSynchronousEpochState(&queue->m_SynchronousEpochState) == pending->Epoch', 'true'),

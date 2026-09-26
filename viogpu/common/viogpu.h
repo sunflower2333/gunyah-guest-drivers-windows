@@ -45,6 +45,7 @@ extern VirtIOSystemOps VioGpuSystemOps;
 
 #define VIRTIO_GPU_EVENT_DISPLAY (1 << 0)
 #define VIRTIO_GPU_EVENT_NATIVE_AHB_REFRESH (1 << 1)
+#define VIRTIO_GPU_EVENT_NATIVE_SCANOUT_PROFILE (1U << 2)
 
 enum virtio_gpu_formats
 {

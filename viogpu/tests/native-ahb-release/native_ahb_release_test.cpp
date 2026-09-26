@@ -16,6 +16,7 @@ using VOID = void;
 using PVOID = void *;
 using BOOLEAN = bool;
 #include "viogpu_3d_wire.h"
+#include "viogpu_scanout_geometry_wire.h"
 #define _Inout_
 #define TRUE true
 #define FALSE false
@@ -48,7 +49,10 @@ enum VIOGPU_VBUFFER_TERMINAL_CLAIM { VioGpuVbufferTerminalClaimUnarmed,
     VioGpuVbufferTerminalClaimWon, VioGpuVbufferTerminalClaimLost };
 using VIOGPU_NATIVE_AHB_COMPLETION = VOID (*)(PVOID, VIOGPU_HOST_CONTEXT_RESULT, UINT, ULONGLONG);
 struct GPU_VBUFFER {
-    GPU_NATIVE_AHB_OPERATION command{};
+    union {
+        GPU_NATIVE_AHB_OPERATION command{};
+        VIOGPU_PRESENT_SCANOUT_GEOMETRY geometry;
+    };
     GPU_NATIVE_AHB_PAGING paging{};
     PVOID data_buf{}; UINT data_size{},resp_size{};
     void *resp_buf{};
@@ -80,7 +84,8 @@ public:
     UINT liveBuffers{}, freedBuffers{};
     std::vector<PGPU_VBUFFER> pending;
     static bool IsStandard2DResourceId(UINT id) { return id && id < 0x80000000U; }
-    bool QueueNativeAhbOperation(UINT, ULONGLONG, BOOLEAN, VIOGPU_NATIVE_AHB_COMPLETION, PVOID, BOOLEAN = false);
+    bool QueueNativeAhbOperation(UINT, ULONGLONG, BOOLEAN, VIOGPU_NATIVE_AHB_COMPLETION, PVOID,
+                                 BOOLEAN = false, const VIOGPU_SCANOUT_GEOMETRY * = nullptr, BOOLEAN = false);
     static VOID CompleteNativeAhbOperation(PVOID);
     static VOID CancelNativeAhbOperation(PVOID);
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhbSynchronous(UINT,UINT,ULONGLONG,UINT,UINT,PVOID);
@@ -107,10 +112,10 @@ public:
         return true;
     }
     PVOID AllocCmdResp(PGPU_VBUFFER *out, int size, PVOID response, int responseSize) {
-        assert((size==40 && responseSize==40) || (size==48 && responseSize>=48));
+        assert(((size==40 || size==56) && responseSize==40) || (size==48 && responseSize>=48));
         if(failCommand) return nullptr;
         *out = new GPU_VBUFFER; ++liveBuffers; (*out)->resp_buf = response; (*out)->resp_size=responseSize;
-        return size==40?static_cast<PVOID>(&(*out)->command):static_cast<PVOID>(&(*out)->paging);
+        return size==48?static_cast<PVOID>(&(*out)->paging):static_cast<PVOID>(&(*out)->command);
     }
     void ReleaseBuffer(PGPU_VBUFFER b) {
         assert(liveBuffers); --liveBuffers; ++freedBuffers;
@@ -125,6 +130,8 @@ public:
                b->command.hdr.padding[2]==0 && b->command.reserved==0);
         assert(b->command.hdr.type==VIRTIO_GPU_CMD_PRESENT_NATIVE_AHB ||
                b->command.hdr.type==VIRTIO_GPU_CMD_WAIT_NATIVE_AHB_RELEASE ||
+               b->command.hdr.type==VIRTIO_GPU_CMD_PRESENT_SCANOUT_GEOMETRY ||
+               b->command.hdr.type==VIRTIO_GPU_CMD_REFRESH_SCANOUT_GEOMETRY ||
                b->command.hdr.type==VIRTIO_GPU_CMD_REFRESH_NATIVE_AHB);
         pending.push_back(b);
         if(immediate) reply(b, accepted(b, b->command.sequence));
@@ -165,6 +172,34 @@ struct Result {
 int main() {
     static_assert(sizeof(GPU_CTRL_HDR)==24 && sizeof(GPU_NATIVE_AHB_OPERATION)==40);
     CtrlQueue q; Result a,b;
+    VIOGPU_SCANOUT_GEOMETRY geometry = {1,64,1904,3040,3040,1904,1,0,7,11,{0,0}};
+    Result oriented;
+    assert(!q.QueueNativeAhbOperation(5,0,true,Result::done,&oriented,false,&geometry));
+    assert(!q.QueueNativeAhbOperation(5,9,false,Result::done,&oriented,false,&geometry,true));
+    auto malformed = geometry; malformed.ModeGeneration = 0;
+    assert(!q.QueueNativeAhbOperation(5,0,true,Result::done,&oriented,false,&malformed,true));
+    assert(q.pending.empty() && oriented.calls==0);
+    assert(q.QueueNativeAhbOperation(5,0,true,Result::done,&oriented,false,&geometry,true));
+    auto rotated = q.pending.back();
+    assert(rotated->geometry.Header.Type==0xd21d && rotated->geometry.HostResetGeneration==7 &&
+           rotated->geometry.ModeGeneration==11 && rotated->geometry.ResourceId==5 &&
+           rotated->geometry.Sequence==0 && rotated->geometry.Reserved==0);
+    geometry.ModeGeneration = 12; // Caller/current mode changes cannot rewrite queued binding.
+    assert(rotated->geometry.ModeGeneration==11);
+    q.reply(rotated,CtrlQueue::accepted(rotated,89));
+    assert(oriented.calls==1 && oriented.result==VioGpuHostContextConfirmed && oriented.sequence==89);
+    geometry.ModeGeneration=11;
+    assert(q.QueueNativeAhbOperation(5,89,false,Result::done,&oriented,true,&geometry,true));
+    rotated=q.pending.back();
+    assert(rotated->geometry.Header.Type==0xd21e && rotated->geometry.Sequence==89 &&
+           rotated->geometry.HostResetGeneration==7 && rotated->geometry.ModeGeneration==11);
+    q.reply(rotated,CtrlQueue::accepted(rotated,89));
+    assert(oriented.calls==2 && oriented.result==VioGpuHostContextConfirmed);
+    // Genuine old release stays on the original opcode with its accepted sequence.
+    assert(q.QueueNativeAhbOperation(5,89,false,Result::done,&oriented));
+    rotated=q.pending.back();
+    assert(rotated->command.hdr.type==VIRTIO_GPU_CMD_WAIT_NATIVE_AHB_RELEASE);
+    q.reply(rotated,CtrlQueue::accepted(rotated,89));
     assert(q.QueueNativeAhbOperation(1,41,false,Result::done,&a));
     auto wait=q.pending.back();
     assert(q.QueueNativeAhbOperation(2,0,true,Result::done,&b));

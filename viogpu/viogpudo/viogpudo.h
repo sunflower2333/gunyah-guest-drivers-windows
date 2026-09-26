@@ -37,6 +37,8 @@
 #include "child_descriptor.h"
 #include "mmio_flip.h"
 #include "viogpu_queue.h"
+#include "viogpu_native_scanout_mode.h"
+#include "viogpu_native_diagnostic_mode.h"
 #include "edid_hdr.h"
 
 /* Source-mode pixel formats that carry more than eight bits per component, so
@@ -124,7 +126,8 @@ typedef struct
      * that same backing through the guest BAR.  This is deliberately separate
      * from ZeroCopyScanout, which uses the native-context ShareKey path. */
     UINT NativeAhbScanout : 1;
-    UINT Unused : 22;
+    UINT NativeScanoutGeometryDiagnostic : 1;
+    UINT Unused : 21;
 } DRIVER_STATUS_FLAG;
 
 #pragma pack(pop)
@@ -804,12 +807,33 @@ struct VIOGPU_NATIVE_CONTEXT_READINESS
     GPU_CAPSET_DRM Capset;
 };
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+/* Own every fallback host resource until confirmed UNREF or a confirmed device
+ * reset. Preparing a replacement never changes the currently published owner. */
+struct VIOGPU_NATIVE_FRAMEBUFFER
+{
+    VioGpuObj *Object;
+    VIOGPU_2D_RESOURCE_STATE State;
+    ULONGLONG ResetGeneration;
+    UINT Width;
+    UINT Height;
+    VIOGPU_NATIVE_FRAMEBUFFER *Next;
+};
+#endif
+
 class VioGpuAdapter : IVioGpuPCI
 {
   public:
     VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod);
     ~VioGpuAdapter(void);
     NTSTATUS SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    NTSTATUS PrepareFrameBufferMode(ULONG Mode, const CURRENT_MODE *candidate,
+                                    VIOGPU_NATIVE_FRAMEBUFFER **prepared);
+    NTSTATUS CommitFrameBufferMode(VIOGPU_NATIVE_FRAMEBUFFER *prepared, CURRENT_MODE *candidate);
+    VOID RetireFrameBufferMode(VIOGPU_NATIVE_FRAMEBUFFER *owner);
+    BOOLEAN CollectRetiredFrameBuffers();
+#endif
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     NTSTATUS ResumeFrameBuffer(CURRENT_MODE *pCurrentMode);
     void RequestColorConnectionRefresh();
@@ -1108,13 +1132,26 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     __declspec(code_seg(".text")) BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
-                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE);
+                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE,
+                                    const VIOGPU_SCANOUT_GEOMETRY *geometry = NULL);
     /* Make the next DPC drain the control queue as if its interrupt fired. */
     VOID RequestDisplayQueueDrain(void)
     {
         InterlockedOr(reinterpret_cast<volatile LONG *>(&m_PendingWorks), ISR_REASON_DISPLAY);
     }
     BOOLEAN SupportsNativeAhbPaging() const;
+    BOOLEAN SupportsNativeScanoutGeometry() const;
+    BOOLEAN QueryNativeScanoutState(VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                    VIOGPU_SCANOUT_PROFILE *profile, ULONGLONG *localReset);
+    BOOLEAN ReserveNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode);
+    BOOLEAN NativeScanoutModeEligible(const VIOGPU_NATIVE_SCANOUT_MODE *mode, BOOLEAN committedOnly);
+    VIOGPU_HOST_CONTEXT_RESULT CommitNativeScanoutMode(const VIOGPU_NATIVE_SCANOUT_MODE *mode);
+    BOOLEAN QueryReservedNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode, BOOLEAN *committed);
+    VOID ObserveNativeScanoutProfile(void);
+    BOOLEAN NativeScanoutBindingCurrent(const VIOGPU_SCANOUT_BINDING *binding);
+    VIOGPU_HOST_CONTEXT_RESULT BindNativeScanoutProfile(UINT resource, ULONGLONG key, ULONGLONG localReset,
+        const VIOGPU_SCANOUT_GEOMETRY *geometry, const VIOGPU_SCANOUT_PROFILE *profile,
+        VIOGPU_SCANOUT_BINDING *binding);
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
                                             ULONGLONG offset, UINT length, UINT pattern, PVOID data);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize)
@@ -1233,6 +1270,9 @@ class VioGpuAdapter : IVioGpuPCI
     void SetCustomDisplay(_In_ USHORT xres, _In_ USHORT yres);
     BOOLEAN CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, CURRENT_MODE *pCurrentMode);
     void DestroyFrameBufferObj(BOOLEAN bReset, BOOLEAN bKeepBuffer);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    BOOLEAN ReleaseFrameBufferOwner(VIOGPU_NATIVE_FRAMEBUFFER *owner);
+#endif
     BOOLEAN CreateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape, _In_ CONST CURRENT_MODE *pCurrentMode);
     BOOLEAN UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape, _In_ CONST CURRENT_MODE *pCurrentMode);
     void DestroyCursor(void);
@@ -1284,6 +1324,19 @@ class VioGpuAdapter : IVioGpuPCI
 #if defined(VIOGPU_NATIVE_CONTEXT)
     UINT m_NextNativeResourceId;
     KMUTEX m_2DScanoutMutex;
+    /* Lock order: submission rundown, caller's flip exclusion (if any), then
+     * this passive mode mutex, then CtrlQueue's synchronous channel. */
+    KMUTEX m_NativeScanoutModeMutex;
+    VIOGPU_NATIVE_SCANOUT_MODE m_NativeScanoutCandidate;
+    VIOGPU_NATIVE_SCANOUT_MODE m_NativeScanoutCommitted;
+    ULONGLONG m_NativeScanoutReservedHostReset;
+    ULONGLONG m_NativeScanoutReservedMode;
+    VIOGPU_SCANOUT_PROFILE m_NativeScanoutObservedProfile;
+    ULONGLONG m_NativeScanoutObservedHostReset;
+    ULONGLONG m_NativeScanoutObservedLocalReset;
+    ULONGLONG m_NativeScanoutObservation;
+    BOOLEAN m_NativeScanoutObservationValid;
+    BOOLEAN m_NativeScanoutReconcilePending;
     BOOLEAN m_2DResourceIdsInitialized;
     UINT m_2DScanoutResourceId;
     BOOLEAN m_2DScanoutUnknown;
@@ -1311,6 +1364,10 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuBuf m_GpuBuf;
     VioGpuIdr m_Idr;
     VioGpuObj *m_pFrameBuf;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    VIOGPU_NATIVE_FRAMEBUFFER *m_FrameBufferOwner;
+    VIOGPU_NATIVE_FRAMEBUFFER *m_RetiredFrameBuffers;
+#endif
     UINT m_FrameBufWidth;
     UINT m_FrameBufHeight;
     /* Resource bound to scanout 0 by the publication path.  SET_SCANOUT makes
@@ -1466,6 +1523,12 @@ class VioGpuDod
      * DDIs registered and the child reporting connected, so the question is
      * which DDI Windows stops at.  One array rather than a dozen members. */
     volatile LONG m_DisplayCounters[VioGpuDisplayCounterCount];
+    KMUTEX m_NativeDiagnosticCaptureMutex;
+    VIOGPU_NATIVE_SCANOUT_MODE m_NativeDiagnosticCaptureMode;
+    UINT m_NativeDiagnosticCaptureCount;
+    VIOGPU_NATIVE_DIAGNOSTIC_DDI_RECORD m_NativeDiagnosticCapture[16];
+    VIOGPU_NATIVE_DIAGNOSTIC_CURSOR_RECORD m_NativeDiagnosticCursorCapture[2];
+    UINT m_NativeDiagnosticCursorMask;
     volatile LONG m_UmdPresentActive;
     volatile LONG m_PublishSequence;
     volatile LONG m_PublishSequenceAtFlip;
@@ -1987,10 +2050,38 @@ class VioGpuDod
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
     BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
-                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE);
+                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE,
+                                    const VIOGPU_SCANOUT_GEOMETRY *geometry = NULL);
     __declspec(code_seg(".text")) VOID RequestNativeAhbRefreshWork(void);
     VOID PollControlQueue(void);
     BOOLEAN SupportsNativeAhbPaging() const;
+    BOOLEAN SupportsNativeScanoutGeometry() const;
+    BOOLEAN QueryNativeScanoutState(VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                    VIOGPU_SCANOUT_PROFILE *profile, ULONGLONG *localReset);
+    BOOLEAN NativeScanoutBindingCurrent(const VIOGPU_SCANOUT_BINDING *binding);
+    VIOGPU_HOST_CONTEXT_RESULT BindNativeScanoutProfile(UINT resource, ULONGLONG key, ULONGLONG localReset,
+        const VIOGPU_SCANOUT_GEOMETRY *geometry, const VIOGPU_SCANOUT_PROFILE *profile,
+        VIOGPU_SCANOUT_BINDING *binding);
+    /* Producer final-render, complete VidPN and all consumer admission are
+     * not implemented yet. Host profile flags cannot enable those facts. */
+    BOOLEAN NativeScanoutProfileReady() const { return FALSE; }
+    BOOLEAN NativeScanoutDiagnosticEnabled() const
+    {
+        return m_Flags.NativeScanoutGeometryDiagnostic && IsNativeAhbScanoutEnabled() && !IsRenderOnly();
+    }
+    /* Diagnostic mechanisms are not observed producer or production readiness. */
+    UINT NativeScanoutDiagnosticMechanisms() const { return 63U; }
+    VOID RecordNativeDiagnosticDdi(const D3DKMDT_VIDPN_SOURCE_MODE *source,
+        const D3DKMDT_VIDPN_PRESENT_PATH *path, const D3DKMDT_VIDEO_SIGNAL_INFO *signal,
+        HANDLE primary, UINT stage, NTSTATUS status, const VIOGPU_NATIVE_SCANOUT_MODE *mode = NULL);
+    VOID RecordNativeDiagnosticCursor(const DXGKARG_SETPOINTERPOSITION *position,
+                                      const DXGKARG_SETPOINTERSHAPE *shape);
+    BOOLEAN QueryReservedNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode, BOOLEAN *committed);
+    BOOLEAN ReserveNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode);
+    BOOLEAN NativeScanoutModeEligible(const VIOGPU_NATIVE_SCANOUT_MODE *mode, BOOLEAN committedOnly);
+    BOOLEAN PrepareNativeDiagnosticMode(VIOGPU_NATIVE_SCANOUT_MODE *mode,
+        VIDEO_MODE_INFORMATION *physicalInfo, VIOGPU_DISPLAY_TIMING *physicalTiming,
+        D3DKMDT_VIDEO_SIGNAL_INFO *signal, USHORT *logicalIndex);
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
                                             ULONGLONG offset, UINT length, UINT pattern, PVOID data);
     BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize, BOOLEAN resize = FALSE);
@@ -2832,7 +2923,18 @@ class VioGpuDod
     NTSTATUS ReadRegistryDWORD(_In_ HANDLE DevInstRegKeyHandle, _In_ PCWSTR pszwValueName, _Inout_ PDWORD pdwValue);
     NTSTATUS SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourceMode,
                                   CONST D3DKMDT_VIDPN_PRESENT_PATH *pPath,
-                                  CONST D3DKMDT_VIDEO_SIGNAL_INFO *pTargetSignal);
+                                  CONST D3DKMDT_VIDEO_SIGNAL_INFO *pTargetSignal,
+                                  HANDLE hPrimaryAllocation = NULL);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    NTSTATUS SetNativeDiagnosticModeAndPath(const D3DKMDT_VIDPN_SOURCE_MODE *source,
+        const D3DKMDT_VIDPN_PRESENT_PATH *path, const D3DKMDT_VIDEO_SIGNAL_INFO *signal,
+        HANDLE primary);
+    NTSTATUS AddNativeDiagnosticSourceMode(const DXGK_VIDPNSOURCEMODESET_INTERFACE *modeInterface,
+        D3DKMDT_HVIDPNSOURCEMODESET set, const D3DKMDT_VIDPN_TARGET_MODE *target);
+    NTSTATUS AddNativeDiagnosticTargetMode(const DXGK_VIDPNTARGETMODESET_INTERFACE *modeInterface,
+        D3DKMDT_HVIDPNTARGETMODESET set, const D3DKMDT_VIDPN_SOURCE_MODE *source);
+    NTSTATUS AddNativeDiagnosticMonitorMode(const DXGKARG_RECOMMENDMONITORMODES *request);
+#endif
     NTSTATUS AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODES *CONST pRecommendMonitorModes);
     NTSTATUS AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTERFACE *pVidPnSourceModeSetInterface,
                                  D3DKMDT_HVIDPNSOURCEMODESET hVidPnSourceModeSet,

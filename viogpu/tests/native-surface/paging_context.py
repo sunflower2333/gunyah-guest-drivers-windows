@@ -3,11 +3,15 @@
 from pathlib import Path
 import os
 import re
-import resource
+try:
+    import resource
+except ImportError:  # Windows has no POSIX resource limits.
+    resource = None
 import subprocess
 import tempfile
 
-resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+if resource is not None:
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 here = Path(__file__).resolve().parent
 root = here.parents[2]
 source = (root / 'viogpu/viogpuwddm/wddmddi.cpp').read_text()

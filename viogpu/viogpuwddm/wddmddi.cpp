@@ -3655,6 +3655,13 @@ NTSTATUS ExecutePresentTransaction(VIOGPU_WDDM_PRESENT_TRANSACTION *transaction,
                                              *failureDetail, executionDiagnostic);
         return nativeStatus;
     }
+    if (!transaction->Adapter->NativeScanoutBindingCurrent(NULL))
+    {
+        *failureStage = VioGpuWddmPresentExecuteScanoutProfile;
+        InitializePresentExecutionDiagnostic(transaction, *failureStage, STATUS_DEVICE_NOT_READY,
+                                             *failureDetail, executionDiagnostic);
+        return STATUS_DEVICE_NOT_READY;
+    }
     if (source == destination)
     {
         *failureStage = VioGpuWddmPresentExecuteAliasedAllocations;
@@ -4482,6 +4489,9 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
     VIOGPU_2D_RESOURCE_STATE SurfaceState;
     ULONGLONG SurfaceResetGeneration;
     VIOGPU_WDDM_NATIVE_SURFACE Surface;
+    VIOGPU_SCANOUT_BINDING ScanoutBinding;
+    VIOGPU_NATIVE_SCANOUT_MODE ScanoutMode;
+    volatile LONG ScanoutBindPending;
     volatile LONG SubmissionReferences;
     volatile LONG AsyncReferences;
     VIOGPU_NATIVE_AHB_ACCESS Access;
@@ -5597,6 +5607,99 @@ static VOID NativeAhbRefreshCompleted(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT r
     InterlockedDecrement(&share->AsyncReferences);
 }
 
+static BOOLEAN NativeHostSurfaceBindingCurrent(const VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share)
+{
+    PAGED_CODE();
+    if (InterlockedCompareExchange(const_cast<volatile LONG *>(&share->ScanoutBindPending), 0, 0) != 0)
+        return FALSE;
+    const auto binding = &share->ScanoutBinding;
+    if (binding->ResourceId != 0 &&
+        !VioGpuScanoutBindingMatches(binding, &binding->Geometry, share->ResourceId, share->Key,
+            share->SurfaceResetGeneration, share->Surface.Width, share->Surface.Height))
+        return FALSE;
+    return share->Adapter->NativeScanoutBindingCurrent(binding);
+}
+
+static BOOLEAN NativeHostSurfaceAllocationEligible(const VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share)
+{
+    PAGED_CODE();
+    return InterlockedCompareExchange(const_cast<volatile LONG *>(&share->ScanoutBindPending), 0, 0) != 0
+        ? share->Adapter->NativeScanoutModeEligible(&share->ScanoutMode, FALSE)
+        : share->Adapter->NativeScanoutBindingCurrent(&share->ScanoutBinding);
+}
+
+BOOLEAN VioGpuWddmValidateDiagnosticPrimary(VioGpuDod *adapter, HANDLE handle,
+                                            const VIOGPU_NATIVE_SCANOUT_MODE *mode)
+{
+    PAGED_CODE();
+    if (adapter == NULL || !adapter->NativeScanoutDiagnosticEnabled() || !VioGpuNativeScanoutModeValid(mode))
+        return FALSE;
+    /* Dxgkrnl may commit a mode before supplying any primary. This grants no
+     * resource permission: the first actual Present still requires mode+BIND. */
+    if (handle == NULL) return TRUE;
+    auto allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(handle);
+    if (!IsOwnedAllocation(allocation, adapter) ||
+        AcquireAllocationSubmissionReference(allocation, adapter) != STATUS_SUCCESS) return FALSE;
+    BOOLEAN valid = IsScanoutPrimaryAllocation(allocation) &&
+        allocation->Width == mode->Geometry.StorageWidth && allocation->Height == mode->Geometry.StorageHeight &&
+        (allocation->Format == D3DDDIFMT_A8R8G8B8 || allocation->Format == D3DDDIFMT_X8R8G8B8) &&
+        allocation->Pitch >= allocation->Width * 4 &&
+        allocation->BackingSize >= static_cast<ULONGLONG>(allocation->Pitch) * allocation->Height;
+    /* An ordinary shared primary is the physical Dxgkrnl mode placeholder.
+     * Validating it here grants no scanout: after Configure only a separately
+     * authenticated HostSurface can Present. A runtime requiring the ordinary
+     * primary itself to display is a refused diagnostic outcome. */
+    if (valid && allocation->HostSurface)
+    {
+        valid = FALSE;
+        if (AcquireNativeShareRegistry(FALSE))
+        {
+            auto share = FindNativeShareByKeyLocked(adapter, allocation->ShareKey);
+            valid = share != NULL && share->HostSurface && share->ResourceId == allocation->ResourceId &&
+                VioGpuNativeScanoutModeEqual(&share->ScanoutMode, mode) &&
+                VioGpuScanoutBindingMatches(&allocation->ScanoutBinding, &mode->Geometry, share->ResourceId,
+                    share->Key, mode->LocalResetGeneration, allocation->Width, allocation->Height) &&
+                NativeHostSurfaceAllocationEligible(share);
+            ReleaseNativeShareRegistry();
+        }
+    }
+    ReleaseAllocationSubmissionReference(allocation);
+    return valid;
+}
+
+/* Called with the passive share registry held. The immutable allocation/share
+ * identity is already validated; only the canonical share owns pending BIND. */
+static BOOLEAN EnsureNativeHostSurfaceBinding(VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share)
+{
+    PAGED_CODE();
+    if (InterlockedCompareExchange(&share->ScanoutBindPending, 0, 0) == 0)
+        return NativeHostSurfaceBindingCurrent(share);
+    if (!share->Adapter->NativeScanoutModeEligible(&share->ScanoutMode, TRUE))
+        return FALSE; // Pre-Commit rendering is legal; pre-Commit Present is not.
+    VIOGPU_SCANOUT_BINDING confirmed = {};
+    const auto result = share->Adapter->BindNativeScanoutProfile(share->ResourceId, share->Key,
+        share->SurfaceResetGeneration, &share->ScanoutMode.Geometry, &share->ScanoutMode.Profile, &confirmed);
+    if (result != VioGpuHostContextConfirmed)
+    {
+        if (result == VioGpuHostContextUnknown)
+        {
+            KIRQL irql;
+            KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+            share->Access.Poisoned = true;
+            KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
+            KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+        }
+        return FALSE;
+    }
+    if (!VioGpuScanoutBindingMatches(&confirmed, &share->ScanoutBinding.Geometry,
+            share->ResourceId, share->Key, share->SurfaceResetGeneration, share->Surface.Width, share->Surface.Height) ||
+        confirmed.EndpointGeneration != share->ScanoutBinding.EndpointGeneration ||
+        confirmed.ProfileGeneration != share->ScanoutBinding.ProfileGeneration)
+        return FALSE;
+    InterlockedExchange(&share->ScanoutBindPending, 0);
+    return TRUE;
+}
+
 NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocation)
 {
     PAGED_CODE();
@@ -5611,7 +5714,14 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
     if (share == NULL || !share->HostSurface || share->ResourceId != allocation->ResourceId ||
         share->SurfaceResetGeneration != allocation->Resource2DResetGeneration ||
         share->AllocationReferences == 0 || share->Surface.Width != allocation->Width ||
-        share->Surface.Height != allocation->Height || share->Surface.Stride != allocation->Pitch)
+        share->Surface.Height != allocation->Height || share->Surface.Stride != allocation->Pitch ||
+        share->ScanoutBinding.ResourceId != allocation->ScanoutBinding.ResourceId ||
+        (share->ScanoutBinding.ResourceId != 0 &&
+         (!VioGpuScanoutBindingMatches(&allocation->ScanoutBinding, &share->ScanoutBinding.Geometry,
+              share->ResourceId, share->Key, share->SurfaceResetGeneration, allocation->Width, allocation->Height) ||
+          allocation->ScanoutBinding.EndpointGeneration != share->ScanoutBinding.EndpointGeneration ||
+          allocation->ScanoutBinding.ProfileGeneration != share->ScanoutBinding.ProfileGeneration)) ||
+        !EnsureNativeHostSurfaceBinding(share))
     {
         ReleaseNativeShareRegistry();
         return STATUS_INVALID_HANDLE;
@@ -5688,6 +5798,16 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
     InterlockedExchange(&g_VioGpuHostSurfacePhaseUsec[0], phaseUsec);
     if (phaseUsec > 2000)
         adapter->CountDisplayEvent(VioGpuHostSurfaceReleaseWaitOver2ms);
+    if (!NativeHostSurfaceBindingCurrent(share))
+    {
+        KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+        if (reserved) share->Access.PresentPending = false;
+        share->RefreshRequested = FALSE;
+        KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
+        KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+        InterlockedDecrement(&share->AsyncReferences);
+        return STATUS_DEVICE_NOT_READY;
+    }
     if (unchangedFront)
     {
         InterlockedDecrement(&share->AsyncReferences);
@@ -5746,7 +5866,8 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
             KeInitializeEvent(&pending->Event, NotificationEvent, FALSE);
             InterlockedIncrement(&share->AsyncReferences);
             if (!adapter->QueueNativeAhbOperation(share->ResourceId, share->SurfaceResetGeneration, 0, TRUE,
-                                                  NativeAhbPresentAccepted, pending))
+                                                  NativeAhbPresentAccepted, pending, FALSE,
+                                                  share->ScanoutBinding.ResourceId ? &share->ScanoutBinding.Geometry : NULL))
                 NativeAhbPresentAccepted(pending, VioGpuHostContextNotSubmitted, share->ResourceId, 0);
             status = WaitPollingControlQueue(adapter, &pending->Event, timeout.QuadPart);
             const LONGLONG wokeTicks = KeQueryPerformanceCounter(NULL).QuadPart;
@@ -5851,15 +5972,24 @@ static NTSTATUS HandleNativeSurfaceEscape(_In_ VioGpuDod *adapter, _In_ const DX
     PAGED_CODE();
     if (adapter == NULL || escape == NULL || escape->hDevice != NULL || escape->hContext != NULL ||
         escape->Flags.Value != 0 || escape->pPrivateDriverData == NULL ||
-        escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_NATIVE_SURFACE))
+        (escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_NATIVE_SURFACE) &&
+         escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_NATIVE_PROFILE_SURFACE)))
     {
         return STATUS_INVALID_PARAMETER;
     }
     static_assert(sizeof(VIOGPU_WDDM_NATIVE_SURFACE) == 128, "native surface ABI width");
     VIOGPU_WDDM_NATIVE_SURFACE request = {};
+    VIOGPU_WDDM_NATIVE_PROFILE_SURFACE profileRequest = {};
+    const BOOLEAN profiled = escape->PrivateDriverDataSize == sizeof(profileRequest);
     __try
     {
-        RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
+        if (profiled)
+        {
+            RtlCopyMemory(&profileRequest, escape->pPrivateDriverData, sizeof(profileRequest));
+            request = profileRequest.Surface;
+        }
+        else
+            RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request));
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -5869,6 +5999,30 @@ static NTSTATUS HandleNativeSurfaceEscape(_In_ VioGpuDod *adapter, _In_ const DX
     {
         return STATUS_INVALID_PARAMETER;
     }
+    if (profiled)
+    {
+        if (!IsCurrentAbiHeader(&profileRequest.Header, sizeof(profileRequest)) ||
+            profileRequest.Opcode != VIOGPU_WDDM_ESCAPE_ALLOCATE_PROFILE_SURFACE ||
+            (profileRequest.Flags & ~VIOGPU_WDDM_PROFILE_SURFACE_CANDIDATE) != 0 ||
+            profileRequest.ExpectedLocalResetGeneration == 0 ||
+            request.Opcode != VIOGPU_WDDM_ESCAPE_ALLOCATE_NATIVE_SURFACE ||
+            !VioGpuScanoutProfileMatches(&profileRequest.Profile, &profileRequest.Geometry) ||
+            !VioGpuScanoutStorageMatches(&profileRequest.Geometry, request.Width, request.Height))
+            return STATUS_INVALID_PARAMETER;
+        const BOOLEAN candidate = (profileRequest.Flags & VIOGPU_WDDM_PROFILE_SURFACE_CANDIDATE) != 0;
+        if (!(candidate ? adapter->NativeScanoutDiagnosticEnabled() : adapter->NativeScanoutProfileReady()) ||
+            !adapter->SupportsNativeScanoutGeometry())
+            return STATUS_NOT_SUPPORTED;
+        if (candidate)
+        {
+            const VIOGPU_NATIVE_SCANOUT_MODE mode = {profileRequest.ExpectedLocalResetGeneration,
+                profileRequest.Geometry, profileRequest.Profile};
+            if (!adapter->NativeScanoutModeEligible(&mode, FALSE)) return STATUS_DEVICE_NOT_READY;
+        }
+    }
+    else if (request.Opcode == VIOGPU_WDDM_ESCAPE_ALLOCATE_NATIVE_SURFACE &&
+             !adapter->NativeScanoutBindingCurrent(NULL))
+        return STATUS_NOT_SUPPORTED; // A legacy allocation has no producer/binding contract.
     if (!AcquireNativeShareRegistry(TRUE))
     {
         return STATUS_DEVICE_NOT_READY;
@@ -5905,7 +6059,8 @@ static NTSTATUS HandleNativeSurfaceEscape(_In_ VioGpuDod *adapter, _In_ const DX
             }
         }
         if (!adapter->IsDriverActive() || !adapter->SupportsNativeAhbPaging() ||
-            !adapter->QueryNativeContextReadiness(&capset, NULL, NULL, &generation) || generation == 0)
+            !adapter->QueryNativeContextReadiness(&capset, NULL, NULL, &generation) || generation == 0 ||
+            (profiled && profileRequest.ExpectedLocalResetGeneration != generation))
         {
             status = STATUS_DEVICE_NOT_READY;
         }
@@ -5950,6 +6105,29 @@ static NTSTATUS HandleNativeSurfaceEscape(_In_ VioGpuDod *adapter, _In_ const DX
                      * must survive until confirmed UNREF or reset retirement. */
                     InsertTailList(&g_VioGpuNativeShares, &share->Link);
                     share->Size = layout.BackingSize;
+                    if (result == VioGpuHostContextConfirmed && profiled &&
+                        share->SurfaceResetGeneration == generation)
+                    {
+                        if ((profileRequest.Flags & VIOGPU_WDDM_PROFILE_SURFACE_CANDIDATE) != 0)
+                        {
+                            share->ScanoutMode = {generation, profileRequest.Geometry, profileRequest.Profile};
+                            if (!adapter->NativeScanoutModeEligible(&share->ScanoutMode, FALSE))
+                                result = VioGpuHostContextNotSubmitted;
+                            else
+                            {
+                                /* This immutable identity is reserved, not
+                                 * host-bound. First post-Commit Present owns
+                                 * the actual BIND; creation never Configures. */
+                                share->ScanoutBinding = {share->ResourceId, share->Key, generation,
+                                    profileRequest.Profile.EndpointGeneration, profileRequest.Profile.ProfileGeneration,
+                                    profileRequest.Geometry};
+                                InterlockedExchange(&share->ScanoutBindPending, 1);
+                            }
+                        }
+                        else
+                            result = adapter->BindNativeScanoutProfile(share->ResourceId, share->Key, generation,
+                                &profileRequest.Geometry, &profileRequest.Profile, &share->ScanoutBinding);
+                    }
                     if (result != VioGpuHostContextConfirmed || share->SurfaceResetGeneration != generation ||
                         layout.BackingSize == 0 || layout.BackingSize > VIOGPU_WDDM_HOST_SURFACE_BUDGET ||
                         bytes + layout.BackingSize > VIOGPU_WDDM_HOST_SURFACE_BUDGET)
@@ -5969,7 +6147,13 @@ static NTSTATUS HandleNativeSurfaceEscape(_In_ VioGpuDod *adapter, _In_ const DX
                         share->Surface = request;
                         __try
                         {
-                            RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request));
+                            if (profiled)
+                            {
+                                profileRequest.Surface = request;
+                                RtlCopyMemory(escape->pPrivateDriverData, &profileRequest, sizeof(profileRequest));
+                            }
+                            else
+                                RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request));
                         }
                         __except (EXCEPTION_EXECUTE_HANDLER)
                         {
@@ -6144,10 +6328,12 @@ static NTSTATUS ReferenceHostSurfaceAllocation(_In_ VioGpuDod *adapter,
                                                 _In_ const VIOGPU_WDDM_RESOURCE_SHARE *resource,
                                                 _In_ const VIOGPU_WDDM_ALLOCATION_INFO *info,
                                                 _Out_ UINT *resourceId,
-                                                _Out_ ULONGLONG *generation)
+                                                _Out_ ULONGLONG *generation,
+                                                _Out_ VIOGPU_SCANOUT_BINDING *binding)
 {
     *resourceId = 0;
     *generation = 0;
+    RtlZeroMemory(binding, sizeof(*binding));
     if (!AcquireNativeShareRegistry(FALSE))
     {
         return STATUS_INVALID_HANDLE;
@@ -6167,11 +6353,13 @@ static NTSTATUS ReferenceHostSurfaceAllocation(_In_ VioGpuDod *adapter,
     {
         BOOLEAN retired = FALSE;
         if (adapter->Reconcile2DResourceAfterReset(&share->SurfaceState, &share->SurfaceResetGeneration, &retired) &&
-            !retired && share->SurfaceResetGeneration == share->Surface.ResetGeneration)
+            !retired && share->SurfaceResetGeneration == share->Surface.ResetGeneration &&
+            NativeHostSurfaceAllocationEligible(share))
         {
             ++share->AllocationReferences;
             *resourceId = share->ResourceId;
             *generation = share->SurfaceResetGeneration;
+            *binding = share->ScanoutBinding;
             status = STATUS_SUCCESS;
         }
     }
@@ -7432,8 +7620,15 @@ VOID VioGpuWddmRefreshNativeScanout(VioGpuDod *adapter, BOOLEAN requested)
             if (share->Adapter != adapter || !share->HostSurface || share->AllocationReferences == 0 ||
                 !adapter->IsActiveScanoutResource(share->ResourceId))
                 continue;
+            const BOOLEAN bindingCurrent = NativeHostSurfaceBindingCurrent(share);
             KIRQL irql;
             KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+            if (!bindingCurrent)
+            {
+                share->RefreshRequested = FALSE;
+                KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+                break;
+            }
             if (requested) share->RefreshRequested = TRUE;
             if (share->RefreshRequested && share->SurfaceResident && !share->Access.Poisoned &&
                 !share->Access.PresentPending && !share->Access.WaitPending && !share->Access.Writer &&
@@ -7452,7 +7647,8 @@ VOID VioGpuWddmRefreshNativeScanout(VioGpuDod *adapter, BOOLEAN requested)
         ReleaseNativeShareRegistry();
     }
     if (reserved && !adapter->QueueNativeAhbOperation(reserved->ResourceId, reserved->SurfaceResetGeneration,
-            sequence, FALSE, NativeAhbRefreshCompleted, reserved, TRUE))
+            sequence, FALSE, NativeAhbRefreshCompleted, reserved, TRUE,
+            reserved->ScanoutBinding.ResourceId ? &reserved->ScanoutBinding.Geometry : NULL))
         NativeAhbRefreshCompleted(reserved, VioGpuHostContextNotSubmitted, reserved->ResourceId, sequence);
     adapter->ReleaseFlipApply();
 }
@@ -7963,6 +8159,104 @@ static NTSTATUS HandleNativePublishEscape(_In_ VioGpuDod *adapter, _In_ CONST DX
     return status;
 }
 
+static NTSTATUS QueryNativeScanoutProfileEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+    if (escape->hDevice != NULL || escape->hContext != NULL || escape->Flags.Value != 0 ||
+        escape->pPrivateDriverData == NULL || escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_SCANOUT_STATE))
+        return STATUS_INVALID_PARAMETER;
+    VIOGPU_WDDM_SCANOUT_STATE request = {};
+    __try { RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request)); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return STATUS_INVALID_USER_BUFFER; }
+    VIOGPU_WDDM_SCANOUT_STATE expected = {};
+    expected.Header = request.Header;
+    expected.Opcode = VIOGPU_WDDM_ESCAPE_QUERY_SCANOUT_PROFILE;
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
+        RtlCompareMemory(&request, &expected, sizeof(request)) != sizeof(request))
+        return STATUS_INVALID_PARAMETER;
+    if (!adapter->QueryNativeScanoutState(&request.Geometry, &request.Profile, &request.LocalResetGeneration))
+        return STATUS_NOT_SUPPORTED;
+    /* Host facts are observable, but cannot assert producer/DDI readiness.
+     * Exact DXGI mode representation remains unavailable until that contract
+     * is implemented together with CommitVidPn and smooth active updates. */
+    request.ReadyFlags = 0;
+    __try { RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request)); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return STATUS_INVALID_USER_BUFFER; }
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS QueryNativeScanoutDiagnosticEscape(VioGpuDod *adapter, const DXGKARG_ESCAPE *escape)
+{
+    PAGED_CODE();
+    if (escape->hDevice != NULL || escape->hContext != NULL || escape->Flags.Value != 0 ||
+        escape->pPrivateDriverData == NULL || escape->PrivateDriverDataSize != sizeof(VIOGPU_WDDM_SCANOUT_DIAGNOSTIC))
+        return STATUS_INVALID_PARAMETER;
+    VIOGPU_WDDM_SCANOUT_DIAGNOSTIC request = {};
+    __try { RtlCopyMemory(&request, escape->pPrivateDriverData, sizeof(request)); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return STATUS_INVALID_USER_BUFFER; }
+    VIOGPU_WDDM_SCANOUT_DIAGNOSTIC expected = {};
+    expected.Header = request.Header;
+    expected.Opcode = VIOGPU_WDDM_ESCAPE_SCANOUT_DIAGNOSTIC;
+    expected.Version = VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_VERSION;
+    expected.RequestFlags = request.RequestFlags;
+    if (!IsCurrentAbiHeader(&request.Header, sizeof(request)) ||
+        (request.RequestFlags & ~VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_RESERVE) != 0 ||
+        RtlCompareMemory(&request, &expected, sizeof(request)) != sizeof(request))
+        return STATUS_INVALID_PARAMETER;
+    if (!adapter->NativeScanoutDiagnosticEnabled() || !adapter->SupportsNativeScanoutGeometry())
+        return STATUS_NOT_SUPPORTED;
+    request.Mechanisms = adapter->NativeScanoutDiagnosticMechanisms();
+    if ((request.RequestFlags & VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_RESERVE) != 0)
+    {
+        VIOGPU_NATIVE_SCANOUT_MODE mode = {};
+        if (!adapter->ReserveNativeScanoutMode(&mode)) return STATUS_DEVICE_NOT_READY;
+        VIOGPU_NATIVE_SCANOUT_MODE observed = {};
+        BOOLEAN committed = FALSE;
+        if (!adapter->QueryReservedNativeScanoutMode(&observed, &committed) ||
+            !VioGpuNativeScanoutModeEqual(&mode, &observed)) return STATUS_DEVICE_NOT_READY;
+        request.Geometry = mode.Geometry;
+        request.Profile = mode.Profile;
+        request.LocalResetGeneration = mode.LocalResetGeneration;
+        request.StateFlags = VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_PROFILE_AVAILABLE |
+            (committed ? VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_COMMITTED : VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_CANDIDATE);
+    }
+    else
+    {
+        VIOGPU_NATIVE_SCANOUT_MODE mode = {};
+        BOOLEAN committed = FALSE;
+        if (adapter->QueryReservedNativeScanoutMode(&mode, &committed))
+        {
+            request.Geometry = mode.Geometry;
+            request.Profile = mode.Profile;
+            request.LocalResetGeneration = mode.LocalResetGeneration;
+            request.StateFlags = VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_PROFILE_AVAILABLE |
+                (committed ? VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_COMMITTED : VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_CANDIDATE);
+        }
+        else
+        {
+            if (!adapter->QueryNativeScanoutState(&request.Geometry, &request.Profile, &request.LocalResetGeneration))
+                return STATUS_DEVICE_NOT_READY;
+            /* No local record is not proof of an uncommitted host. Ambiguous
+             * Configure and revoked prior modes require reset, never CCD rollback. */
+            if (request.Geometry.ModeGeneration != 0) return STATUS_DEVICE_NOT_READY;
+            if (request.Profile.Flags == VIOGPU_SCANOUT_PROFILE_USABLE)
+                request.StateFlags = VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_PROFILE_AVAILABLE;
+        }
+    }
+    if ((request.StateFlags & (VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_CANDIDATE |
+                               VIOGPU_WDDM_SCANOUT_DIAGNOSTIC_COMMITTED)) != 0 &&
+        request.Geometry.ContentRotationCw == 3)
+    {
+        request.ModeWidth = request.Geometry.StorageWidth;
+        request.ModeHeight = request.Geometry.StorageHeight;
+        request.ModeRotation = 2; // Explicit DXGI diagnostic hypothesis, not a general CW cast.
+    }
+    /* Mechanism flags never synthesize production ReadyFlags. */
+    __try { RtlCopyMemory(escape->pPrivateDriverData, &request, sizeof(request)); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return STATUS_INVALID_USER_BUFFER; }
+    return STATUS_SUCCESS;
+}
+
 _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter, CONST DXGKARG_ESCAPE *escape)
 {
     PAGED_CODE();
@@ -7973,6 +8267,13 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmEscape(CONST HANDLE hAdapter,
     }
 
     reinterpret_cast<VioGpuDod *>(hAdapter)->CountDisplayEvent(32);
+
+    if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_SCANOUT_STATE))
+        return QueryNativeScanoutProfileEscape(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
+    if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_SCANOUT_DIAGNOSTIC))
+        return QueryNativeScanoutDiagnosticEscape(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
+    if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_NATIVE_PROFILE_SURFACE))
+        return HandleNativeSurfaceEscape(reinterpret_cast<VioGpuDod *>(hAdapter), escape);
 
     if (escape->PrivateDriverDataSize == sizeof(VIOGPU_WDDM_NATIVE_SURFACE_RESOURCE) &&
         escape->pPrivateDriverData != NULL)
@@ -8074,6 +8375,15 @@ VioGpuWddmGetStandardAllocationDriverData(CONST HANDLE hAdapter, DXGKARG_GETSTAN
                     return STATUS_INVALID_PARAMETER;
                 }
 
+                VioGpuDod *adapter = reinterpret_cast<VioGpuDod *>(hAdapter);
+                if (adapter != NULL && adapter->NativeScanoutDiagnosticEnabled())
+                {
+                    D3DKMDT_VIDPN_SOURCE_MODE raw = {};
+                    raw.Format.Graphics.PrimSurfSize.cx = surface->Width;
+                    raw.Format.Graphics.PrimSurfSize.cy = surface->Height;
+                    raw.Format.Graphics.PixelFormat = surface->Format;
+                    adapter->RecordNativeDiagnosticDdi(&raw, NULL, NULL, NULL, 3, STATUS_PENDING);
+                }
                 status = CalculateSurfaceLayout(surface->Width,
                                                 surface->Height,
                                                 surface->Format,
@@ -8304,10 +8614,11 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
         ULONGLONG contextResetGeneration = 0;
         UINT contextId = 0;
         ULONGLONG surfaceGeneration = 0;
+        VIOGPU_SCANOUT_BINDING surfaceBinding = {};
         if (hostSurface)
         {
             status = ReferenceHostSurfaceAllocation(adapter, &resourceShare, &privateData,
-                                                     &standardResourceId, &surfaceGeneration);
+                                                     &standardResourceId, &surfaceGeneration, &surfaceBinding);
             if (!NT_SUCCESS(status))
             {
                 break;
@@ -8409,6 +8720,7 @@ _Use_decl_annotations_ NTSTATUS APIENTRY VioGpuWddmCreateAllocation(CONST HANDLE
         allocation->ShareKey = resourceShare.ShareKey;
         allocation->ShareStride = resourceShare.Stride;
         allocation->HostSurface = hostSurface;
+        allocation->ScanoutBinding = surfaceBinding;
         if (hostSurface)
         {
             allocation->Resource2DState = VioGpu2DResourceNativeAhbBackingAttached;
@@ -14081,6 +14393,7 @@ static NTSTATUS BindStandardPrimaryScanout(_In_ VioGpuDod *adapter,
     {
         return PresentResidentHostSurface(adapter, allocation, static_cast<ULONGLONG>(primaryAddress), modeChange);
     }
+    if (!adapter->NativeScanoutBindingCurrent(NULL)) return STATUS_DEVICE_NOT_READY;
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     // A high-precision primary carries no color space of its own. MPO3 would
     // supply one per present, but dxgkrnl never calls it without overlay caps,

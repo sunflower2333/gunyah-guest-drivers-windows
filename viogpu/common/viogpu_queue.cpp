@@ -425,10 +425,13 @@ VOID CtrlQueue::CancelNativeAhbOperation(PVOID context)
 }
 
 BOOLEAN CtrlQueue::QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, BOOLEAN present,
-                                          VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh)
+                                          VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh,
+                                          const VIOGPU_SCANOUT_GEOMETRY *geometry, BOOLEAN geometryNegotiated)
 {
     if (KeGetCurrentIrql() > DISPATCH_LEVEL || !IsStandard2DResourceId(resourceId) ||
         (present && sequence != 0) || (refresh && (present || sequence == 0)) ||
+        (geometry != NULL && (!geometryNegotiated || (!present && !refresh) ||
+                              !VioGpuScanoutGeometryValid(geometry))) ||
         completion == NULL || m_pBuf == NULL)
     {
         return FALSE;
@@ -450,7 +453,8 @@ BOOLEAN CtrlQueue::QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, 
         return FALSE;
     }
     PGPU_VBUFFER buffer = NULL;
-    auto command = static_cast<PGPU_NATIVE_AHB_OPERATION>(AllocCmdResp(&buffer, sizeof(*response), response,
+    const UINT commandSize = geometry != NULL ? sizeof(VIOGPU_PRESENT_SCANOUT_GEOMETRY) : sizeof(*response);
+    auto command = static_cast<PGPU_NATIVE_AHB_OPERATION>(AllocCmdResp(&buffer, commandSize, response,
                                                                      sizeof(*response)));
     if (command == NULL)
     {
@@ -459,11 +463,21 @@ BOOLEAN CtrlQueue::QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, 
         return FALSE;
     }
     RtlZeroMemory(response, sizeof(*response));
-    RtlZeroMemory(command, sizeof(*command));
+    RtlZeroMemory(command, commandSize);
     command->hdr.type = refresh ? VIRTIO_GPU_CMD_REFRESH_NATIVE_AHB :
                         present ? VIRTIO_GPU_CMD_PRESENT_NATIVE_AHB : VIRTIO_GPU_CMD_WAIT_NATIVE_AHB_RELEASE;
     command->resource_id = resourceId;
     command->sequence = sequence;
+    if (geometry != NULL)
+    {
+        /* The caller must pass the allocation's immutable binding, not the
+         * current adapter tuple. The host checks both at actual admission. */
+        auto oriented = reinterpret_cast<VIOGPU_PRESENT_SCANOUT_GEOMETRY *>(command);
+        oriented->Header.Type = refresh ? VIRTIO_GPU_CMD_REFRESH_SCANOUT_GEOMETRY
+                                       : VIRTIO_GPU_CMD_PRESENT_SCANOUT_GEOMETRY;
+        oriented->HostResetGeneration = geometry->HostResetGeneration;
+        oriented->ModeGeneration = geometry->ModeGeneration;
+    }
     pending->Queue = this;
     pending->Buffer = buffer;
     pending->Completion = completion;
@@ -2171,6 +2185,159 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::FlushResourceSynchronous(UINT resource_id,
     command->r.y = y;
 
     VIOGPU_HOST_CONTEXT_RESULT result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+BOOLEAN CtrlQueue::QueryScanoutGeometry(VIOGPU_SCANOUT_GEOMETRY_RESPONSE *caps, BOOLEAN negotiated)
+{
+    PAGED_CODE();
+    if (caps == NULL)
+        return FALSE;
+    RtlZeroMemory(caps, sizeof(*caps));
+    if (!negotiated || m_pBuf == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || !BeginSynchronousRequest())
+        return FALSE;
+    auto response = static_cast<VIOGPU_SCANOUT_GEOMETRY_RESPONSE *>(m_pBuf->AllocateMemory(sizeof(*caps)));
+    if (response == NULL)
+    {
+        EndSynchronousRequest();
+        return FALSE;
+    }
+    PGPU_VBUFFER vbuf = NULL;
+    auto command = static_cast<VIOGPU_QUERY_SCANOUT_GEOMETRY *>(
+        AllocCmdResp(&vbuf, sizeof(VIOGPU_QUERY_SCANOUT_GEOMETRY), response, sizeof(*caps)));
+    if (command == NULL)
+    {
+        m_pBuf->FreeMemory(response);
+        EndSynchronousRequest();
+        return FALSE;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    RtlZeroMemory(response, sizeof(*response));
+    command->Header.Type = VIRTIO_GPU_CMD_QUERY_SCANOUT_GEOMETRY;
+    BOOLEAN releaseBuffer = TRUE;
+    const BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) &&
+                            VioGpuScanoutGeometryResponseValid(response, vbuf->response_size);
+    if (success)
+        *caps = *response;
+    if (releaseBuffer)
+        ReleaseBuffer(vbuf);
+    EndSynchronousRequest();
+    return success;
+}
+
+BOOLEAN CtrlQueue::QueryScanoutProfile(VIOGPU_SCANOUT_PROFILE_RESPONSE *caps, BOOLEAN negotiated)
+{
+    PAGED_CODE();
+    if (caps == NULL)
+        return FALSE;
+    RtlZeroMemory(caps, sizeof(*caps));
+    if (!negotiated || m_pBuf == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || !BeginSynchronousRequest())
+        return FALSE;
+    auto response = static_cast<VIOGPU_SCANOUT_PROFILE_RESPONSE *>(m_pBuf->AllocateMemory(sizeof(*caps)));
+    if (response == NULL)
+    {
+        EndSynchronousRequest();
+        return FALSE;
+    }
+    PGPU_VBUFFER vbuf = NULL;
+    auto command = static_cast<VIOGPU_QUERY_SCANOUT_PROFILE *>(
+        AllocCmdResp(&vbuf, sizeof(VIOGPU_QUERY_SCANOUT_PROFILE), response, sizeof(*caps)));
+    if (command == NULL)
+    {
+        m_pBuf->FreeMemory(response);
+        EndSynchronousRequest();
+        return FALSE;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    RtlZeroMemory(response, sizeof(*response));
+    command->Header.Type = VIRTIO_GPU_CMD_QUERY_SCANOUT_PROFILE;
+    BOOLEAN releaseBuffer = TRUE;
+    const BOOLEAN success = SubmitSynchronousLocked(vbuf, &releaseBuffer) &&
+                            VioGpuScanoutProfileResponseValid(response, vbuf->response_size);
+    if (success)
+        *caps = *response;
+    if (releaseBuffer)
+        ReleaseBuffer(vbuf);
+    EndSynchronousRequest();
+    return success;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::ConfigureScanoutProfile(const VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                                             const VIOGPU_SCANOUT_PROFILE_RESPONSE *profile,
+                                                             BOOLEAN negotiated)
+{
+    PAGED_CODE();
+    /* Validate the queried host reset independently from local allocation
+     * reset. The host rechecks these preference tokens atomically at commit. */
+    if (!negotiated || !VioGpuScanoutProfileResponseValid(profile, sizeof(*profile)) ||
+        !VioGpuScanoutProfileMatches(&profile->Profile, geometry) ||
+        profile->HostResetGeneration != geometry->HostResetGeneration || m_pBuf == NULL ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL || !BeginSynchronousRequest())
+        return VioGpuHostContextNotSubmitted;
+    PGPU_VBUFFER vbuf = NULL;
+    auto command = static_cast<VIOGPU_CONFIGURE_SCANOUT_PROFILE *>(
+        AllocCmd(&vbuf, sizeof(VIOGPU_CONFIGURE_SCANOUT_PROFILE)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->Header.Type = VIRTIO_GPU_CMD_CONFIGURE_SCANOUT_PROFILE;
+    command->Geometry = *geometry;
+    command->EndpointGeneration = profile->Profile.EndpointGeneration;
+    command->ProfileGeneration = profile->Profile.ProfileGeneration;
+    const auto result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::ConfigureScanoutGeometry(const VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                                              BOOLEAN negotiated)
+{
+    PAGED_CODE();
+    if (!negotiated || !VioGpuScanoutGeometryValid(geometry) || m_pBuf == NULL ||
+        KeGetCurrentIrql() != PASSIVE_LEVEL || !BeginSynchronousRequest())
+        return VioGpuHostContextNotSubmitted;
+    PGPU_VBUFFER vbuf = NULL;
+    auto command = static_cast<VIOGPU_CONFIGURE_SCANOUT_GEOMETRY *>(
+        AllocCmd(&vbuf, sizeof(VIOGPU_CONFIGURE_SCANOUT_GEOMETRY)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->Header.Type = VIRTIO_GPU_CMD_CONFIGURE_SCANOUT_GEOMETRY;
+    command->Geometry = *geometry;
+    const auto result = SubmitSynchronousNoDataLocked(vbuf);
+    EndSynchronousRequest();
+    return result;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::BindScanoutGeometry(UINT resourceId,
+                                                         const VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                                         BOOLEAN negotiated)
+{
+    PAGED_CODE();
+    if (!negotiated || !IsStandard2DResourceId(resourceId) || !VioGpuScanoutGeometryValid(geometry) ||
+        m_pBuf == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL || !BeginSynchronousRequest())
+        return VioGpuHostContextNotSubmitted;
+    PGPU_VBUFFER vbuf = NULL;
+    auto command = static_cast<VIOGPU_BIND_SCANOUT_GEOMETRY *>(
+        AllocCmd(&vbuf, sizeof(VIOGPU_BIND_SCANOUT_GEOMETRY)));
+    if (command == NULL)
+    {
+        EndSynchronousRequest();
+        return VioGpuHostContextNotSubmitted;
+    }
+    RtlZeroMemory(command, sizeof(*command));
+    command->Header.Type = VIRTIO_GPU_CMD_BIND_SCANOUT_GEOMETRY;
+    command->ResourceId = resourceId;
+    command->HostResetGeneration = geometry->HostResetGeneration;
+    command->ModeGeneration = geometry->ModeGeneration;
+    const auto result = SubmitSynchronousNoDataLocked(vbuf);
     EndSynchronousRequest();
     return result;
 }

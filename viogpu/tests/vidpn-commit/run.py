@@ -2,6 +2,10 @@
 """Execute the actual CommitVidPn body against strict per-source VidPN peers."""
 import argparse
 import re
+try:
+    import resource
+except ImportError:  # Windows has no POSIX resource limits.
+    resource = None
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,13 +14,20 @@ import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--negative-control-source-all', action='store_true')
+parser.add_argument('--negative-control-early-commit', action='store_true')
 args = parser.parse_args()
+if resource is not None:
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 here = Path(__file__).resolve().parent
 root = here.parents[2]
 source = (root / 'viogpu/viogpudo/viogpudo.cpp').read_text()
 start = source.index('NTSTATUS VioGpuDod::CommitVidPn(')
 end = source.index('NTSTATUS VioGpuDod::SetSourceModeAndPath(', start)
 production = source[start:end]
+if args.negative_control_early_commit:
+    anchor = 'applyPreparedMode = true;'
+    assert production.count(anchor) == 1
+    production = production.replace(anchor, 'SetSourceModeAndPath(&preparedSource, &preparedPath, &preparedSignal); ' + anchor)
 if args.negative_control_source_all:
     # Preserve the exact all-source normalization operands across line wrapping.
     pattern = r'\?\s*0\s*:\s*pCommitVidPn\s*->\s*AffectedVidPnSourceId\s*;'
@@ -48,7 +59,11 @@ with tempfile.TemporaryDirectory(prefix='viogpu-vidpn-commit-') as temporary:
             if attempt == 20:
                 raise
             time.sleep(0.25)
-    if args.negative_control_source_all:
+    if args.negative_control_early_commit:
+        if result.returncode == 0 or 'peer.released()' not in result.stderr:
+            raise SystemExit('Negative control did not detect commit before cleanup')
+        print('PASS negative control: hardware commit before borrowed-handle cleanup rejected')
+    elif args.negative_control_source_all:
         if result.returncode != 1 or 'FAIL ID_ALL never enters per-source callbacks' not in result.stdout:
             raise SystemExit('Negative control did not detect lost all-source normalization')
         print('PASS negative control: lost all-source normalization detected')

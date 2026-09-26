@@ -29,6 +29,7 @@
 
 #pragma once
 #include "viogpu.h"
+#include "viogpu_scanout_geometry_wire.h"
 #include "../shared/viogpu_display_color.h"
 #include "viogpu_pci.h"
 
@@ -584,7 +585,19 @@ class CtrlQueue : public VioGpuQueue
      * means nothing submitted and no callback. TRUE transfers callback-context
      * ownership until completion/cancellation, possibly before this returns. */
     BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, BOOLEAN present,
-                                    VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE);
+                                    VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE,
+                                    const VIOGPU_SCANOUT_GEOMETRY *geometry = NULL, BOOLEAN geometryNegotiated = FALSE);
+    /* Negotiated is explicit: the product currently never acknowledges
+     * feature 11. QUERY is state, not a producer/readiness capability. */
+    BOOLEAN QueryScanoutGeometry(VIOGPU_SCANOUT_GEOMETRY_RESPONSE *response, BOOLEAN negotiated);
+    BOOLEAN QueryScanoutProfile(VIOGPU_SCANOUT_PROFILE_RESPONSE *response, BOOLEAN negotiated);
+    VIOGPU_HOST_CONTEXT_RESULT ConfigureScanoutProfile(const VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                                      const VIOGPU_SCANOUT_PROFILE_RESPONSE *profile,
+                                                      BOOLEAN negotiated);
+    VIOGPU_HOST_CONTEXT_RESULT ConfigureScanoutGeometry(const VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                                       BOOLEAN negotiated);
+    VIOGPU_HOST_CONTEXT_RESULT BindScanoutGeometry(UINT resourceId, const VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                                  BOOLEAN negotiated);
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhbSynchronous(UINT resourceId, UINT operation,
                                                        ULONGLONG offset, UINT length, UINT pattern, PVOID data);
     /* Standard-resource MAP_BLOB/UNMAP_BLOB used by the opt-in Native AHB

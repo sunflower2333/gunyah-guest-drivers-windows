@@ -1019,9 +1019,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58607",
+        "$minor = 58609",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58607",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58609",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -3226,9 +3226,17 @@ def check_vidpn_mode_contract() -> None:
 
     commit = canonical_code(function_body("VioGpuDod::CommitVidPn", VIOGPU_CODE))
     for required in ("pfnAcquireTargetModeSet(", "pfnAcquirePinnedModeInfo(hTargetModeSet,&pPinnedTarget)",
-                     "&pPinnedTarget->VideoSignalInfo", "pfnReleaseTargetModeSet("):
+                     "preparedSource=*pPinnedVidPnSourceModeInfo;", "preparedPath=*pVidPnPresentPath;",
+                     "preparedSignal=pPinnedTarget->VideoSignalInfo;", "pfnReleaseTargetModeSet(",
+                     "if(NT_SUCCESS(Status)&&applyPreparedMode)Status=SetSourceModeAndPath(&preparedSource,&preparedPath,&preparedSignal,pCommitVidPn->hPrimaryAllocation);"):
         if required not in commit:
             fail(f"commit must consume and release pinned target timing: {required}")
+    if commit.count("SetSourceModeAndPath(") != 1:
+        fail("CommitVidPn must have one final prepared mode commit")
+    commit_position = commit.index("SetSourceModeAndPath(")
+    for release in ("pfnReleaseModeInfo(", "pfnReleaseTargetModeSet(", "pfnReleaseSourceModeSet(", "pfnReleasePathInfo("):
+        if commit.rfind(release) > commit_position:
+            fail("CommitVidPn must release all borrowed records before hardware commit")
     mode_set = canonical_code(function_body("VioGpuDod::SetSourceModeAndPath", VIOGPU_CODE))
     for required in ("signal.PixelRate==pTargetSignal->PixelRate", "signal.TotalSize.cx==pTargetSignal->TotalSize.cx",
                      "signal.TotalSize.cy==pTargetSignal->TotalSize.cy",
@@ -6403,6 +6411,7 @@ def check_wddm_present_contract() -> None:
         "VioGpuWddmPresentExecuteTransactionRetire": "21",
         "VioGpuWddmPresentExecuteStateTransition": "22",
         "VioGpuWddmPresentExecuteHostSurfaceProtocol": "23",
+        "VioGpuWddmPresentExecuteScanoutProfile": "24",
         "VioGpuWddmPresentExecuteComplete": "0x0FFF",
     }
     execution_stage_match = re.search(

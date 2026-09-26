@@ -35,6 +35,8 @@
 #include "viogpum.h"
 #include "edid.h"
 #include "viogpu_primary_scanout.h"
+#include "viogpu_native_mode_policy.h"
+#include "viogpu_native_diagnostic_mode.h"
 
 #include <intrin.h>
 
@@ -43,6 +45,8 @@
 #endif
 
 static UINT g_InstanceId = 0;
+
+UINT ColorFormat(UINT format);
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
 extern "C" UCHAR __ImageBase;
@@ -56,6 +60,8 @@ BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
 BOOLEAN VioGpuWddmIsMpo3Registration();
 VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter);
 VOID VioGpuWddmRefreshNativeScanout(_In_ VioGpuDod *adapter, BOOLEAN requested);
+BOOLEAN VioGpuWddmValidateDiagnosticPrimary(VioGpuDod *adapter, HANDLE allocation,
+                                            const VIOGPU_NATIVE_SCANOUT_MODE *mode);
 
 static const ULONG VIOGPU_WIN7_DRIVERCAPS_SIZE = FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps);
 static_assert(VIOGPU_WIN7_DRIVERCAPS_SIZE == 528, "unexpected Win7 DXGK_DRIVERCAPS prefix size");
@@ -276,6 +282,12 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     m_PublishSequence = 0;
     m_PublishSequenceAtFlip = 0;
     RtlZeroMemory((void *)m_DisplayCounters, sizeof(m_DisplayCounters));
+    KeInitializeMutex(&m_NativeDiagnosticCaptureMutex, 0);
+    RtlZeroMemory(&m_NativeDiagnosticCaptureMode, sizeof(m_NativeDiagnosticCaptureMode));
+    RtlZeroMemory(m_NativeDiagnosticCapture, sizeof(m_NativeDiagnosticCapture));
+    m_NativeDiagnosticCaptureCount = 0;
+    RtlZeroMemory(m_NativeDiagnosticCursorCapture, sizeof(m_NativeDiagnosticCursorCapture));
+    m_NativeDiagnosticCursorMask = 0;
     RtlZeroMemory((void *)m_NativeShareOk, sizeof(m_NativeShareOk));
     RtlZeroMemory((void *)m_NativeShareFailed, sizeof(m_NativeShareFailed));
     m_NativeSubmissionFaultDiagnosticRecorded = 0;
@@ -806,6 +818,205 @@ BOOLEAN VioGpuDod::SupportsNativeAhbPaging() const
     return IsNativeAhbScanoutEnabled() && m_pHWDevice != NULL && m_pHWDevice->SupportsNativeAhbPaging();
 }
 
+BOOLEAN VioGpuDod::SupportsNativeScanoutGeometry() const
+{
+    return IsNativeAhbScanoutEnabled() && m_pHWDevice != NULL && m_pHWDevice->SupportsNativeScanoutGeometry();
+}
+
+BOOLEAN VioGpuDod::QueryNativeScanoutState(VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                          VIOGPU_SCANOUT_PROFILE *profile, ULONGLONG *localReset)
+{
+    PAGED_CODE();
+    if (!AcquireNativeSubmissionOperation()) return FALSE;
+    const BOOLEAN result = m_pHWDevice->QueryNativeScanoutState(geometry, profile, localReset);
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
+BOOLEAN VioGpuDod::NativeScanoutBindingCurrent(const VIOGPU_SCANOUT_BINDING *binding)
+{
+    PAGED_CODE();
+    if (!AcquireNativeSubmissionOperation()) return FALSE;
+    const BOOLEAN result = m_pHWDevice->NativeScanoutBindingCurrent(binding);
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
+BOOLEAN VioGpuDod::ReserveNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode)
+{
+    PAGED_CODE();
+    if (!NativeScanoutDiagnosticEnabled() || !AcquireNativeSubmissionOperation()) return FALSE;
+    const BOOLEAN result = m_pHWDevice->ReserveNativeScanoutMode(mode);
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
+BOOLEAN VioGpuDod::QueryReservedNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode, BOOLEAN *committed)
+{
+    PAGED_CODE();
+    if (!NativeScanoutDiagnosticEnabled() || !AcquireNativeSubmissionOperation()) return FALSE;
+    const BOOLEAN result = m_pHWDevice->QueryReservedNativeScanoutMode(mode, committed);
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
+BOOLEAN VioGpuDod::NativeScanoutModeEligible(const VIOGPU_NATIVE_SCANOUT_MODE *mode, BOOLEAN committedOnly)
+{
+    PAGED_CODE();
+    if (!NativeScanoutDiagnosticEnabled() || !AcquireNativeSubmissionOperation()) return FALSE;
+    const BOOLEAN result = m_pHWDevice->NativeScanoutModeEligible(mode, committedOnly);
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
+BOOLEAN VioGpuDod::PrepareNativeDiagnosticMode(VIOGPU_NATIVE_SCANOUT_MODE *mode,
+    VIDEO_MODE_INFORMATION *physicalInfo, VIOGPU_DISPLAY_TIMING *physicalTiming,
+    D3DKMDT_VIDEO_SIGNAL_INFO *signal, USHORT *logicalIndex)
+{
+    PAGED_CODE();
+    if (mode == NULL || physicalInfo == NULL || physicalTiming == NULL || signal == NULL ||
+        logicalIndex == NULL || !ReserveNativeScanoutMode(mode)) return FALSE;
+    const USHORT index = m_pHWDevice->GetCurrentModeIndex();
+    if (index >= m_pHWDevice->GetModeCount() ||
+        !VioGpuNativeDiagnosticModeTiming(mode, m_pHWDevice->GetModeTiming(index), physicalTiming)) return FALSE;
+    *physicalInfo = *m_pHWDevice->GetModeInfo(index);
+    physicalInfo->VisScreenWidth = physicalTiming->Width;
+    physicalInfo->VisScreenHeight = physicalTiming->Height;
+    physicalInfo->ScreenStride = physicalTiming->Width * 4;
+    BuildVideoSignalInfo(signal, m_pHWDevice->GetModeInfo(index));
+    signal->ActiveSize.cx = physicalTiming->Width;
+    signal->ActiveSize.cy = physicalTiming->Height;
+    signal->TotalSize.cx = physicalTiming->TotalWidth;
+    signal->TotalSize.cy = physicalTiming->TotalHeight;
+    unsigned numerator = 0, denominator = 0;
+    if (!VioGpuTimingRational(physicalTiming->PixelClock, physicalTiming->TotalWidth, numerator, denominator))
+        return FALSE;
+    signal->HSyncFreq.Numerator = numerator;
+    signal->HSyncFreq.Denominator = denominator;
+    *logicalIndex = index;
+    return TRUE;
+}
+
+VOID VioGpuDod::RecordNativeDiagnosticDdi(const D3DKMDT_VIDPN_SOURCE_MODE *source,
+    const D3DKMDT_VIDPN_PRESENT_PATH *path, const D3DKMDT_VIDEO_SIGNAL_INFO *signal,
+    HANDLE primary, UINT stage, NTSTATUS status, const VIOGPU_NATIVE_SCANOUT_MODE *mode)
+{
+    PAGED_CODE();
+    if (!NativeScanoutDiagnosticEnabled()) return;
+    VIOGPU_NATIVE_DIAGNOSTIC_DDI_RECORD record = {};
+    record.Version = 1;
+    record.Stage = stage;
+    record.Status = static_cast<UINT>(status);
+    record.PrimaryHandle = reinterpret_cast<ULONG_PTR>(primary);
+    BOOLEAN committed = FALSE;
+    if (mode != NULL) record.Mode = *mode;
+    else (VOID)QueryReservedNativeScanoutMode(&record.Mode, &committed);
+    if (source != NULL)
+    {
+        record.Flags |= 1;
+        record.SourceWidth = source->Format.Graphics.PrimSurfSize.cx;
+        record.SourceHeight = source->Format.Graphics.PrimSurfSize.cy;
+        record.VisibleWidth = source->Format.Graphics.VisibleRegionSize.cx;
+        record.VisibleHeight = source->Format.Graphics.VisibleRegionSize.cy;
+        record.Stride = source->Format.Graphics.Stride;
+        record.Format = source->Format.Graphics.PixelFormat;
+    }
+    if (path != NULL)
+    {
+        record.Flags |= 2;
+        record.SourceId = path->VidPnSourceId;
+        record.TargetId = path->VidPnTargetId;
+        record.Rotation = path->ContentTransformation.Rotation;
+        record.Scaling = path->ContentTransformation.Scaling;
+    }
+    if (signal != NULL)
+    {
+        record.Flags |= 4;
+        record.TargetWidth = signal->ActiveSize.cx;
+        record.TargetHeight = signal->ActiveSize.cy;
+        record.TotalWidth = signal->TotalSize.cx;
+        record.TotalHeight = signal->TotalSize.cy;
+        record.PixelClock = signal->PixelRate;
+        record.HSyncNumerator = signal->HSyncFreq.Numerator;
+        record.HSyncDenominator = signal->HSyncFreq.Denominator;
+        record.VSyncNumerator = signal->VSyncFreq.Numerator;
+        record.VSyncDenominator = signal->VSyncFreq.Denominator;
+    }
+    if (KeWaitForSingleObject(&m_NativeDiagnosticCaptureMutex, Executive, KernelMode, FALSE, NULL) != STATUS_SUCCESS)
+        return;
+    if (RtlCompareMemory(&record.Mode, &m_NativeDiagnosticCaptureMode, sizeof(record.Mode)) != sizeof(record.Mode))
+    {
+        m_NativeDiagnosticCaptureMode = record.Mode;
+        m_NativeDiagnosticCaptureCount = 0;
+        m_NativeDiagnosticCursorMask = 0;
+        RtlZeroMemory(m_NativeDiagnosticCursorCapture, sizeof(m_NativeDiagnosticCursorCapture));
+    }
+    if (m_NativeDiagnosticCaptureCount < ARRAYSIZE(m_NativeDiagnosticCapture))
+    {
+        m_NativeDiagnosticCapture[m_NativeDiagnosticCaptureCount++] = record;
+        HANDLE key = NULL;
+        if (NT_SUCCESS(IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &key)))
+        {
+            UNICODE_STRING name;
+            RtlInitUnicodeString(&name, L"NativeScanoutDdiCapture");
+            (VOID)ZwSetValueKey(key, &name, 0, REG_BINARY, m_NativeDiagnosticCapture,
+                static_cast<ULONG>(m_NativeDiagnosticCaptureCount * sizeof(record)));
+            ZwClose(key);
+        }
+    }
+    KeReleaseMutex(&m_NativeDiagnosticCaptureMutex, FALSE);
+}
+
+VOID VioGpuDod::RecordNativeDiagnosticCursor(const DXGKARG_SETPOINTERPOSITION *position,
+                                            const DXGKARG_SETPOINTERSHAPE *shape)
+{
+    PAGED_CODE();
+    if (!NativeScanoutDiagnosticEnabled() || (position == NULL) == (shape == NULL)) return;
+    if (KeWaitForSingleObject(&m_NativeDiagnosticCaptureMutex, Executive, KernelMode, FALSE, NULL) != STATUS_SUCCESS)
+        return;
+    const UINT index = position == NULL ? 0 : 1;
+    if ((m_NativeDiagnosticCursorMask & (1U << index)) == 0)
+    {
+        auto &record = m_NativeDiagnosticCursorCapture[index];
+        record.Mode = m_NativeDiagnosticCaptureMode;
+        record.Stage = index + 1;
+        if (position != NULL)
+        {
+            record.X = static_cast<UINT>(position->X);
+            record.Y = static_cast<UINT>(position->Y);
+            record.Visible = position->Flags.Visible;
+            record.Flags = position->Flags.Value;
+        }
+        else
+        {
+            record.Width = shape->Width; record.Height = shape->Height; record.Pitch = shape->Pitch;
+            record.HotX = shape->XHot; record.HotY = shape->YHot; record.Flags = shape->Flags.Value;
+        }
+        m_NativeDiagnosticCursorMask |= 1U << index;
+        HANDLE key = NULL;
+        if (NT_SUCCESS(IoOpenDeviceRegistryKey(m_pPhysicalDevice, PLUGPLAY_REGKEY_DRIVER, KEY_SET_VALUE, &key)))
+        {
+            UNICODE_STRING name;
+            RtlInitUnicodeString(&name, L"NativeScanoutCursorCapture");
+            (VOID)ZwSetValueKey(key, &name, 0, REG_BINARY, m_NativeDiagnosticCursorCapture,
+                              sizeof(m_NativeDiagnosticCursorCapture));
+            ZwClose(key);
+        }
+    }
+    KeReleaseMutex(&m_NativeDiagnosticCaptureMutex, FALSE);
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::BindNativeScanoutProfile(UINT resource, ULONGLONG key, ULONGLONG localReset,
+    const VIOGPU_SCANOUT_GEOMETRY *geometry, const VIOGPU_SCANOUT_PROFILE *profile,
+    VIOGPU_SCANOUT_BINDING *binding)
+{
+    PAGED_CODE();
+    if (!AcquireNativeSubmissionOperation()) return VioGpuHostContextNotSubmitted;
+    const auto result = m_pHWDevice->BindNativeScanoutProfile(resource, key, localReset, geometry, profile, binding);
+    ReleaseNativeSubmissionOperation();
+    return result;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
                                                    ULONGLONG offset, UINT length, UINT pattern, PVOID data)
 {
@@ -820,7 +1031,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::PageNativeAhb(UINT resourceId, ULONGLONG g
 #pragma code_seg(push)
 #pragma code_seg()
 BOOLEAN VioGpuDod::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
-                                         BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh)
+                                         BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh,
+                                         const VIOGPU_SCANOUT_GEOMETRY *geometry)
 {
     if (KeGetCurrentIrql() > DISPATCH_LEVEL || !AcquireNativeSubmissionOperation())
     {
@@ -828,7 +1040,7 @@ BOOLEAN VioGpuDod::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedRe
     }
     VioGpuAdapter *adapter = m_pHWDevice;
     BOOLEAN queued = adapter->QueueNativeAhbOperation(resourceId, expectedResetGeneration, sequence,
-                                                      present, completion, context, refresh);
+                                                      present, completion, context, refresh, geometry);
     // Never keep rundown until WAIT_RELEASE completes: reset must be able to
     // cancel a descriptor whose front buffer Android continues to display.
     ReleaseNativeSubmissionOperation();
@@ -4261,6 +4473,9 @@ NTSTATUS VioGpuDod::SetPointerPosition(_In_ CONST DXGKARG_SETPOINTERPOSITION *pS
 
     VIOGPU_ASSERT(pSetPointerPosition != NULL);
     VIOGPU_ASSERT(pSetPointerPosition->VidPnSourceId < MAX_VIEWS);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (KeGetCurrentIrql() == PASSIVE_LEVEL) RecordNativeDiagnosticCursor(pSetPointerPosition, NULL);
+#endif
     if (IsPointerEnabled() && pSetPointerPosition->VidPnSourceId == 0)
     {
         return m_pHWDevice->SetPointerPosition(pSetPointerPosition, &m_CurrentMode);
@@ -4273,6 +4488,9 @@ NTSTATUS VioGpuDod::SetPointerShape(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
     PAGED_CODE();
 
     VIOGPU_ASSERT(pSetPointerShape != NULL);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (KeGetCurrentIrql() == PASSIVE_LEVEL) RecordNativeDiagnosticCursor(NULL, pSetPointerShape);
+#endif
 
     DbgPrint(TRACE_LEVEL_INFORMATION,
              ("<---> %s Height = %d, Width = %d, XHot= %d, YHot = %d SourceId = %d\n",
@@ -4415,7 +4633,7 @@ NTSTATUS VioGpuDod::QueryVidPnHWCapability(_Inout_ DXGKARG_QUERYVIDPNHWCAPABILIT
     VIOGPU_ASSERT(pVidPnHWCaps->TargetId < MAX_CHILDREN);
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
-    pVidPnHWCaps->VidPnHWCaps.DriverRotation = 0;
+    pVidPnHWCaps->VidPnHWCaps.DriverRotation = NativeScanoutDiagnosticEnabled() ? 1 : 0;
 #else
     pVidPnHWCaps->VidPnHWCaps.DriverRotation = 1;
 #endif
@@ -4606,7 +4824,11 @@ NTSTATUS VioGpuDod::RecommendMonitorModes(_In_ CONST DXGKARG_RECOMMENDMONITORMOD
 #endif
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
 
-    return AddSingleMonitorMode(pRecommendMonitorModes);
+    NTSTATUS status = AddSingleMonitorMode(pRecommendMonitorModes);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (NT_SUCCESS(status)) status = AddNativeDiagnosticMonitorMode(pRecommendMonitorModes);
+#endif
+    return status;
 }
 
 NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTERFACE *pVidPnSourceModeSetInterface,
@@ -4715,7 +4937,11 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
     }
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    return AddNativeDiagnosticSourceMode(pVidPnSourceModeSetInterface, hVidPnSourceModeSet, pPinnedTarget);
+#else
     return STATUS_SUCCESS;
+#endif
 }
 
 VOID VioGpuDod::BuildVideoSignalInfo(D3DKMDT_VIDEO_SIGNAL_INFO *pVideoSignalInfo, PVIDEO_MODE_INFORMATION pModeInfo)
@@ -4798,8 +5024,112 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
         }
         found = true;
     }
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    const NTSTATUS diagnostic = AddNativeDiagnosticTargetMode(pVidPnTargetModeSetInterface,
+        hVidPnTargetModeSet, pVidPnPinnedSourceModeInfo);
+    if (diagnostic != STATUS_NOT_FOUND) return diagnostic;
+#endif
     return found ? STATUS_SUCCESS : STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
 }
+
+#if defined(VIOGPU_NATIVE_CONTEXT)
+NTSTATUS VioGpuDod::AddNativeDiagnosticSourceMode(const DXGK_VIDPNSOURCEMODESET_INTERFACE *modeInterface,
+    D3DKMDT_HVIDPNSOURCEMODESET set, const D3DKMDT_VIDPN_TARGET_MODE *target)
+{
+    PAGED_CODE();
+    VIOGPU_NATIVE_SCANOUT_MODE mode = {};
+    VIDEO_MODE_INFORMATION info = {};
+    VIOGPU_DISPLAY_TIMING timing = {};
+    D3DKMDT_VIDEO_SIGNAL_INFO signal = {};
+    USHORT index = 0;
+    if (!PrepareNativeDiagnosticMode(&mode, &info, &timing, &signal, &index) ||
+        (target != NULL && (target->VideoSignalInfo.ActiveSize.cx != info.VisScreenWidth ||
+                           target->VideoSignalInfo.ActiveSize.cy != info.VisScreenHeight))) return STATUS_SUCCESS;
+    D3DKMDT_VIDPN_SOURCE_MODE *entry = NULL;
+    NTSTATUS status = modeInterface->pfnCreateNewModeInfo(set, &entry);
+    if (!NT_SUCCESS(status)) return status;
+    entry->Type = D3DKMDT_RMT_GRAPHICS;
+    entry->Format.Graphics.PrimSurfSize.cx = info.VisScreenWidth;
+    entry->Format.Graphics.PrimSurfSize.cy = info.VisScreenHeight;
+    entry->Format.Graphics.VisibleRegionSize = entry->Format.Graphics.PrimSurfSize;
+    entry->Format.Graphics.Stride = info.ScreenStride;
+    entry->Format.Graphics.PixelFormat = D3DDDIFMT_A8R8G8B8;
+    entry->Format.Graphics.ColorBasis = D3DKMDT_CB_SCRGB;
+    entry->Format.Graphics.PixelValueAccessMode = D3DKMDT_PVAM_DIRECT;
+    status = modeInterface->pfnAddMode(set, entry);
+    if (!NT_SUCCESS(status))
+    {
+        const NTSTATUS released = modeInterface->pfnReleaseModeInfo(set, entry);
+        if (!NT_SUCCESS(released)) return released;
+        if (status == STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET) status = STATUS_SUCCESS;
+    }
+    return status;
+}
+
+NTSTATUS VioGpuDod::AddNativeDiagnosticTargetMode(const DXGK_VIDPNTARGETMODESET_INTERFACE *modeInterface,
+    D3DKMDT_HVIDPNTARGETMODESET set, const D3DKMDT_VIDPN_SOURCE_MODE *source)
+{
+    PAGED_CODE();
+    VIOGPU_NATIVE_SCANOUT_MODE mode = {};
+    VIDEO_MODE_INFORMATION info = {};
+    VIOGPU_DISPLAY_TIMING timing = {};
+    D3DKMDT_VIDEO_SIGNAL_INFO signal = {};
+    USHORT index = 0;
+    if (!PrepareNativeDiagnosticMode(&mode, &info, &timing, &signal, &index) ||
+        (source != NULL && !VioGpuNativeDiagnosticSourceMatches(&mode,
+            source->Format.Graphics.PrimSurfSize.cx, source->Format.Graphics.PrimSurfSize.cy,
+            source->Format.Graphics.VisibleRegionSize.cx, source->Format.Graphics.VisibleRegionSize.cy,
+            source->Format.Graphics.Stride, D3DKMDT_VPPR_ROTATE90, D3DKMDT_VPPS_IDENTITY))) return STATUS_NOT_FOUND;
+    D3DKMDT_VIDPN_TARGET_MODE *entry = NULL;
+    NTSTATUS status = modeInterface->pfnCreateNewModeInfo(set, &entry);
+    if (!NT_SUCCESS(status)) return status;
+    entry->VideoSignalInfo = signal;
+    entry->Preference = D3DKMDT_MP_NOTPREFERRED;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    entry->WireFormatAndPreference.Rgb = D3DKMDT_BITS_PER_COMPONENT_08;
+#endif
+    status = modeInterface->pfnAddMode(set, entry);
+    if (!NT_SUCCESS(status))
+    {
+        const NTSTATUS released = modeInterface->pfnReleaseModeInfo(set, entry);
+        if (!NT_SUCCESS(released)) return released;
+        if (status == STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET) status = STATUS_SUCCESS;
+    }
+    return status;
+}
+
+NTSTATUS VioGpuDod::AddNativeDiagnosticMonitorMode(const DXGKARG_RECOMMENDMONITORMODES *request)
+{
+    PAGED_CODE();
+    VIOGPU_NATIVE_SCANOUT_MODE mode = {};
+    VIDEO_MODE_INFORMATION info = {};
+    VIOGPU_DISPLAY_TIMING timing = {};
+    D3DKMDT_VIDEO_SIGNAL_INFO signal = {};
+    USHORT index = 0;
+    if (!PrepareNativeDiagnosticMode(&mode, &info, &timing, &signal, &index)) return STATUS_SUCCESS;
+    const auto modeInterface = request->pMonitorSourceModeSetInterface;
+    const auto set = request->hMonitorSourceModeSet;
+    D3DKMDT_MONITOR_SOURCE_MODE *entry = NULL;
+    NTSTATUS status = modeInterface->pfnCreateNewModeInfo(set, &entry);
+    if (!NT_SUCCESS(status)) return status;
+    entry->VideoSignalInfo = signal;
+    entry->Origin = D3DKMDT_MCO_DRIVER;
+    entry->Preference = D3DKMDT_MP_NOTPREFERRED;
+    entry->ColorBasis = D3DKMDT_CB_SRGB;
+    entry->ColorCoeffDynamicRanges.FirstChannel = 8;
+    entry->ColorCoeffDynamicRanges.SecondChannel = 8;
+    entry->ColorCoeffDynamicRanges.ThirdChannel = 8;
+    entry->ColorCoeffDynamicRanges.FourthChannel = 8;
+    status = modeInterface->pfnAddMode(set, entry);
+    if (!NT_SUCCESS(status))
+    {
+        const NTSTATUS released = modeInterface->pfnReleaseModeInfo(set, entry);
+        if (!NT_SUCCESS(released)) return released;
+        if (status == STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET) status = STATUS_SUCCESS;
+    }
+    return status;
+}
+#endif
 
 NTSTATUS VioGpuDod::AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODES *CONST pRecommendMonitorModes)
 {
@@ -5286,15 +5616,18 @@ NTSTATUS VioGpuDod::EnumVidPnCofuncModality(_In_ CONST DXGKARG_ENUMVIDPNCOFUNCMO
             }
         }
 
-        if (!((pEnumCofuncModality->EnumPivotType != D3DKMDT_EPT_ROTATION) &&
+        if (!((pEnumCofuncModality->EnumPivotType == D3DKMDT_EPT_ROTATION) &&
               (pEnumCofuncModality->EnumPivot.VidPnSourceId == pVidPnPresentPath->VidPnSourceId) &&
               (pEnumCofuncModality->EnumPivot.VidPnTargetId == pVidPnPresentPath->VidPnTargetId)))
         {
             if (pVidPnPresentPath->ContentTransformation.Rotation == D3DKMDT_VPPR_UNPINNED)
             {
+                RtlZeroMemory(&LocalVidPnPresentPath.ContentTransformation.RotationSupport,
+                              sizeof(LocalVidPnPresentPath.ContentTransformation.RotationSupport));
                 LocalVidPnPresentPath.ContentTransformation.RotationSupport.Identity = 1;
 #if defined(VIOGPU_NATIVE_CONTEXT)
-                LocalVidPnPresentPath.ContentTransformation.RotationSupport.Rotate90 = 0;
+                LocalVidPnPresentPath.ContentTransformation.RotationSupport.Rotate90 =
+                    NativeScanoutDiagnosticEnabled() && SupportsNativeScanoutGeometry() ? 1 : 0;
 #else
                 LocalVidPnPresentPath.ContentTransformation.RotationSupport.Rotate90 = 1;
 #endif
@@ -5476,6 +5809,10 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
     D3DKMDT_HVIDPNTARGETMODESET hTargetModeSet = 0;
     CONST DXGK_VIDPNTARGETMODESET_INTERFACE *pTargetInterface = NULL;
     CONST D3DKMDT_VIDPN_TARGET_MODE *pPinnedTarget = NULL;
+    D3DKMDT_VIDPN_SOURCE_MODE preparedSource = {};
+    D3DKMDT_VIDPN_PRESENT_PATH preparedPath = {};
+    D3DKMDT_VIDEO_SIGNAL_INFO preparedSignal = {};
+    bool applyPreparedMode = false;
 
     if (pCommitVidPn->Flags.PathPoweredOff)
     {
@@ -5541,6 +5878,11 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
         goto CommitVidPnExit;
     }
 
+    if (NumPaths > MAX_CHILDREN)
+    {
+        Status = STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+        goto CommitVidPnExit;
+    }
     if (NumPaths != 0)
     {
         Status = pVidPnInterface->pfnAcquireSourceModeSet(pCommitVidPn->hFunctionalVidPn,
@@ -5608,6 +5950,11 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
         goto CommitVidPnExit;
     }
 
+    if (NumPathsFromSource > MAX_CHILDREN || NumPathsFromSource > NumPaths)
+    {
+        Status = STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+        goto CommitVidPnExit;
+    }
     for (SIZE_T PathIndex = 0; PathIndex < NumPathsFromSource; ++PathIndex)
     {
         D3DDDI_VIDEO_PRESENT_TARGET_ID TargetId = D3DDDI_ID_UNINITIALIZED;
@@ -5637,12 +5984,6 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
             goto CommitVidPnExit;
         }
 
-        Status = IsVidPnPathFieldsValid(pVidPnPresentPath);
-        if (!NT_SUCCESS(Status))
-        {
-            goto CommitVidPnExit;
-        }
-
         Status = pVidPnInterface->pfnAcquireTargetModeSet(pCommitVidPn->hFunctionalVidPn,
                                                           TargetId,
                                                           &hTargetModeSet,
@@ -5661,28 +6002,20 @@ NTSTATUS VioGpuDod::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN *CONST pCommitVid
             Status = STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
             goto CommitVidPnExit;
         }
-        Status = SetSourceModeAndPath(pPinnedVidPnSourceModeInfo, pVidPnPresentPath, &pPinnedTarget->VideoSignalInfo);
-        if (!NT_SUCCESS(Status))
-        {
-            goto CommitVidPnExit;
-        }
-
-        pTargetInterface->pfnReleaseModeInfo(hTargetModeSet, pPinnedTarget);
-        pPinnedTarget = NULL;
-        pVidPnInterface->pfnReleaseTargetModeSet(pCommitVidPn->hFunctionalVidPn, hTargetModeSet);
-        hTargetModeSet = 0;
-
-        Status = pVidPnTopologyInterface->pfnReleasePathInfo(hVidPnTopology, pVidPnPresentPath);
-        if (!NT_SUCCESS(Status))
-        {
-            DbgPrint(TRACE_LEVEL_ERROR,
-                     ("pfnReleasePathInfo failed with Status = 0x%X, hVidPnTopoogy = 0x%llu, pVidPnPresentPath = %p\n",
-                      Status,
-                      LONG_PTR(hVidPnTopology),
-                      pVidPnPresentPath));
-            goto CommitVidPnExit;
-        }
-        pVidPnPresentPath = NULL;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        RecordNativeDiagnosticDdi(pPinnedVidPnSourceModeInfo, pVidPnPresentPath,
+            &pPinnedTarget->VideoSignalInfo, pCommitVidPn->hPrimaryAllocation, 1, STATUS_PENDING);
+#endif
+        Status = IsVidPnPathFieldsValid(pVidPnPresentPath);
+        if (!NT_SUCCESS(Status)) goto CommitVidPnExit;
+        /* Borrowed VidPN records cannot outlive their mode sets. Copy the
+         * validated one-path transaction, release every handle, then perform
+         * the only hardware commit. Cleanup failure must not report a failed
+         * CommitVidPn after a new mode has already become active. */
+        preparedSource = *pPinnedVidPnSourceModeInfo;
+        preparedPath = *pVidPnPresentPath;
+        preparedSignal = pPinnedTarget->VideoSignalInfo;
+        applyPreparedMode = true;
     }
 
 CommitVidPnExit:
@@ -5691,30 +6024,35 @@ CommitVidPnExit:
 
     if (pPinnedTarget != NULL)
     {
-        pTargetInterface->pfnReleaseModeInfo(hTargetModeSet, pPinnedTarget);
+        TempStatus = pTargetInterface->pfnReleaseModeInfo(hTargetModeSet, pPinnedTarget);
+        if (NT_SUCCESS(Status) && !NT_SUCCESS(TempStatus)) Status = TempStatus;
     }
     if (hTargetModeSet != 0)
     {
-        pVidPnInterface->pfnReleaseTargetModeSet(pCommitVidPn->hFunctionalVidPn, hTargetModeSet);
+        TempStatus = pVidPnInterface->pfnReleaseTargetModeSet(pCommitVidPn->hFunctionalVidPn, hTargetModeSet);
+        if (NT_SUCCESS(Status) && !NT_SUCCESS(TempStatus)) Status = TempStatus;
     }
 
     if ((pVidPnSourceModeSetInterface != NULL) && (hVidPnSourceModeSet != 0) && (pPinnedVidPnSourceModeInfo != NULL))
     {
         TempStatus = pVidPnSourceModeSetInterface->pfnReleaseModeInfo(hVidPnSourceModeSet, pPinnedVidPnSourceModeInfo);
-        NT_ASSERT(NT_SUCCESS(TempStatus));
+        if (NT_SUCCESS(Status) && !NT_SUCCESS(TempStatus)) Status = TempStatus;
     }
 
     if ((pVidPnInterface != NULL) && (pCommitVidPn->hFunctionalVidPn != 0) && (hVidPnSourceModeSet != 0))
     {
         TempStatus = pVidPnInterface->pfnReleaseSourceModeSet(pCommitVidPn->hFunctionalVidPn, hVidPnSourceModeSet);
-        NT_ASSERT(NT_SUCCESS(TempStatus));
+        if (NT_SUCCESS(Status) && !NT_SUCCESS(TempStatus)) Status = TempStatus;
     }
 
     if ((pVidPnTopologyInterface != NULL) && (hVidPnTopology != 0) && (pVidPnPresentPath != NULL))
     {
         TempStatus = pVidPnTopologyInterface->pfnReleasePathInfo(hVidPnTopology, pVidPnPresentPath);
-        NT_ASSERT(NT_SUCCESS(TempStatus));
+        if (NT_SUCCESS(Status) && !NT_SUCCESS(TempStatus)) Status = TempStatus;
     }
+
+    if (NT_SUCCESS(Status) && applyPreparedMode)
+        Status = SetSourceModeAndPath(&preparedSource, &preparedPath, &preparedSignal, pCommitVidPn->hPrimaryAllocation);
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
     RecordDisplayValue(6, Status);
@@ -5726,10 +6064,24 @@ CommitVidPnExit:
 
 NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourceMode,
                                          CONST D3DKMDT_VIDPN_PRESENT_PATH *pPath,
-                                         CONST D3DKMDT_VIDEO_SIGNAL_INFO *pTargetSignal)
+                                         CONST D3DKMDT_VIDEO_SIGNAL_INFO *pTargetSignal,
+                                         HANDLE hPrimaryAllocation)
 {
     PAGED_CODE();
     VIOGPU_ASSERT(pPath->VidPnSourceId < MAX_VIEWS);
+
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    static_assert(D3DKMDT_VPPR_IDENTITY == 1, "native committed rotation policy");
+    if (pPath->ContentTransformation.Rotation == D3DKMDT_VPPR_ROTATE90 && NativeScanoutDiagnosticEnabled())
+        return SetNativeDiagnosticModeAndPath(pSourceMode, pPath, pTargetSignal, hPrimaryAllocation);
+    if (!VioGpuNativeCommittedRotationSupported(pPath->ContentTransformation.Rotation))
+        return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+    /* An acknowledged physical profile has no scalar/CCD-only rollback.
+     * Restoring identity requires a drained reset, then genuine mode0 bootstrap. */
+    if (!NativeScanoutBindingCurrent(NULL)) return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+#else
+    UNREFERENCED_PARAMETER(hPrimaryAllocation);
+#endif
 
     // Validate the complete target signal before changing current geometry.
     USHORT selected = MAXUSHORT;
@@ -5754,7 +6106,22 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
     }
 
     NTSTATUS Status = STATUS_SUCCESS;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (!AcquireNativeSubmissionOperation())
+        return STATUS_DEVICE_NOT_READY;
+    AcquireFlipApply();
+    CURRENT_MODE candidate = m_CurrentMode;
+    CURRENT_MODE *pCurrentMode = &candidate;
+    VIOGPU_NATIVE_FRAMEBUFFER *prepared = NULL;
+    KIRQL timingIrql;
+    KeAcquireSpinLock(&m_CrtcTimingLock, &timingIrql);
+    const VIOGPU_DISPLAY_TIMING previousTiming = m_CrtcTiming;
+    const LONGLONG previousPeriod = m_CrtcPeriodTicks;
+    const LONGLONG previousEpoch = m_CrtcEpoch;
+    KeReleaseSpinLock(&m_CrtcTimingLock, timingIrql);
+#else
     CURRENT_MODE *pCurrentMode = &m_CurrentMode;
+#endif
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     // A ten-bit source mode owns real RGB10A2 storage. Every eight-bit source
     // mode keeps the X8R8G8B8 driver framebuffer of the SDR baseline, so an
@@ -5789,6 +6156,61 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
                                    BPPFromPixelFormat(pCurrentMode->DispInfo.ColorFormat) / BITS_PER_BYTE;
 
     pCurrentMode->Flags.FullscreenPresent = TRUE;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    /* Prepare first, then commit timing while the old framebuffer and mode
+     * remain owned. The final acknowledged SET_SCANOUT is the only host
+     * binding mutation. A refused transaction never publishes candidate. */
+    if (resize)
+        Status = m_pHWDevice->PrepareFrameBufferMode(m_pHWDevice->GetModeNumber(selected), pCurrentMode, &prepared);
+    BOOLEAN timingChanged = FALSE;
+    if (Status == STATUS_SUCCESS)
+    {
+        Status = SetCrtcTiming(m_pHWDevice->GetModeTiming(selected));
+        timingChanged = Status == STATUS_SUCCESS;
+    }
+    if (Status == STATUS_SUCCESS && prepared != NULL)
+    {
+        Status = m_pHWDevice->CommitFrameBufferMode(prepared, pCurrentMode);
+        if (Status == STATUS_SUCCESS)
+            prepared = NULL; // The adapter now owns it, including deferred old retirement.
+    }
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    else if (Status == STATUS_SUCCESS && m_ColorTargetPoweredOff)
+        Status = m_pHWDevice->ResumeFrameBuffer(pCurrentMode);
+#endif
+    if (Status == STATUS_SUCCESS)
+    {
+        (VOID)TakePendingFlip();
+        if (resize)
+            SetCrtcVsyncPrimaryAddress(0);
+        m_CurrentMode = candidate;
+        m_pHWDevice->SetCurrentModeIndex(selected);
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+        m_ColorTargetPoweredOff = FALSE;
+#endif
+    }
+    else if (timingChanged)
+    {
+        if (VioGpuTimingValid(previousTiming))
+        {
+            if (!NT_SUCCESS(SetCrtcTiming(previousTiming)))
+                RequestHardwareResetAtAnyIrql();
+        }
+        else
+        {
+            DisarmCrtcVsyncTimer();
+            KeAcquireSpinLock(&m_CrtcTimingLock, &timingIrql);
+            m_CrtcTiming = previousTiming;
+            m_CrtcPeriodTicks = previousPeriod;
+            m_CrtcEpoch = previousEpoch;
+            KeReleaseSpinLock(&m_CrtcTimingLock, timingIrql);
+        }
+    }
+    if (prepared != NULL)
+        m_pHWDevice->RetireFrameBufferMode(prepared);
+    ReleaseFlipApply();
+    ReleaseNativeSubmissionOperation();
+#else
     DisarmCrtcVsyncTimer();
     if (resize)
     {
@@ -5812,6 +6234,7 @@ NTSTATUS VioGpuDod::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourc
     {
         ArmCrtcVsyncTimer();
     }
+#endif
 
     return Status;
 }
@@ -5851,6 +6274,10 @@ NTSTATUS VioGpuDod::IsVidPnPathFieldsValid(CONST D3DKMDT_VIDPN_PRESENT_PATH *pPa
         return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
     }
     else if ((pPath->ContentTransformation.Rotation != D3DKMDT_VPPR_IDENTITY) &&
+#if defined(VIOGPU_NATIVE_CONTEXT)
+             !(NativeScanoutDiagnosticEnabled() &&
+               pPath->ContentTransformation.Rotation == D3DKMDT_VPPR_ROTATE90) &&
+#endif
 #if !defined(VIOGPU_NATIVE_CONTEXT)
              (pPath->ContentTransformation.Rotation != D3DKMDT_VPPR_ROTATE90) &&
 #endif
@@ -5935,14 +6362,138 @@ VioGpuDod::UpdateActiveVidPnPresentPath(_In_ CONST DXGKARG_UPDATEACTIVEVIDPNPRES
         return Status;
     }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (pUpdateActiveVidPnPresentPath->VidPnPresentPathInfo.ContentTransformation.Rotation ==
+            D3DKMDT_VPPR_ROTATE90 && NativeScanoutDiagnosticEnabled())
+        return SetNativeDiagnosticModeAndPath(NULL, &pUpdateActiveVidPnPresentPath->VidPnPresentPathInfo, NULL, NULL);
+    if (!VioGpuNativeCommittedRotationSupported(
+            pUpdateActiveVidPnPresentPath->VidPnPresentPathInfo.ContentTransformation.Rotation))
+        return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+    if (!NativeScanoutBindingCurrent(NULL)) return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+    if (!AcquireNativeSubmissionOperation())
+        return STATUS_DEVICE_NOT_READY;
+    AcquireFlipApply();
+    CURRENT_MODE candidate = m_CurrentMode;
+    candidate.Flags.FullscreenPresent = TRUE;
+    candidate.Rotation = pUpdateActiveVidPnPresentPath->VidPnPresentPathInfo.ContentTransformation.Rotation;
+    candidate.Scaling = pUpdateActiveVidPnPresentPath->VidPnPresentPathInfo.ContentTransformation.Scaling;
+    m_CurrentMode = candidate;
+    ReleaseFlipApply();
+    ReleaseNativeSubmissionOperation();
+#else
     m_CurrentMode.Flags.FullscreenPresent = TRUE;
-
     m_CurrentMode.Rotation = pUpdateActiveVidPnPresentPath->VidPnPresentPathInfo.ContentTransformation.Rotation;
+#endif
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 
     return STATUS_SUCCESS;
 }
+
+#if defined(VIOGPU_NATIVE_CONTEXT)
+NTSTATUS VioGpuDod::SetNativeDiagnosticModeAndPath(const D3DKMDT_VIDPN_SOURCE_MODE *source,
+    const D3DKMDT_VIDPN_PRESENT_PATH *path, const D3DKMDT_VIDEO_SIGNAL_INFO *signal, HANDLE primary)
+{
+    PAGED_CODE();
+    if (!NativeScanoutDiagnosticEnabled() || !AcquireNativeSubmissionOperation()) return STATUS_DEVICE_NOT_READY;
+    AcquireFlipApply();
+    VIOGPU_NATIVE_SCANOUT_MODE mode = {};
+    VIDEO_MODE_INFORMATION info = {};
+    VIOGPU_DISPLAY_TIMING timing = {};
+    D3DKMDT_VIDEO_SIGNAL_INFO expected = {};
+    USHORT selected = MAXUSHORT;
+    NTSTATUS status = STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
+    do
+    {
+        if (!PrepareNativeDiagnosticMode(&mode, &info, &timing, &expected, &selected) ||
+            path->VidPnSourceId != 0 || path->VidPnTargetId != 0) break;
+        /* Optimized path update has no replacement primary/source/target.
+         * It can only reaffirm the already committed physical representation;
+         * the first logical-to-physical transition must take CommitVidPn. */
+        if (source == NULL)
+        {
+            if (signal != NULL || primary != NULL ||
+                !m_pHWDevice->NativeScanoutModeEligible(&mode, TRUE) ||
+                !VioGpuNativeDiagnosticSourceMatches(&mode, m_CurrentMode.DispInfo.Width,
+                    m_CurrentMode.DispInfo.Height, m_CurrentMode.SrcModeWidth, m_CurrentMode.SrcModeHeight,
+                    m_CurrentMode.DispInfo.Pitch, path->ContentTransformation.Rotation,
+                    path->ContentTransformation.Scaling) || !VioGpuSameTiming(m_CrtcTiming, timing)) break;
+            m_CurrentMode.Rotation = path->ContentTransformation.Rotation;
+            m_CurrentMode.Scaling = path->ContentTransformation.Scaling;
+            m_CurrentMode.Flags.FullscreenPresent = TRUE;
+            status = STATUS_SUCCESS;
+            break;
+        }
+        if (signal == NULL || source->Format.Graphics.PixelFormat != D3DDDIFMT_A8R8G8B8 ||
+            !VioGpuNativeDiagnosticSourceMatches(&mode, source->Format.Graphics.PrimSurfSize.cx,
+                source->Format.Graphics.PrimSurfSize.cy, source->Format.Graphics.VisibleRegionSize.cx,
+                source->Format.Graphics.VisibleRegionSize.cy, source->Format.Graphics.Stride,
+                path->ContentTransformation.Rotation, path->ContentTransformation.Scaling) ||
+            signal->ActiveSize.cx != expected.ActiveSize.cx || signal->ActiveSize.cy != expected.ActiveSize.cy ||
+            signal->TotalSize.cx != expected.TotalSize.cx || signal->TotalSize.cy != expected.TotalSize.cy ||
+            signal->PixelRate != expected.PixelRate || signal->ScanLineOrdering != expected.ScanLineOrdering ||
+            signal->VSyncFreq.Numerator != expected.VSyncFreq.Numerator ||
+            signal->VSyncFreq.Denominator != expected.VSyncFreq.Denominator ||
+            signal->HSyncFreq.Numerator != expected.HSyncFreq.Numerator ||
+            signal->HSyncFreq.Denominator != expected.HSyncFreq.Denominator ||
+            !VioGpuWddmValidateDiagnosticPrimary(this, primary, &mode)) break;
+        CURRENT_MODE candidate = m_CurrentMode;
+        candidate.DispInfo.Width = info.VisScreenWidth;
+        candidate.DispInfo.Height = info.VisScreenHeight;
+        candidate.DispInfo.Pitch = info.ScreenStride;
+        candidate.DispInfo.ColorFormat = D3DDDIFMT_A8R8G8B8;
+        candidate.SrcModeWidth = info.VisScreenWidth;
+        candidate.SrcModeHeight = info.VisScreenHeight;
+        candidate.Rotation = path->ContentTransformation.Rotation;
+        candidate.Scaling = path->ContentTransformation.Scaling;
+        candidate.Flags.FullscreenPresent = TRUE;
+        /* The old fallback owner remains owned until ordinary teardown. It
+         * must not be exposed as CPU storage for this physical native mode. */
+        candidate.FrameBuffer = NULL;
+        candidate.Flags.FrameBufferIsActive = FALSE;
+        KIRQL irql;
+        KeAcquireSpinLock(&m_CrtcTimingLock, &irql);
+        const VIOGPU_DISPLAY_TIMING previousTiming = m_CrtcTiming;
+        const LONGLONG previousPeriod = m_CrtcPeriodTicks;
+        const LONGLONG previousEpoch = m_CrtcEpoch;
+        KeReleaseSpinLock(&m_CrtcTimingLock, irql);
+        status = SetCrtcTiming(timing);
+        if (status != STATUS_SUCCESS) break;
+        const auto committed = m_pHWDevice->CommitNativeScanoutMode(&mode);
+        if (committed == VioGpuHostContextConfirmed)
+        {
+            /* Configure was the last fallible action. No BIND, query or
+             * framebuffer SET_SCANOUT can fail after this publication. */
+            (VOID)TakePendingFlip();
+            SetCrtcVsyncPrimaryAddress(0);
+            m_CurrentMode = candidate;
+            m_pHWDevice->SetCurrentModeIndex(selected);
+            status = STATUS_SUCCESS;
+        }
+        else
+        {
+            status = STATUS_DEVICE_NOT_READY;
+            if (VioGpuTimingValid(previousTiming))
+            {
+                if (!NT_SUCCESS(SetCrtcTiming(previousTiming))) RequestHardwareResetAtAnyIrql();
+            }
+            else
+            {
+                DisarmCrtcVsyncTimer();
+                KeAcquireSpinLock(&m_CrtcTimingLock, &irql);
+                m_CrtcTiming = previousTiming;
+                m_CrtcPeriodTicks = previousPeriod;
+                m_CrtcEpoch = previousEpoch;
+                KeReleaseSpinLock(&m_CrtcTimingLock, irql);
+            }
+        }
+    } while (false);
+    RecordNativeDiagnosticDdi(source, path, signal, primary, 2, status, &mode);
+    ReleaseFlipApply();
+    ReleaseNativeSubmissionOperation();
+    return status;
+}
+#endif
 
 PAGED_CODE_SEG_END
 
@@ -10171,6 +10722,10 @@ NTSTATUS VioGpuDod::GetRegisterInfo(void)
     value = 0;
     StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"NativeAhbScanout", &value);
     m_Flags.NativeAhbScanout = NT_SUCCESS(StatusOptional) && value == 1 && !IsRenderOnly();
+    value = 0;
+    StatusOptional = ReadRegistryDWORD(DevInstRegKeyHandle, L"NativeScanoutGeometryDiagnostic", &value);
+    m_Flags.NativeScanoutGeometryDiagnostic =
+        NT_SUCCESS(StatusOptional) && value == 1 && IsNativeAhbScanoutEnabled();
     /* A render-only adapter owns no VidPn target, so it must never service the
      * pointer DDIs.  SetPointerShape() reaches UpdateCursor() -> CreateCursor(),
      * which builds a cursor resource against CURRENT_MODE and shares
@@ -10225,6 +10780,12 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_ModeCount = 0;
     m_Id = g_InstanceId++;
     m_pFrameBuf = NULL;
+    m_FrameBufWidth = 0;
+    m_FrameBufHeight = 0;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    m_FrameBufferOwner = NULL;
+    m_RetiredFrameBuffers = NULL;
+#endif
     m_PublishedScanoutResourceId = 0;
     m_ActiveScanoutResourceId = 0;
     m_ExplicitPresentResourceId = 0;
@@ -10262,6 +10823,17 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
 #if defined(VIOGPU_NATIVE_CONTEXT)
     m_NextNativeResourceId = VIOGPU_NATIVE_RESOURCE_ID_START;
     KeInitializeMutex(&m_2DScanoutMutex, 0);
+    KeInitializeMutex(&m_NativeScanoutModeMutex, 0);
+    RtlZeroMemory(&m_NativeScanoutCandidate, sizeof(m_NativeScanoutCandidate));
+    RtlZeroMemory(&m_NativeScanoutCommitted, sizeof(m_NativeScanoutCommitted));
+    m_NativeScanoutReservedHostReset = 0;
+    m_NativeScanoutReservedMode = 0;
+    RtlZeroMemory(&m_NativeScanoutObservedProfile, sizeof(m_NativeScanoutObservedProfile));
+    m_NativeScanoutObservedHostReset = 0;
+    m_NativeScanoutObservedLocalReset = 0;
+    m_NativeScanoutObservation = 0;
+    m_NativeScanoutObservationValid = FALSE;
+    m_NativeScanoutReconcilePending = FALSE;
     m_2DResourceIdsInitialized = FALSE;
     m_2DScanoutResourceId = 0;
     m_2DScanoutUnknown = FALSE;
@@ -10365,11 +10937,6 @@ NTSTATUS VioGpuAdapter::ResumeFrameBuffer(CURRENT_MODE *pCurrentMode)
         color.generation = caps.generation;
         result = m_CtrlQueue.SetResourceColor(&color);
     }
-    UINT previousResource = 0;
-    if (result == VioGpuHostContextConfirmed)
-    {
-        result = Set2DScanout(0, resource, m_FrameBufWidth, m_FrameBufHeight, &previousResource);
-    }
     if (result == VioGpuHostContextConfirmed)
     {
         result = m_CtrlQueue.TransferToHost2DSynchronous(resource, 0, m_FrameBufWidth, m_FrameBufHeight, 0, 0);
@@ -10378,6 +10945,9 @@ NTSTATUS VioGpuAdapter::ResumeFrameBuffer(CURRENT_MODE *pCurrentMode)
     {
         result = m_CtrlQueue.FlushResourceSynchronous(resource, m_FrameBufWidth, m_FrameBufHeight, 0, 0);
     }
+    UINT previousResource = 0;
+    if (result == VioGpuHostContextConfirmed)
+        result = Set2DScanout(0, resource, m_FrameBufWidth, m_FrameBufHeight, &previousResource);
     if (result == VioGpuHostContextUnknown)
     {
         m_pVioGpuDod->RequestHardwareResetAtAnyIrql();
@@ -10386,9 +10956,202 @@ NTSTATUS VioGpuAdapter::ResumeFrameBuffer(CURRENT_MODE *pCurrentMode)
 }
 #endif
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+BOOLEAN VioGpuAdapter::ReleaseFrameBufferOwner(VIOGPU_NATIVE_FRAMEBUFFER *owner)
+{
+    PAGED_CODE();
+    if (owner == NULL)
+        return TRUE;
+    const UINT resource = owner->Object == NULL ? 0 : owner->Object->GetId();
+    if (resource != 0)
+    {
+        BOOLEAN released = FALSE;
+        if (Destroy2DResource(resource, &owner->State, &owner->ResetGeneration, &released, TRUE) !=
+                VioGpuHostContextConfirmed || !released)
+            return FALSE;
+        Release2DResourceId(resource);
+    }
+    delete owner->Object;
+    delete owner;
+    return TRUE;
+}
+
+VOID VioGpuAdapter::RetireFrameBufferMode(VIOGPU_NATIVE_FRAMEBUFFER *owner)
+{
+    PAGED_CODE();
+    if (owner != NULL && !ReleaseFrameBufferOwner(owner))
+    {
+        owner->Next = m_RetiredFrameBuffers;
+        m_RetiredFrameBuffers = owner;
+    }
+}
+
+BOOLEAN VioGpuAdapter::CollectRetiredFrameBuffers()
+{
+    PAGED_CODE();
+    auto link = &m_RetiredFrameBuffers;
+    while (*link != NULL)
+    {
+        auto owner = *link;
+        auto next = owner->Next;
+        if (ReleaseFrameBufferOwner(owner))
+            *link = next;
+        else
+            link = &owner->Next;
+    }
+    return m_RetiredFrameBuffers == NULL;
+}
+
+NTSTATUS VioGpuAdapter::PrepareFrameBufferMode(ULONG Mode, const CURRENT_MODE *candidate,
+                                               VIOGPU_NATIVE_FRAMEBUFFER **prepared)
+{
+    PAGED_CODE();
+    if (prepared == NULL)
+        return STATUS_INVALID_PARAMETER;
+    *prepared = NULL;
+    if (candidate == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL ||
+        m_pVioGpuDod->IsHardwareResetRequested() || !CollectRetiredFrameBuffers())
+        return STATUS_DEVICE_NOT_READY;
+    PVIDEO_MODE_INFORMATION mode = NULL;
+    for (ULONG i = 0; i < GetModeCount(); ++i)
+    {
+        if (m_ModeInfo[i].ModeIndex == Mode)
+        {
+            mode = &m_ModeInfo[i];
+            break;
+        }
+    }
+    if (mode == NULL || mode->VisScreenWidth == 0 || mode->VisScreenHeight == 0 || mode->ScreenStride == 0 ||
+        mode->ScreenStride > MAXUINT / mode->VisScreenHeight ||
+        mode->VisScreenWidth != candidate->DispInfo.Width || mode->VisScreenHeight != candidate->DispInfo.Height)
+        return STATUS_INVALID_PARAMETER;
+    const UINT format = ColorFormat(candidate->DispInfo.ColorFormat);
+    const UINT bytes = mode->ScreenStride * mode->VisScreenHeight;
+    if (format == 0 || bytes > MAXUINT - (PAGE_SIZE - 1))
+        return STATUS_INVALID_PARAMETER;
+    auto owner = new (NonPagedPoolNx) VIOGPU_NATIVE_FRAMEBUFFER;
+    if (owner == NULL)
+        return STATUS_NO_MEMORY;
+    RtlZeroMemory(owner, sizeof(*owner));
+    owner->Width = mode->VisScreenWidth;
+    owner->Height = mode->VisScreenHeight;
+    owner->Object = new (NonPagedPoolNx) VioGpuObj();
+    if (owner->Object == NULL || !owner->Object->Init(bytes, &m_FrameSegment))
+    {
+        RetireFrameBufferMode(owner);
+        return STATUS_NO_MEMORY;
+    }
+    const auto sgl = owner->Object->GetSGList();
+    if (sgl == NULL || sgl->NumberOfElements == 0 ||
+        sgl->NumberOfElements > VIOGPU_MAX_BACKING_ENTRIES)
+    {
+        RetireFrameBufferMode(owner);
+        return STATUS_INVALID_PARAMETER;
+    }
+    auto entries = static_cast<PGPU_MEM_ENTRY>(m_GpuBuf.AllocateMemory(
+        static_cast<SIZE_T>(sgl->NumberOfElements) * sizeof(GPU_MEM_ENTRY)));
+    if (entries == NULL)
+    {
+        RetireFrameBufferMode(owner);
+        return STATUS_NO_MEMORY;
+    }
+    for (UINT i = 0; i < sgl->NumberOfElements; ++i)
+    {
+        entries[i].addr = sgl->Elements[i].Address.QuadPart;
+        entries[i].length = sgl->Elements[i].Length;
+        entries[i].padding = 0;
+    }
+    const UINT resource = Allocate2DResourceId();
+    owner->Object->SetId(resource);
+    auto result = resource == 0 ? VioGpuHostContextNotSubmitted :
+        Create2DResourceBacking(resource, format, owner->Width, owner->Height, owner->Object->GetSize(),
+                                entries, sgl->NumberOfElements, &owner->State, &owner->ResetGeneration);
+    m_GpuBuf.FreeMemory(entries); // The synchronous queue owns its copied descriptor storage.
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
+    UINT wireFormat = 0;
+    UINT wireEncoding = 0;
+    if (result == VioGpuHostContextConfirmed &&
+        VioGpuSourceColorTag(candidate->DispInfo.ColorFormat, &wireFormat, &wireEncoding))
+    {
+        VIOGPU_DISPLAY_COLOR_RESPONSE caps = {};
+        VIOGPU_SET_RESOURCE_COLOR color = {};
+        color.resource_id = resource;
+        color.format = wireFormat;
+        color.encoding = wireEncoding;
+        if (!m_pVioGpuDod->QueryDisplayColor(&caps) || !(caps.usable_hdr_types & VIOGPU_DISPLAY_COLOR_PQ))
+            result = VioGpuHostContextNotSubmitted;
+        else
+        {
+            color.generation = caps.generation;
+            result = m_CtrlQueue.SetResourceColor(&color);
+        }
+    }
+#endif
+    /* No SET_SCANOUT or publication before every fallible preparation succeeds.
+     * Old and new objects refer to the persistent framebuffer segment; it is
+     * never freed while either host resource may still own a reference. */
+    if (result == VioGpuHostContextConfirmed)
+        result = m_CtrlQueue.TransferToHost2DSynchronous(resource, 0, owner->Width, owner->Height, 0, 0);
+    if (result == VioGpuHostContextConfirmed)
+        result = m_CtrlQueue.FlushResourceSynchronous(resource, owner->Width, owner->Height, 0, 0);
+    if (result != VioGpuHostContextConfirmed)
+    {
+        if (result == VioGpuHostContextUnknown)
+            m_pVioGpuDod->RequestHardwareResetAtAnyIrql();
+        RetireFrameBufferMode(owner);
+        return STATUS_DEVICE_NOT_READY;
+    }
+    *prepared = owner;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS VioGpuAdapter::CommitFrameBufferMode(VIOGPU_NATIVE_FRAMEBUFFER *prepared, CURRENT_MODE *candidate)
+{
+    PAGED_CODE();
+    if (prepared == NULL || candidate == NULL || prepared->Object == NULL ||
+        prepared->State != VioGpu2DResourceBackingAttached ||
+        prepared->Width != candidate->DispInfo.Width || prepared->Height != candidate->DispInfo.Height ||
+        prepared->ResetGeneration == 0 || m_pVioGpuDod->IsHardwareResetRequested() ||
+        prepared->ResetGeneration != static_cast<ULONGLONG>(InterlockedCompareExchange64(
+            &m_NativeContextResetGeneration, 0, 0)))
+        return STATUS_DEVICE_NOT_READY;
+    UINT previous = 0;
+    if (Set2DScanout(0, prepared->Object->GetId(), prepared->Width, prepared->Height, &previous) !=
+        VioGpuHostContextConfirmed)
+        return STATUS_DEVICE_NOT_READY;
+    if (m_pVioGpuDod->IsHardwareResetRequested() ||
+        prepared->ResetGeneration != static_cast<ULONGLONG>(InterlockedCompareExchange64(
+            &m_NativeContextResetGeneration, 0, 0)))
+    {
+        m_pVioGpuDod->RequestHardwareResetAtAnyIrql();
+        return STATUS_DEVICE_NOT_READY;
+    }
+    auto old = m_FrameBufferOwner;
+    m_FrameBufferOwner = prepared;
+    m_pFrameBuf = prepared->Object;
+    m_FrameBufWidth = prepared->Width;
+    m_FrameBufHeight = prepared->Height;
+    candidate->FrameBuffer = prepared->Object->GetVirtualAddress();
+    candidate->Flags.FrameBufferIsActive = TRUE;
+    RetireFrameBufferMode(old);
+    return STATUS_SUCCESS;
+}
+#endif
+
 NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
 {
     PAGED_CODE();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    VIOGPU_NATIVE_FRAMEBUFFER *prepared = NULL;
+    NTSTATUS status = PrepareFrameBufferMode(Mode, pCurrentMode, &prepared);
+    if (status == STATUS_SUCCESS)
+    {
+        status = CommitFrameBufferMode(prepared, pCurrentMode);
+        if (status != STATUS_SUCCESS)
+            RetireFrameBufferMode(prepared);
+    }
+    return status;
+#else
     DbgPrint(TRACE_LEVEL_ERROR, ("---> %s - %d: Mode = %d\n", __FUNCTION__, m_Id, Mode));
     for (ULONG idx = 0; idx < GetModeCount(); idx++)
     {
@@ -10414,6 +11177,7 @@ NTSTATUS VioGpuAdapter::SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode)
     }
     DbgPrint(TRACE_LEVEL_ERROR, ("<--- %s failed\n", __FUNCTION__));
     return STATUS_UNSUCCESSFUL;
+#endif
 }
 
 NTSTATUS VioGpuAdapter::VioGpuAdapterInit(DXGK_DISPLAY_INFORMATION *pDispInfo)
@@ -10913,6 +11677,11 @@ NTSTATUS VioGpuAdapter::NegotiateNativeContextFeatures(void)
         !AckFeature(VIRTIO_GPU_F_NATIVE_AHB_PAGING))
         return STATUS_NOT_SUPPORTED;
 
+    if (m_pVioGpuDod->NativeScanoutDiagnosticEnabled() && SupportsNativeAhbPaging() &&
+        virtio_is_feature_enabled(m_u64HostFeatures, VIRTIO_GPU_F_NATIVE_SCANOUT_GEOMETRY) &&
+        !AckFeature(VIRTIO_GPU_F_NATIVE_SCANOUT_GEOMETRY))
+        return STATUS_NOT_SUPPORTED;
+
     return STATUS_SUCCESS;
 }
 
@@ -10933,6 +11702,321 @@ BOOLEAN VioGpuAdapter::SupportsNativeAhbPaging() const
            virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_PAGING);
 }
 
+BOOLEAN VioGpuAdapter::SupportsNativeScanoutGeometry() const
+{
+    return SupportsNativeAhbPaging() &&
+        virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_SCANOUT_GEOMETRY);
+}
+
+BOOLEAN VioGpuAdapter::QueryNativeScanoutState(VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                              VIOGPU_SCANOUT_PROFILE *profile, ULONGLONG *localReset)
+{
+    PAGED_CODE();
+    if (geometry == NULL || profile == NULL || localReset == NULL) return FALSE;
+    RtlZeroMemory(geometry, sizeof(*geometry));
+    RtlZeroMemory(profile, sizeof(*profile));
+    *localReset = 0;
+    if (!SupportsNativeScanoutGeometry() || m_pVioGpuDod->IsHardwareResetRequested()) return FALSE;
+    const ULONGLONG generation = static_cast<ULONGLONG>(InterlockedCompareExchange64(
+        &m_NativeContextResetGeneration, 0, 0));
+    VIOGPU_SCANOUT_GEOMETRY_RESPONSE active = {};
+    VIOGPU_SCANOUT_PROFILE_RESPONSE preferred = {};
+    if (generation == 0 || !m_CtrlQueue.QueryScanoutGeometry(&active, TRUE) ||
+        !m_CtrlQueue.QueryScanoutProfile(&preferred, TRUE) ||
+        active.Geometry.HostResetGeneration != preferred.HostResetGeneration ||
+        m_pVioGpuDod->IsHardwareResetRequested() || generation != static_cast<ULONGLONG>(
+            InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0))) return FALSE;
+    *geometry = active.Geometry;
+    *profile = preferred.Profile;
+    *localReset = generation;
+    return TRUE;
+}
+
+BOOLEAN VioGpuAdapter::ReserveNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode)
+{
+    PAGED_CODE();
+    if (mode == NULL) return FALSE;
+    RtlZeroMemory(mode, sizeof(*mode));
+    if (!SupportsNativeScanoutGeometry() || !AcquireNativeSubmitOperation()) return FALSE;
+    if (KeWaitForSingleObject(&m_NativeScanoutModeMutex, Executive, KernelMode, FALSE, NULL) != STATUS_SUCCESS)
+    {
+        ReleaseNativeSubmitOperation();
+        return FALSE;
+    }
+    BOOLEAN reserved = FALSE;
+    VIOGPU_SCANOUT_GEOMETRY active = {};
+    VIOGPU_SCANOUT_PROFILE preferred = {};
+    ULONGLONG localReset = 0;
+    do
+    {
+        if (!QueryNativeScanoutState(&active, &preferred, &localReset) ||
+            preferred.Flags != VIOGPU_SCANOUT_PROFILE_USABLE) break;
+        /* Post-Commit allocations join the exact committed mode. Merely
+         * observing equal host dimensions never authenticates a local commit. */
+        if (m_NativeScanoutCommitted.LocalResetGeneration == localReset &&
+            VioGpuScanoutGeometryEqual(&m_NativeScanoutCommitted.Geometry, &active) &&
+            VioGpuScanoutProfileEqual(&m_NativeScanoutCommitted.Profile, &preferred))
+        {
+            *mode = m_NativeScanoutCommitted;
+            reserved = TRUE;
+            break;
+        }
+        if (VioGpuNativeScanoutModeValid(&m_NativeScanoutCandidate) &&
+            m_NativeScanoutCandidate.LocalResetGeneration == localReset &&
+            m_NativeScanoutCandidate.Geometry.HostResetGeneration == active.HostResetGeneration &&
+            m_NativeScanoutCandidate.Geometry.ModeGeneration > active.ModeGeneration &&
+            VioGpuScanoutProfileEqual(&m_NativeScanoutCandidate.Profile, &preferred))
+        {
+            *mode = m_NativeScanoutCandidate;
+            reserved = TRUE;
+            break;
+        }
+        ULONGLONG last = active.ModeGeneration;
+        if (m_NativeScanoutReservedHostReset == active.HostResetGeneration && m_NativeScanoutReservedMode > last)
+            last = m_NativeScanoutReservedMode;
+        if (last == ~0ULL) break; // Never recycle an abandoned mode number.
+        VIOGPU_NATIVE_SCANOUT_MODE candidate = {};
+        candidate.LocalResetGeneration = localReset;
+        candidate.Profile = preferred;
+        candidate.Geometry.Version = VIOGPU_SCANOUT_GEOMETRY_VERSION;
+        candidate.Geometry.Size = VIOGPU_SCANOUT_GEOMETRY_SIZE;
+        candidate.Geometry.StorageWidth = preferred.StorageWidth;
+        candidate.Geometry.StorageHeight = preferred.StorageHeight;
+        candidate.Geometry.LogicalWidth = preferred.LogicalWidth;
+        candidate.Geometry.LogicalHeight = preferred.LogicalHeight;
+        candidate.Geometry.ContentRotationCw = preferred.ContentRotationCw;
+        candidate.Geometry.HostResetGeneration = active.HostResetGeneration;
+        candidate.Geometry.ModeGeneration = last + 1;
+        if (!VioGpuNativeScanoutModeValid(&candidate)) break;
+        m_NativeScanoutReservedHostReset = active.HostResetGeneration;
+        m_NativeScanoutReservedMode = candidate.Geometry.ModeGeneration;
+        m_NativeScanoutCandidate = candidate;
+        *mode = candidate;
+        reserved = TRUE;
+    } while (false);
+    KeReleaseMutex(&m_NativeScanoutModeMutex, FALSE);
+    ReleaseNativeSubmitOperation();
+    return reserved;
+}
+
+BOOLEAN VioGpuAdapter::NativeScanoutModeEligible(const VIOGPU_NATIVE_SCANOUT_MODE *mode, BOOLEAN committedOnly)
+{
+    PAGED_CODE();
+    if (!VioGpuNativeScanoutModeValid(mode) || !SupportsNativeScanoutGeometry() ||
+        !AcquireNativeSubmitOperation()) return FALSE;
+    if (KeWaitForSingleObject(&m_NativeScanoutModeMutex, Executive, KernelMode, FALSE, NULL) != STATUS_SUCCESS)
+    {
+        ReleaseNativeSubmitOperation();
+        return FALSE;
+    }
+    VIOGPU_SCANOUT_GEOMETRY active = {};
+    VIOGPU_SCANOUT_PROFILE preferred = {};
+    ULONGLONG localReset = 0;
+    const BOOLEAN current = QueryNativeScanoutState(&active, &preferred, &localReset) &&
+        mode->LocalResetGeneration == localReset && mode->Geometry.HostResetGeneration == active.HostResetGeneration &&
+        VioGpuScanoutProfileEqual(&mode->Profile, &preferred);
+    const BOOLEAN eligible = current &&
+        ((VioGpuNativeScanoutModeEqual(mode, &m_NativeScanoutCommitted) &&
+          VioGpuScanoutGeometryEqual(&mode->Geometry, &active)) ||
+         (!committedOnly && VioGpuNativeScanoutModeEqual(mode, &m_NativeScanoutCandidate) &&
+          mode->Geometry.ModeGeneration > active.ModeGeneration));
+    KeReleaseMutex(&m_NativeScanoutModeMutex, FALSE);
+    ReleaseNativeSubmitOperation();
+    return eligible;
+}
+
+BOOLEAN VioGpuAdapter::QueryReservedNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode, BOOLEAN *committed)
+{
+    PAGED_CODE();
+    if (mode == NULL || committed == NULL) return FALSE;
+    RtlZeroMemory(mode, sizeof(*mode));
+    *committed = FALSE;
+    if (!SupportsNativeScanoutGeometry() || !AcquireNativeSubmitOperation()) return FALSE;
+    if (KeWaitForSingleObject(&m_NativeScanoutModeMutex, Executive, KernelMode, FALSE, NULL) != STATUS_SUCCESS)
+    {
+        ReleaseNativeSubmitOperation();
+        return FALSE;
+    }
+    VIOGPU_SCANOUT_GEOMETRY active = {};
+    VIOGPU_SCANOUT_PROFILE preferred = {};
+    ULONGLONG localReset = 0;
+    BOOLEAN found = FALSE;
+    if (QueryNativeScanoutState(&active, &preferred, &localReset))
+    {
+        const VIOGPU_NATIVE_SCANOUT_MODE *record = &m_NativeScanoutCommitted;
+        const BOOLEAN isCommitted = VioGpuNativeScanoutModeValid(record) &&
+            record->LocalResetGeneration == localReset &&
+            VioGpuScanoutGeometryEqual(&record->Geometry, &active) &&
+            VioGpuScanoutProfileEqual(&record->Profile, &preferred);
+        if (!isCommitted) record = &m_NativeScanoutCandidate;
+        found = isCommitted || (active.ModeGeneration == 0 && VioGpuNativeScanoutModeValid(record) &&
+            record->LocalResetGeneration == localReset &&
+            record->Geometry.HostResetGeneration == active.HostResetGeneration &&
+            record->Geometry.ModeGeneration > active.ModeGeneration &&
+            VioGpuScanoutProfileEqual(&record->Profile, &preferred));
+        if (found)
+        {
+            *mode = *record;
+            *committed = isCommitted;
+        }
+    }
+    /* Observation does not create a candidate or consume a mode number. */
+    KeReleaseMutex(&m_NativeScanoutModeMutex, FALSE);
+    ReleaseNativeSubmitOperation();
+    return found;
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::CommitNativeScanoutMode(const VIOGPU_NATIVE_SCANOUT_MODE *mode)
+{
+    PAGED_CODE();
+    if (!VioGpuNativeScanoutModeValid(mode) || !SupportsNativeScanoutGeometry() ||
+        !AcquireNativeSubmitOperation()) return VioGpuHostContextNotSubmitted;
+    if (KeWaitForSingleObject(&m_NativeScanoutModeMutex, Executive, KernelMode, FALSE, NULL) != STATUS_SUCCESS)
+    {
+        ReleaseNativeSubmitOperation();
+        return VioGpuHostContextNotSubmitted;
+    }
+    VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextNotSubmitted;
+    VIOGPU_SCANOUT_GEOMETRY active = {};
+    VIOGPU_SCANOUT_PROFILE preferred = {};
+    ULONGLONG localReset = 0;
+    do
+    {
+        if (!QueryNativeScanoutState(&active, &preferred, &localReset) ||
+            mode->LocalResetGeneration != localReset ||
+            mode->Geometry.HostResetGeneration != active.HostResetGeneration ||
+            !VioGpuScanoutProfileEqual(&mode->Profile, &preferred)) break;
+        if (VioGpuNativeScanoutModeEqual(mode, &m_NativeScanoutCommitted) &&
+            VioGpuScanoutGeometryEqual(&mode->Geometry, &active))
+        {
+            result = VioGpuHostContextConfirmed;
+            break;
+        }
+        if (!VioGpuNativeScanoutModeEqual(mode, &m_NativeScanoutCandidate) ||
+            mode->Geometry.ModeGeneration <= active.ModeGeneration) break;
+        VIOGPU_SCANOUT_PROFILE_RESPONSE response = {};
+        response.Header.Type = VIRTIO_GPU_RESP_OK_SCANOUT_PROFILE;
+        response.Profile = preferred;
+        response.HostResetGeneration = active.HostResetGeneration;
+        /* The caller must finish all mode preparation, timing changes and
+         * borrowed-handle releases before this call. CONFIGURE is the final
+         * fallible commit: an ACK is never followed by a fallible query/BIND/
+         * SET_SCANOUT or a claimed scalar rollback of the active host tuple. */
+        result = m_CtrlQueue.ConfigureScanoutProfile(&mode->Geometry, &response, TRUE);
+        if (result == VioGpuHostContextConfirmed)
+        {
+            m_NativeScanoutCommitted = *mode;
+            RtlZeroMemory(&m_NativeScanoutCandidate, sizeof(m_NativeScanoutCandidate));
+        }
+        else if (result == VioGpuHostContextUnknown)
+        {
+            /* Host may have committed without a delivered ACK. Neither old
+             * nor candidate mode can be advertised as known active now. */
+            RtlZeroMemory(&m_NativeScanoutCommitted, sizeof(m_NativeScanoutCommitted));
+            RtlZeroMemory(&m_NativeScanoutCandidate, sizeof(m_NativeScanoutCandidate));
+            m_pVioGpuDod->RequestHardwareResetAtAnyIrql();
+        }
+    } while (false);
+    KeReleaseMutex(&m_NativeScanoutModeMutex, FALSE);
+    ReleaseNativeSubmitOperation();
+    return result;
+}
+
+VOID VioGpuAdapter::ObserveNativeScanoutProfile(void)
+{
+    PAGED_CODE();
+    if (!SupportsNativeScanoutGeometry() || !AcquireNativeSubmitOperation()) return;
+    if (KeWaitForSingleObject(&m_NativeScanoutModeMutex, Executive, KernelMode, FALSE, NULL) != STATUS_SUCCESS)
+    {
+        ReleaseNativeSubmitOperation();
+        return;
+    }
+    VIOGPU_SCANOUT_GEOMETRY active = {};
+    VIOGPU_SCANOUT_PROFILE profile = {};
+    ULONGLONG localReset = 0;
+    const BOOLEAN queried = QueryNativeScanoutState(&active, &profile, &localReset);
+    const BOOLEAN same = queried && m_NativeScanoutObservationValid &&
+        localReset == m_NativeScanoutObservedLocalReset &&
+        active.HostResetGeneration == m_NativeScanoutObservedHostReset &&
+        ((profile.Flags == 0 && m_NativeScanoutObservedProfile.Flags == 0 &&
+          profile.EndpointGeneration == m_NativeScanoutObservedProfile.EndpointGeneration &&
+          profile.ProfileGeneration == m_NativeScanoutObservedProfile.ProfileGeneration) ||
+         VioGpuScanoutProfileEqual(&profile, &m_NativeScanoutObservedProfile));
+    if (!same)
+    {
+        m_NativeScanoutObservationValid = queried;
+        m_NativeScanoutObservedProfile = profile;
+        m_NativeScanoutObservedHostReset = queried ? active.HostResetGeneration : 0;
+        m_NativeScanoutObservedLocalReset = queried ? localReset : 0;
+        if (m_NativeScanoutObservation != ~0ULL) ++m_NativeScanoutObservation;
+        m_NativeScanoutReconcilePending = TRUE;
+        if (!queried || m_NativeScanoutCandidate.LocalResetGeneration != localReset ||
+            m_NativeScanoutCandidate.Geometry.HostResetGeneration != active.HostResetGeneration ||
+            !VioGpuScanoutProfileEqual(&m_NativeScanoutCandidate.Profile, &profile))
+            RtlZeroMemory(&m_NativeScanoutCandidate, sizeof(m_NativeScanoutCandidate));
+    }
+    /* No old resource gets a new profile here. Reconciliation has its own
+     * acknowledged user-mode transaction; observation alone grants no ready
+     * flag, host BIND, mode Configure or presentation lease. This also works
+     * before any share exists during headless boot. */
+    KeReleaseMutex(&m_NativeScanoutModeMutex, FALSE);
+    ReleaseNativeSubmitOperation();
+}
+
+BOOLEAN VioGpuAdapter::NativeScanoutBindingCurrent(const VIOGPU_SCANOUT_BINDING *binding)
+{
+    PAGED_CODE();
+    /* Negotiation precedes the first oriented mode. Unconfigured mode zero
+     * keeps the identity native-AHB bootstrap usable even with no Activity.
+     * After Configure, no legacy allocation can enter the oriented route. */
+    if (binding == NULL || binding->ResourceId == 0)
+    {
+        if (!SupportsNativeScanoutGeometry()) return TRUE;
+        VIOGPU_SCANOUT_GEOMETRY bootstrap = {};
+        VIOGPU_SCANOUT_PROFILE preferred = {};
+        ULONGLONG localReset = 0;
+        return QueryNativeScanoutState(&bootstrap, &preferred, &localReset) &&
+            VioGpuScanoutGeometryValid(&bootstrap, false);
+    }
+    VIOGPU_SCANOUT_GEOMETRY active = {};
+    VIOGPU_SCANOUT_PROFILE profile = {};
+    ULONGLONG localReset = 0;
+    return QueryNativeScanoutState(&active, &profile, &localReset) &&
+        binding->LocalResetGeneration == localReset && binding->ShareKey != 0 &&
+        VioGpuScanoutBindingProfileMatches(binding, &active, &profile);
+}
+
+VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::BindNativeScanoutProfile(UINT resource, ULONGLONG key, ULONGLONG localReset,
+    const VIOGPU_SCANOUT_GEOMETRY *geometry, const VIOGPU_SCANOUT_PROFILE *profile,
+    VIOGPU_SCANOUT_BINDING *binding)
+{
+    PAGED_CODE();
+    if (binding == NULL) return VioGpuHostContextNotSubmitted;
+    RtlZeroMemory(binding, sizeof(*binding));
+    VIOGPU_SCANOUT_GEOMETRY active = {};
+    VIOGPU_SCANOUT_PROFILE preferred = {};
+    ULONGLONG generation = 0;
+    if (resource == 0 || key == 0 || localReset == 0 ||
+        !VioGpuScanoutProfileMatches(profile, geometry) ||
+        !QueryNativeScanoutState(&active, &preferred, &generation) || generation != localReset ||
+        !VioGpuScanoutGeometryEqual(geometry, &active) || !VioGpuScanoutProfileEqual(profile, &preferred))
+        return VioGpuHostContextNotSubmitted;
+    const auto result = m_CtrlQueue.BindScanoutGeometry(resource, geometry, TRUE);
+    if (result != VioGpuHostContextConfirmed) return result;
+    VIOGPU_SCANOUT_BINDING candidate = {};
+    candidate.ResourceId = resource;
+    candidate.ShareKey = key;
+    candidate.LocalResetGeneration = localReset;
+    candidate.EndpointGeneration = profile->EndpointGeneration;
+    candidate.ProfileGeneration = profile->ProfileGeneration;
+    candidate.Geometry = *geometry;
+    /* A successful BIND followed by revocation still owns a host resource.
+     * Do not publish it; normal UNREF/reset retirement owns its lifetime. */
+    if (!NativeScanoutBindingCurrent(&candidate)) return VioGpuHostContextUnknown;
+    *binding = candidate;
+    return VioGpuHostContextConfirmed;
+}
+
 VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
                                                        ULONGLONG offset, UINT length, UINT pattern, PVOID data)
 {
@@ -10947,7 +12031,8 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::PageNativeAhb(UINT resourceId, ULONGLO
 
 __declspec(code_seg(".text"))
 BOOLEAN VioGpuAdapter::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
-                                              BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh)
+                                              BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh,
+                                              const VIOGPU_SCANOUT_GEOMETRY *geometry)
 {
     if (expectedResetGeneration == 0 ||
         expectedResetGeneration != static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration,
@@ -10957,7 +12042,8 @@ BOOLEAN VioGpuAdapter::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expect
     {
         return FALSE;
     }
-    return m_CtrlQueue.QueueNativeAhbOperation(resourceId, sequence, present, completion, context, refresh);
+    return m_CtrlQueue.QueueNativeAhbOperation(resourceId, sequence, present, completion, context, refresh,
+                                               geometry, SupportsNativeScanoutGeometry());
 }
 #endif
 
@@ -15940,7 +17026,21 @@ NTSTATUS VioGpuAdapter::StopNativeContextTransportLocked(void)
     }
     m_CtrlQueue.CompleteSynchronousRequestTeardown();
     DestroyCursor();
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    /* Stop has published confirmed reset retirement before reaching here.
+     * Keep the segment and IDs if any owner still cannot prove retirement. */
+    RetireFrameBufferMode(m_FrameBufferOwner);
+    m_FrameBufferOwner = NULL;
+    m_pFrameBuf = NULL;
+    m_FrameBufWidth = 0;
+    m_FrameBufHeight = 0;
+    if (!CollectRetiredFrameBuffers())
+    {
+        return STATUS_DEVICE_NOT_READY;
+    }
+#else
     DestroyFrameBufferObj(TRUE, FALSE);
+#endif
     m_FrameSegment.Close();
     m_CursorSegment.Close();
     if (!m_GpuBuf.Close())
@@ -16226,6 +17326,16 @@ void VioGpuAdapter::ConfigChanged(void)
     DbgPrint(TRACE_LEVEL_FATAL, ("<--> %s\n", __FUNCTION__));
     UINT32 events_read, events_clear = 0;
     virtio_get_config(&m_VioDev, FIELD_OFFSET(GPU_CONFIG, events_read), &events_read, sizeof(m_u32NumScanouts));
+    if (events_read & VIRTIO_GPU_EVENT_NATIVE_SCANOUT_PROFILE)
+    {
+        /* Separate from REFRESH and any active resource. ACK before QUERY so
+         * a racing replacement leaves a further authoritative query pending. */
+        UINT32 profileClear = VIRTIO_GPU_EVENT_NATIVE_SCANOUT_PROFILE;
+        virtio_set_config(&m_VioDev, FIELD_OFFSET(GPU_CONFIG, events_clear), &profileClear, sizeof(profileClear));
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        ObserveNativeScanoutProfile();
+#endif
+    }
     if (events_read & VIRTIO_GPU_EVENT_NATIVE_AHB_REFRESH)
     {
         // Acknowledge before reserving/querying the current consumer. An attach
@@ -16718,6 +17828,11 @@ BOOLEAN VioGpuAdapter::UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPoin
         SrcBltInfo.Offset.x = 0;
         SrcBltInfo.Offset.y = 0;
         SrcBltInfo.Rotation = pCurrentMode->Rotation;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        /* The separate Host cursor plane remains in logical desktop space.
+         * Its raw shape/hotspot must not inherit physical primary rotation. */
+        if (m_pVioGpuDod->NativeScanoutDiagnosticEnabled()) SrcBltInfo.Rotation = D3DKMDT_VPPR_IDENTITY;
+#endif
         SrcBltInfo.Width = pSetPointerShape->Width;
         SrcBltInfo.Height = pSetPointerShape->Height;
 

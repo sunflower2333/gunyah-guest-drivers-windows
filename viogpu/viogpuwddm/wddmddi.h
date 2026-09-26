@@ -3,6 +3,8 @@
 #include "../viogpudo/driver.h"
 #include "../viogpudo/viogpudo.h"
 #include "../shared/viogpu_wddm_abi.h"
+#include "../shared/viogpu_wddm_scanout.h"
+#include "../shared/viogpu_wddm_scanout_diagnostic.h"
 
 // Select the crosvm Native Context implementation when this header is used by
 // the full graphics miniport. The display-only target leaves it undefined.
@@ -221,6 +223,7 @@ struct VIOGPU_WDDM_ALLOCATION
     volatile LONG64 OwnerWritesRetired;
     /* A reference to an adapter-owned host surface, never an owned second BO. */
     BOOLEAN HostSurface;
+    VIOGPU_SCANOUT_BINDING ScanoutBinding;
 };
 
 enum VIOGPU_WDDM_PAGING_TRANSACTION_STATE : LONG
@@ -423,6 +426,7 @@ enum VIOGPU_WDDM_PRESENT_EXECUTION_STAGE : DWORD
     VioGpuWddmPresentExecuteTransactionRetire = 21,
     VioGpuWddmPresentExecuteStateTransition = 22,
     VioGpuWddmPresentExecuteHostSurfaceProtocol = 23,
+    VioGpuWddmPresentExecuteScanoutProfile = 24,
     VioGpuWddmPresentExecuteComplete = 0x0FFF,
 };
 

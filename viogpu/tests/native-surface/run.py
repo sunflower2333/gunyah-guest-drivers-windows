@@ -4,14 +4,18 @@ from pathlib import Path
 import argparse
 import os
 import re
-import resource
+try:
+    import resource
+except ImportError:  # Windows has no POSIX resource limits.
+    resource = None
 import subprocess
 import tempfile
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--negative-controls', action='store_true')
 args = parser.parse_args()
-resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+if resource is not None:
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 here = Path(__file__).resolve().parent
 root = here.parents[2]
 source = (root / 'viogpu/viogpuwddm/wddmddi.cpp').read_text()
@@ -29,11 +33,12 @@ def declaration(name, kind='function'):
         end += 1
     return source[match.start():end + (kind == 'struct')]
 
-names = ['FindNativeShareByKeyLocked', 'CollectNativeSurfacesLocked', 'HandleNativeSurfaceEscape',
+names = ['FindNativeShareByKeyLocked', 'CollectNativeSurfacesLocked', 'NativeHostSurfaceAllocationEligible',
+         'QueryNativeScanoutProfileEscape', 'QueryNativeScanoutDiagnosticEscape', 'HandleNativeSurfaceEscape',
          'ReferenceHostSurfaceAllocation', 'ReleaseHostSurfaceAllocation', 'RemoveNativeImportsForContext',
          'ImportNativeShareLocked', 'ReleaseNativeShareLocked', 'VioGpuWddmRetireNativeShares',
          'IsOwnedAllocation', 'IsNativeAllocation', 'IsStandardAllocation', 'IsStandardPrimaryAllocation',
-         'IsScanoutPrimaryAllocation',
+         'IsScanoutPrimaryAllocation', 'VioGpuWddmValidateDiagnosticPrimary',
          'BeginAllocationDestroy', 'UnmapHostSurfaceAllocation', 'VioGpuWddmDestroyAllocation']
 production = '\n'.join(declaration(name) for name in names)
 structs = '\n'.join(declaration(name, 'struct') for name in
@@ -50,11 +55,23 @@ if args.negative_controls:
         ('wrapper-destroy-routing', 'else if (allocation->HostSurface)', 'else if (false)'),
         ('wrapper-destroy-live-owner',
          'allocation->SubmissionReferences != 0 || allocation->OpenReferences != 0', 'false'),
+        ('profile-readiness', '!(candidate ? adapter->NativeScanoutDiagnosticEnabled() : adapter->NativeScanoutProfileReady()) ||', ''),
+        ('profile-stale-allocation', 'NativeHostSurfaceAllocationEligible(share))',
+         '(NativeHostSurfaceAllocationEligible(share) || true))'),
+        ('candidate-lost-pending-bind', 'InterlockedExchange(&share->ScanoutBindPending, 1);', ''),
+        ('profile-not-copied', '*binding = share->ScanoutBinding;', '(void)binding;'),
+        ('host-flags-claim-ready', 'request.ReadyFlags = 0;', 'request.ReadyFlags = VIOGPU_WDDM_SCANOUT_READY_ALL;'),
+        ('primary-wrong-width', 'allocation->Width == mode->Geometry.StorageWidth &&', ''),
+        ('primary-wrong-mode', 'VioGpuScanoutBindingMatches(&allocation->ScanoutBinding,',
+         '(true || VioGpuScanoutBindingMatches(&allocation->ScanoutBinding,'),
     ]
     for name, old, new in mutations:
         if production.count(old) != 1:
             raise RuntimeError('negative control anchor changed: ' + name)
-        variants.append((name, production.replace(old, new)))
+        mutated = production.replace(old, new)
+        if name == 'primary-wrong-mode':
+            mutated = mutated.replace('allocation->Width, allocation->Height) &&', 'allocation->Width, allocation->Height)) &&')
+        variants.append((name, mutated))
 with tempfile.TemporaryDirectory(prefix='.native-surface-', dir=here) as temp:
     output = Path(temp)
     for name, body in variants:
