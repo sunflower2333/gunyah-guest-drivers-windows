@@ -31,6 +31,7 @@
 
 #include "viogpu.h"
 #include "display_timing.h"
+#include "vblank_cadence.h"
 #include "fence_publication.h"
 #include "activation_trace.h"
 #include "child_descriptor.h"
@@ -1675,6 +1676,8 @@ class VioGpuDod
     LONGLONG m_CrtcEpoch;
     LONGLONG m_CrtcPeriodTicks;
     LONGLONG m_CrtcNextDueTicks;
+    VIOGPU_VBLANK_CADENCE_COUNTERS m_CrtcVblankCadence;
+    LONGLONG m_CrtcAdapterStartQpc;
     volatile LONG m_CrtcVsyncTimerArmed;
     volatile LONG m_CrtcVsyncDeliveredCount;
     /* QPC of the last vsync reported to dxgkrnl; a flip published late in the
@@ -1716,10 +1719,13 @@ class VioGpuDod
     // Keep DISPATCH_LEVEL spinlock regions out of their pageable callers,
     // including optimized builds that would otherwise inline these routines.
     __declspec(noinline) __declspec(code_seg(".text")) NTSTATUS ArmCrtcVsyncTimer(void);
-    VOID DisarmCrtcVsyncTimer(void);
+    __declspec(noinline) __declspec(code_seg(".text")) VOID DisarmCrtcVsyncTimer(void);
     __declspec(noinline) __declspec(code_seg(".text")) BOOLEAN CrtcVsyncDue(void);
     __declspec(noinline) __declspec(code_seg(".text")) VOID RearmCrtcVsyncTimer(_In_ PEX_TIMER timer);
     __declspec(noinline) __declspec(code_seg(".text")) VOID DeliverCrtcVsync(void);
+    __declspec(noinline) __declspec(code_seg(".text")) VOID RecordCrtcVblankDelivery(VIOGPU_VBLANK_DELIVERY_OUTCOME outcome);
+    __declspec(noinline) __declspec(code_seg(".text")) VOID ReadCrtcVblankCadence(VIOGPU_VBLANK_CADENCE_SNAPSHOT &snapshot);
+    NTSTATUS PublishCrtcVblankCadence(HANDLE deviceKey);
     VOID SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     // Any IRQL up to DIRQL.

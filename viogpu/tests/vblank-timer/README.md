@@ -41,6 +41,40 @@ All are host peers of the extracted production bodies. Timing-lock interleavings
 are deterministic boundary injections; the kernel, Android VSYNC, and physical
 scanout are not emulated or certified.
 
+The cadence diagnostics fixture also executes actual recording, capture and
+registry publication bodies. It checks fractional and exact-period resyncs,
+early/invalid callbacks, all five delivery outcomes, an in-flight delivery,
+arm/disarm idempotence, mode transitions, capture/publication concurrency and
+registry-write failure. A stable grid obeys the exact conservation equation
+`delta NextDueTicks = PeriodTicks * delta DueCount + delta ResyncPhaseTicks`.
+Four additional semantic negatives must fail on their respective diagnostic:
+`--negative-control-cadence-resync`, `--negative-control-cadence-gates`,
+`--negative-control-cadence-snapshot`, `--negative-control-cadence-publish`.
+`source_contract_test.py` also rejects pageable lock holders and torn/partial
+snapshot publication. Both workflows require those cases and the new .text MAP
+symbols. No WDK/MAP execution or device result is implied by host tests.
+
+`vblank_cadence.h` defines the fixed208-byte, little-endian schema1 REG_BINARY
+value `NativeVblankCadenceSnapshot`, published by the existing synchronous
+allocation diagnostic trigger. The old registry DWORDs remain compatible.
+Compare this binary value's own SnapshotQpc values, not a user-mode sleep or
+timestamps from the older independently published DWORDs. Require equal
+AdapterStartQpc/QpcFrequency/mode identity/PeriodTicks, no change in ArmCount,
+DisarmCount or ModeChanges, and enabled/armed valid endpoints. ArmCount counts
+transitions including attempts that subsequently fail; ModeChanges counts
+accepted timing publications including ones rolled back after arm failure.
+
+CallbackCount = DueCount + EarlyCount + InvalidPeriodCount. DueCount minus the
+sum of Delivery outcomes is the number between Due and outcome recording; it
+can straddle a snapshot and must not be called a lost interrupt. Delivered is
+the successful Notify wrapper count; in MPO2 mode an obsolete inner notification
+can be suppressed, so it is not a physical-vsync/scanout measurement.
+ResyncCount counts lateness of at least one period; MissedWholePeriods counts
+its integer-period portion and ResyncPhaseTicks includes the fractional phase
+discarded by the unchanged `now + period` policy. MaxLatenessTicks is a lifetime
+maximum, not a per-window maximum. SnapshotQpc must be fresh and increasing;
+atomic registry values may still be replaced by an older concurrent publisher.
+
 64 forced races pause a real production callback either before its rearm call
 or during delivery. Concurrent disarm must disable and wait for that callback;
 concurrent arm cannot publish the next timer before old callback rundown.

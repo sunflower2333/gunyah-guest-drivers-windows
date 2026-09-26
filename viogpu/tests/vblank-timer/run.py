@@ -14,6 +14,10 @@ controls.add_argument('--negative-control-enable', action='store_true')
 controls.add_argument('--negative-control-scanline-epoch', action='store_true')
 controls.add_argument('--negative-control-scanline-arm', action='store_true')
 controls.add_argument('--negative-control-scanline-snapshot', action='store_true')
+controls.add_argument('--negative-control-cadence-resync', action='store_true')
+controls.add_argument('--negative-control-cadence-gates', action='store_true')
+controls.add_argument('--negative-control-cadence-snapshot', action='store_true')
+controls.add_argument('--negative-control-cadence-publish', action='store_true')
 args = parser.parse_args()
 here = Path(__file__).resolve().parent
 root = here.parents[2]
@@ -35,9 +39,9 @@ if args.negative_control_relative:
     methods = methods.replace(original, 'VioGpuVsyncDelay100ns(now, now + m_CrtcPeriodTicks, frequency.QuadPart)')
     expected_failure = 'FAIL phase-aligned cadence'
 if args.negative_control_enable:
-    original = 'InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0) == 0 || '
+    original = 'InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0) == 0'
     assert delivery.count(original) == 1
-    delivery = delivery.replace(original, '')
+    delivery = delivery.replace(original, 'false')
     expected_failure = 'FAIL disabled vblank delivery'
 if args.negative_control_scanline_epoch:
     original = 'const bool armed = InterlockedCompareExchange(&m_CrtcVsyncTimerArmed, 0, 0) != 0;'
@@ -57,6 +61,26 @@ if args.negative_control_scanline_snapshot:
     assert scanline.count(original) == 1
     scanline = scanline.replace(original, original + '    const LONGLONG nextDue = m_CrtcNextDueTicks;\n')
     expected_failure = 'FAIL coherent raster snapshot'
+if args.negative_control_cadence_resync:
+    original = 'm_CrtcVblankCadence.ResyncPhaseTicks += late;'
+    assert methods.count(original) == 1
+    methods = methods.replace(original, 'm_CrtcVblankCadence.ResyncPhaseTicks += (late / period) * period;')
+    expected_failure = 'FAIL cadence resync accounting'
+if args.negative_control_cadence_gates:
+    original = 'RecordCrtcVblankDelivery(VioGpuVblankDisabled);'
+    assert delivery.count(original) == 1
+    delivery = delivery.replace(original, 'RecordCrtcVblankDelivery(VioGpuVblankHardwareGated);')
+    expected_failure = 'FAIL cadence gate accounting'
+if args.negative_control_cadence_snapshot:
+    original = '    snapshot.Counters = m_CrtcVblankCadence;\n    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);'
+    assert delivery.count(original) == 1
+    delivery = delivery.replace(original, '    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);\n    snapshot.Counters = m_CrtcVblankCadence;')
+    expected_failure = 'FAIL cadence coherent snapshot'
+if args.negative_control_cadence_publish:
+    original = 'REG_BINARY, &snapshot, sizeof(snapshot))'
+    assert delivery.count(original) == 1
+    delivery = delivery.replace(original, 'REG_BINARY, &snapshot, sizeof(snapshot) - 8)')
+    expected_failure = 'FAIL cadence atomic publication'
 fixture = (here / 'vblank_timer_test.cpp').read_text()
 fixture = fixture.replace('// INSERT_CALLBACK', callback).replace('// INSERT_METHODS', methods)
 fixture = fixture.replace('// INSERT_DELIVERY', delivery)

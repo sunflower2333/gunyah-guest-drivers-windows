@@ -196,6 +196,8 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     RtlZeroMemory(&m_DxgkInterface, sizeof(m_DxgkInterface));
     InterlockedExchange(&m_CrtcVsyncTimerArmed, 0);
     InterlockedExchange(&m_CrtcVsyncDeliveredCount, 0);
+    RtlZeroMemory(&m_CrtcVblankCadence, sizeof(m_CrtcVblankCadence));
+    m_CrtcAdapterStartQpc = KeQueryPerformanceCounter(NULL).QuadPart;
     InterlockedExchange64(&m_CrtcLastVsyncTicks, 0);
     InterlockedExchange(&m_NativePendingPreemptionFence, 0);
     InterlockedExchange(&m_NativePreemptDeferredCount, 0);
@@ -1443,8 +1445,14 @@ BOOLEAN VioGpuDod::PublishColorPresentCompletion(ULONGLONG presentId, ULONGLONG 
 
 VOID VioGpuDod::DeliverCrtcVsync(void)
 {
-    if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0) == 0 || !IsHardwareInterruptDispatchAllowed())
+    if (InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0) == 0)
     {
+        RecordCrtcVblankDelivery(VioGpuVblankDisabled);
+        return;
+    }
+    if (!IsHardwareInterruptDispatchAllowed())
+    {
+        RecordCrtcVblankDelivery(VioGpuVblankHardwareGated);
         return;
     }
 
@@ -1471,6 +1479,7 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
         if (mpo.PresentId == 0 || colorEpoch == 0 || colorEpoch != notificationEpoch ||
             colorEpoch != static_cast<ULONG>(InterlockedCompareExchange(&m_ColorPresentCompletedEpoch, 0, 0)))
         {
+            RecordCrtcVblankDelivery(VioGpuVblankColorGated);
             return;
         }
         notificationEpoch = colorEpoch;
@@ -1486,6 +1495,11 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
     {
         InterlockedIncrement(&m_CrtcVsyncDeliveredCount);
         InterlockedExchange64(&m_CrtcLastVsyncTicks, KeQueryPerformanceCounter(NULL).QuadPart);
+        RecordCrtcVblankDelivery(VioGpuVblankDelivered);
+    }
+    else
+    {
+        RecordCrtcVblankDelivery(VioGpuVblankNotifyFailed);
     }
 
     /* Nothing else moves the desktop's pixels. The compositor programs its
@@ -1503,6 +1517,50 @@ VOID VioGpuDod::DeliverCrtcVsync(void)
     {
         adapter->RequestScanoutRefresh();
     }
+}
+
+VOID VioGpuDod::RecordCrtcVblankDelivery(VIOGPU_VBLANK_DELIVERY_OUTCOME outcome)
+{
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
+    ++m_CrtcVblankCadence.Delivery[outcome];
+    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
+}
+
+VOID VioGpuDod::ReadCrtcVblankCadence(VIOGPU_VBLANK_CADENCE_SNAPSHOT &snapshot)
+{
+    PAGED_CODE();
+    RtlZeroMemory(&snapshot, sizeof(snapshot));
+    snapshot.Version = 1;
+    snapshot.Size = sizeof(snapshot);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
+    LARGE_INTEGER frequency;
+    snapshot.SnapshotQpc = KeQueryPerformanceCounter(&frequency).QuadPart;
+    snapshot.QpcFrequency = frequency.QuadPart;
+    snapshot.AdapterStartQpc = m_CrtcAdapterStartQpc;
+    snapshot.PeriodTicks = m_CrtcPeriodTicks;
+    snapshot.NextDueTicks = m_CrtcNextDueTicks;
+    snapshot.PixelClock = m_CrtcTiming.PixelClock;
+    snapshot.Width = m_CrtcTiming.Width;
+    snapshot.Height = m_CrtcTiming.Height;
+    snapshot.TotalWidth = m_CrtcTiming.TotalWidth;
+    snapshot.TotalHeight = m_CrtcTiming.TotalHeight;
+    snapshot.Armed = InterlockedCompareExchange(&m_CrtcVsyncTimerArmed, 0, 0) != 0;
+    snapshot.Enabled = InterlockedCompareExchange(&m_CrtcVsyncEnabled, 0, 0) != 0;
+    snapshot.Counters = m_CrtcVblankCadence;
+    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
+}
+
+NTSTATUS VioGpuDod::PublishCrtcVblankCadence(HANDLE deviceKey)
+{
+    PAGED_CODE();
+    VIOGPU_VBLANK_CADENCE_SNAPSHOT snapshot;
+    ReadCrtcVblankCadence(snapshot);
+    UNICODE_STRING name;
+    RtlInitUnicodeString(&name, L"NativeVblankCadenceSnapshot");
+    // One value commits the complete captured sample, never split QPC/counters.
+    return ZwSetValueKey(deviceKey, &name, 0, REG_BINARY, &snapshot, sizeof(snapshot));
 }
 
 BOOLEAN VioGpuDod::PrepareNativeSchedulerNotificationAtDirql(_Inout_ DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
@@ -3613,6 +3671,7 @@ NTSTATUS VioGpuDod::SetCrtcTiming(const VIOGPU_DISPLAY_TIMING &timing)
     const LARGE_INTEGER now = KeQueryPerformanceCounter(&frequency);
     KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
     m_CrtcTiming = timing;
+    ++m_CrtcVblankCadence.ModeChanges;
     m_CrtcPeriodTicks = (frequency.QuadPart * timing.TotalWidth * timing.TotalHeight) / timing.PixelClock;
     m_CrtcEpoch = now.QuadPart;
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
@@ -3655,6 +3714,7 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
     // Publish the arm transition and invalidate the previous mode's grid
     // atomically with respect to GetScanLine. The new grid is set below.
     m_CrtcNextDueTicks = 0;
+    ++m_CrtcVblankCadence.ArmCount;
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     m_CrtcVsyncTimer = ExAllocateTimer(VioGpuCrtcVsyncDpcRoutine, this, EX_TIMER_HIGH_RESOLUTION);
     if (m_CrtcVsyncTimer == NULL)
@@ -3705,7 +3765,33 @@ BOOLEAN VioGpuDod::CrtcVsyncDue(void)
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
     const LONGLONG dueAt = m_CrtcNextDueTicks;
+    const LONGLONG period = m_CrtcPeriodTicks;
     const BOOLEAN due = VioGpuVsyncDue(now, m_CrtcPeriodTicks, &m_CrtcNextDueTicks);
+    ++m_CrtcVblankCadence.CallbackCount;
+    if (due)
+    {
+        ++m_CrtcVblankCadence.DueCount;
+        const ULONGLONG late = static_cast<ULONGLONG>(now) - static_cast<ULONGLONG>(dueAt);
+        if (late > m_CrtcVblankCadence.MaxLatenessTicks)
+        {
+            m_CrtcVblankCadence.MaxLatenessTicks = late;
+        }
+        if (late >= static_cast<ULONGLONG>(period))
+        {
+            ++m_CrtcVblankCadence.ResyncCount;
+            m_CrtcVblankCadence.MissedWholePeriods += late / period;
+            // Resync discards fractional phase as well as whole missed periods.
+            m_CrtcVblankCadence.ResyncPhaseTicks += late;
+        }
+    }
+    else if (period <= 0)
+    {
+        ++m_CrtcVblankCadence.InvalidPeriodCount;
+    }
+    else
+    {
+        ++m_CrtcVblankCadence.EarlyCount;
+    }
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     /* A late vsync delays every compositor frame that waits on it. */
     if (due && now - dueAt > frequency.QuadPart / 1000)
@@ -3742,11 +3828,16 @@ VOID VioGpuDod::DisarmCrtcVsyncTimer(void)
 {
     PAGED_CODE();
     ExAcquireFastMutex(&m_CrtcTimerMutex);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
     if (InterlockedExchange(&m_CrtcVsyncTimerArmed, 0) == 0)
     {
+        KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
         ExReleaseFastMutex(&m_CrtcTimerMutex);
         return;
     }
+    ++m_CrtcVblankCadence.DisarmCount;
+    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     // Cancel AND wait at APC_LEVEL while holding the fast mutex (supported
     // by ExDeleteTimer with Wait=TRUE); neither a queued nor an executing
     // callback may access the adapter/timing after a mode change or teardown.
@@ -8135,6 +8226,10 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
         {
             break;
         }
+    }
+    if (NT_SUCCESS(writeStatus))
+    {
+        writeStatus = PublishCrtcVblankCadence(deviceKey);
     }
     ZwClose(deviceKey);
 

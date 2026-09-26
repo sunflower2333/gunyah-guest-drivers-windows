@@ -42,6 +42,11 @@ jobs:
           python viogpu/tests/vblank-timer/run.py --negative-control-scanline-epoch
           python viogpu/tests/vblank-timer/run.py --negative-control-scanline-arm
           python viogpu/tests/vblank-timer/run.py --negative-control-scanline-snapshot
+          python viogpu/tests/vblank-timer/run.py --negative-control-cadence-resync
+          python viogpu/tests/vblank-timer/run.py --negative-control-cadence-gates
+          python viogpu/tests/vblank-timer/run.py --negative-control-cadence-snapshot
+          python viogpu/tests/vblank-timer/run.py --negative-control-cadence-publish
+          python viogpu/tests/vblank-timer/source_contract_test.py
       - name: Verify native AHB allocation ownership and copy-free rotation
         run: |
           python viogpu/tests/native-surface/run.py
@@ -980,7 +985,7 @@ jobs:
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
           # Unified flat API installation atop frozen 58473. All API files
           # share the display INF and the same signed catalog as the KMD/UMD.
-          $minor = 58604
+          $minor = 58605
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -1064,8 +1069,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58604) {
-            throw "Unified flat candidate requires reserved version 100.6.101.58604"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58605) {
+            throw "Unified flat candidate requires reserved version 100.6.101.58605"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -1119,6 +1124,9 @@ jobs:
             @{ Name = 'VioGpuDod::SetCrtcTiming'; Pattern = '?SetCrtcTiming@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::ArmCrtcVsyncTimer'; Pattern = '?ArmCrtcVsyncTimer@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::CrtcVsyncDue'; Pattern = '?CrtcVsyncDue@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::DisarmCrtcVsyncTimer'; Pattern = '?DisarmCrtcVsyncTimer@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::RecordCrtcVblankDelivery'; Pattern = '?RecordCrtcVblankDelivery@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::ReadCrtcVblankCadence'; Pattern = '?ReadCrtcVblankCadence@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::RearmCrtcVsyncTimer'; Pattern = '?RearmCrtcVsyncTimer@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::DeliverCrtcVsync'; Pattern = '?DeliverCrtcVsync@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::NotifyNativeSchedulerInterrupt'; Pattern = '?NotifyNativeSchedulerInterrupt@VioGpuDod@@'; Object = '*viogpudo.obj' },
@@ -1427,7 +1435,7 @@ jobs:
         run: |
           python viogpu/package/verify_bundle.py --output out `
             --mesa d69aa548d973d6f0135c2f8222af4e9c4d22ad1b --mesa-run 35953846432 `
-            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58604
+            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58605
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact

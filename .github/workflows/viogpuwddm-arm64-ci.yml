@@ -196,6 +196,16 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python viogpu/tests/vblank-timer/run.py --negative-control-scanline-snapshot
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/run.py --negative-control-cadence-resync
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/run.py --negative-control-cadence-gates
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/run.py --negative-control-cadence-snapshot
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/run.py --negative-control-cadence-publish
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/source_contract_test.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Compile display-mode diagnostic without running display operations
         shell: pwsh
@@ -483,6 +493,9 @@ jobs:
             @{ Name = 'VioGpuDod::SetCrtcTiming'; Pattern = '?SetCrtcTiming@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::ArmCrtcVsyncTimer'; Pattern = '?ArmCrtcVsyncTimer@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::CrtcVsyncDue'; Pattern = '?CrtcVsyncDue@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::DisarmCrtcVsyncTimer'; Pattern = '?DisarmCrtcVsyncTimer@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::RecordCrtcVblankDelivery'; Pattern = '?RecordCrtcVblankDelivery@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::ReadCrtcVblankCadence'; Pattern = '?ReadCrtcVblankCadence@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::RearmCrtcVsyncTimer'; Pattern = '?RearmCrtcVsyncTimer@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::DeliverCrtcVsync'; Pattern = '?DeliverCrtcVsync@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::NotifyNativeSchedulerInterrupt'; Pattern = '?NotifyNativeSchedulerInterrupt@VioGpuDod@@'; Object = '*viogpudo.obj' },

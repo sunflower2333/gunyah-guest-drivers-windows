@@ -2,6 +2,7 @@
 // disables new operations and waits for callbacks before deleting the object.
 // This exercises driver ordering; it is not a Windows kernel execution test.
 #include "display_timing.h"
+#include "vblank_cadence.h"
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -23,6 +25,7 @@ using LONG64 = long long;
 using LONGLONG = long long;
 using VOID = void;
 using PVOID = void*;
+using HANDLE = void*;
 using BOOLEAN = bool;
 using NTSTATUS = int32_t;
 using KIRQL = int;
@@ -31,6 +34,22 @@ using KSPIN_LOCK = std::mutex;
 struct LARGE_INTEGER { LONGLONG QuadPart; };
 constexpr NTSTATUS STATUS_SUCCESS = 0, STATUS_INVALID_PARAMETER = -1, STATUS_INSUFFICIENT_RESOURCES = -2;
 constexpr NTSTATUS STATUS_DEVICE_NOT_READY = -3;
+constexpr int REG_BINARY = 3;
+struct UNICODE_STRING { const wchar_t* Buffer; };
+void RtlInitUnicodeString(UNICODE_STRING* name, const wchar_t* text) { name->Buffer = text; }
+static VIOGPU_VBLANK_CADENCE_SNAPSHOT publishedCadence{};
+static unsigned cadencePublications;
+static std::function<void()> insidePublish;
+static NTSTATUS publicationStatus = STATUS_SUCCESS;
+NTSTATUS ZwSetValueKey(HANDLE, UNICODE_STRING* name, unsigned, unsigned kind, void* value, unsigned size) {
+    if (insidePublish) insidePublish();
+    if (std::wcscmp(name->Buffer, L"NativeVblankCadenceSnapshot") ||
+        kind != REG_BINARY || size != sizeof(publishedCadence)) return STATUS_INVALID_PARAMETER;
+    if (publicationStatus != STATUS_SUCCESS) return publicationStatus;
+    std::memcpy(&publishedCadence, value, size);
+    ++cadencePublications;
+    return STATUS_SUCCESS;
+}
 constexpr int EX_TIMER_HIGH_RESOLUTION = 1, VioGpuVsyncLateOver1ms = 1;
 #define _In_
 #define _In_opt_
@@ -173,8 +192,10 @@ struct VioGpuDod {
     VIOGPU_DISPLAY_TIMING m_CrtcTiming = VioGpuVirtualTiming(1920, 1080, 165);
     struct { struct { bool FrameBufferIsActive = true, SourceNotVisible = false; } Flags; } m_CurrentMode;
     LONGLONG m_CrtcEpoch = 0, m_CrtcPeriodTicks = 0, m_CrtcNextDueTicks = 0;
+    VIOGPU_VBLANK_CADENCE_COUNTERS m_CrtcVblankCadence{};
+    LONGLONG m_CrtcAdapterStartQpc = 1234;
     unsigned delivered = 0, late = 0;
-    bool interruptAllowed = true;
+    bool interruptAllowed = true, notifyAccepted = true;
     VioGpuAdapter hardware;
     VioGpuAdapter* m_pHWDevice = &hardware;
     NTSTATUS ArmCrtcVsyncTimer();
@@ -189,11 +210,15 @@ struct VioGpuDod {
     BOOLEAN IsHardwareInterruptDispatchAllowed() const { return interruptAllowed; }
     ULONG QueryNativeFenceEpoch() const { return 1; }
     BOOLEAN NotifyNativeSchedulerInterrupt(const DXGKARGCB_NOTIFY_INTERRUPT_DATA*, BOOLEAN, ULONG) {
+        if (!notifyAccepted) return false;
         ++delivered;
         if (insideDelivery) insideDelivery();
         return true;
     }
     VOID DeliverCrtcVsync();
+    VOID RecordCrtcVblankDelivery(VIOGPU_VBLANK_DELIVERY_OUTCOME);
+    VOID ReadCrtcVblankCadence(VIOGPU_VBLANK_CADENCE_SNAPSHOT&);
+    NTSTATUS PublishCrtcVblankCadence(HANDLE);
 };
 // INSERT_CALLBACK
 // INSERT_METHODS
@@ -382,6 +407,107 @@ static void productionRaster() {
     assert(adapter.GetScanLine(nullptr) == STATUS_DEVICE_NOT_READY);
     std::puts("PASS production raster: late callback/deadline/stall/disabled/modechange/arm-publication/snapshot/rollback");
 }
+static void requireCadence(bool good, const char* failure) {
+    if (good) return;
+    std::puts(failure);
+    std::fflush(stdout);
+    std::exit(1);
+}
+static void productionCadenceDiagnostics() {
+    VioGpuDod adapter;
+    counter = 19200000;
+    assert(adapter.ArmCrtcVsyncTimer() == STATUS_SUCCESS);
+    auto* timer = adapter.m_CrtcVsyncTimer;
+    const LONGLONG period = adapter.m_CrtcPeriodTicks;
+    const LONGLONG firstDue = adapter.m_CrtcNextDueTicks;
+    assert(adapter.ArmCrtcVsyncTimer() == STATUS_SUCCESS);
+    assert(adapter.m_CrtcVblankCadence.ArmCount == 1);
+    counter = adapter.m_CrtcNextDueTicks + period / 2;
+    fire(timer);
+    counter = adapter.m_CrtcNextDueTicks - 1;
+    fire(timer);
+    adapter.m_CrtcPeriodTicks = 0;
+    fire(timer);
+    adapter.m_CrtcPeriodTicks = period;
+    const auto oldDue = adapter.m_CrtcNextDueTicks;
+    const ULONGLONG late = period * 2 + period / 3;
+    counter = oldDue + late;
+    fire(timer);
+    requireCadence(adapter.m_CrtcNextDueTicks == counter + period &&
+                   adapter.m_CrtcVblankCadence.ResyncCount == 1 &&
+                   adapter.m_CrtcVblankCadence.MissedWholePeriods == 2 &&
+                   adapter.m_CrtcVblankCadence.ResyncPhaseTicks == late &&
+                   adapter.m_CrtcVblankCadence.MaxLatenessTicks == late,
+                   "FAIL cadence resync accounting");
+    counter = adapter.m_CrtcNextDueTicks + period;
+    fire(timer); // An exact full-period delay also resynchronizes.
+    assert(adapter.m_CrtcVblankCadence.ResyncCount == 2);
+    assert(adapter.m_CrtcVblankCadence.MissedWholePeriods == 3);
+    assert(adapter.m_CrtcVblankCadence.ResyncPhaseTicks == late + period);
+    assert(adapter.m_CrtcVblankCadence.MaxLatenessTicks == late);
+    const auto next = [&] { counter = adapter.m_CrtcNextDueTicks; fire(timer); };
+    adapter.m_CrtcVsyncEnabled = 0;
+    next();
+    adapter.m_CrtcVsyncEnabled = 1;
+    adapter.interruptAllowed = false;
+    next();
+    adapter.interruptAllowed = true;
+    adapter.m_ColorPresentActive = 1;
+    next();
+    adapter.m_ColorPresentActive = 0;
+    adapter.notifyAccepted = false;
+    next();
+    adapter.notifyAccepted = true;
+    insideDelivery = [&] {
+        VIOGPU_VBLANK_CADENCE_SNAPSHOT during;
+        adapter.ReadCrtcVblankCadence(during);
+        ULONGLONG outcomes = 0;
+        for (auto count : during.Counters.Delivery) outcomes += count;
+        assert(during.Counters.DueCount == outcomes + 1); // Current callback in flight.
+    };
+    next();
+    insideDelivery = {};
+    auto& metrics = adapter.m_CrtcVblankCadence;
+    requireCadence(metrics.Delivery[VioGpuVblankDisabled] == 1 &&
+                   metrics.Delivery[VioGpuVblankHardwareGated] == 1 &&
+                   metrics.Delivery[VioGpuVblankColorGated] == 1 &&
+                   metrics.Delivery[VioGpuVblankNotifyFailed] == 1 &&
+                   metrics.Delivery[VioGpuVblankDelivered] == adapter.delivered,
+                   "FAIL cadence gate accounting");
+    assert(metrics.CallbackCount == metrics.DueCount + metrics.EarlyCount + metrics.InvalidPeriodCount);
+    assert(metrics.CallbackCount == 10 && metrics.DueCount == 8 && metrics.EarlyCount == 1 && metrics.InvalidPeriodCount == 1);
+    requireCadence(static_cast<ULONGLONG>(adapter.m_CrtcNextDueTicks - firstDue) ==
+                   period * metrics.DueCount + metrics.ResyncPhaseTicks,
+                   "FAIL cadence deadline conservation");
+    VIOGPU_VBLANK_CADENCE_SNAPSHOT before;
+    adapter.ReadCrtcVblankCadence(before);
+    assert(before.Version == 1 && before.Size == 208 && before.QpcFrequency == 19200000);
+    assert(before.AdapterStartQpc == 1234 && before.SnapshotQpc == static_cast<ULONGLONG>(counter));
+    afterUnlock = [&] {
+        counter = adapter.m_CrtcNextDueTicks;
+        fire(timer);
+        assert(adapter.SetCrtcTiming(VioGpuVirtualTiming(3040, 1904, 120)) == STATUS_SUCCESS);
+    };
+    VIOGPU_VBLANK_CADENCE_SNAPSHOT captured;
+    adapter.ReadCrtcVblankCadence(captured);
+    requireCadence(std::memcmp(&before, &captured, sizeof(before)) == 0,
+                   "FAIL cadence coherent snapshot");
+    // The registry write must publish this captured sample even as the next
+    // callback/mode proceeds, and a failure must not report success.
+    adapter.ReadCrtcVblankCadence(before);
+    insidePublish = [&] { counter = adapter.m_CrtcNextDueTicks; fire(adapter.m_CrtcVsyncTimer); };
+    requireCadence(adapter.PublishCrtcVblankCadence(nullptr) == STATUS_SUCCESS && cadencePublications == 1 &&
+                   std::memcmp(&before, &publishedCadence, sizeof(before)) == 0,
+                   "FAIL cadence atomic publication");
+    insidePublish = {};
+    publicationStatus = STATUS_INSUFFICIENT_RESOURCES;
+    assert(adapter.PublishCrtcVblankCadence(nullptr) == publicationStatus && cadencePublications == 1);
+    publicationStatus = STATUS_SUCCESS;
+    adapter.DisarmCrtcVsyncTimer();
+    adapter.DisarmCrtcVsyncTimer();
+    assert(metrics.ArmCount == 2 && metrics.DisarmCount == 2 && metrics.ModeChanges == 1);
+    std::puts("PASS production cadence diagnostics: resync/gates/lifecycle/coherent snapshot/atomic publication");
+}
 int main() {
     productionRaster();
     productionCadence(false);
@@ -440,4 +566,5 @@ int main() {
         cancellationRace(true);
     }
     std::puts("PASS production vblank timer: delayed phase/early wake/stall/enable gates/delete/rearm; 64 forced cancellation races");
+    productionCadenceDiagnostics();
 }

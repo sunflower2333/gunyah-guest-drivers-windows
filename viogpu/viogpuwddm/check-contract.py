@@ -963,6 +963,9 @@ def check_arm64_workflow_contract() -> None:
             "'?QueryNativeContextReadiness@VioGpuAdapter@@'",
             "'?NativeAhbRefreshCompleted@?A0x'",
             "'?RequestNativeAhbRefreshWork@VioGpuDod@@'",
+            "'?DisarmCrtcVsyncTimer@VioGpuDod@@'",
+            "'?RecordCrtcVblankDelivery@VioGpuDod@@'",
+            "'?ReadCrtcVblankCadence@VioGpuDod@@'",
             "'?AllocateMemory@VioGpuBuf@@'",
             "'?FreeMemory@VioGpuBuf@@'",
             "$textSectionIds -notcontains $sectionId",
@@ -1016,9 +1019,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58604",
+        "$minor = 58605",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58604",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58605",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -3439,7 +3442,8 @@ def check_legacy_runtime_callback_contract() -> None:
     # frames. A phase-aligned timer has to stand in for the CRTC interrupt.
     deliver_vsync = canonical_code(function_body("VioGpuDod::DeliverCrtcVsync", VIOGPU_CODE))
     for fragment in (
-        "InterlockedCompareExchange(&m_CrtcVsyncEnabled,0,0)==0||!IsHardwareInterruptDispatchAllowed()",
+        "if(InterlockedCompareExchange(&m_CrtcVsyncEnabled,0,0)==0){RecordCrtcVblankDelivery(VioGpuVblankDisabled);return;}",
+        "if(!IsHardwareInterruptDispatchAllowed()){RecordCrtcVblankDelivery(VioGpuVblankHardwareGated);return;}",
         "notify.InterruptType=DXGK_INTERRUPT_CRTC_VSYNC;",
         "notify.CrtcVsync.VidPnTargetId=0;",
         "notify.CrtcVsync.PhysicalAddress.QuadPart=InterlockedCompareExchange64(&m_CrtcVsyncPrimaryAddress,0,0);",
@@ -3448,7 +3452,27 @@ def check_legacy_runtime_callback_contract() -> None:
         if fragment not in deliver_vsync:
             fail(f"vsync delivery must report a gated CRTC vertical blank for the programmed primary: {fragment}")
 
+    for label, path in (("product", PROJECT_DIR.parents[1] / ".github/workflows/build-arm64-drivers.yml"),
+                        ("WDDM", PROJECT_DIR.parents[1] / ".github/workflows/viogpuwddm-arm64-ci.yml")):
+        workflow = path.read_text(encoding="utf-8")
+        for control in ("resync", "gates", "snapshot", "publish"):
+            if workflow.count("--negative-control-cadence-" + control) != 1:
+                fail(f"{label} workflow must run vblank cadence {control} semantic negative")
+
     arm_vsync = canonical_code(function_body("VioGpuDod::ArmCrtcVsyncTimer", VIOGPU_CODE))
+    for method in ("DisarmCrtcVsyncTimer", "RecordCrtcVblankDelivery", "ReadCrtcVblankCadence"):
+        annotation = '__declspec(noinline)__declspec(code_seg(".text"))VOID' + method + '('
+        if annotation not in canonical_code(VIOGPU_HEADER_SOURCE):
+            fail(f"vblank cadence spinlock routine must stay noinline and nonpaged: {method}")
+    cadence = canonical_code(function_body("VioGpuDod::ReadCrtcVblankCadence", VIOGPU_CODE))
+    for fragment in ("snapshot.SnapshotQpc=KeQueryPerformanceCounter(&frequency).QuadPart;",
+                     "snapshot.Counters=m_CrtcVblankCadence;",
+                     "snapshot.PeriodTicks=m_CrtcPeriodTicks;"):
+        if not (0 <= cadence.find("KeAcquireSpinLock") < cadence.find(fragment) < cadence.find("KeReleaseSpinLock")):
+            fail("vblank cadence timestamp, period and counters must use one timing-lock snapshot")
+    publication = canonical_code(function_body("VioGpuDod::PublishCrtcVblankCadence", VIOGPU_CODE))
+    if "returnZwSetValueKey(deviceKey,&name,0,REG_BINARY,&snapshot,sizeof(snapshot));" not in publication:
+        fail("vblank cadence publication must atomically write one full binary snapshot and return its status")
     if "InterlockedExchange(&m_CrtcVsyncTimerArmed,1)==1" not in arm_vsync:
         fail("arming the software vertical-blank source must be idempotent")
     for fragment in ("EX_TIMER_HIGH_RESOLUTION", "VioGpuTimingPeriod100ns(m_CrtcTiming)",
