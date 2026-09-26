@@ -804,12 +804,33 @@ struct VIOGPU_NATIVE_CONTEXT_READINESS
     GPU_CAPSET_DRM Capset;
 };
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+/* Own every fallback host resource until confirmed UNREF or a confirmed device
+ * reset. Preparing a replacement never changes the currently published owner. */
+struct VIOGPU_NATIVE_FRAMEBUFFER
+{
+    VioGpuObj *Object;
+    VIOGPU_2D_RESOURCE_STATE State;
+    ULONGLONG ResetGeneration;
+    UINT Width;
+    UINT Height;
+    VIOGPU_NATIVE_FRAMEBUFFER *Next;
+};
+#endif
+
 class VioGpuAdapter : IVioGpuPCI
 {
   public:
     VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod);
     ~VioGpuAdapter(void);
     NTSTATUS SetCurrentMode(ULONG Mode, CURRENT_MODE *pCurrentMode);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    NTSTATUS PrepareFrameBufferMode(ULONG Mode, const CURRENT_MODE *candidate,
+                                    VIOGPU_NATIVE_FRAMEBUFFER **prepared);
+    NTSTATUS CommitFrameBufferMode(VIOGPU_NATIVE_FRAMEBUFFER *prepared, CURRENT_MODE *candidate);
+    VOID RetireFrameBufferMode(VIOGPU_NATIVE_FRAMEBUFFER *owner);
+    BOOLEAN CollectRetiredFrameBuffers();
+#endif
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
     NTSTATUS ResumeFrameBuffer(CURRENT_MODE *pCurrentMode);
     void RequestColorConnectionRefresh();
@@ -1108,13 +1129,21 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     __declspec(code_seg(".text")) BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
-                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE);
+                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE,
+                                    const VIOGPU_SCANOUT_GEOMETRY *geometry = NULL);
     /* Make the next DPC drain the control queue as if its interrupt fired. */
     VOID RequestDisplayQueueDrain(void)
     {
         InterlockedOr(reinterpret_cast<volatile LONG *>(&m_PendingWorks), ISR_REASON_DISPLAY);
     }
     BOOLEAN SupportsNativeAhbPaging() const;
+    BOOLEAN SupportsNativeScanoutGeometry() const;
+    BOOLEAN QueryNativeScanoutState(VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                    VIOGPU_SCANOUT_PROFILE *profile, ULONGLONG *localReset);
+    BOOLEAN NativeScanoutBindingCurrent(const VIOGPU_SCANOUT_BINDING *binding);
+    VIOGPU_HOST_CONTEXT_RESULT BindNativeScanoutProfile(UINT resource, ULONGLONG key, ULONGLONG localReset,
+        const VIOGPU_SCANOUT_GEOMETRY *geometry, const VIOGPU_SCANOUT_PROFILE *profile,
+        VIOGPU_SCANOUT_BINDING *binding);
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
                                             ULONGLONG offset, UINT length, UINT pattern, PVOID data);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize)
@@ -1233,6 +1262,9 @@ class VioGpuAdapter : IVioGpuPCI
     void SetCustomDisplay(_In_ USHORT xres, _In_ USHORT yres);
     BOOLEAN CreateFrameBufferObj(PVIDEO_MODE_INFORMATION pModeInfo, CURRENT_MODE *pCurrentMode);
     void DestroyFrameBufferObj(BOOLEAN bReset, BOOLEAN bKeepBuffer);
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    BOOLEAN ReleaseFrameBufferOwner(VIOGPU_NATIVE_FRAMEBUFFER *owner);
+#endif
     BOOLEAN CreateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape, _In_ CONST CURRENT_MODE *pCurrentMode);
     BOOLEAN UpdateCursor(_In_ CONST DXGKARG_SETPOINTERSHAPE *pSetPointerShape, _In_ CONST CURRENT_MODE *pCurrentMode);
     void DestroyCursor(void);
@@ -1311,6 +1343,10 @@ class VioGpuAdapter : IVioGpuPCI
     VioGpuBuf m_GpuBuf;
     VioGpuIdr m_Idr;
     VioGpuObj *m_pFrameBuf;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    VIOGPU_NATIVE_FRAMEBUFFER *m_FrameBufferOwner;
+    VIOGPU_NATIVE_FRAMEBUFFER *m_RetiredFrameBuffers;
+#endif
     UINT m_FrameBufWidth;
     UINT m_FrameBufHeight;
     /* Resource bound to scanout 0 by the publication path.  SET_SCANOUT makes
@@ -1987,10 +2023,21 @@ class VioGpuDod
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
     BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
-                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE);
+                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE,
+                                    const VIOGPU_SCANOUT_GEOMETRY *geometry = NULL);
     __declspec(code_seg(".text")) VOID RequestNativeAhbRefreshWork(void);
     VOID PollControlQueue(void);
     BOOLEAN SupportsNativeAhbPaging() const;
+    BOOLEAN SupportsNativeScanoutGeometry() const;
+    BOOLEAN QueryNativeScanoutState(VIOGPU_SCANOUT_GEOMETRY *geometry,
+                                    VIOGPU_SCANOUT_PROFILE *profile, ULONGLONG *localReset);
+    BOOLEAN NativeScanoutBindingCurrent(const VIOGPU_SCANOUT_BINDING *binding);
+    VIOGPU_HOST_CONTEXT_RESULT BindNativeScanoutProfile(UINT resource, ULONGLONG key, ULONGLONG localReset,
+        const VIOGPU_SCANOUT_GEOMETRY *geometry, const VIOGPU_SCANOUT_PROFILE *profile,
+        VIOGPU_SCANOUT_BINDING *binding);
+    /* Producer final-render, complete VidPN and all consumer admission are
+     * not implemented yet. Host profile flags cannot enable those facts. */
+    BOOLEAN NativeScanoutProfileReady() const { return FALSE; }
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,
                                             ULONGLONG offset, UINT length, UINT pattern, PVOID data);
     BOOLEAN RefreshNativeSubmit(_In_ PGPU_VBUFFER buffer, _In_ const void *command, _In_ UINT commandSize, BOOLEAN resize = FALSE);

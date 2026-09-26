@@ -58,7 +58,7 @@ production = '\n'.join(refresh_scoped if n == refresh_name else definition(n) fo
      'UnpinNativeSubmitImports', 'AdmitNativeSubmitImports', 'RetireNativeSubmitImports',
      'RepackNativeSubmitImports', 'PublishStandardPlacement', 'ClearNativePlacement', 'ExecuteHostSurfacePaging',
      'NativeAhbPresentAccepted', 'FlipTicksToUsec', 'WaitPollingControlQueue',
-     'NativeAhbRefreshCompleted', 'VioGpuWddmRefreshNativeScanout',
+     'NativeAhbRefreshCompleted', 'NativeHostSurfaceBindingCurrent', 'VioGpuWddmRefreshNativeScanout',
      'PresentHostSurface', 'PresentResidentHostSurface'])
 production += '\n' + definition('VioGpuDod::NativePassiveDispatchReadyLocked', adapter)
 production += '\n' + definition('VioGpuDod::TryResumeNativePassiveDispatch', adapter)
@@ -67,6 +67,10 @@ fixture = fixture.replace('int main() {',
                           'void CheckRefreshLinkage();\nint main() {\n    CheckRefreshLinkage();')
 variants = [('production', production)]
 for name, old, new in [
+    ('refresh-revoked-profile', 'const BOOLEAN bindingCurrent = NativeHostSurfaceBindingCurrent(share);',
+     'const BOOLEAN bindingCurrent = TRUE;'),
+    ('front-revoked-profile', 'if (!NativeHostSurfaceBindingCurrent(share))', 'if (false)'),
+    ('present-binding-restamp', 'share->ScanoutBinding.ResourceId ? &share->ScanoutBinding.Geometry : NULL', 'NULL'),
     ('refresh-with-writer',
      '!share->Access.PresentPending && !share->Access.WaitPending && !share->Access.Writer &&',
      '!share->Access.PresentPending && !share->Access.WaitPending &&'),

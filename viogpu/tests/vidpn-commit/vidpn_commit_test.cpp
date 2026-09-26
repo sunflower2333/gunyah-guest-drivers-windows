@@ -118,7 +118,7 @@ struct DXGK_VIDPNSOURCEMODESET_INTERFACE
     {
         assert(peer.sourceModes);
         --peer.sourceModes;
-        return STATUS_SUCCESS;
+        return peer.step("sourceModeRelease");
     }
 } sourceInterface;
 struct DXGK_VIDPNTARGETMODESET_INTERFACE
@@ -140,7 +140,7 @@ struct DXGK_VIDPNTARGETMODESET_INTERFACE
     {
         assert(peer.targetModes);
         --peer.targetModes;
-        return STATUS_SUCCESS;
+        return peer.step("targetModeRelease");
     }
 } targetInterface;
 struct DXGK_VIDPNTOPOLOGY_INTERFACE
@@ -189,7 +189,7 @@ struct DXGK_VIDPNTOPOLOGY_INTERFACE
     {
         assert(peer.pathRefs);
         --peer.pathRefs;
-        return STATUS_SUCCESS;
+        return peer.step("pathRelease");
     }
 } topologyInterface;
 struct DXGK_VIDPN_INTERFACE
@@ -223,7 +223,7 @@ struct DXGK_VIDPN_INTERFACE
     {
         assert(peer.sources);
         --peer.sources;
-        return STATUS_SUCCESS;
+        return peer.step("sourceSetRelease");
     }
     NTSTATUS pfnAcquireTargetModeSet(uintptr_t,
                                      uint32_t,
@@ -243,7 +243,7 @@ struct DXGK_VIDPN_INTERFACE
     {
         assert(peer.targets);
         --peer.targets;
-        return STATUS_SUCCESS;
+        return peer.step("targetSetRelease");
     }
 } vidpnInterface;
 struct VioGpuDod
@@ -281,6 +281,7 @@ struct VioGpuDod
                                   const D3DKMDT_VIDPN_PRESENT_PATH *,
                                   const D3DKMDT_VIDEO_SIGNAL_INFO *signal)
     {
+        assert(peer.released());
         if (peer.step("setSource"))
         {
             return Refusal;
@@ -330,6 +331,11 @@ int main()
                                 "pathValidate",
                                 "targetSet",
                                 "targetPinned",
+                                "sourceModeRelease",
+                                "sourceSetRelease",
+                                "targetModeRelease",
+                                "targetSetRelease",
+                                "pathRelease",
                                 "setSource"})
     {
         peer = Peer{};

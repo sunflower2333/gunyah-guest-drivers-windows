@@ -44,6 +44,9 @@ fixture = (here / 'native_ahb_release_test.cpp').read_text().replace('// INSERT_
 variants = [('production', production)]
 if args.negative_controls:
     for name, old, new in [
+        ('geometry-negotiation', '!geometryNegotiated ||', '(geometryNegotiated && false) ||'),
+        ('geometry-mode-restamp', 'oriented->ModeGeneration = geometry->ModeGeneration;',
+         'oriented->ModeGeneration = geometry->ModeGeneration + 1;'),
         ('refresh-stale-sequence', 'response->sequence >= pending->Sequence', 'true'),
         ('short-response', 'buffer->response_size == sizeof(*response)', 'buffer->response_size >= sizeof(GPU_CTRL_HDR)'),
         ('stale-epoch', 'VioGpuReadSynchronousEpochState(&queue->m_SynchronousEpochState) == pending->Epoch', 'true'),

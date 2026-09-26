@@ -29,7 +29,7 @@ def declaration(name, kind='function'):
         end += 1
     return source[match.start():end + (kind == 'struct')]
 
-names = ['FindNativeShareByKeyLocked', 'CollectNativeSurfacesLocked', 'HandleNativeSurfaceEscape',
+names = ['FindNativeShareByKeyLocked', 'CollectNativeSurfacesLocked', 'QueryNativeScanoutProfileEscape', 'HandleNativeSurfaceEscape',
          'ReferenceHostSurfaceAllocation', 'ReleaseHostSurfaceAllocation', 'RemoveNativeImportsForContext',
          'ImportNativeShareLocked', 'ReleaseNativeShareLocked', 'VioGpuWddmRetireNativeShares',
          'IsOwnedAllocation', 'IsNativeAllocation', 'IsStandardAllocation', 'IsStandardPrimaryAllocation',
@@ -50,6 +50,10 @@ if args.negative_controls:
         ('wrapper-destroy-routing', 'else if (allocation->HostSurface)', 'else if (false)'),
         ('wrapper-destroy-live-owner',
          'allocation->SubmissionReferences != 0 || allocation->OpenReferences != 0', 'false'),
+        ('profile-readiness', '!adapter->NativeScanoutProfileReady() ||', ''),
+        ('profile-stale-allocation', 'adapter->NativeScanoutBindingCurrent(&share->ScanoutBinding)', 'true'),
+        ('profile-not-copied', '*binding = share->ScanoutBinding;', '(void)binding;'),
+        ('host-flags-claim-ready', 'request.ReadyFlags = 0;', 'request.ReadyFlags = VIOGPU_WDDM_SCANOUT_READY_ALL;'),
     ]
     for name, old, new in mutations:
         if production.count(old) != 1:
