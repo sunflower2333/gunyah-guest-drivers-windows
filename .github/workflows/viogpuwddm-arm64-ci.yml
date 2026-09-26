@@ -16,6 +16,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/display-timing/**"
+      - "viogpu/tests/vblank-timer/**"
       - "viogpu/tests/present-formats/**"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
@@ -46,6 +47,7 @@ on:
       - "viogpu/tests/native-context-wire/**"
       - "viogpu/tests/fence-publication/**"
       - "viogpu/tests/display-timing/**"
+      - "viogpu/tests/vblank-timer/**"
       - "viogpu/tests/present-formats/**"
       - "viogpu/tests/power-recovery/**"
       - "viogpu/tests/fault-recovery/**"
@@ -163,6 +165,16 @@ jobs:
           python viogpu/tests/vidpn-commit/run.py
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python viogpu/tests/vidpn-commit/run.py --negative-control-source-all
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Execute production vblank lifecycle and semantic negative controls
+        shell: pwsh
+        run: |
+          python viogpu/tests/vblank-timer/run.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/run.py --negative-control-relative
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/run.py --negative-control-enable
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Compile display-mode diagnostic without running display operations
@@ -448,6 +460,11 @@ jobs:
             @{ Name = 'VioGpuDod::GetScanLine'; Pattern = '?GetScanLine@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::SetCrtcTiming'; Pattern = '?SetCrtcTiming@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::ArmCrtcVsyncTimer'; Pattern = '?ArmCrtcVsyncTimer@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::CrtcVsyncDue'; Pattern = '?CrtcVsyncDue@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::RearmCrtcVsyncTimer'; Pattern = '?RearmCrtcVsyncTimer@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::DeliverCrtcVsync'; Pattern = '?DeliverCrtcVsync@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::NotifyNativeSchedulerInterrupt'; Pattern = '?NotifyNativeSchedulerInterrupt@VioGpuDod@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuDod::PrepareNativeSchedulerNotificationAtDirql'; Pattern = '?PrepareNativeSchedulerNotificationAtDirql@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::AcquireNativeSubmissionOperation'; Pattern = '?AcquireNativeSubmissionOperation@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::ReleaseNativeSubmissionOperation'; Pattern = '?ReleaseNativeSubmissionOperation@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuAdapter::ReleaseNativeSubmitOperation'; Pattern = '?ReleaseNativeSubmitOperation@VioGpuAdapter@@'; Object = '*viogpudo.obj' },

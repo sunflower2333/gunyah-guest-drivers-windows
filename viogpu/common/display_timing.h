@@ -317,12 +317,11 @@ static inline unsigned long long VioGpuTimingPeriod100ns(const VIOGPU_DISPLAY_TI
     return (10000000ULL * t.TotalWidth * t.TotalHeight + t.PixelClock / 2) / t.PixelClock;
 }
 
-/* The kernel rounds a periodic timer to its resolution (0.5 ms here), so a
- * 6.06 ms period fired every 6.5 ms: 153.6 vblanks/s for a 165 Hz mode. Tick
- * finer than the frame and deliver a vblank each time the counter passes the
- * next due time instead; the average rate is then exact and each vblank is at
- * most one tick late. A stall longer than a frame resynchronises rather than
- * delivering the missed vblanks in a burst. */
+/* Keep the next frame on the QPC phase, independent of timer quantization or
+ * callback latency. A rounded periodic 6.06 ms timer fired every 6.5 ms and
+ * reduced a 165 Hz mode to 153.6 Hz. One-shot wakeups use the remaining time
+ * to this phase deadline. A stall longer than a frame resynchronises rather
+ * than delivering the missed vblanks in a burst. */
 static inline bool VioGpuVsyncDue(long long now, long long period, long long *nextDue)
 {
     if (period <= 0 || now < *nextDue)
@@ -337,10 +336,30 @@ static inline bool VioGpuVsyncDue(long long now, long long period, long long *ne
     return true;
 }
 
-/* Timer tick for VioGpuVsyncDue, in 100 ns units: the kernel's 0.5 ms
- * resolution, or the whole frame when that is shorter. */
-static inline long long VioGpuVsyncTick100ns(long long period100ns)
+/* Convert the remaining absolute QPC deadline to a relative high-resolution
+ * timer delay, rounding up so conversion cannot schedule before nextDue.
+ * ExSetTimer requires a strictly negative DueTime for high-resolution timers;
+ * an already-due deadline therefore uses the minimum relative delay. */
+static inline long long VioGpuVsyncDelay100ns(long long now, long long nextDue, long long frequency)
 {
-    return period100ns < 5000 ? period100ns : 5000;
+    const unsigned long long units = 10000000;
+    const unsigned long long limit = 0x7fffffffffffffffULL;
+    if (frequency <= 0 || static_cast<unsigned long long>(frequency) > limit / units)
+    {
+        return 0;
+    }
+    if (nextDue <= now)
+    {
+        return 1;
+    }
+    const unsigned long long ticks = static_cast<unsigned long long>(nextDue) -
+                                     static_cast<unsigned long long>(now);
+    const unsigned long long seconds = ticks / frequency;
+    const unsigned long long fraction = (ticks % frequency) * units;
+    const unsigned long long fractionUnits = fraction / frequency + (fraction % frequency != 0);
+    if (seconds > (limit - fractionUnits) / units)
+    {
+        return static_cast<long long>(limit);
+    }
+    return static_cast<long long>(seconds * units + fractionUnits);
 }
-

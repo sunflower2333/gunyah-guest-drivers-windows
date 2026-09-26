@@ -171,12 +171,14 @@ static VOID VioGpuFlipKickDpcRoutine(_In_ PKDPC dpc, _In_opt_ PVOID context, _In
 
 static VOID VioGpuCrtcVsyncDpcRoutine(_In_ PEX_TIMER timer, _In_opt_ PVOID context)
 {
-    UNREFERENCED_PARAMETER(timer);
-
     VioGpuDod *dod = static_cast<VioGpuDod *>(context);
-    if (dod != NULL && dod->CrtcVsyncDue())
+    if (dod != NULL)
     {
-        dod->DeliverCrtcVsync();
+        if (dod->CrtcVsyncDue())
+        {
+            dod->DeliverCrtcVsync();
+        }
+        dod->RearmCrtcVsyncTimer(timer);
     }
 }
 
@@ -3547,8 +3549,7 @@ NTSTATUS VioGpuDod::SetCrtcTiming(const VIOGPU_DISPLAY_TIMING &timing)
     PAGED_CODE();
     /* Validate before the running timer is touched. The division below is by
      * timing.PixelClock, so a zero clock bugchecks outright, and a degenerate
-     * raster yields a zero period -- which ExSetTimer accepts as a one-shot, so
-     * vsync fires once and never again with nothing reporting an error.
+     * raster yields a zero period that cannot advance the frame deadline.
      * Either outcome silently removes the only vertical blank this adapter has,
      * and the compositor then stops presenting to it altogether (the failure
      * this software vblank exists to prevent). Refuse such a timing and leave
@@ -3630,14 +3631,12 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
     const LARGE_INTEGER now = KeQueryPerformanceCounter(&frequency);
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
-    /* The division below is by m_CrtcTiming.PixelClock and the result is handed
-     * to ExSetTimer, and this is reached directly from ControlInterrupt and
+    /* The division below is by m_CrtcTiming.PixelClock, and this is reached
+     * directly from ControlInterrupt and
      * CommitVidPn -- not only through SetCrtcTiming -- so it cannot lean on the
-     * validation there. The stored timing is zeroed until the first successful
-     * mode set: a zero clock bugchecks here, and a zero period makes ExSetTimer
-     * arm a one-shot, so vsync fires once, never repeats, and this function
-     * still returns STATUS_SUCCESS. Refuse rather than arm a timer that looks
-     * armed and delivers no vertical blank. */
+     * validation there. A zero clock would bugcheck here; a zero QPC period
+     * would endlessly rearm without advancing a frame deadline. Refuse rather
+     * than report an armed timer that delivers no vertical blank. */
     const bool usableTiming = VioGpuTimingValid(m_CrtcTiming);
     const LONGLONG period = usableTiming ? static_cast<LONGLONG>(VioGpuTimingPeriod100ns(m_CrtcTiming)) : 0;
     if (period > 0)
@@ -3647,8 +3646,11 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
         m_CrtcEpoch = now.QuadPart;
         m_CrtcNextDueTicks = now.QuadPart + m_CrtcPeriodTicks;
     }
+    const LONGLONG initialDelay = period > 0 && m_CrtcPeriodTicks > 0
+                                    ? VioGpuVsyncDelay100ns(now.QuadPart, m_CrtcNextDueTicks, frequency.QuadPart)
+                                    : 0;
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
-    if (period <= 0)
+    if (initialDelay <= 0)
     {
         ExDeleteTimer(m_CrtcVsyncTimer, TRUE, TRUE, NULL);
         m_CrtcVsyncTimer = NULL;
@@ -3656,8 +3658,7 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
         ExReleaseFastMutex(&m_CrtcTimerMutex);
         return STATUS_INVALID_PARAMETER;
     }
-    const LONGLONG tick = VioGpuVsyncTick100ns(period);
-    ExSetTimer(m_CrtcVsyncTimer, -tick, tick, NULL);
+    RearmCrtcVsyncTimer(m_CrtcVsyncTimer);
     ExReleaseFastMutex(&m_CrtcTimerMutex);
     return STATUS_SUCCESS;
 }
@@ -3677,6 +3678,29 @@ BOOLEAN VioGpuDod::CrtcVsyncDue(void)
         CountDisplayEvent(VioGpuVsyncLateOver1ms);
     }
     return due;
+}
+
+VOID VioGpuDod::RearmCrtcVsyncTimer(_In_ PEX_TIMER timer)
+{
+    if (InterlockedCompareExchange(&m_CrtcVsyncTimerArmed, 0, 0) == 0)
+    {
+        return;
+    }
+    LARGE_INTEGER frequency;
+    const LONGLONG now = KeQueryPerformanceCounter(&frequency).QuadPart;
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
+    const LONGLONG delay = VioGpuVsyncDelay100ns(now, m_CrtcNextDueTicks, frequency.QuadPart);
+    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
+    if (delay > 0)
+    {
+        // Rearm only this callback's Timer argument, never the adapter's
+        // replaceable pointer. ExDeleteTimer disables new operations before
+        // waiting for callbacks; Timer stays valid until this callback returns.
+        // A concurrent delete either cancels this set or makes it a no-op.
+        // Do not acquire m_CrtcTimerMutex here: deletion waits while holding it.
+        (VOID)ExSetTimer(timer, -delay, 0, NULL);
+    }
 }
 
 VOID VioGpuDod::DisarmCrtcVsyncTimer(void)
@@ -3721,7 +3745,7 @@ NTSTATUS VioGpuDod::ControlInterrupt(_In_ DXGK_INTERRUPT_TYPE interruptType, _In
              * may return: dxgkrnl reports "Driver returned an invalid NTSTATUS
              * code" and fails the device creation, so no D3D device could ever
              * open on this adapter.  The virtual scanout has no hardware
-             * vblank, so a periodic timer supplies one for as long as dxgkrnl
+             * vblank, so a timer supplies one for as long as dxgkrnl
              * asks for the interrupt.  Merely recording the request was not
              * enough: with no vblank ever reported,
              * D3DKMTWaitForVerticalBlankEvent returned STATUS_TIMEOUT on every

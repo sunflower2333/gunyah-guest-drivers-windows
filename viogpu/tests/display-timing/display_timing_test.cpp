@@ -313,7 +313,45 @@ int main(int argc, char **argv)
         assert(VioGpuVsyncDue(stalled, period, &next) && next == stalled + period); // no burst
         assert(!VioGpuVsyncDue(stalled + tick, period, &next));
         assert(!VioGpuVsyncDue(1 << 20, 0, &next));
-        assert(VioGpuVsyncTick100ns(60606) == 5000 && VioGpuVsyncTick100ns(4000) == 4000);
+        assert(VioGpuVsyncDelay100ns(0, 1, 19200000) == 1);
+        assert(VioGpuVsyncDelay100ns(100, 100, frequency) == 1);
+        assert(VioGpuVsyncDelay100ns(101, 100, frequency) == 1);
+        assert(VioGpuVsyncDelay100ns(0, 1, 0) == 0);
+        assert(VioGpuVsyncDelay100ns(0, 1, -1) == 0);
+        assert(VioGpuVsyncDelay100ns(0, 1, 0x7fffffffffffffffLL) == 0);
+        assert(VioGpuVsyncDelay100ns(0, 0x7fffffffffffffffLL, 1) == 0x7fffffffffffffffLL);
+    }
+    for (const long long frequency : {10000000LL, 19200000LL, 24000000LL})
+    {
+        for (const unsigned hz : {20U, 60U, 120U, 144U, 165U, 240U, 360U})
+        {
+            const long long period = frequency / hz, quantum = frequency / 2000;
+            const long long end = frequency * 100;
+            long long now = 0, next = period, delivered = 0, wakeups = 0, worst = 0;
+            while (now < end)
+            {
+                const long long delay = VioGpuVsyncDelay100ns(now, next, frequency);
+                assert(delay > 0);
+                const long long ticks = (delay * frequency + 9999999) / 10000000;
+                // Quantize actual timer expiry upward to the 0.5 ms clock grid.
+                now = ((now + ticks + quantum - 1) / quantum) * quantum;
+                if (now > end)
+                    break;
+                ++wakeups;
+                const long long expected = next;
+                assert(VioGpuVsyncDue(now, period, &next));
+                ++delivered;
+                worst = std::max(worst, now - expected);
+                // Variable callback work before rearming must not accumulate
+                // into frame phase drift. Rearm uses the unchanged QPC deadline.
+                now += (delivered % 5) * frequency / 20000;
+            }
+            assert(delivered >= 100 * hz - 1 && delivered <= 100 * hz + 1);
+            assert(wakeups == delivered && worst <= quantum + 1);
+            if (hz == 165)
+                std::printf("ONE_SHOT qpc=%lld frames=%lld callbacks=%lld old_callbacks=200000 late_ticks=%lld\n",
+                            frequency, delivered, wakeups, worst);
+        }
     }
     puts("display timing: EDID/DisplayID/wide rational/capacity/malformed/CTA boundary PASS");
 }

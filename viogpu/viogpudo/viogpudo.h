@@ -1711,8 +1711,9 @@ class VioGpuDod
     // including optimized builds that would otherwise inline these routines.
     __declspec(noinline) __declspec(code_seg(".text")) NTSTATUS ArmCrtcVsyncTimer(void);
     VOID DisarmCrtcVsyncTimer(void);
-    BOOLEAN CrtcVsyncDue(void);
-    VOID DeliverCrtcVsync(void);
+    __declspec(noinline) __declspec(code_seg(".text")) BOOLEAN CrtcVsyncDue(void);
+    __declspec(noinline) __declspec(code_seg(".text")) VOID RearmCrtcVsyncTimer(_In_ PEX_TIMER timer);
+    __declspec(noinline) __declspec(code_seg(".text")) VOID DeliverCrtcVsync(void);
     VOID SetCrtcVsyncPrimaryAddress(_In_ ULONGLONG address);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     // Any IRQL up to DIRQL.
@@ -2492,9 +2493,11 @@ class VioGpuDod
                                        _In_ UINT nodeOrdinal,
                                        _In_ UINT engineOrdinal,
                                        _In_ BOOLEAN queueDpc);
+    __declspec(noinline) __declspec(code_seg(".text"))
     BOOLEAN NotifyNativeSchedulerInterrupt(_In_ const DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
                                            _In_ BOOLEAN queueDpc,
                                            _In_ ULONG fenceEpoch = 0);
+    __declspec(noinline) __declspec(code_seg(".text"))
     BOOLEAN PrepareNativeSchedulerNotificationAtDirql(_Inout_ DXGKARGCB_NOTIFY_INTERRUPT_DATA *notification,
                                                       _In_ ULONG fenceEpoch);
     ULONG QueryNativeFenceEpoch(void) const
