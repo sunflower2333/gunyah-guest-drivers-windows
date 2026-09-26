@@ -45,6 +45,8 @@
 
 static UINT g_InstanceId = 0;
 
+UINT ColorFormat(UINT format);
+
 #if defined(VIOGPU_NATIVE_CONTEXT)
 extern "C" UCHAR __ImageBase;
 

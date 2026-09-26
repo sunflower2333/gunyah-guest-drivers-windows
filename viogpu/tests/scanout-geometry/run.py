@@ -108,17 +108,29 @@ with tempfile.TemporaryDirectory(prefix='.geometry-', dir=here) as temp:
         if (result.returncode == 0) != (name == 'binding'):
             raise SystemExit(name + ': unexpected result\n' + result.stdout + result.stderr)
         print(result.stdout.strip() if name == 'binding' else 'PASS negative control ' + name + ' rejected')
-    owner_bodies = []
+    # Preserve the real declaration order: the framebuffer owner calls the
+    # global helper before its late definition in this translation unit.
+    color_declaration = re.search(r'^UINT ColorFormat\(UINT format\);$', mode_source, re.M)
+    color_definition = re.search(r'^UINT ColorFormat\(UINT format\)\s*\{', mode_source, re.M)
+    assert color_declaration and color_definition
+    owner_bodies = [color_declaration.group()]
     for name in ('ReleaseFrameBufferOwner', 'RetireFrameBufferMode', 'CollectRetiredFrameBuffers',
                  'PrepareFrameBufferMode', 'CommitFrameBufferMode'):
         match = re.search(r'^[^;\n]*\bVioGpuAdapter::' + name + r'\([^;]*?\)\s*\{', mode_source, re.M)
         assert match, name
+        assert color_declaration.start() < match.start() < color_definition.start(), name
         start = mode_source.index('{', match.start())
         depth, end = 1, start + 1
         while depth:
             depth += (mode_source[end] == '{') - (mode_source[end] == '}')
             end += 1
         owner_bodies.append(mode_source[match.start():end])
+    start = mode_source.index('{', color_definition.start())
+    depth, end = 1, start + 1
+    while depth:
+        depth += (mode_source[end] == '{') - (mode_source[end] == '}')
+        end += 1
+    owner_bodies.append(mode_source[color_definition.start():end])
     owner_production = '\n'.join(owner_bodies)
     owner_fixture = (here / 'framebuffer_owner_test.cpp').read_text()
     for name, body in (
@@ -126,10 +138,17 @@ with tempfile.TemporaryDirectory(prefix='.geometry-', dir=here) as temp:
         ('retirement-unconfirmed', owner_production.replace('return FALSE;', 'return TRUE;', 1)),
         ('framebuffer-early-publish', owner_production.replace('UINT previous = 0;',
              'm_FrameBufferOwner = prepared; UINT previous = 0;')),
+        ('framebuffer-helper-undeclared', owner_production.replace(color_declaration.group(), '')),
     ):
         unit, binary = output / (name + '.cpp'), output / name
         unit.write_text(owner_fixture.replace('// INSERT_PRODUCTION', body))
-        subprocess.run(flags + [str(unit), '-o', str(binary)], check=True)
+        compiled = subprocess.run(flags + [str(unit), '-o', str(binary)], capture_output=True, text=True)
+        if name == 'framebuffer-helper-undeclared':
+            assert compiled.returncode != 0 and 'ColorFormat' in compiled.stderr, compiled.stderr
+            print('PASS negative control framebuffer-helper-undeclared rejected at compilation')
+            continue
+        if compiled.returncode != 0:
+            raise SystemExit(name + ': compilation failed\n' + compiled.stdout + compiled.stderr)
         result = subprocess.run([str(binary)], capture_output=True, text=True)
         if (result.returncode == 0) != (name == 'framebuffer'):
             raise SystemExit(name + ': unexpected result\n' + result.stdout + result.stderr)

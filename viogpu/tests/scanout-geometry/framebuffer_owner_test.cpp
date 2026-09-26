@@ -12,6 +12,11 @@ using LONG64=long long; using SIZE_T=size_t; using NTSTATUS=int; using BOOLEAN=b
 #define VIOGPU_NATIVE_CONTEXT 1
 #define DXGKDDI_INTERFACE_VERSION 0x5023
 #define DXGKDDI_INTERFACE_VERSION_WDDM2_3 0x8001
+#define DbgPrint(...) ((void)0)
+constexpr UINT D3DDDIFMT_A8R8G8B8=21,D3DDDIFMT_X8R8G8B8=22,
+               D3DDDIFMT_A8B8G8R8=32,D3DDDIFMT_X8B8G8R8=33;
+constexpr UINT VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM=1,VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM=2,
+               VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM=67,VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM=134;
 constexpr UINT MAXUINT=~0U,PAGE_SIZE=4096,VIOGPU_MAX_BACKING_ENTRIES=1U<<18;
 constexpr bool TRUE=true,FALSE=false;
 constexpr int STATUS_SUCCESS=0,STATUS_DEVICE_NOT_READY=-1,STATUS_INVALID_PARAMETER=-2,STATUS_NO_MEMORY=-3;
@@ -52,9 +57,8 @@ struct VIOGPU_NATIVE_FRAMEBUFFER {
 };
 struct VIDEO_MODE_INFORMATION { unsigned ModeIndex=8,VisScreenWidth=3040,VisScreenHeight=1904,ScreenStride=12160; };
 using PVIDEO_MODE_INFORMATION=VIDEO_MODE_INFORMATION*;
-struct CURRENT_MODE { struct { unsigned Width=3040,Height=1904,ColorFormat=87; } DispInfo;
+struct CURRENT_MODE { struct { unsigned Width=3040,Height=1904,ColorFormat=D3DDDIFMT_A8R8G8B8; } DispInfo;
                       void *FrameBuffer{}; struct { bool FrameBufferIsActive{}; } Flags; };
-unsigned ColorFormat(unsigned format) { return format==87?1:0; }
 struct Dod { bool reset{}; unsigned requests{};
     bool IsHardwareResetRequested() { return reset; }
     void RequestHardwareResetAtAnyIrql() { reset=true; ++requests; }
@@ -89,7 +93,7 @@ struct VioGpuAdapter {
     bool Release2DResourceId(unsigned id) { assert(!host.count(id)); assert(ids.erase(id)==1); ++releasedIds; return true; }
     VIOGPU_HOST_CONTEXT_RESULT Create2DResourceBacking(UINT id,UINT format,UINT width,UINT height,SIZE_T size,
         const GPU_MEM_ENTRY *entries,UINT count,VIOGPU_2D_RESOURCE_STATE *state,ULONGLONG *reset) {
-        ++creates; assert(format==1 && width==3040 && height==1904 && size>=width*height*4);
+        ++creates; assert(format==VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM && width==3040 && height==1904 && size>=width*height*4);
         assert(entries && count==1 && entries[0].padding==0);
         if(createResult==VioGpuHostContextConfirmed || createResult==VioGpuHostContextUnknown) {
             assert(host.insert(id).second); *reset=7;
