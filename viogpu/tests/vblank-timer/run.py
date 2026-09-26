@@ -11,6 +11,9 @@ parser = argparse.ArgumentParser()
 controls = parser.add_mutually_exclusive_group()
 controls.add_argument('--negative-control-relative', action='store_true')
 controls.add_argument('--negative-control-enable', action='store_true')
+controls.add_argument('--negative-control-scanline-epoch', action='store_true')
+controls.add_argument('--negative-control-scanline-arm', action='store_true')
+controls.add_argument('--negative-control-scanline-snapshot', action='store_true')
 args = parser.parse_args()
 here = Path(__file__).resolve().parent
 root = here.parents[2]
@@ -21,6 +24,10 @@ methods = source[source.index('NTSTATUS VioGpuDod::ArmCrtcVsyncTimer('):
                  source.index('NTSTATUS VioGpuDod::ControlInterrupt(')]
 delivery = source[source.index('VOID VioGpuDod::DeliverCrtcVsync('):
                   source.index('BOOLEAN VioGpuDod::PrepareNativeSchedulerNotificationAtDirql(')]
+scanline = source[source.index('NTSTATUS VioGpuDod::GetScanLine('):
+                  source.index('NTSTATUS VioGpuDod::SetCrtcTiming(')]
+timing = source[source.index('NTSTATUS VioGpuDod::SetCrtcTiming('):
+                source.index('NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(')]
 expected_failure = None
 if args.negative_control_relative:
     original = 'VioGpuVsyncDelay100ns(now, m_CrtcNextDueTicks, frequency.QuadPart)'
@@ -32,9 +39,28 @@ if args.negative_control_enable:
     assert delivery.count(original) == 1
     delivery = delivery.replace(original, '')
     expected_failure = 'FAIL disabled vblank delivery'
+if args.negative_control_scanline_epoch:
+    original = 'const bool armed = InterlockedCompareExchange(&m_CrtcVsyncTimerArmed, 0, 0) != 0;'
+    assert scanline.count(original) == 1
+    scanline = scanline.replace(original, 'const bool armed = false;')
+    expected_failure = 'FAIL armed raster grid'
+if args.negative_control_scanline_arm:
+    original = '    m_CrtcNextDueTicks = 0;'
+    assert methods.count(original) == 1
+    methods = methods.replace(original, '')
+    expected_failure = 'FAIL unpublished arm raster'
+if args.negative_control_scanline_snapshot:
+    original = '    const LONGLONG nextDue = m_CrtcNextDueTicks;\n'
+    assert scanline.count(original) == 1
+    scanline = scanline.replace(original, '')
+    original = '    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);\n'
+    assert scanline.count(original) == 1
+    scanline = scanline.replace(original, original + '    const LONGLONG nextDue = m_CrtcNextDueTicks;\n')
+    expected_failure = 'FAIL coherent raster snapshot'
 fixture = (here / 'vblank_timer_test.cpp').read_text()
 fixture = fixture.replace('// INSERT_CALLBACK', callback).replace('// INSERT_METHODS', methods)
 fixture = fixture.replace('// INSERT_DELIVERY', delivery)
+fixture = fixture.replace('// INSERT_SCANLINE', scanline).replace('// INSERT_TIMING', timing)
 with tempfile.TemporaryDirectory(prefix='viogpu-vblank-timer-') as temporary:
     output = Path(temporary)
     unit = output / 'test.cpp'

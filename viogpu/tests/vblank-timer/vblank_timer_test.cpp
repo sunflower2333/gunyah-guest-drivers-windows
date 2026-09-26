@@ -17,6 +17,7 @@
 
 using LONG = int32_t;
 using ULONG = uint32_t;
+using UINT = unsigned;
 using ULONGLONG = unsigned long long;
 using LONG64 = long long;
 using LONGLONG = long long;
@@ -29,12 +30,15 @@ using FAST_MUTEX = std::mutex;
 using KSPIN_LOCK = std::mutex;
 struct LARGE_INTEGER { LONGLONG QuadPart; };
 constexpr NTSTATUS STATUS_SUCCESS = 0, STATUS_INVALID_PARAMETER = -1, STATUS_INSUFFICIENT_RESOURCES = -2;
+constexpr NTSTATUS STATUS_DEVICE_NOT_READY = -3;
 constexpr int EX_TIMER_HIGH_RESOLUTION = 1, VioGpuVsyncLateOver1ms = 1;
 #define _In_
 #define _In_opt_
+#define _Inout_
 #define TRUE true
 #define FALSE false
 #define PAGED_CODE() ((void)0)
+#define NT_SUCCESS(status) ((status) >= 0)
 #define DXGKDDI_INTERFACE_VERSION 0x3000
 #define DXGKDDI_INTERFACE_VERSION_WDDM2_3 0x2300
 #define RtlZeroMemory(p, size) std::memset(p, 0, size)
@@ -47,6 +51,10 @@ struct DXGKARGCB_NOTIFY_INTERRUPT_DATA {
         unsigned VidPnTargetId, PhysicalAdapterMask, MultiPlaneOverlayVsyncInfoCount;
         DXGK_MULTIPLANE_OVERLAY_VSYNC_INFO2* pMultiPlaneOverlayVsyncInfo;
     } CrtcVsyncWithMultiPlaneOverlay2;
+};
+struct DXGKARG_GETSCANLINE {
+    unsigned VidPnTargetId = 0, ScanLine = 0;
+    bool InVerticalBlank = false;
 };
 static std::mutex interlockedMutex;
 LONG InterlockedExchange(volatile LONG* p, LONG v) {
@@ -71,7 +79,13 @@ LONG InterlockedCompareExchange(volatile LONG* p, LONG v, LONG expected) {
 void ExAcquireFastMutex(FAST_MUTEX* m) { m->lock(); }
 void ExReleaseFastMutex(FAST_MUTEX* m) { m->unlock(); }
 void KeAcquireSpinLock(KSPIN_LOCK* m, KIRQL* level) { *level = 0; m->lock(); }
-void KeReleaseSpinLock(KSPIN_LOCK* m, KIRQL) { m->unlock(); }
+static thread_local std::function<void()> afterUnlock;
+void KeReleaseSpinLock(KSPIN_LOCK* m, KIRQL) {
+    m->unlock();
+    auto hook = std::move(afterUnlock);
+    afterUnlock = {};
+    if (hook) hook();
+}
 static std::atomic<LONGLONG> counter{0}, counterFrequency{19200000};
 LARGE_INTEGER KeQueryPerformanceCounter(LARGE_INTEGER* frequency) {
     if (frequency) frequency->QuadPart = counterFrequency.load();
@@ -95,9 +109,10 @@ struct Timer {
     std::shared_ptr<Statistics> stats = std::make_shared<Statistics>();
 };
 static bool failAllocation;
-static std::function<void()> beforeSet, insideDelivery;
+static std::function<void()> beforeSet, insideDelivery, insideAllocation;
 PEX_TIMER ExAllocateTimer(VOID (*callback)(PEX_TIMER, PVOID), PVOID context, int attributes) {
     assert(attributes == EX_TIMER_HIGH_RESOLUTION);
+    if (insideAllocation) insideAllocation();
     if (failAllocation) { failAllocation = false; return nullptr; }
     auto* timer = new Timer;
     timer->callback = callback;
@@ -156,12 +171,17 @@ struct VioGpuDod {
     FAST_MUTEX m_CrtcTimerMutex;
     KSPIN_LOCK m_CrtcTimingLock;
     VIOGPU_DISPLAY_TIMING m_CrtcTiming = VioGpuVirtualTiming(1920, 1080, 165);
+    struct { struct { bool FrameBufferIsActive = true, SourceNotVisible = false; } Flags; } m_CurrentMode;
     LONGLONG m_CrtcEpoch = 0, m_CrtcPeriodTicks = 0, m_CrtcNextDueTicks = 0;
     unsigned delivered = 0, late = 0;
     bool interruptAllowed = true;
     VioGpuAdapter hardware;
     VioGpuAdapter* m_pHWDevice = &hardware;
     NTSTATUS ArmCrtcVsyncTimer();
+    NTSTATUS GetScanLine(DXGKARG_GETSCANLINE*);
+    NTSTATUS SetCrtcTiming(const VIOGPU_DISPLAY_TIMING&);
+    bool IsDriverActive() const { return true; }
+    bool IsHardwareInit() const { return true; }
     BOOLEAN CrtcVsyncDue();
     VOID RearmCrtcVsyncTimer(PEX_TIMER);
     VOID DisarmCrtcVsyncTimer();
@@ -178,6 +198,8 @@ struct VioGpuDod {
 // INSERT_CALLBACK
 // INSERT_METHODS
 // INSERT_DELIVERY
+// INSERT_SCANLINE
+// INSERT_TIMING
 
 struct Gate {
     std::mutex mutex;
@@ -259,7 +281,109 @@ static void productionCadence(bool extraHalfMillisecond) {
     assert(stats->sets == callbacks + 1);
     adapter.DisarmCrtcVsyncTimer();
 }
+static unsigned expectedLine(const VIOGPU_DISPLAY_TIMING& timing, LONGLONG phase, LONGLONG period) {
+    return (static_cast<ULONGLONG>(phase) * timing.TotalHeight / period + timing.Height) % timing.TotalHeight;
+}
+static void requireRaster(VioGpuDod& adapter, LONGLONG phase, const char* failure) {
+    DXGKARG_GETSCANLINE scan;
+    const unsigned expected = expectedLine(adapter.m_CrtcTiming, phase, adapter.m_CrtcPeriodTicks);
+    if (adapter.GetScanLine(&scan) != STATUS_SUCCESS || scan.ScanLine != expected ||
+        scan.InVerticalBlank != (expected >= adapter.m_CrtcTiming.Height)) {
+        std::puts(failure);
+        std::fflush(stdout);
+        std::exit(1);
+    }
+}
+static void productionRaster() {
+    VioGpuDod adapter;
+    counter = 19200000;
+    counterFrequency = 19200000;
+    assert(adapter.ArmCrtcVsyncTimer() == STATUS_SUCCESS);
+    auto* timer = adapter.m_CrtcVsyncTimer;
+    const LONGLONG period = adapter.m_CrtcPeriodTicks, firstDue = adapter.m_CrtcNextDueTicks;
+    requireRaster(adapter, 0, "FAIL initial raster");
+    counter = firstDue - 1;
+    requireRaster(adapter, period - 1, "FAIL pre-deadline raster");
+    counter = firstDue;
+    requireRaster(adapter, 0, "FAIL due raster before callback");
+    counter = firstDue + period / 4;
+    requireRaster(adapter, period / 4, "FAIL delayed raster before callback");
+    fire(timer); // Arrival resets epoch but must not shift the fixed-grid raster.
+    requireRaster(adapter, period / 4, "FAIL armed raster grid");
+    counter = adapter.m_CrtcNextDueTicks - 1;
+    requireRaster(adapter, period - 1, "FAIL armed raster before next deadline");
+    counter = adapter.m_CrtcNextDueTicks;
+    requireRaster(adapter, 0, "FAIL armed raster next deadline");
+    // Before a stalled DPC arrives, raster keeps wrapping on the current grid.
+    counter = adapter.m_CrtcNextDueTicks + period * 4 + period / 3;
+    requireRaster(adapter, period / 3, "FAIL delayed multi-frame raster");
+    fire(timer); // Existing timer policy explicitly resynchronizes after a stall.
+    requireRaster(adapter, 0, "FAIL stalled resynchronized raster");
+    adapter.DisarmCrtcVsyncTimer();
+    counter = adapter.m_CrtcEpoch + period / 2;
+    requireRaster(adapter, period / 2, "FAIL disabled epoch raster");
+
+    // Query during Arm after a mode change: old due must not mix with new period.
+    unsigned armQueries = 0;
+    insideAllocation = [&] {
+        ++armQueries;
+        DXGKARG_GETSCANLINE scan;
+        if (adapter.GetScanLine(&scan) != STATUS_DEVICE_NOT_READY) {
+            std::puts("FAIL unpublished arm raster");
+            std::fflush(stdout);
+            std::exit(1);
+        }
+    };
+    const auto nextMode = VioGpuVirtualTiming(3040, 1904, 120);
+    assert(adapter.SetCrtcTiming(nextMode) == STATUS_SUCCESS);
+    insideAllocation = {};
+    assert(armQueries == 1);
+    requireRaster(adapter, 0, "FAIL mode-change raster origin");
+    counter = adapter.m_CrtcNextDueTicks - adapter.m_CrtcPeriodTicks / 2;
+    const LONGLONG newPhase = adapter.m_CrtcPeriodTicks - adapter.m_CrtcPeriodTicks / 2;
+    requireRaster(adapter, newPhase, "FAIL mode-change raster phase");
+
+    // A concurrent mode publication just after GetScanLine unlocks must not
+    // combine any new due/period/geometry/clock with the captured old snapshot.
+    const auto oldMode = adapter.m_CrtcTiming;
+    const auto oldPeriod = adapter.m_CrtcPeriodTicks;
+    const auto oldExpected = expectedLine(oldMode, newPhase, oldPeriod);
+    afterUnlock = [&] {
+        assert(adapter.SetCrtcTiming(VioGpuVirtualTiming(1024, 768, 60)) == STATUS_SUCCESS);
+    };
+    DXGKARG_GETSCANLINE scan;
+    if (adapter.GetScanLine(&scan) != STATUS_SUCCESS || scan.ScanLine != oldExpected ||
+        scan.InVerticalBlank != (oldExpected >= oldMode.Height)) {
+        std::puts("FAIL coherent raster snapshot");
+        std::fflush(stdout);
+        std::exit(1);
+    }
+    requireRaster(adapter, 0, "FAIL following mode snapshot");
+    // Invalid mode is rejected while preserving the current armed grid.
+    const auto dueBeforeInvalid = adapter.m_CrtcNextDueTicks;
+    auto invalid = adapter.m_CrtcTiming;
+    invalid.PixelClock = 0;
+    assert(adapter.SetCrtcTiming(invalid) == STATUS_INVALID_PARAMETER);
+    assert(adapter.m_CrtcNextDueTicks == dueBeforeInvalid);
+    requireRaster(adapter, 0, "FAIL refused mode raster");
+    // Allocation failure rolls back to the previous mode and publishes a fresh grid.
+    const auto widthBeforeFailed = adapter.m_CrtcTiming.Width;
+    failAllocation = true;
+    assert(adapter.SetCrtcTiming(nextMode) == STATUS_INSUFFICIENT_RESOURCES);
+    assert(adapter.m_CrtcTiming.Width == widthBeforeFailed && adapter.m_CrtcVsyncTimerArmed);
+    requireRaster(adapter, 0, "FAIL rolled-back mode raster");
+    adapter.DisarmCrtcVsyncTimer();
+    adapter.m_CrtcVsyncEnabled = 0;
+    assert(adapter.SetCrtcTiming(nextMode) == STATUS_SUCCESS);
+    counter += adapter.m_CrtcPeriodTicks / 3;
+    requireRaster(adapter, adapter.m_CrtcPeriodTicks / 3, "FAIL disabled new-mode epoch");
+    adapter.m_CrtcPeriodTicks = 0;
+    assert(adapter.GetScanLine(&scan) == STATUS_DEVICE_NOT_READY);
+    assert(adapter.GetScanLine(nullptr) == STATUS_DEVICE_NOT_READY);
+    std::puts("PASS production raster: late callback/deadline/stall/disabled/modechange/arm-publication/snapshot/rollback");
+}
 int main() {
+    productionRaster();
     productionCadence(false);
     productionCadence(true);
     VioGpuDod adapter;

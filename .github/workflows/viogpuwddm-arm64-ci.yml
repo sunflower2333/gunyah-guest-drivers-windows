@@ -176,6 +176,12 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python viogpu/tests/vblank-timer/run.py --negative-control-enable
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/run.py --negative-control-scanline-epoch
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/run.py --negative-control-scanline-arm
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/run.py --negative-control-scanline-snapshot
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Compile display-mode diagnostic without running display operations
         shell: pwsh

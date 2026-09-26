@@ -3528,15 +3528,36 @@ NTSTATUS VioGpuDod::GetScanLine(_Inout_ DXGKARG_GETSCANLINE *pGetScanLine)
     const VIOGPU_DISPLAY_TIMING timing = m_CrtcTiming;
     const LONGLONG epoch = m_CrtcEpoch;
     const LONGLONG period = m_CrtcPeriodTicks;
+    const bool armed = InterlockedCompareExchange(&m_CrtcVsyncTimerArmed, 0, 0) != 0;
+    const LONGLONG nextDue = m_CrtcNextDueTicks;
     const LONGLONG now = KeQueryPerformanceCounter(NULL).QuadPart;
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     if (period <= 0 || now < epoch)
     {
         return STATUS_DEVICE_NOT_READY;
     }
-    // The callback reports the START of blanking. Scanline uses that same
-    // software epoch, with active scan beginning after the blanking lines.
-    const ULONGLONG position = static_cast<ULONGLONG>(now - epoch) % period;
+    // Armed scanout follows the SAME QPC deadline grid as the one-shot timer.
+    // Callback arrival may be late; rebasing the raster on that arrival while
+    // keeping the next timer deadline fixed shortens this reported frame.
+    // nextDue is a blanking boundary even before a delayed DPC advances it.
+    // Disabled interrupts retain the existing free-running epoch behavior.
+    ULONGLONG position = static_cast<ULONGLONG>(now - epoch) % period;
+    if (armed)
+    {
+        if (nextDue <= 0)
+        {
+            return STATUS_DEVICE_NOT_READY; // Arm has not published its grid yet.
+        }
+        if (now >= nextDue)
+        {
+            position = static_cast<ULONGLONG>(now - nextDue) % period;
+        }
+        else
+        {
+            const ULONGLONG until = static_cast<ULONGLONG>(nextDue - now) % period;
+            position = until == 0 ? 0 : static_cast<ULONGLONG>(period) - until;
+        }
+    }
     const UINT line = static_cast<UINT>((position * timing.TotalHeight) / period);
     const UINT scanLine = (line + timing.Height) % timing.TotalHeight;
     pGetScanLine->InVerticalBlank = scanLine >= timing.Height;
@@ -3615,11 +3636,18 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
 {
     PAGED_CODE();
     ExAcquireFastMutex(&m_CrtcTimerMutex);
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
     if (InterlockedExchange(&m_CrtcVsyncTimerArmed, 1) == 1)
     {
+        KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
         ExReleaseFastMutex(&m_CrtcTimerMutex);
         return STATUS_SUCCESS;
     }
+    // Publish the arm transition and invalidate the previous mode's grid
+    // atomically with respect to GetScanLine. The new grid is set below.
+    m_CrtcNextDueTicks = 0;
+    KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     m_CrtcVsyncTimer = ExAllocateTimer(VioGpuCrtcVsyncDpcRoutine, this, EX_TIMER_HIGH_RESOLUTION);
     if (m_CrtcVsyncTimer == NULL)
     {
@@ -3629,7 +3657,6 @@ NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(void)
     }
     LARGE_INTEGER frequency;
     const LARGE_INTEGER now = KeQueryPerformanceCounter(&frequency);
-    KIRQL oldIrql;
     KeAcquireSpinLock(&m_CrtcTimingLock, &oldIrql);
     /* The division below is by m_CrtcTiming.PixelClock, and this is reached
      * directly from ControlInterrupt and
