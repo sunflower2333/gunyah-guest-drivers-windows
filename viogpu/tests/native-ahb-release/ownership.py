@@ -27,6 +27,22 @@ def definition(name, text=source, structure=False):
         end += 1
     return text[match.start():end + structure]
 
+refresh_name = 'VioGpuWddmRefreshNativeScanout'
+refresh_definition = definition(refresh_name)
+# Preserve this entry's real namespace when extracting it. The ordinary
+# single-TU ownership fixture otherwise erases the private/global distinction.
+namespace_open = list(re.finditer(r'^namespace\s*\{', source, re.M))
+namespace_close = list(re.finditer(r'^} // namespace$', source, re.M))
+if len(namespace_open) != 1 or len(namespace_close) != 1:
+    raise RuntimeError('refresh linkage fixture needs updated namespace boundaries')
+refresh_position = source.index(refresh_definition)
+refresh_internal = namespace_open[0].start() < refresh_position < namespace_close[0].start()
+refresh_scoped = ('namespace {\n' + refresh_definition + '\n}'
+                  if refresh_internal else refresh_definition)
+refresh_declaration = re.search(r'^VOID ' + refresh_name + r'\([^;]*\);', adapter, re.M)
+if not refresh_declaration:
+    raise RuntimeError('missing adapter refresh declaration')
+
 structs = '\n'.join(definition(n, structure=True) for n in
                    ['VIOGPU_WDDM_NATIVE_SHARE_ENTRY', 'VIOGPU_WDDM_NATIVE_IMPORT_ENTRY',
                     'VIOGPU_NATIVE_AHB_PRESENT_COMPLETION', 'VIOGPU_NATIVE_POISON_SAMPLE',
@@ -35,7 +51,7 @@ structs += '''
 VIOGPU_NATIVE_POISON_RECORD g_VioGpuNativePoisonRecord;
 VIOGPU_HOST_SURFACE_PAGING_FAILURE g_VioGpuHostSurfacePagingFailure;
 static volatile LONG g_VioGpuHostSurfacePhaseUsec[3];'''
-production = '\n'.join(definition(n) for n in
+production = '\n'.join(refresh_scoped if n == refresh_name else definition(n) for n in
     ['FindNativeShareByKeyLocked', 'RecordNativePoisonLocked', 'NativeAhbReleaseObserved',
      'ResolveKeyedHostSurfaceAllocation', 'ResolveHostImportAllocation', 'PinNativeSubmitImports',
      'ReleasePendingSurfaceWriterLocked',
@@ -47,6 +63,8 @@ production = '\n'.join(definition(n) for n in
 production += '\n' + definition('VioGpuDod::NativePassiveDispatchReadyLocked', adapter)
 production += '\n' + definition('VioGpuDod::TryResumeNativePassiveDispatch', adapter)
 fixture = (here / 'ownership_test.cpp').read_text().replace('// INSERT_STRUCTS', structs)
+fixture = fixture.replace('int main() {',
+                          'void CheckRefreshLinkage();\nint main() {\n    CheckRefreshLinkage();')
 variants = [('production', production)]
 for name, old, new in [
     ('refresh-with-writer',
@@ -98,12 +116,35 @@ for name, old, new in [
     variants.append((name, production.replace(old, new)))
 with tempfile.TemporaryDirectory(prefix='.native-ahb-ownership-', dir=here) as temp:
     output = Path(temp)
+    compiler = ['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
+                '-I' + str(root / 'viogpu/common')]
+    compile_env = {**os.environ, 'TMPDIR': str(output)}
+    caller = output / 'refresh-caller.cpp'
+    caller_object = output / 'refresh-caller.o'
+    caller.write_text('#define _In_\nusing VOID=void; using BOOLEAN=bool; class VioGpuDod;\n' +
+                      refresh_declaration.group() + '\nvoid CheckRefreshLinkage() {\n    ' +
+                      refresh_name + '(nullptr, false);\n}\n')
+    subprocess.run(compiler + ['-c', str(caller), '-o', str(caller_object)],
+                   env=compile_env, check=True)
+    # A definition with internal linkage must compile but fail to resolve the
+    # real adapter declaration from a separately compiled translation unit.
+    internal = output / 'refresh-internal-linkage.cpp'
+    internal_object = output / 'refresh-internal-linkage.o'
+    internal_body = production.replace(refresh_scoped, 'namespace {\n' + refresh_definition + '\n}')
+    internal.write_text(fixture.replace('// INSERT_PRODUCTION', internal_body))
+    subprocess.run(compiler + ['-c', str(internal), '-o', str(internal_object)],
+                   env=compile_env, check=True)
+    linked = subprocess.run(compiler + [str(internal_object), str(caller_object),
+                            '-o', str(output / 'refresh-internal-linkage')],
+                            env=compile_env, capture_output=True, text=True)
+    if linked.returncode == 0 or 'undefined reference' not in linked.stderr or refresh_name not in linked.stderr:
+        raise SystemExit('refresh internal linkage was not rejected by the linker\n' + linked.stderr)
+    print('PASS ownership refresh-internal-linkage rejected by separate-TU link')
     for name, body in variants:
         unit, binary = output / (name + '.cpp'), output / name
         unit.write_text(fixture.replace('// INSERT_PRODUCTION', body))
-        subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
-                        '-I' + str(root / 'viogpu/common'), str(unit), '-o', str(binary)],
-                       env={**os.environ, 'TMPDIR': str(output)}, check=True)
+        subprocess.run(compiler + [str(unit), str(caller_object), '-o', str(binary)],
+                       env=compile_env, check=True)
         result = subprocess.run([str(binary)], capture_output=True, text=True,
                                 env={**os.environ, 'UBSAN_OPTIONS': 'halt_on_error=1'})
         if (result.returncode == 0) != (name == 'production'):

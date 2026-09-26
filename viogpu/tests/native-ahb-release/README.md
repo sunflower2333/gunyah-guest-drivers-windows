@@ -28,6 +28,10 @@ read/write admission, coalesced retry, ordinary-present races, enqueue failure
 and uncertain reset completion. Four refresh ownership mutations and one stale
 refresh response mutation must fail. Both ARM64 workflows execute these Linux
 fixtures and require the callback/wakeup entry points in the final MAP's `.text`.
+The ownership fixture also compiles the adapter's refresh declaration in a
+separate translation unit, preserving the definition's production namespace.
+An internal-linkage mutation must compile and then fail at link time, catching
+the namespace mismatch that a single extracted translation unit would hide.
 
 Detached paging cases run later pageout/discard before the initial FILL and
 require FIFO for overlapping allocation sets. They also allow independent
