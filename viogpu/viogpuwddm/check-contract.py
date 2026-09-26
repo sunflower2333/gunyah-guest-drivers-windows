@@ -1019,9 +1019,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58605",
+        "$minor = 58606",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58605",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58606",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:
@@ -3455,6 +3455,8 @@ def check_legacy_runtime_callback_contract() -> None:
     for label, path in (("product", PROJECT_DIR.parents[1] / ".github/workflows/build-arm64-drivers.yml"),
                         ("WDDM", PROJECT_DIR.parents[1] / ".github/workflows/viogpuwddm-arm64-ci.yml")):
         workflow = path.read_text(encoding="utf-8")
+        if workflow.count("--negative-control-phase-grid") != 1:
+            fail(f"{label} workflow must run the vblank phase-grid semantic negative")
         for control in ("resync", "gates", "snapshot", "publish"):
             if workflow.count("--negative-control-cadence-" + control) != 1:
                 fail(f"{label} workflow must run vblank cadence {control} semantic negative")

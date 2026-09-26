@@ -23,7 +23,7 @@ compile failure is not accepted as success.
 The raster regression reads actual GetScanLine output before/at/after a QPC
 deadline and after late delivery. Armed phase follows the timer deadline even
 when Deliver changes its callback epoch; disabled queries retain epoch behavior.
-It covers a multi-frame stall and the existing timer's deliberate resynchronization,
+It covers a multi-frame stall with preserved raster phase and skipped whole frames,
 mode changes, invalid modes, allocation-failure rollback, and the temporary
 not-ready state before Arm publishes its new grid. An injected mode change just
 after the query releases its timing lock verifies the entire old snapshot is
@@ -47,7 +47,9 @@ early/invalid callbacks, all five delivery outcomes, an in-flight delivery,
 arm/disarm idempotence, mode transitions, capture/publication concurrency and
 registry-write failure. A stable grid obeys the exact conservation equation
 `delta NextDueTicks = PeriodTicks * delta DueCount + delta ResyncPhaseTicks`.
-Four additional semantic negatives must fail on their respective diagnostic:
+The `--negative-control-phase-grid` restores the old late `now + period`
+restart and must fail the stalled-raster check. Four additional semantic
+negatives must fail on their respective diagnostic:
 `--negative-control-cadence-resync`, `--negative-control-cadence-gates`,
 `--negative-control-cadence-snapshot`, `--negative-control-cadence-publish`.
 `source_contract_test.py` also rejects pageable lock holders and torn/partial
@@ -70,8 +72,15 @@ can straddle a snapshot and must not be called a lost interrupt. Delivered is
 the successful Notify wrapper count; in MPO2 mode an obsolete inner notification
 can be suppressed, so it is not a physical-vsync/scanout measurement.
 ResyncCount counts lateness of at least one period; MissedWholePeriods counts
-its integer-period portion and ResyncPhaseTicks includes the fractional phase
-discarded by the unchanged `now + period` policy. MaxLatenessTicks is a lifetime
+its integer-period portion. ResyncPhaseTicks always counts actual NextDue
+advance beyond one period per DueCount. Older `now + period` builds included
+fractional phase loss; the grid-preserving policy counts only skipped whole
+periods, so ResyncPhaseTicks equals PeriodTicks * MissedWholePeriods within a
+stable-mode window. The wire layout and exact conservation equation are
+unchanged, and the existing reader accepts both policies. Interpret this field
+against the exact driver revision; it is not raw callback lateness.
+InvalidPeriodCount also counts rejection when no signed future grid deadline
+is representable; EarlyCount excludes that failure. MaxLatenessTicks is a lifetime
 maximum, not a per-window maximum. SnapshotQpc must be fresh and increasing;
 atomic registry values may still be replaced by an older concurrent publisher.
 
@@ -81,13 +90,18 @@ concurrent arm cannot publish the next timer before old callback rundown.
 Accepted rearm before cancellation and disabled rearm during cancellation are
 both covered, as are allocation failure, invalid timing/QPC, and early wakeup.
 The actual delivery body observes enable/disable and hardware interrupt gates.
-A multi-frame stall delivers only one vblank and resynchronizes; an immediate
+A multi-frame stall delivers only one vblank and skips to the first strictly
+future point on the same grid; an immediate
 extra callback cannot produce a catchup burst. The full delivery body compiles
 with the MPO path enabled; OS notification and worker signaling remain peers.
 
 `tests/display-timing/display_timing_test.cpp` additionally covers 100 seconds
 at 20/60/120/144/165/240/360 Hz with 10/19.2/24 MHz QPC, conversion rounding,
-saturation, and the existing long-stall/no-burst rule.
+saturation, 128466 exhaustive small signed-range grid cases, 17 signed-limit
+cases (including unrepresentable deadlines), and the long-stall/no-burst rule.
+The extracted driver additionally checks 2000 mixed whole/fractional stalls,
+unchanged diagnostic conservation, correct invalid/early classification and
+full-width unsigned lateness without signed subtraction overflow.
 
 These are source and host-model checks. They do not prove Windows timer
 implementation behavior, new binary section placement, guest CPU savings,

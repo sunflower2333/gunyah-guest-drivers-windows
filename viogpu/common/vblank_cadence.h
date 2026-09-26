@@ -17,9 +17,12 @@ struct VIOGPU_VBLANK_CADENCE_COUNTERS
     unsigned long long CallbackCount;
     unsigned long long DueCount;
     unsigned long long EarlyCount;
-    unsigned long long InvalidPeriodCount;
+    unsigned long long InvalidPeriodCount; // Also unrepresentable future grid deadlines.
     unsigned long long ResyncCount;
     unsigned long long MissedWholePeriods;
+    // Actual NextDue advance beyond DueCount * PeriodTicks in a stable mode.
+    // Old arrival-relative resync included fractional lateness; grid-preserving
+    // resync adds only skipped whole periods. Field and schema stay compatible.
     unsigned long long ResyncPhaseTicks;
     unsigned long long MaxLatenessTicks;
     unsigned long long ArmCount;

@@ -342,8 +342,8 @@ static void productionRaster() {
     // Before a stalled DPC arrives, raster keeps wrapping on the current grid.
     counter = adapter.m_CrtcNextDueTicks + period * 4 + period / 3;
     requireRaster(adapter, period / 3, "FAIL delayed multi-frame raster");
-    fire(timer); // Existing timer policy explicitly resynchronizes after a stall.
-    requireRaster(adapter, 0, "FAIL stalled resynchronized raster");
+    fire(timer); // Skipped whole frames must preserve the original raster phase.
+    requireRaster(adapter, period / 3, "FAIL stalled grid-preserving raster");
     adapter.DisarmCrtcVsyncTimer();
     counter = adapter.m_CrtcEpoch + period / 2;
     requireRaster(adapter, period / 2, "FAIL disabled epoch raster");
@@ -433,17 +433,17 @@ static void productionCadenceDiagnostics() {
     const ULONGLONG late = period * 2 + period / 3;
     counter = oldDue + late;
     fire(timer);
-    requireCadence(adapter.m_CrtcNextDueTicks == counter + period &&
+    requireCadence(adapter.m_CrtcNextDueTicks == oldDue + 3 * period &&
                    adapter.m_CrtcVblankCadence.ResyncCount == 1 &&
                    adapter.m_CrtcVblankCadence.MissedWholePeriods == 2 &&
-                   adapter.m_CrtcVblankCadence.ResyncPhaseTicks == late &&
+                   adapter.m_CrtcVblankCadence.ResyncPhaseTicks == 2 * static_cast<ULONGLONG>(period) &&
                    adapter.m_CrtcVblankCadence.MaxLatenessTicks == late,
                    "FAIL cadence resync accounting");
     counter = adapter.m_CrtcNextDueTicks + period;
     fire(timer); // An exact full-period delay also resynchronizes.
     assert(adapter.m_CrtcVblankCadence.ResyncCount == 2);
     assert(adapter.m_CrtcVblankCadence.MissedWholePeriods == 3);
-    assert(adapter.m_CrtcVblankCadence.ResyncPhaseTicks == late + period);
+    assert(adapter.m_CrtcVblankCadence.ResyncPhaseTicks == 3 * static_cast<ULONGLONG>(period));
     assert(adapter.m_CrtcVblankCadence.MaxLatenessTicks == late);
     const auto next = [&] { counter = adapter.m_CrtcNextDueTicks; fire(timer); };
     adapter.m_CrtcVsyncEnabled = 0;
@@ -508,6 +508,66 @@ static void productionCadenceDiagnostics() {
     assert(metrics.ArmCount == 2 && metrics.DisarmCount == 2 && metrics.ModeChanges == 1);
     std::puts("PASS production cadence diagnostics: resync/gates/lifecycle/coherent snapshot/atomic publication");
 }
+static void productionCadenceGrid() {
+    VioGpuDod adapter;
+    counter = 19200000;
+    assert(adapter.ArmCrtcVsyncTimer() == STATUS_SUCCESS);
+    auto* timer = adapter.m_CrtcVsyncTimer;
+    const auto origin = adapter.m_CrtcNextDueTicks;
+    const auto period = adapter.m_CrtcPeriodTicks;
+    ULONGLONG missed = 0, resyncs = 0;
+    for (unsigned i = 0; i < 2000; ++i) {
+        const auto dueAt = adapter.m_CrtcNextDueTicks;
+        const unsigned skipped = i % 9;
+        const LONGLONG fraction = (i * 7919) % period;
+        counter = dueAt + skipped * period + fraction;
+        fire(timer);
+        missed += skipped;
+        resyncs += skipped != 0;
+        const auto next = adapter.m_CrtcNextDueTicks;
+        const auto& counts = adapter.m_CrtcVblankCadence;
+        requireCadence(next > counter && next - period <= counter && (next - origin) % period == 0 &&
+                       counts.DueCount == i + 1 && adapter.delivered == i + 1 &&
+                       counts.ResyncCount == resyncs && counts.MissedWholePeriods == missed &&
+                       counts.ResyncPhaseTicks == missed * period &&
+                       static_cast<ULONGLONG>(next - origin) == period * (counts.DueCount + missed),
+                       "FAIL cadence repeated grid conservation");
+        fire(timer); // An immediate duplicate must not fabricate a missed vblank.
+        requireCadence(adapter.m_CrtcNextDueTicks == next && adapter.delivered == i + 1 &&
+                       counts.EarlyCount == i + 1,
+                       "FAIL cadence repeated no-burst");
+    }
+    adapter.DisarmCrtcVsyncTimer();
+    std::puts("PASS production grid: 2000 mixed whole/fractional stalls, exact conservation, no bursts");
+}
+static void productionCadenceLimits() {
+    VioGpuDod adapter;
+    constexpr LONGLONG maximum = 0x7fffffffffffffffLL, minimum = -maximum - 1;
+    adapter.m_CrtcPeriodTicks = 1;
+    adapter.m_CrtcNextDueTicks = maximum - 2;
+    counter = maximum - 1;
+    assert(adapter.CrtcVsyncDue() && adapter.m_CrtcNextDueTicks == maximum);
+    counter = maximum;
+    for (unsigned i = 0; i < 2; ++i) {
+        assert(!adapter.CrtcVsyncDue() && adapter.m_CrtcNextDueTicks == maximum);
+    }
+    const auto& counts = adapter.m_CrtcVblankCadence;
+    requireCadence(counts.CallbackCount == 3 && counts.DueCount == 1 &&
+                   counts.InvalidPeriodCount == 2 && counts.EarlyCount == 0 &&
+                   counts.ResyncCount == 1 && counts.MissedWholePeriods == 1 && counts.ResyncPhaseTicks == 1,
+                   "FAIL cadence unrepresentable deadline");
+    VioGpuDod crossing;
+    crossing.m_CrtcPeriodTicks = 3;
+    crossing.m_CrtcNextDueTicks = minimum;
+    counter = 0;
+    assert(crossing.CrtcVsyncDue() && crossing.m_CrtcNextDueTicks == 1);
+    const ULONGLONG late = 1ULL << 63;
+    requireCadence(crossing.m_CrtcVblankCadence.MaxLatenessTicks == late && crossing.late == 1 &&
+                   crossing.m_CrtcVblankCadence.MissedWholePeriods == late / 3 &&
+                   crossing.m_CrtcVblankCadence.ResyncPhaseTicks == late - late % 3,
+                   "FAIL cadence unsigned lateness");
+    std::puts("PASS production cadence: signed-limit rejection/classification and full-width unsigned lateness");
+}
 int main() {
     productionRaster();
     productionCadence(false);
@@ -567,4 +627,6 @@ int main() {
     }
     std::puts("PASS production vblank timer: delayed phase/early wake/stall/enable gates/delete/rearm; 64 forced cancellation races");
     productionCadenceDiagnostics();
+    productionCadenceGrid();
+    productionCadenceLimits();
 }

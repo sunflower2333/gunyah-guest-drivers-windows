@@ -3780,12 +3780,16 @@ BOOLEAN VioGpuDod::CrtcVsyncDue(void)
         {
             ++m_CrtcVblankCadence.ResyncCount;
             m_CrtcVblankCadence.MissedWholePeriods += late / period;
-            // Resync discards fractional phase as well as whole missed periods.
-            m_CrtcVblankCadence.ResyncPhaseTicks += late;
+            // Count actual deadline advance beyond this one delivered period.
+            // Grid-preserving skips lose whole periods, never fractional phase.
+            const ULONGLONG skippedTicks = static_cast<ULONGLONG>(m_CrtcNextDueTicks) -
+                                           static_cast<ULONGLONG>(dueAt) - static_cast<ULONGLONG>(period);
+            m_CrtcVblankCadence.ResyncPhaseTicks += skippedTicks;
         }
     }
-    else if (period <= 0)
+    else if (period <= 0 || now >= dueAt)
     {
+        // Legacy field also covers an unrepresentable future grid deadline.
         ++m_CrtcVblankCadence.InvalidPeriodCount;
     }
     else
@@ -3794,7 +3798,9 @@ BOOLEAN VioGpuDod::CrtcVsyncDue(void)
     }
     KeReleaseSpinLock(&m_CrtcTimingLock, oldIrql);
     /* A late vsync delays every compositor frame that waits on it. */
-    if (due && now - dueAt > frequency.QuadPart / 1000)
+    if (due && frequency.QuadPart > 0 &&
+        static_cast<ULONGLONG>(now) - static_cast<ULONGLONG>(dueAt) >
+            static_cast<ULONGLONG>(frequency.QuadPart / 1000))
     {
         CountDisplayEvent(VioGpuVsyncLateOver1ms);
     }

@@ -25,7 +25,11 @@ timer period. A 128-byte legacy fixture reproducing the installed
 
 The tests also cover malformed and truncated sections, independent inner and
 outer checksums, CTA/DisplayID in either extension order, capacity boundaries,
-and pixel clocks beyond 32 bits. ASan/UBSan invocation on Linux:
+and pixel clocks beyond 32 bits. Vblank tests compare 128466 small signed-range
+cases against a stepwise grid oracle and cover 17 signed-limit/invalid cases.
+Late callbacks skip missed whole periods, preserve fractional raster phase and
+deliver at most once; an unrepresentable future deadline leaves state unchanged
+and refuses delivery. ASan/UBSan invocation on Linux:
 
 ```sh
 c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \

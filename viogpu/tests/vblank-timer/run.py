@@ -10,6 +10,7 @@ import time
 parser = argparse.ArgumentParser()
 controls = parser.add_mutually_exclusive_group()
 controls.add_argument('--negative-control-relative', action='store_true')
+controls.add_argument('--negative-control-phase-grid', action='store_true')
 controls.add_argument('--negative-control-enable', action='store_true')
 controls.add_argument('--negative-control-scanline-epoch', action='store_true')
 controls.add_argument('--negative-control-scanline-arm', action='store_true')
@@ -22,6 +23,7 @@ args = parser.parse_args()
 here = Path(__file__).resolve().parent
 root = here.parents[2]
 source = (root / 'viogpu/viogpudo/viogpudo.cpp').read_text()
+timing_header = (root / 'viogpu/common/display_timing.h').read_text()
 callback = source[source.index('static VOID VioGpuCrtcVsyncDpcRoutine('):
                   source.index('PAGED_CODE_SEG_BEGIN')]
 methods = source[source.index('NTSTATUS VioGpuDod::ArmCrtcVsyncTimer('):
@@ -33,6 +35,12 @@ scanline = source[source.index('NTSTATUS VioGpuDod::GetScanLine('):
 timing = source[source.index('NTSTATUS VioGpuDod::SetCrtcTiming('):
                 source.index('NTSTATUS VioGpuDod::ArmCrtcVsyncTimer(')]
 expected_failure = None
+if args.negative_control_phase_grid:
+    original = '*nextDue = now + remaining;'
+    assert timing_header.count(original) == 1
+    timing_header = timing_header.replace(original,
+        '*nextDue = now + (late >= static_cast<unsigned long long>(period) ? period : remaining);')
+    expected_failure = 'FAIL stalled grid-preserving raster'
 if args.negative_control_relative:
     original = 'VioGpuVsyncDelay100ns(now, m_CrtcNextDueTicks, frequency.QuadPart)'
     assert methods.count(original) == 1
@@ -62,9 +70,9 @@ if args.negative_control_scanline_snapshot:
     scanline = scanline.replace(original, original + '    const LONGLONG nextDue = m_CrtcNextDueTicks;\n')
     expected_failure = 'FAIL coherent raster snapshot'
 if args.negative_control_cadence_resync:
-    original = 'm_CrtcVblankCadence.ResyncPhaseTicks += late;'
+    original = 'm_CrtcVblankCadence.ResyncPhaseTicks += skippedTicks;'
     assert methods.count(original) == 1
-    methods = methods.replace(original, 'm_CrtcVblankCadence.ResyncPhaseTicks += (late / period) * period;')
+    methods = methods.replace(original, 'm_CrtcVblankCadence.ResyncPhaseTicks += late + (skippedTicks * 0);')
     expected_failure = 'FAIL cadence resync accounting'
 if args.negative_control_cadence_gates:
     original = 'RecordCrtcVblankDelivery(VioGpuVblankDisabled);'
@@ -89,6 +97,9 @@ with tempfile.TemporaryDirectory(prefix='viogpu-vblank-timer-') as temporary:
     output = Path(temporary)
     unit = output / 'test.cpp'
     unit.write_text(fixture)
+    # Quoted include selects this exact production header, or its deliberate
+    # negative mutation, without changing the source worktree.
+    (output / 'display_timing.h').write_text(timing_header)
     if shutil.which('cl'):
         binary = output / 'test.exe'
         command = ['cl', '/nologo', '/EHsc', '/W4', '/WX', '/std:c++17',

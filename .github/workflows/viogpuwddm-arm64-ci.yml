@@ -188,6 +188,8 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python viogpu/tests/vblank-timer/run.py --negative-control-relative
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python viogpu/tests/vblank-timer/run.py --negative-control-phase-grid
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python viogpu/tests/vblank-timer/run.py --negative-control-enable
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python viogpu/tests/vblank-timer/run.py --negative-control-scanline-epoch

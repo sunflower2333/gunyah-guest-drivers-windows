@@ -320,19 +320,25 @@ static inline unsigned long long VioGpuTimingPeriod100ns(const VIOGPU_DISPLAY_TI
 /* Keep the next frame on the QPC phase, independent of timer quantization or
  * callback latency. A rounded periodic 6.06 ms timer fired every 6.5 ms and
  * reduced a 165 Hz mode to 153.6 Hz. One-shot wakeups use the remaining time
- * to this phase deadline. A stall longer than a frame resynchronises rather
- * than delivering the missed vblanks in a burst. */
+ * to this phase deadline. After a stall, skip missed whole periods to the first
+ * strictly future point on the existing grid. Never emit catch-up vblanks or
+ * discard the fractional phase by restarting the grid at callback arrival.
+ * If no signed future grid point is representable, leave the deadline unchanged
+ * and refuse delivery; saturating would invent an off-grid/repeated deadline. */
 static inline bool VioGpuVsyncDue(long long now, long long period, long long *nextDue)
 {
-    if (period <= 0 || now < *nextDue)
+    if (nextDue == nullptr || period <= 0 || now < *nextDue)
     {
         return false;
     }
-    *nextDue += period;
-    if (now - *nextDue >= 0)
+    const unsigned long long late = static_cast<unsigned long long>(now) -
+                                    static_cast<unsigned long long>(*nextDue);
+    const long long remaining = period - static_cast<long long>(late % static_cast<unsigned long long>(period));
+    if (now > 0x7fffffffffffffffLL - remaining)
     {
-        *nextDue = now + period;
+        return false;
     }
+    *nextDue = now + remaining;
     return true;
 }
 

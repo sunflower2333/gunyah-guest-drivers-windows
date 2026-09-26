@@ -8,6 +8,60 @@
 #include <fstream>
 #include <vector>
 
+static void vsyncGridBoundaries()
+{
+    // Small exhaustive oracle advances the old grid one period at a time.
+    // Production must find the same deadline in constant time and emit once.
+    unsigned cases = 0;
+    for (long long due = -40; due <= 40; ++due)
+    {
+        for (long long period = 1; period <= 13; ++period)
+        {
+            for (long long now = -41; now <= 80; ++now)
+            {
+                long long expected = due, next = due;
+                while (expected <= now)
+                    expected += period;
+                assert(VioGpuVsyncDue(now, period, &next) == (now >= due));
+                assert(next == expected);
+                assert(!VioGpuVsyncDue(now, period, &next) && next == expected);
+                ++cases;
+            }
+        }
+    }
+    constexpr long long maximum = 0x7fffffffffffffffLL, minimum = -maximum - 1;
+    struct Edge { long long due, now, period, next; bool delivered; };
+    const Edge edges[] = {
+        {maximum - 2, maximum - 1, 1, maximum, true},
+        {maximum - 2, maximum, 1, maximum - 2, false},
+        {maximum, maximum, 1, maximum, false},
+        {maximum - 5, maximum - 1, 3, maximum - 5, false},
+        {minimum, minimum, maximum, -1, true},
+        {minimum, -2, maximum, -1, true},
+        {minimum, -1, maximum, maximum - 1, true},
+        {minimum, maximum - 1, maximum, minimum, false},
+        {minimum, 0, 3, 1, true},
+        {minimum, maximum - 1, 1, maximum, true},
+        {minimum, maximum, 1, minimum, false},
+        {0, maximum - 1, maximum, maximum, true},
+        {0, maximum, maximum, 0, false},
+        {-1, -1, maximum, maximum - 1, true},
+        {maximum, minimum, 1, maximum, false},
+        {2, 5, 0, 2, false},
+        {2, 5, -1, 2, false},
+    };
+    for (const auto& edge : edges)
+    {
+        long long next = edge.due;
+        assert(VioGpuVsyncDue(edge.now, edge.period, &next) == edge.delivered);
+        assert(next == edge.next);
+        assert(!VioGpuVsyncDue(edge.now, edge.period, &next) && next == edge.next);
+    }
+    assert(!VioGpuVsyncDue(0, 1, nullptr));
+    std::printf("VSYNC_GRID exhaustive=%u signed-limit=%zu no-burst/overflow PASS\n",
+                cases, sizeof(edges) / sizeof(edges[0]));
+}
+
 static void displayidChecksum(unsigned char *block)
 {
     const unsigned end = 5U + block[2];
@@ -293,6 +347,7 @@ int main(int argc, char **argv)
                     rd,
                     VioGpuTimingPeriod100ns(t));
     }
+    vsyncGridBoundaries();
     {
         // 165 Hz on a 19.2 MHz counter, ticked at the kernel's 0.5 ms (9600 counts).
         const long long frequency = 19200000, period = frequency * 60606 / 10000000, tick = 9600;
