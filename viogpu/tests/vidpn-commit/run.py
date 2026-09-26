@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Execute the actual CommitVidPn body against strict per-source VidPN peers."""
 import argparse
+import os
 import re
-import resource
 from pathlib import Path
 import shutil
 import subprocess
@@ -13,7 +13,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--negative-control-source-all', action='store_true')
 parser.add_argument('--negative-control-early-commit', action='store_true')
 args = parser.parse_args()
-resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+# Suppress core files for intentional assertion failures on POSIX. Windows has
+# no resource module; all production fixture compilation/assertions still run.
+if os.name == 'posix':
+    import resource
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 here = Path(__file__).resolve().parent
 root = here.parents[2]
 source = (root / 'viogpu/viogpudo/viogpudo.cpp').read_text()
