@@ -55,6 +55,7 @@ BOOLEAN VioGpuWddmIsRenderOnlyRegistration();
 BOOLEAN VioGpuWddmIsOverlayProbeRegistration();
 BOOLEAN VioGpuWddmIsMpo3Registration();
 VOID VioGpuWddmApplyPendingFlip(_In_ VioGpuDod *adapter);
+VOID VioGpuWddmRefreshNativeScanout(_In_ VioGpuDod *adapter, BOOLEAN requested);
 
 static const ULONG VIOGPU_WIN7_DRIVERCAPS_SIZE = FIELD_OFFSET(DXGK_DRIVERCAPS, PreemptionCaps);
 static_assert(VIOGPU_WIN7_DRIVERCAPS_SIZE == 528, "unexpected Win7 DXGK_DRIVERCAPS prefix size");
@@ -817,7 +818,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::PageNativeAhb(UINT resourceId, ULONGLONG g
 #pragma code_seg(push)
 #pragma code_seg()
 BOOLEAN VioGpuDod::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
-                                         BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context)
+                                         BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh)
 {
     if (KeGetCurrentIrql() > DISPATCH_LEVEL || !AcquireNativeSubmissionOperation())
     {
@@ -825,11 +826,18 @@ BOOLEAN VioGpuDod::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedRe
     }
     VioGpuAdapter *adapter = m_pHWDevice;
     BOOLEAN queued = adapter->QueueNativeAhbOperation(resourceId, expectedResetGeneration, sequence,
-                                                      present, completion, context);
+                                                      present, completion, context, refresh);
     // Never keep rundown until WAIT_RELEASE completes: reset must be able to
     // cancel a descriptor whose front buffer Android continues to display.
     ReleaseNativeSubmissionOperation();
     return queued;
+}
+
+__declspec(noinline) VOID VioGpuDod::RequestNativeAhbRefreshWork(void)
+{
+    if (!AcquireNativeSubmissionOperation()) return;
+    m_pHWDevice->RequestNativeAhbRefreshWork();
+    ReleaseNativeSubmissionOperation();
 }
 
 /* Drain the control queue from a DPC on this processor. A flip waiting on a
@@ -10131,6 +10139,7 @@ VioGpuAdapter::VioGpuAdapter(_In_ VioGpuDod *pVioGpuDod)
     m_ActiveScanoutGuestBlob = FALSE;
     m_ActiveScanoutNative = FALSE;
     m_ActiveScanoutNativeAhb = FALSE;
+    m_NativeAhbRefreshRequested = 0;
     m_ScanoutRefreshRequested = 0;
     m_pCursorBuf = NULL;
     m_CursorPositionSent = FALSE;
@@ -10843,7 +10852,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::PageNativeAhb(UINT resourceId, ULONGLO
 
 __declspec(code_seg(".text"))
 BOOLEAN VioGpuAdapter::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
-                                              BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context)
+                                              BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh)
 {
     if (expectedResetGeneration == 0 ||
         expectedResetGeneration != static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration,
@@ -10853,7 +10862,7 @@ BOOLEAN VioGpuAdapter::QueueNativeAhbOperation(UINT resourceId, ULONGLONG expect
     {
         return FALSE;
     }
-    return m_CtrlQueue.QueueNativeAhbOperation(resourceId, sequence, present, completion, context);
+    return m_CtrlQueue.QueueNativeAhbOperation(resourceId, sequence, present, completion, context, refresh);
 }
 #endif
 
@@ -16102,6 +16111,8 @@ void VioGpuAdapter::ThreadWorkRoutine(void)
         }
 #if defined(VIOGPU_NATIVE_CONTEXT)
         VioGpuWddmApplyPendingFlip(m_pVioGpuDod);
+        if (InterlockedExchange(&m_NativeAhbRefreshRequested, 0) != 0)
+            VioGpuWddmRefreshNativeScanout(m_pVioGpuDod, FALSE);
 #endif
         RefreshActiveScanout();
         ConfigChanged();
@@ -16120,6 +16131,16 @@ void VioGpuAdapter::ConfigChanged(void)
     DbgPrint(TRACE_LEVEL_FATAL, ("<--> %s\n", __FUNCTION__));
     UINT32 events_read, events_clear = 0;
     virtio_get_config(&m_VioDev, FIELD_OFFSET(GPU_CONFIG, events_read), &events_read, sizeof(m_u32NumScanouts));
+    if (events_read & VIRTIO_GPU_EVENT_NATIVE_AHB_REFRESH)
+    {
+        // Acknowledge before reserving/querying the current consumer. An attach
+        // racing the async operation then leaves a new notification pending.
+        UINT32 refreshClear = VIRTIO_GPU_EVENT_NATIVE_AHB_REFRESH;
+        virtio_set_config(&m_VioDev, FIELD_OFFSET(GPU_CONFIG, events_clear), &refreshClear, sizeof(refreshClear));
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        VioGpuWddmRefreshNativeScanout(m_pVioGpuDod, TRUE);
+#endif
+    }
     if (events_read & VIRTIO_GPU_EVENT_DISPLAY)
     {
         if (m_pVioGpuDod->IsRenderOnly())

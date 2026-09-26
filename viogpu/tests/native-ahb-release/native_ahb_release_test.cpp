@@ -80,7 +80,7 @@ public:
     UINT liveBuffers{}, freedBuffers{};
     std::vector<PGPU_VBUFFER> pending;
     static bool IsStandard2DResourceId(UINT id) { return id && id < 0x80000000U; }
-    bool QueueNativeAhbOperation(UINT, ULONGLONG, BOOLEAN, VIOGPU_NATIVE_AHB_COMPLETION, PVOID);
+    bool QueueNativeAhbOperation(UINT, ULONGLONG, BOOLEAN, VIOGPU_NATIVE_AHB_COMPLETION, PVOID, BOOLEAN = false);
     static VOID CompleteNativeAhbOperation(PVOID);
     static VOID CancelNativeAhbOperation(PVOID);
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhbSynchronous(UINT,UINT,ULONGLONG,UINT,UINT,PVOID);
@@ -124,7 +124,8 @@ public:
                b->command.hdr.ring_idx==0 && b->command.hdr.padding[0]==0 && b->command.hdr.padding[1]==0 &&
                b->command.hdr.padding[2]==0 && b->command.reserved==0);
         assert(b->command.hdr.type==VIRTIO_GPU_CMD_PRESENT_NATIVE_AHB ||
-               b->command.hdr.type==VIRTIO_GPU_CMD_WAIT_NATIVE_AHB_RELEASE);
+               b->command.hdr.type==VIRTIO_GPU_CMD_WAIT_NATIVE_AHB_RELEASE ||
+               b->command.hdr.type==VIRTIO_GPU_CMD_REFRESH_NATIVE_AHB);
         pending.push_back(b);
         if(immediate) reply(b, accepted(b, b->command.sequence));
         return 0;
@@ -198,6 +199,19 @@ int main() {
         assert(r.calls==1 && r.result==VioGpuHostContextUnknown);
     }
     Result error;
+    for (ULONGLONG reply : {ULONGLONG(0),ULONGLONG(76),ULONGLONG(77),ULONGLONG(78)}) {
+        Result refresh;
+        assert(q.QueueNativeAhbOperation(3,77,false,Result::done,&refresh,true));
+        auto request=q.pending.back();
+        assert(request->command.hdr.type==VIRTIO_GPU_CMD_REFRESH_NATIVE_AHB);
+        q.reply(request,CtrlQueue::accepted(request,reply));
+        assert(refresh.calls==1);
+        assert(refresh.result==(reply>=77?VioGpuHostContextConfirmed:VioGpuHostContextUnknown));
+        if(reply>=77) assert(refresh.sequence==reply);
+    }
+    Result invalidRefresh;
+    assert(!q.QueueNativeAhbOperation(3,0,false,Result::done,&invalidRefresh,true));
+    assert(!q.QueueNativeAhbOperation(3,0,true,Result::done,&invalidRefresh,true));
     assert(q.QueueNativeAhbOperation(3,7,false,Result::done,&error));
     auto p=q.pending.back(); auto response=CtrlQueue::accepted(p,7);
     response.hdr.type=VIRTIO_GPU_RESP_ERR_UNSPEC; q.reply(p,response,24);

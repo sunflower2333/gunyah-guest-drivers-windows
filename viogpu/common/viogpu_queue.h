@@ -584,7 +584,7 @@ class CtrlQueue : public VioGpuQueue
      * means nothing submitted and no callback. TRUE transfers callback-context
      * ownership until completion/cancellation, possibly before this returns. */
     BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, BOOLEAN present,
-                                    VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
+                                    VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE);
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhbSynchronous(UINT resourceId, UINT operation,
                                                        ULONGLONG offset, UINT length, UINT pattern, PVOID data);
     /* Standard-resource MAP_BLOB/UNMAP_BLOB used by the opt-in Native AHB

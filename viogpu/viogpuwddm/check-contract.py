@@ -961,6 +961,8 @@ def check_arm64_workflow_contract() -> None:
             "$requiredTextSymbols = @(",
             "'?QueryNativeContextReadiness@VioGpuDod@@'",
             "'?QueryNativeContextReadiness@VioGpuAdapter@@'",
+            "'?NativeAhbRefreshCompleted@?A0x'",
+            "'?RequestNativeAhbRefreshWork@VioGpuDod@@'",
             "'?AllocateMemory@VioGpuBuf@@'",
             "'?FreeMemory@VioGpuBuf@@'",
             "$textSectionIds -notcontains $sectionId",
@@ -968,6 +970,12 @@ def check_arm64_workflow_contract() -> None:
         ):
             if source.count(fragment) != 1:
                 fail(f"{label} workflow must prove DISPATCH routines are linked into default .text: {fragment}")
+        for fragment in (
+            "python viogpu/tests/native-ahb-release/ownership.py",
+            "python viogpu/tests/native-ahb-release/run.py --negative-controls",
+        ):
+            if source.count(fragment) != 1:
+                fail(f"{label} workflow must execute native AHB refresh ownership gates: {fragment}")
     if not PRESENT_DIAGNOSTIC_TEST_PATH.is_file():
         fail("Native Present diagnostic decoder fixture is missing")
     if sources["Native Context full-miniport"].count(
@@ -1008,9 +1016,9 @@ def check_arm64_workflow_contract() -> None:
         if sources["product drivers"].count(fragment) != 1:
             fail(f"the signed ARM64 product workflow must stage exact-build debug evidence: {fragment}")
     product_version_fragments = (
-        "$minor = 58603",
+        "$minor = 58604",
         '"DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV',
-        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58603",
+        "[int]$env:DROIDVM_DRIVER_MINOR -ne 58604",
         'Native Context INF does not contain expected DriverVer $infVersion',
     )
     for fragment in product_version_fragments:

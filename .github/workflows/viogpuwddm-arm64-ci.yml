@@ -71,6 +71,20 @@ permissions:
   contents: read
 
 jobs:
+  native-ahb-refresh-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Verify native AHB refresh reservation and transport negative controls
+        run: |
+          python viogpu/tests/native-ahb-release/ownership.py
+          python viogpu/tests/native-ahb-release/run.py --negative-controls
+
   contract-check:
     # This workflow validates ARM64 targets with the known-good VS2022/WDK
     # 26100 x64 host while the VS2026 ARM image's WDK task assembly is mismatched.
@@ -463,6 +477,8 @@ jobs:
           }
 
           $requiredTextSymbols = @(
+            @{ Name = 'NativeAhbRefreshCompleted'; Pattern = '?NativeAhbRefreshCompleted@?A0x'; Object = '*wddmddi.obj' },
+            @{ Name = 'VioGpuDod::RequestNativeAhbRefreshWork'; Pattern = '?RequestNativeAhbRefreshWork@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::GetScanLine'; Pattern = '?GetScanLine@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::SetCrtcTiming'; Pattern = '?SetCrtcTiming@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::ArmCrtcVsyncTimer'; Pattern = '?ArmCrtcVsyncTimer@VioGpuDod@@'; Object = '*viogpudo.obj' },

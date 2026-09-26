@@ -987,6 +987,11 @@ class VioGpuAdapter : IVioGpuPCI
      * then draws into that memory, so the binding has to be republished on the
      * display's cadence for anything to reach the host. */
     VOID RequestScanoutRefresh(void);
+    __declspec(code_seg(".text")) VOID RequestNativeAhbRefreshWork(void)
+    {
+        if (InterlockedExchange(&m_NativeAhbRefreshRequested, 1) == 0)
+            KeSetEvent(&m_ConfigUpdateEvent, IO_NO_INCREMENT, FALSE);
+    }
     VOID RecordActiveScanout(_In_ UINT resourceId, _In_ UINT width, _In_ UINT height, _In_ BOOLEAN guestBlob = FALSE,
                              _In_ BOOLEAN nativeResource = FALSE, _In_ BOOLEAN nativeAhb = FALSE);
     /* A flip publishes a finished primary that the compositor does not write
@@ -1102,7 +1107,7 @@ class VioGpuAdapter : IVioGpuPCI
     BOOLEAN IsNativeContextGenerationCurrent(_In_ LONG generation, _In_ ULONGLONG resetGeneration);
 #if defined(VIOGPU_NATIVE_CONTEXT)
     __declspec(code_seg(".text")) BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
-                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
+                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE);
     /* Make the next DPC drain the control queue as if its interrupt fired. */
     VOID RequestDisplayQueueDrain(void)
     {
@@ -1335,6 +1340,7 @@ class VioGpuAdapter : IVioGpuPCI
      * no-transfer path, but unlike a native-context resource it has a standard
      * resource id and therefore needs its own lifetime bit. */
     BOOLEAN m_ActiveScanoutNativeAhb;
+    volatile LONG m_NativeAhbRefreshRequested;
     volatile LONG m_ScanoutRefreshRequested;
     VioGpuObj *m_pCursorBuf;
     /* Last cursor position the host accepted, valid while
@@ -1975,7 +1981,8 @@ class VioGpuDod
     BOOLEAN Query2DScanoutResource(_In_ UINT resourceId, _Out_ BOOLEAN *active);
     PGPU_VBUFFER PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize);
     BOOLEAN QueueNativeAhbOperation(UINT resourceId, ULONGLONG expectedResetGeneration, ULONGLONG sequence,
-                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context);
+                                    BOOLEAN present, VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh = FALSE);
+    __declspec(code_seg(".text")) VOID RequestNativeAhbRefreshWork(void);
     VOID PollControlQueue(void);
     BOOLEAN SupportsNativeAhbPaging() const;
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resourceId, ULONGLONG generation, UINT operation,

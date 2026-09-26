@@ -374,6 +374,7 @@ struct VIOGPU_NATIVE_AHB_PENDING
     UINT ResourceId;
     ULONGLONG Sequence;
     BOOLEAN Present;
+    BOOLEAN Refresh;
 };
 
 VOID CtrlQueue::CompleteNativeAhbOperation(PVOID context)
@@ -389,7 +390,8 @@ VOID CtrlQueue::CompleteNativeAhbOperation(PVOID context)
         if (buffer->response_size == sizeof(*response) && response != NULL &&
             IsPlainControlResponse(&response->hdr, VIRTIO_GPU_RESP_OK_NATIVE_AHB_OPERATION) &&
             response->resource_id == pending->ResourceId && response->reserved == 0 &&
-            (pending->Present ? response->sequence != 0 : response->sequence == pending->Sequence))
+            (pending->Refresh ? response->sequence >= pending->Sequence :
+             pending->Present ? response->sequence != 0 : response->sequence == pending->Sequence))
         {
             sequence = response->sequence;
             result = VioGpuHostContextConfirmed;
@@ -423,10 +425,11 @@ VOID CtrlQueue::CancelNativeAhbOperation(PVOID context)
 }
 
 BOOLEAN CtrlQueue::QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, BOOLEAN present,
-                                          VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context)
+                                          VIOGPU_NATIVE_AHB_COMPLETION completion, PVOID context, BOOLEAN refresh)
 {
     if (KeGetCurrentIrql() > DISPATCH_LEVEL || !IsStandard2DResourceId(resourceId) ||
-        (present && sequence != 0) || completion == NULL || m_pBuf == NULL)
+        (present && sequence != 0) || (refresh && (present || sequence == 0)) ||
+        completion == NULL || m_pBuf == NULL)
     {
         return FALSE;
     }
@@ -457,7 +460,8 @@ BOOLEAN CtrlQueue::QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, 
     }
     RtlZeroMemory(response, sizeof(*response));
     RtlZeroMemory(command, sizeof(*command));
-    command->hdr.type = present ? VIRTIO_GPU_CMD_PRESENT_NATIVE_AHB : VIRTIO_GPU_CMD_WAIT_NATIVE_AHB_RELEASE;
+    command->hdr.type = refresh ? VIRTIO_GPU_CMD_REFRESH_NATIVE_AHB :
+                        present ? VIRTIO_GPU_CMD_PRESENT_NATIVE_AHB : VIRTIO_GPU_CMD_WAIT_NATIVE_AHB_RELEASE;
     command->resource_id = resourceId;
     command->sequence = sequence;
     pending->Queue = this;
@@ -468,6 +472,7 @@ BOOLEAN CtrlQueue::QueueNativeAhbOperation(UINT resourceId, ULONGLONG sequence, 
     pending->ResourceId = resourceId;
     pending->Sequence = sequence;
     pending->Present = present;
+    pending->Refresh = refresh;
     buffer->complete_cb = CompleteNativeAhbOperation;
     buffer->complete_ctx = pending;
     buffer->cancel_cb = CancelNativeAhbOperation;

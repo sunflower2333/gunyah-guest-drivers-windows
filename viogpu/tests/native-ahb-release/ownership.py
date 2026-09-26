@@ -15,7 +15,7 @@ adapter = (root / 'viogpu/viogpudo/viogpudo.cpp').read_text()
 
 def definition(name, text=source, structure=False):
     pattern = (r'^struct ' + name + r'\s*\{' if structure else
-               r'^(?:static )?(?:VOID|BOOLEAN|NTSTATUS|VIOGPU_WDDM_NATIVE_SHARE_ENTRY\s*\*|VIOGPU_WDDM_ALLOCATION\s*\*)\s*' +
+               r'^(?:static )?(?:VOID|BOOLEAN|NTSTATUS|LONG|VIOGPU_WDDM_NATIVE_SHARE_ENTRY\s*\*|VIOGPU_WDDM_ALLOCATION\s*\*)\s*' +
                re.escape(name) + r'\([^;]*?\)\s*\{')
     match = re.search(pattern, text, re.M)
     if not match:
@@ -33,19 +33,34 @@ structs = '\n'.join(definition(n, structure=True) for n in
                     'VIOGPU_NATIVE_POISON_RECORD', 'VIOGPU_HOST_SURFACE_PAGING_FAILURE'])
 structs += '''
 VIOGPU_NATIVE_POISON_RECORD g_VioGpuNativePoisonRecord;
-VIOGPU_HOST_SURFACE_PAGING_FAILURE g_VioGpuHostSurfacePagingFailure;'''
+VIOGPU_HOST_SURFACE_PAGING_FAILURE g_VioGpuHostSurfacePagingFailure;
+static volatile LONG g_VioGpuHostSurfacePhaseUsec[3];'''
 production = '\n'.join(definition(n) for n in
     ['FindNativeShareByKeyLocked', 'RecordNativePoisonLocked', 'NativeAhbReleaseObserved',
      'ResolveKeyedHostSurfaceAllocation', 'ResolveHostImportAllocation', 'PinNativeSubmitImports',
      'ReleasePendingSurfaceWriterLocked',
      'UnpinNativeSubmitImports', 'AdmitNativeSubmitImports', 'RetireNativeSubmitImports',
      'RepackNativeSubmitImports', 'PublishStandardPlacement', 'ClearNativePlacement', 'ExecuteHostSurfacePaging',
-     'NativeAhbPresentAccepted', 'PresentHostSurface', 'PresentResidentHostSurface'])
+     'NativeAhbPresentAccepted', 'FlipTicksToUsec', 'WaitPollingControlQueue',
+     'NativeAhbRefreshCompleted', 'VioGpuWddmRefreshNativeScanout',
+     'PresentHostSurface', 'PresentResidentHostSurface'])
 production += '\n' + definition('VioGpuDod::NativePassiveDispatchReadyLocked', adapter)
 production += '\n' + definition('VioGpuDod::TryResumeNativePassiveDispatch', adapter)
 fixture = (here / 'ownership_test.cpp').read_text().replace('// INSERT_STRUCTS', structs)
 variants = [('production', production)]
 for name, old, new in [
+    ('refresh-with-writer',
+     '!share->Access.PresentPending && !share->Access.WaitPending && !share->Access.Writer &&',
+     '!share->Access.PresentPending && !share->Access.WaitPending &&'),
+    ('refresh-with-reader',
+     'share->Access.Readers == 0 && share->PendingSurfaceWriters == 0 && share->Access.Sequence != 0',
+     'share->PendingSurfaceWriters == 0 && share->Access.Sequence != 0'),
+    ('refresh-fabricates-release',
+     'share->RefreshPending = FALSE;',
+     'share->Access.ReleasedSequence = sequence; share->RefreshPending = FALSE;'),
+    ('refresh-without-reservation',
+     'share->RefreshPending = TRUE;\n                share->Access.PresentPending = true;',
+     'share->RefreshPending = TRUE;\n                share->Access.PresentPending = false;'),
     ('forged-iova', 'candidate->Iova == ref.Iova', 'true'),
     ('importer-before-published-writes', 'InterlockedCompareExchange64(&allocation->OwnerWritesRetired, 0, 0) < share->PublishedOwnerWrites', 'false'),
     ('present-before-rendered-write', 'if (share->PendingSurfaceWriters == 0)', 'if (true)'),
@@ -71,6 +86,9 @@ for name, old, new in [
      'return status != STATUS_SUCCESS && NT_SUCCESS(status) ? STATUS_DEVICE_NOT_READY : status;', 'return status;'),
     ('present-front-repeat', 'const BOOLEAN front = usable && held && adapter->IsActiveScanoutResource(share->ResourceId);',
      'const BOOLEAN front = false;'),
+    ('present-front-pending-writer',
+     'unchangedFront = !share->Access.WaitPending && !share->Access.Writer;',
+     'unchangedFront = !share->Access.WaitPending && !share->Access.Writer && share->PendingSurfaceWriters == 0;'),
     ('present-held-no-release', 'else if (usable && !held && !share->Access.WaitPending)',
      'else if (usable && !share->Access.WaitPending)'),
     ('paging-worker-reorder', '!orderingConflict && !m_NativePassiveClosing', '(orderingConflict || !orderingConflict) && !m_NativePassiveClosing'),

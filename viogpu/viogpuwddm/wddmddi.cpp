@@ -4485,6 +4485,8 @@ struct VIOGPU_WDDM_NATIVE_SHARE_ENTRY
     volatile LONG SubmissionReferences;
     volatile LONG AsyncReferences;
     VIOGPU_NATIVE_AHB_ACCESS Access;
+    BOOLEAN RefreshRequested;
+    BOOLEAN RefreshPending;
     /* HostSurface writes rendered but not yet retired, counted from
      * DxgkDdiRender. Render runs on the presenting thread before its flip, so
      * a flip that waits for zero covers writes VidSch has not dispatched yet;
@@ -4840,6 +4842,7 @@ static VOID NativeAhbReleaseObserved(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT re
         share->Access.Poisoned = true;
     }
     share->Access.WaitPending = false;
+    if (share->RefreshRequested) share->Adapter->RequestNativeAhbRefreshWork();
     KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
     WakeNativeImportWaitersLocked(share->Adapter);
     KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
@@ -4999,7 +5002,10 @@ static VOID ReleasePendingSurfaceWriterLocked(_Inout_ VIOGPU_WDDM_SUBMISSION_IMP
     import->PendingWriterCounted = FALSE;
     auto share = static_cast<VIOGPU_WDDM_NATIVE_SHARE_ENTRY *>(import->Share);
     if (--share->PendingSurfaceWriters == 0)
+    {
         KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
+        if (share->RefreshRequested) share->Adapter->RequestNativeAhbRefreshWork();
+    }
 }
 
 __declspec(code_seg(".text"))
@@ -5206,6 +5212,7 @@ VOID RetireNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, BOOLEAN confi
             {
                 KeSetEvent(&share->ProducersIdle, IO_NO_INCREMENT, FALSE);
                 KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
+                if (share->RefreshRequested) share->Adapter->RequestNativeAhbRefreshWork();
             }
         }
         submission->ImportsAdmitted = FALSE;
@@ -5251,6 +5258,7 @@ static VOID NativeAhbPresentAccepted(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT re
     }
     share->Access.PresentPending = false;
     KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
+    if (share->RefreshRequested) share->Adapter->RequestNativeAhbRefreshWork();
     pending->Result = accepted ? VioGpuHostContextConfirmed : VioGpuHostContextUnknown;
     WakeNativeImportWaitersLocked(share->Adapter);
     KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
@@ -5486,6 +5494,7 @@ NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, V
             share->Access.Poisoned = true;
         share->Access.Writer = false;
         KeSetEvent(&share->ProducersIdle, IO_NO_INCREMENT, FALSE);
+        if (share->RefreshRequested) share->Adapter->RequestNativeAhbRefreshWork();
         KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
         WakeNativeImportWaitersLocked(adapter);
         KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
@@ -5554,6 +5563,84 @@ static NTSTATUS WaitPollingControlQueue(_In_ VioGpuDod *adapter, _In_ PKEVENT ev
     }
 }
 
+__declspec(code_seg(".text")) __declspec(noinline)
+static VOID NativeAhbRefreshCompleted(PVOID opaque, VIOGPU_HOST_CONTEXT_RESULT result,
+                                      UINT resourceId, ULONGLONG sequence)
+{
+    auto share = static_cast<VIOGPU_WDDM_NATIVE_SHARE_ENTRY *>(opaque);
+    KIRQL irql;
+    KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+    const BOOLEAN valid = share->RefreshPending && share->Access.PresentPending &&
+        !share->Access.Poisoned && !share->Access.Writer && share->Access.Readers == 0 &&
+        !share->Access.WaitPending && resourceId == share->ResourceId;
+    const BOOLEAN accepted = valid && result == VioGpuHostContextConfirmed &&
+        sequence >= share->Access.Sequence && sequence != 0;
+    if (accepted && sequence != share->Access.Sequence)
+    {
+        share->Access.Sequence = sequence;
+        ++share->PresentCount;
+    }
+    else if (!accepted && !(valid && result == VioGpuHostContextNotSubmitted))
+    {
+        RecordNativePoisonLocked(share, 5, resourceId, static_cast<ULONG>(result), sequence);
+        share->Access.Poisoned = true;
+        share->Adapter->RequestHardwareResetAtAnyIrql();
+    }
+    // Same sequence means no new presentation. Never advance ReleasedSequence
+    // here: only WAIT_RELEASE reports that the current sequence is reusable.
+    share->RefreshPending = FALSE;
+    share->Access.PresentPending = false;
+    KeSetEvent(&share->AccessChanged, IO_NO_INCREMENT, FALSE);
+    if (share->RefreshRequested) share->Adapter->RequestNativeAhbRefreshWork();
+    WakeNativeImportWaitersLocked(share->Adapter);
+    KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+    InterlockedDecrement(&share->AsyncReferences);
+}
+
+VOID VioGpuWddmRefreshNativeScanout(VioGpuDod *adapter, BOOLEAN requested)
+{
+    PAGED_CODE();
+    if (adapter == NULL || !adapter->IsNativeAhbScanoutEnabled() || adapter->IsHardwareResetRequested())
+        return;
+    // Same serialization as normal flips/modesets, held only through enqueue.
+    // The host asynchronously waits for old consumer fences; this worker and
+    // the control queue remain free to process ordinary paints and releases.
+    adapter->AcquireFlipApply();
+    VIOGPU_WDDM_NATIVE_SHARE_ENTRY *reserved = NULL;
+    ULONGLONG sequence = 0;
+    if (AcquireNativeShareRegistry(FALSE))
+    {
+        for (PLIST_ENTRY link = g_VioGpuNativeShares.Flink; link != &g_VioGpuNativeShares; link = link->Flink)
+        {
+            auto share = CONTAINING_RECORD(link, VIOGPU_WDDM_NATIVE_SHARE_ENTRY, Link);
+            if (share->Adapter != adapter || !share->HostSurface || share->AllocationReferences == 0 ||
+                !adapter->IsActiveScanoutResource(share->ResourceId))
+                continue;
+            KIRQL irql;
+            KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
+            if (requested) share->RefreshRequested = TRUE;
+            if (share->RefreshRequested && share->SurfaceResident && !share->Access.Poisoned &&
+                !share->Access.PresentPending && !share->Access.WaitPending && !share->Access.Writer &&
+                share->Access.Readers == 0 && share->PendingSurfaceWriters == 0 && share->Access.Sequence != 0)
+            {
+                share->RefreshRequested = FALSE;
+                share->RefreshPending = TRUE;
+                share->Access.PresentPending = true;
+                sequence = share->Access.Sequence;
+                InterlockedIncrement(&share->AsyncReferences);
+                reserved = share;
+            }
+            KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+            break;
+        }
+        ReleaseNativeShareRegistry();
+    }
+    if (reserved && !adapter->QueueNativeAhbOperation(reserved->ResourceId, reserved->SurfaceResetGeneration,
+            sequence, FALSE, NativeAhbRefreshCompleted, reserved, TRUE))
+        NativeAhbRefreshCompleted(reserved, VioGpuHostContextNotSubmitted, reserved->ResourceId, sequence);
+    adapter->ReleaseFlipApply();
+}
+
 NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocation)
 {
     PAGED_CODE();
@@ -5592,6 +5679,15 @@ NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocati
         ULONGLONG sequence = 0;
         KeAcquireSpinLock(&g_VioGpuNativeAccessLock, &irql);
         KeClearEvent(&share->AccessChanged);
+        if (share->RefreshPending)
+        {
+            // An event-owned reservation may precede this ordinary flip.
+            // Do not fail the flip or steal its reservation while it completes.
+            KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
+            status = WaitPollingControlQueue(adapter, &share->AccessChanged, timeout.QuadPart);
+            if (status == STATUS_SUCCESS) continue;
+            break;
+        }
         const BOOLEAN usable = share->SurfaceResident && !share->Access.Poisoned &&
                                !share->Access.PresentPending;
         const BOOLEAN held = share->Access.Sequence != share->Access.ReleasedSequence;

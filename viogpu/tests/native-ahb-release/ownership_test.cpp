@@ -20,25 +20,36 @@
 #define PAGED_CODE() ((void)0)
 #define RtlZeroMemory(p,n) std::memset(p,0,n)
 #define RtlCopyMemory(p,q,n) std::memcpy(p,q,n)
+#define ARRAYSIZE(a) (sizeof(a)/sizeof((a)[0]))
 #define TRUE true
 #define FALSE false
 #define NT_SUCCESS(x) ((x)>=0)
 #define DbgPrintEx(...) ((void)0)
 using UINT=unsigned; using ULONG=unsigned; using LONG=int; using ULONGLONG=unsigned long long; using LONG64=long long;
+using LONGLONG=long long;
 using BOOLEAN=bool; using VOID=void; using BYTE=unsigned char; using PVOID=void*;
 using PEPROCESS=void*; using NTSTATUS=int; using SIZE_T=std::size_t;
 using ULONG_PTR=uintptr_t;
 using KIRQL=int; using KSPIN_LOCK=int; using KEVENT=bool;
+using PKEVENT=KEVENT*;
 constexpr int STATUS_SUCCESS=0, STATUS_PENDING=1, STATUS_DEVICE_NOT_READY=-1,
     STATUS_INVALID_PARAMETER=-2, STATUS_NO_MEMORY=-3, STATUS_INVALID_HANDLE=-4,
     STATUS_GRAPHICS_ALLOCATION_BUSY=-5,STATUS_CANCELLED=-6,STATUS_INVALID_DEVICE_STATE=-7;
 constexpr int NonPagedPoolNx=0, IO_NO_INCREMENT=0;
+constexpr int STATUS_TIMEOUT=0x102, MAXLONG=INT32_MAX;
 void *operator new[](std::size_t size,int) { return ::operator new[](size); }
 void *operator new(std::size_t size,int) { return ::operator new(size); }
-void KeAcquireSpinLock(KSPIN_LOCK*,KIRQL *irql) { *irql=0; }
-void KeReleaseSpinLock(KSPIN_LOCK*,KIRQL) {}
-void KeAcquireSpinLockAtDpcLevel(KSPIN_LOCK*) {}
-void KeReleaseSpinLockFromDpcLevel(KSPIN_LOCK*) {}
+static unsigned spinlocksHeld;
+void KeAcquireSpinLock(KSPIN_LOCK *lock,KIRQL *irql) {
+    assert(!*lock); *lock=1; ++spinlocksHeld; *irql=0;
+}
+void KeReleaseSpinLock(KSPIN_LOCK *lock,KIRQL) {
+    assert(*lock && spinlocksHeld); *lock=0; --spinlocksHeld;
+}
+void KeAcquireSpinLockAtDpcLevel(KSPIN_LOCK *lock) {
+    KIRQL irql; KeAcquireSpinLock(lock,&irql);
+}
+void KeReleaseSpinLockFromDpcLevel(KSPIN_LOCK *lock) { KeReleaseSpinLock(lock,0); }
 void KeClearEvent(KEVENT *e) { *e=false; }
 void KeSetEvent(KEVENT *e,int,bool) { *e=true; }
 constexpr int NotificationEvent=0;
@@ -53,6 +64,7 @@ LONG64 InterlockedCompareExchange64(volatile LONG64 *p,LONG64 value,LONG64 old) 
 }
 LONG InterlockedDecrement(volatile LONG *p) { return --*p; }
 LONG InterlockedExchange(volatile LONG *p,LONG v) { LONG old=*p; *p=v; return old; }
+LONG64 InterlockedExchange64(volatile LONG64 *p,LONG64 v) { LONG64 old=*p; *p=v; return old; }
 struct LIST_ENTRY { LIST_ENTRY *Flink,*Blink; };
 using PLIST_ENTRY=LIST_ENTRY*;
 #define CONTAINING_RECORD(p,t,f) reinterpret_cast<t*>(reinterpret_cast<char*>(p)-offsetof(t,f))
@@ -106,10 +118,16 @@ int AcquireAllocationLifecycle(VIOGPU_WDDM_ALLOCATION *a) {
 void KeReleaseMutex(int *mutex,bool) { assert(*mutex==1); *mutex=0; }
 bool EnsureStandard2DAllocationBacking(VIOGPU_WDDM_ALLOCATION *a) { return a->PlacementValid; }
 struct LARGE_INTEGER { long long QuadPart; };
+static LONGLONG counterTicks;
+LARGE_INTEGER KeQueryPerformanceCounter(LARGE_INTEGER *frequency) {
+    if(frequency) frequency->QuadPart=1000000;
+    return {++counterTicks};
+}
 constexpr int Executive=0,KernelMode=0;
 static std::function<void()> onWait;
 static unsigned waitCount;
 int KeWaitForSingleObject(KEVENT *event,int,int,bool,LARGE_INTEGER*) {
+    assert(spinlocksHeld==0);
     if(*event) return 0;
     assert(onWait); ++waitCount; onWait(); return 0;
 }
@@ -138,6 +156,7 @@ struct VIOGPU_WDDM_SUBMISSION {
     volatile LONG State{},CancelRequested{};
     VIOGPU_NATIVE_PASSIVE_WORK Work{}; int References{1};
     PVOID CommandStream{},VirtioBuffer{}; UINT CommandStreamSize{},HostCommandStreamSize{};
+    LONGLONG WriterRenderTicks{},WriterIssueTicks{};
 };
 constexpr int VioGpuWddmSubmissionHostIssued=5,VioGpuWddmSubmissionQuarantined=6;
 constexpr int VioGpuWddmContextSubmissionRender=1,VioGpuNativeShareRegistryReady=2;
@@ -150,11 +169,23 @@ void ReleaseAllocationSubmissionReference(VIOGPU_WDDM_ALLOCATION *a) { assert(a-
 struct VIOGPU_WDDM_MSM_SUBMIT_BO { UINT Flags,Handle; ULONGLONG Presumed; };
 struct VIOGPU_WDDM_MSM_SUBMIT_CMD { UINT words[8]; };
 #pragma pack(pop)
+enum {
+    VioGpuRevokedImportRefsSkipped,VioGpuSurfaceWriterRetireOver2ms,
+    VioGpuHostSurfaceWriterWaits,VioGpuHostSurfaceReleaseWaitOver2ms,
+    VioGpuHostSurfaceIdleWaitOver1ms,VioGpuHostSurfaceScanoutOver2ms,
+    VioGpuHostSurfaceAcceptOver2ms,VioGpuHostSurfaceAcceptSlowDelivery,
+    VioGpuHostSurfaceAcceptSlowWake,VioGpuHostSurfaceLastSlowDeliveryUsec,
+    VioGpuHostSurfaceLastSlowWakeUsec,VioGpuHostSurfaceControlPolls,
+};
 class VioGpuDod {
 public:
+    void CountDisplayEvent(int) {}
+    void RecordDisplayValue(int,LONG) {}
+    void PollControlQueue() {}
     struct Wait { UINT resource; ULONGLONG sequence; PVOID context;
         void (*callback)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG); };
     std::vector<Wait> waits;
+    std::vector<Wait> refreshes;
     std::vector<BYTE> packet;
     std::vector<BYTE> ahb;
     UINT pagingCalls{},failPagingCall{};
@@ -164,8 +195,9 @@ public:
     bool queueOk=true,reset=false;
     BOOLEAN TryResumeNativePassiveDispatch(VIOGPU_NATIVE_PASSIVE_WORK *work);
     bool QueueNativeAhbOperation(UINT id,ULONGLONG,ULONGLONG sequence,bool present,
-        void (*cb)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG),PVOID context) {
+        void (*cb)(PVOID,VIOGPU_HOST_CONTEXT_RESULT,UINT,ULONGLONG),PVOID context,bool refresh=false) {
         if(!queueOk) return false;
+        if(refresh) { assert(!present && sequence); refreshes.push_back({id,sequence,context,cb}); return true; }
         if(present) { assert(!sequence); cb(context,VioGpuHostContextConfirmed,id,++presentSequence); return true; }
         waits.push_back({id,sequence,context,cb}); return true;
     }
@@ -185,6 +217,11 @@ public:
     VIOGPU_HOST_CONTEXT_RESULT Set2DScanout(UINT,UINT,UINT,UINT,UINT*,
         VIOGPU_PRIMARY_SCANOUT_LAYOUT*,bool,bool) { ++scanouts; return VioGpuHostContextConfirmed; }
     void RequestHardwareResetAtAnyIrql() { reset=true; }
+    void RequestNativeAhbRefreshWork() { ++refreshWakes; }
+    unsigned refreshWakes{};
+    void AcquireFlipApply() { assert(!flipLocked); flipLocked=true; }
+    void ReleaseFlipApply() { assert(flipLocked); flipLocked=false; }
+    bool flipLocked{};
     VIOGPU_HOST_CONTEXT_RESULT PageNativeAhb(UINT resource,ULONGLONG generation,UINT operation,
         ULONGLONG offset,UINT length,UINT pattern,PVOID data) {
         assert(resource==19 && generation==7 && length && length<=65536 && offset+length<=ahb.size());
@@ -468,6 +505,37 @@ int main() {
         assert(share.PendingSurfaceWriters==0);
         share.Access.Sequence=share.Access.ReleasedSequence=0; entry.Size=0x4000;
     }
+    // Rendering may queue a future write while the current frame is still
+    // scanned out. Repeating that scanout does not grant the writer access:
+    // it remains pinned, and only a real release admits its GPU submission.
+    {
+        assert(PresentResidentHostSurface(&adapter,&wrapper,tx.PlacementOffset,false)==0);
+        adapter.activeScanout=19;
+        const auto heldSequence=share.Access.Sequence;
+        const auto scanoutsBefore=adapter.scanouts;
+        const auto pendingWaits=adapter.waits.size();
+        assert(heldSequence!=share.Access.ReleasedSequence);
+        auto next=make_submit(adapter,context,41); link_submit(next);
+        Packet w=make_packet(); w.refs[0].Size=bytes; entry.Size=bytes;
+        assert(PinNativeSubmitImports(&next,&w.header)==0 && share.PendingSurfaceWriters==1);
+        assert(!share.Access.Writer && !share.Access.WaitPending);
+        onWait=[&] { assert(!"an unchanged front repeat cannot wait for its own release"); };
+        assert(PresentResidentHostSurface(&adapter,&wrapper,tx.PlacementOffset,false)==0);
+        assert(adapter.scanouts==scanoutsBefore && adapter.waits.size()==pendingWaits);
+        assert(share.PendingSurfaceWriters==1 && !next.ImportsAdmitted);
+        assert(share.Access.Sequence==heldSequence && !share.Access.Poisoned && !adapter.reset);
+        assert(AdmitNativeSubmitImports(&next)==STATUS_PENDING);
+        assert(share.Access.WaitPending && !share.Access.Writer && !next.ImportsAdmitted);
+        assert(adapter.waits.size()==pendingWaits+1 && share.PendingSurfaceWriters==1);
+        adapter.activeScanout=0; // Another surface replaced this one on screen.
+        const auto release=adapter.waits.back();
+        release.callback(release.context,VioGpuHostContextConfirmed,release.resource,release.sequence);
+        assert(AdmitNativeSubmitImports(&next)==0 && share.Access.Writer);
+        next.ImportsHostIssued=true; finish(next,true);
+        assert(!share.PendingSurfaceWriters && !share.Access.Writer && !share.AsyncReferences);
+        assert(!wrapper.LifecycleMutex && spinlocksHeld==0);
+        share.Access.Sequence=share.Access.ReleasedSequence=0; entry.Size=0x4000;
+    }
     const UINT beforeDiscard=adapter.pagingCalls;
     tx.Flags=VioGpuWddmPagingFlagDiscard; tx.TransferSize=0; tx.TransferAddress=nullptr;
     assert(ExecuteHostSurfacePaging(&tx,&pagingWork)==0 && adapter.pagingCalls==beforeDiscard);
@@ -539,4 +607,55 @@ int main() {
     assert(held.DisplayReleaseWait && !otherPaging.DisplayReleaseWait);
     assert(adapter.TryResumeNativePassiveDispatch(&render));
     RemoveEntryList(&held.Link); RemoveEntryList(&otherPaging.Link);
+
+    // Actual refresh entrypoint/callback: fresh reservation, no manufactured
+    // release, coalesced delayed retry and unchanged-front paint race.
+    adapter.reset=false; adapter.activeScanout=19; share.SurfaceResident=true;
+    share.Access={}; share.Access.Sequence=500; share.Access.ReleasedSequence=499;
+    share.PendingSurfaceWriters=0; share.RefreshRequested=share.RefreshPending=false;
+    const auto replyRefresh=[&](ULONGLONG sequence, VIOGPU_HOST_CONTEXT_RESULT result=VioGpuHostContextConfirmed) {
+        assert(!adapter.refreshes.empty());
+        auto request=adapter.refreshes.back(); adapter.refreshes.pop_back();
+        request.callback(request.context,result,request.resource,sequence);
+    };
+    VioGpuWddmRefreshNativeScanout(&adapter,true);
+    assert(share.RefreshPending && share.Access.PresentPending && share.AsyncReferences==1);
+    assert(!VioGpuNativeAhbCanAccess(&share.Access,VIOGPU_WDDM_REFERENCE_WRITE));
+    assert(!VioGpuNativeAhbCanAccess(&share.Access,VIOGPU_WDDM_REFERENCE_READ));
+    assert(adapter.refreshes.size()==1);
+    VioGpuWddmRefreshNativeScanout(&adapter,true);
+    VioGpuWddmRefreshNativeScanout(&adapter,true);
+    assert(adapter.refreshes.size()==1 && share.RefreshRequested);
+    replyRefresh(501);
+    assert(!share.Access.PresentPending && !share.RefreshPending && share.AsyncReferences==0);
+    assert(share.Access.Sequence==501 && share.Access.ReleasedSequence==499 && adapter.refreshWakes);
+    VioGpuWddmRefreshNativeScanout(&adapter,false);
+    assert(adapter.refreshes.size()==1);
+    replyRefresh(501); // normal present already reached new consumer
+    assert(share.Access.Sequence==501 && share.Access.ReleasedSequence==499 && !share.RefreshRequested);
+    assert(!VioGpuNativeAhbCanAccess(&share.Access,VIOGPU_WDDM_REFERENCE_WRITE));
+    for(unsigned reason=0;reason<5;++reason) {
+        share.Access.Writer=reason==0; share.Access.Readers=reason==1;
+        share.PendingSurfaceWriters=reason==2; share.Access.WaitPending=reason==3;
+        share.Access.PresentPending=reason==4;
+        VioGpuWddmRefreshNativeScanout(&adapter,true);
+        assert(adapter.refreshes.empty() && share.RefreshRequested && !share.RefreshPending);
+        share.Access.Writer=false; share.Access.Readers=0; share.PendingSurfaceWriters=0;
+        share.Access.WaitPending=false; share.Access.PresentPending=false;
+        VioGpuWddmRefreshNativeScanout(&adapter,false);
+        assert(adapter.refreshes.size()==1); replyRefresh(501);
+    }
+    adapter.queueOk=false;
+    VioGpuWddmRefreshNativeScanout(&adapter,true);
+    assert(!share.RefreshPending && !share.Access.PresentPending && !share.Access.Poisoned);
+    assert(!share.AsyncReferences && !adapter.reset);
+    adapter.queueOk=true;
+    VioGpuWddmRefreshNativeScanout(&adapter,true);
+    const auto oldScanouts=adapter.scanouts;
+    onWait=[&] { replyRefresh(502); };
+    assert(PresentHostSurface(&adapter,&wrapper)==STATUS_SUCCESS);
+    assert(adapter.scanouts==oldScanouts && share.Access.Sequence==502 && share.Access.ReleasedSequence==499);
+    VioGpuWddmRefreshNativeScanout(&adapter,true);
+    replyRefresh(502,VioGpuHostContextUnknown);
+    assert(share.Access.Poisoned && adapter.reset && !share.AsyncReferences);
 }
