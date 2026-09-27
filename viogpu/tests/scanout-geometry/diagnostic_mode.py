@@ -59,6 +59,15 @@ for name, old, new in (
      '(void)pPinnedTarget;'),
     ('enum-ordinary-rotated-target', 'return diagnostic == STATUS_NOT_FOUND ? STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED : diagnostic;',
      '(void)diagnostic;'),
+    ('monitor-profile-dependent',
+     'if (!NativeScanoutDiagnosticEnabled() || !SupportsNativeScanoutGeometry()) return STATUS_SUCCESS;',
+     'VIOGPU_NATIVE_SCANOUT_MODE reserved = {}; if (!ReserveNativeScanoutMode(&reserved)) return STATUS_SUCCESS;\n'
+     '    if (!NativeScanoutDiagnosticEnabled() || !SupportsNativeScanoutGeometry()) return STATUS_SUCCESS;'),
+    ('monitor-current-only', 'for (UINT index = 0; index < m_pHWDevice->GetModeCount(); ++index)',
+     'for (UINT index = m_pHWDevice->GetCurrentModeIndex(); index < m_pHWDevice->GetModeCount() &&\n'
+     '        index == m_pHWDevice->GetCurrentModeIndex(); ++index)'),
+    ('monitor-geometry-ungated', '|| !SupportsNativeScanoutGeometry()) return STATUS_SUCCESS;',
+     ') return STATUS_SUCCESS;'),
 ):
     assert old in production
     variants.append((name, production.replace(old, new)))

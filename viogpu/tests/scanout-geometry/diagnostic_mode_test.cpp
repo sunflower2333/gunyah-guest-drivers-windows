@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <vector>
 using UINT=unsigned; using USHORT=unsigned short; using BOOLEAN=bool; using KIRQL=unsigned;
 using NTSTATUS=int; using LONGLONG=long long; using VOID=void; using HANDLE=void*;
 using ULONG=unsigned long; using D3DDDI_VIDEO_PRESENT_SOURCE_ID=unsigned;
@@ -45,8 +46,13 @@ struct D3DKMDT_MONITOR_SOURCE_MODE { D3DKMDT_VIDEO_SIGNAL_INFO VideoSignalInfo; 
     struct { unsigned FirstChannel,SecondChannel,ThirdChannel,FourthChannel; } ColorCoeffDynamicRanges; };
 template<typename T> struct ModeSet {
     T entry{}; unsigned creates{},adds{},releases{}; int createStatus{},addStatus{},releaseStatus{};
+    std::vector<T> accepted;
     static int create(ModeSet *set,T **out) { ++set->creates; *out=&set->entry; return set->createStatus; }
-    static int add(ModeSet *set,T *entry) { assert(entry==&set->entry); ++set->adds; return set->addStatus; }
+    static int add(ModeSet *set,T *entry) {
+        assert(entry==&set->entry); ++set->adds;
+        if(!set->addStatus)set->accepted.push_back(*entry);
+        return set->addStatus;
+    }
     static int release(ModeSet *set,const T *entry) { assert(entry==&set->entry); ++set->releases; return set->releaseStatus; }
 };
 template<typename T> struct ModeInterface {
@@ -78,7 +84,7 @@ struct D3DKMDT_VIDPN_PRESENT_PATH {
     } ContentTransformation;
 };
 struct EnumRequest { unsigned EnumPivotType; struct { unsigned VidPnSourceId,VidPnTargetId; } EnumPivot; };
-struct VIDEO_MODE_INFORMATION { unsigned VisScreenWidth=3040,VisScreenHeight=1904,ScreenStride=12160; };
+struct VIDEO_MODE_INFORMATION { unsigned VisScreenWidth=3040,VisScreenHeight=1904,ScreenStride=12160,ModeIndex=0; };
 using PVIDEO_MODE_INFORMATION=VIDEO_MODE_INFORMATION*;
 struct CURRENT_MODE {
     struct { unsigned Width=3040,Height=1904,Pitch=12160,ColorFormat=22; } DispInfo;
@@ -91,12 +97,21 @@ enum VIOGPU_HOST_CONTEXT_RESULT { VioGpuHostContextNotSubmitted,VioGpuHostContex
 struct Backend {
     VIDEO_MODE_INFORMATION info;
     VIOGPU_DISPLAY_TIMING timing=VioGpuVirtualTiming(3040,1904,165);
+    std::vector<VIDEO_MODE_INFORMATION> extraInfo;
+    std::vector<VIOGPU_DISPLAY_TIMING> extraTimings;
+    unsigned current{};
     bool eligible{},revoked{},committed{}; unsigned commits{},selects{};
     VIOGPU_HOST_CONTEXT_RESULT result=VioGpuHostContextConfirmed;
-    unsigned short GetCurrentModeIndex() { return 0; }
-    unsigned GetModeCount() { return 1; }
-    VIDEO_MODE_INFORMATION *GetModeInfo(unsigned index) { assert(!index); return &info; }
-    VIOGPU_DISPLAY_TIMING GetModeTiming(unsigned index) { assert(!index); return timing; }
+    unsigned short GetCurrentModeIndex() { return current; }
+    unsigned GetModeCount() { return 1+extraTimings.size(); }
+    VIDEO_MODE_INFORMATION *GetModeInfo(unsigned index) {
+        if(!index)return &info;
+        assert(index<=extraInfo.size()); extraInfo[index-1].ModeIndex=index;
+        return &extraInfo[index-1];
+    }
+    VIOGPU_DISPLAY_TIMING GetModeTiming(unsigned index) {
+        assert(index<GetModeCount()); return index?extraTimings[index-1]:timing;
+    }
     bool NativeScanoutModeEligible(const VIOGPU_NATIVE_SCANOUT_MODE*,bool only) { assert(only); return eligible&&!revoked; }
     VIOGPU_HOST_CONTEXT_RESULT CommitNativeScanoutMode(const VIOGPU_NATIVE_SCANOUT_MODE *mode) {
         assert(VioGpuNativeScanoutModeValid(mode)); ++commits;
@@ -104,7 +119,7 @@ struct Backend {
         if(result==VioGpuHostContextConfirmed)eligible=committed=true;
         return result;
     }
-    void SetCurrentModeIndex(unsigned index) { assert(!index); ++selects; }
+    void SetCurrentModeIndex(unsigned index) { assert(index<GetModeCount()); current=index; ++selects; }
 };
 struct VioGpuDod {
     Backend hw; Backend *m_pHWDevice=&hw; CURRENT_MODE m_CurrentMode;
@@ -112,9 +127,10 @@ struct VioGpuDod {
                                             {1,64,7,3,1904,3040,3040,1904,23,29,{0,0}}};
     VIOGPU_DISPLAY_TIMING m_CrtcTiming=VioGpuVirtualTiming(3040,1904,165);
     unsigned m_CrtcTimingLock{}; LONGLONG m_CrtcPeriodTicks=7,m_CrtcEpoch=8;
-    bool enabled=true,available=true,rundown=true,held{},flipHeld{},primaryValid=true,failTiming{};
+    bool enabled=true,available=true,geometrySupported=true,rundown=true,held{},flipHeld{},primaryValid=true,failTiming{};
     unsigned reserveCalls{},timings{},drains{},clears{},disarms{},resets{};
     bool NativeScanoutDiagnosticEnabled() { return enabled; }
+    bool SupportsNativeScanoutGeometry() { return geometrySupported; }
     bool ReserveNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *out) {
         ++reserveCalls; assert(!hw.committed); *out=reserved; return enabled&&available;
     }
@@ -123,7 +139,7 @@ struct VioGpuDod {
     void AcquireFlipApply() { assert(held&&!flipHeld); flipHeld=true; }
     void ReleaseFlipApply() { assert(flipHeld); flipHeld=false; }
     void BuildVideoSignalInfo(D3DKMDT_VIDEO_SIGNAL_INFO *out,VIDEO_MODE_INFORMATION *info) {
-        assert(info==&hw.info); const auto t=hw.timing;
+        const auto t=hw.GetModeTiming(info->ModeIndex);
         out->ActiveSize={t.Width,t.Height}; out->TotalSize={t.TotalWidth,t.TotalHeight};
         out->PixelRate=t.PixelClock; out->ScanLineOrdering=1;
         assert(VioGpuTimingRational(t.PixelClock,t.TotalWidth,out->HSyncFreq.Numerator,out->HSyncFreq.Denominator));
@@ -180,6 +196,39 @@ static D3DKMDT_VIDEO_SIGNAL_INFO signal(VioGpuDod &dod) {
 int main() {
     const D3DKMDT_VIDPN_SOURCE_MODE source={{{{1904,3040},{1904,3040},7616,21}},D3DKMDT_RMT_GRAPHICS};
     const D3DKMDT_VIDPN_PRESENT_PATH path={0,0,{2,1}};
+    // RecommendMonitorModes may run before an Activity/profile exists, while
+    // the selected mode is 60Hz or a recovery resolution. Its cached result
+    // must already contain the eventual exact physical165Hz monitor signal.
+    for(bool profile:{false,true}) for(unsigned current:{0U,1U,2U}) {
+        VioGpuDod dod;
+        dod.available=profile;
+        dod.hw.timing=VioGpuVirtualTiming(3040,1904,60);
+        const VIOGPU_DISPLAY_TIMING measured165={3040,1904,3600,1954,1160680000ULL};
+        dod.hw.extraTimings={measured165,VioGpuVirtualTiming(1920,1080,60),{3040,1904,3600,1954,0}};
+        dod.hw.extraInfo.resize(dod.hw.extraTimings.size());
+        dod.hw.current=current;
+        ModeSet<D3DKMDT_MONITOR_SOURCE_MODE> monitors;
+        ModeInterface<D3DKMDT_MONITOR_SOURCE_MODE> mi;
+        DXGKARG_RECOMMENDMONITORMODES request{&mi,&monitors};
+        assert(dod.AddNativeDiagnosticMonitorMode(&request)==STATUS_SUCCESS);
+        assert(dod.reserveCalls==0 && monitors.accepted.size()==3 && !dod.hw.commits);
+        const auto &signal165=monitors.accepted[1].VideoSignalInfo;
+        assert(signal165.ActiveSize.cx==1904 && signal165.ActiveSize.cy==3040);
+        assert(signal165.TotalSize.cx==1954 && signal165.TotalSize.cy==3600);
+        assert(signal165.PixelRate==1160680000ULL && signal165.ScanLineOrdering==1);
+        assert(signal165.HSyncFreq.Numerator==580340000 && signal165.HSyncFreq.Denominator==977);
+        assert(signal165.VSyncFreq.Numerator==1450850 && signal165.VSyncFreq.Denominator==8793);
+        for(const auto &mode:monitors.accepted) {
+            assert(mode.Preference==D3DKMDT_MP_NOTPREFERRED && mode.Origin==D3DKMDT_MCO_DRIVER);
+            assert(mode.ColorBasis==D3DKMDT_CB_SRGB && mode.ColorCoeffDynamicRanges.FirstChannel==8);
+        }
+        D3DKMDT_VIDPN_TARGET_MODE target165{signal165,0};
+        // Advertising monitor support grants no profile, mismatched timing or
+        // primary admission: the existing live cofunctionality gate still wins.
+        assert(dod.NativeDiagnosticModeCofunctional(&source,&target165,&path)==(profile&&current==1));
+        dod.geometrySupported=false; monitors={};
+        assert(!dod.AddNativeDiagnosticMonitorMode(&request) && !monitors.creates);
+    }
     for(unsigned failure=0;failure<6;++failure) {
         VioGpuDod dod;
         ModeSet<D3DKMDT_VIDPN_SOURCE_MODE> sources;

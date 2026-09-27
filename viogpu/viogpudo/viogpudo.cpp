@@ -5168,33 +5168,49 @@ NTSTATUS VioGpuDod::AddNativeDiagnosticTargetMode(const DXGK_VIDPNTARGETMODESET_
 NTSTATUS VioGpuDod::AddNativeDiagnosticMonitorMode(const DXGKARG_RECOMMENDMONITORMODES *request)
 {
     PAGED_CODE();
-    VIOGPU_NATIVE_SCANOUT_MODE mode = {};
-    VIDEO_MODE_INFORMATION info = {};
-    VIOGPU_DISPLAY_TIMING timing = {};
-    D3DKMDT_VIDEO_SIGNAL_INFO signal = {};
-    USHORT index = 0;
-    if (!PrepareNativeDiagnosticMode(&mode, &info, &timing, &signal, &index)) return STATUS_SUCCESS;
+    if (!NativeScanoutDiagnosticEnabled() || !SupportsNativeScanoutGeometry()) return STATUS_SUCCESS;
+    /* Windows caches monitor timings independently of later VidPN enumeration.
+     * Describe the diagnostic transport's complete timing catalogue before an
+     * Activity/profile exists, and regardless of the currently selected mode.
+     * Live profile/primary checks still govern every source/target and Commit. */
     const auto modeInterface = request->pMonitorSourceModeSetInterface;
     const auto set = request->hMonitorSourceModeSet;
-    D3DKMDT_MONITOR_SOURCE_MODE *entry = NULL;
-    NTSTATUS status = modeInterface->pfnCreateNewModeInfo(set, &entry);
-    if (!NT_SUCCESS(status)) return status;
-    entry->VideoSignalInfo = signal;
-    entry->Origin = D3DKMDT_MCO_DRIVER;
-    entry->Preference = D3DKMDT_MP_NOTPREFERRED;
-    entry->ColorBasis = D3DKMDT_CB_SRGB;
-    entry->ColorCoeffDynamicRanges.FirstChannel = 8;
-    entry->ColorCoeffDynamicRanges.SecondChannel = 8;
-    entry->ColorCoeffDynamicRanges.ThirdChannel = 8;
-    entry->ColorCoeffDynamicRanges.FourthChannel = 8;
-    status = modeInterface->pfnAddMode(set, entry);
-    if (!NT_SUCCESS(status))
+    for (UINT index = 0; index < m_pHWDevice->GetModeCount(); ++index)
     {
-        const NTSTATUS released = modeInterface->pfnReleaseModeInfo(set, entry);
-        if (!NT_SUCCESS(released)) return released;
-        if (status == STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET) status = STATUS_SUCCESS;
+        const auto &logical = m_pHWDevice->GetModeTiming(index);
+        const VIOGPU_DISPLAY_TIMING physical = {logical.Height, logical.Width,
+            logical.TotalHeight, logical.TotalWidth, logical.PixelClock};
+        if (!VioGpuTimingValid(logical) || !VioGpuTimingValid(physical)) continue;
+        D3DKMDT_VIDEO_SIGNAL_INFO signal = {};
+        BuildVideoSignalInfo(&signal, m_pHWDevice->GetModeInfo(index));
+        signal.ActiveSize.cx = physical.Width;
+        signal.ActiveSize.cy = physical.Height;
+        signal.TotalSize.cx = physical.TotalWidth;
+        signal.TotalSize.cy = physical.TotalHeight;
+        unsigned numerator = 0, denominator = 0;
+        if (!VioGpuTimingRational(physical.PixelClock, physical.TotalWidth, numerator, denominator)) continue;
+        signal.HSyncFreq.Numerator = numerator;
+        signal.HSyncFreq.Denominator = denominator;
+        D3DKMDT_MONITOR_SOURCE_MODE *entry = NULL;
+        NTSTATUS status = modeInterface->pfnCreateNewModeInfo(set, &entry);
+        if (!NT_SUCCESS(status)) return status;
+        entry->VideoSignalInfo = signal;
+        entry->Origin = D3DKMDT_MCO_DRIVER;
+        entry->Preference = D3DKMDT_MP_NOTPREFERRED;
+        entry->ColorBasis = D3DKMDT_CB_SRGB;
+        entry->ColorCoeffDynamicRanges.FirstChannel = 8;
+        entry->ColorCoeffDynamicRanges.SecondChannel = 8;
+        entry->ColorCoeffDynamicRanges.ThirdChannel = 8;
+        entry->ColorCoeffDynamicRanges.FourthChannel = 8;
+        status = modeInterface->pfnAddMode(set, entry);
+        if (!NT_SUCCESS(status))
+        {
+            const NTSTATUS released = modeInterface->pfnReleaseModeInfo(set, entry);
+            if (!NT_SUCCESS(released)) return released;
+            if (status != STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET) return status;
+        }
     }
-    return status;
+    return STATUS_SUCCESS;
 }
 #endif
 
