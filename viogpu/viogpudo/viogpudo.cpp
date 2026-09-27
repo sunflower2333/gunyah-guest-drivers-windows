@@ -5169,11 +5169,9 @@ BOOLEAN VioGpuDod::NativeDiagnosticConstraintsMatch(const VIOGPU_NATIVE_SCANOUT_
          rotation != D3DKMDT_VPPR_NOTSPECIFIED) ||
         (scaling != D3DKMDT_VPPS_IDENTITY && scaling != D3DKMDT_VPPS_UNPINNED &&
          scaling != D3DKMDT_VPPS_NOTSPECIFIED)) return FALSE;
-    // Unpinned transformations may select the one implemented tuple. Pinned
-    // modes must already be that tuple; enumeration must never transpose them.
     if (source != NULL && (source->Type != D3DKMDT_RMT_GRAPHICS ||
         source->Format.Graphics.PixelFormat != D3DDDIFMT_A8R8G8B8 ||
-        !VioGpuNativeDiagnosticSourceMatches(mode,
+        !VioGpuNativeDiagnosticLogicalSourceMatches(mode,
             source->Format.Graphics.PrimSurfSize.cx, source->Format.Graphics.PrimSurfSize.cy,
             source->Format.Graphics.VisibleRegionSize.cx, source->Format.Graphics.VisibleRegionSize.cy,
             source->Format.Graphics.Stride, D3DKMDT_VPPR_ROTATE90, D3DKMDT_VPPS_IDENTITY))) return FALSE;
@@ -5237,10 +5235,10 @@ NTSTATUS VioGpuDod::AddNativeDiagnosticSourceMode(const DXGK_VIDPNSOURCEMODESET_
     NTSTATUS status = modeInterface->pfnCreateNewModeInfo(set, &entry);
     if (!NT_SUCCESS(status)) return status;
     entry->Type = D3DKMDT_RMT_GRAPHICS;
-    entry->Format.Graphics.PrimSurfSize.cx = info.VisScreenWidth;
-    entry->Format.Graphics.PrimSurfSize.cy = info.VisScreenHeight;
+    entry->Format.Graphics.PrimSurfSize.cx = mode.Geometry.LogicalWidth;
+    entry->Format.Graphics.PrimSurfSize.cy = mode.Geometry.LogicalHeight;
     entry->Format.Graphics.VisibleRegionSize = entry->Format.Graphics.PrimSurfSize;
-    entry->Format.Graphics.Stride = info.ScreenStride;
+    entry->Format.Graphics.Stride = mode.Geometry.LogicalWidth * 4;
     entry->Format.Graphics.PixelFormat = D3DDDIFMT_A8R8G8B8;
     entry->Format.Graphics.ColorBasis = D3DKMDT_CB_SCRGB;
     entry->Format.Graphics.PixelValueAccessMode = D3DKMDT_PVAM_DIRECT;
@@ -6732,8 +6730,12 @@ NTSTATUS VioGpuDod::SetNativeDiagnosticModeAndPath(const D3DKMDT_VIDPN_SOURCE_MO
             if (signal != NULL || primary != NULL ||
                 !m_pHWDevice->NativeScanoutModeEligible(&mode, TRUE) ||
                 !VioGpuNativeDiagnosticSourceMatches(&mode, m_CurrentMode.DispInfo.Width,
-                    m_CurrentMode.DispInfo.Height, m_CurrentMode.SrcModeWidth, m_CurrentMode.SrcModeHeight,
+                    m_CurrentMode.DispInfo.Height, m_CurrentMode.DispInfo.Width, m_CurrentMode.DispInfo.Height,
                     m_CurrentMode.DispInfo.Pitch, path->ContentTransformation.Rotation,
+                    path->ContentTransformation.Scaling) ||
+                !VioGpuNativeDiagnosticLogicalSourceMatches(&mode, m_CurrentMode.SrcModeWidth,
+                    m_CurrentMode.SrcModeHeight, m_CurrentMode.SrcModeWidth, m_CurrentMode.SrcModeHeight,
+                    m_CurrentMode.SrcModeWidth * 4, path->ContentTransformation.Rotation,
                     path->ContentTransformation.Scaling) || !VioGpuSameTiming(m_CrtcTiming, timing)) break;
             m_CurrentMode.Rotation = path->ContentTransformation.Rotation;
             m_CurrentMode.Scaling = path->ContentTransformation.Scaling;
@@ -6741,8 +6743,9 @@ NTSTATUS VioGpuDod::SetNativeDiagnosticModeAndPath(const D3DKMDT_VIDPN_SOURCE_MO
             status = STATUS_SUCCESS;
             break;
         }
-        if (signal == NULL || source->Format.Graphics.PixelFormat != D3DDDIFMT_A8R8G8B8 ||
-            !VioGpuNativeDiagnosticSourceMatches(&mode, source->Format.Graphics.PrimSurfSize.cx,
+        if (signal == NULL || source->Type != D3DKMDT_RMT_GRAPHICS ||
+            source->Format.Graphics.PixelFormat != D3DDDIFMT_A8R8G8B8 ||
+            !VioGpuNativeDiagnosticLogicalSourceMatches(&mode, source->Format.Graphics.PrimSurfSize.cx,
                 source->Format.Graphics.PrimSurfSize.cy, source->Format.Graphics.VisibleRegionSize.cx,
                 source->Format.Graphics.VisibleRegionSize.cy, source->Format.Graphics.Stride,
                 path->ContentTransformation.Rotation, path->ContentTransformation.Scaling) ||
@@ -6759,8 +6762,8 @@ NTSTATUS VioGpuDod::SetNativeDiagnosticModeAndPath(const D3DKMDT_VIDPN_SOURCE_MO
         candidate.DispInfo.Height = info.VisScreenHeight;
         candidate.DispInfo.Pitch = info.ScreenStride;
         candidate.DispInfo.ColorFormat = D3DDDIFMT_A8R8G8B8;
-        candidate.SrcModeWidth = info.VisScreenWidth;
-        candidate.SrcModeHeight = info.VisScreenHeight;
+        candidate.SrcModeWidth = mode.Geometry.LogicalWidth;
+        candidate.SrcModeHeight = mode.Geometry.LogicalHeight;
         candidate.Rotation = path->ContentTransformation.Rotation;
         candidate.Scaling = path->ContentTransformation.Scaling;
         candidate.Flags.FullscreenPresent = TRUE;

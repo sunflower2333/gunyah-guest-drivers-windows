@@ -195,8 +195,47 @@ static D3DKMDT_VIDEO_SIGNAL_INFO signal(VioGpuDod &dod) {
     return result;
 }
 int main() {
-    const D3DKMDT_VIDPN_SOURCE_MODE source={{{{1904,3040},{1904,3040},7616,21}},D3DKMDT_RMT_GRAPHICS};
+    const D3DKMDT_VIDPN_SOURCE_MODE source={{{{3040,1904},{3040,1904},12160,21}},D3DKMDT_RMT_GRAPHICS};
     const D3DKMDT_VIDPN_PRESENT_PATH path={0,0,{2,1}};
+    // The captured Enum source pivot carries the logical source with both
+    // transforms unpinned. It must cofunction with the exact physical target,
+    // then expose that same logical source and diagnostic physical target to
+    // the actual mode-set callbacks without transposing either pinned mode.
+    {
+        VioGpuDod dod;
+        auto raw=path;
+        raw.ContentTransformation.Rotation=D3DKMDT_VPPR_UNPINNED;
+        raw.ContentTransformation.Scaling=D3DKMDT_VPPS_UNPINNED;
+        D3DKMDT_VIDPN_TARGET_MODE target{signal(dod),0};
+        VIOGPU_NATIVE_VALIDATION_RECORD capture{};
+        assert(dod.NativeDiagnosticModeCofunctional(&source,&target,&raw,&capture));
+        assert(capture.Result==3);
+        VIOGPU_NATIVE_VALIDATION_RECORD sourcePivotCapture{};
+        assert(dod.NativeDiagnosticModeCofunctional(&source,nullptr,&raw,&sourcePivotCapture));
+        assert(sourcePivotCapture.Result==3);
+        ModeSet<D3DKMDT_VIDPN_SOURCE_MODE> sources;
+        ModeSet<D3DKMDT_VIDPN_TARGET_MODE> targets;
+        DXGK_VIDPNSOURCEMODESET_INTERFACE si; DXGK_VIDPNTARGETMODESET_INTERFACE ti;
+        assert(!dod.AddSingleSourceMode(&si,&sources,0,&target,&raw) && sources.adds==1);
+        assert(sources.entry.Format.Graphics.PrimSurfSize.cx==3040 &&
+            sources.entry.Format.Graphics.PrimSurfSize.cy==1904 && sources.entry.Format.Graphics.Stride==12160);
+        assert(!dod.AddSingleTargetMode(&ti,&targets,&source,0,&raw) && targets.adds==2 &&
+            targets.accepted.back().VideoSignalInfo.ActiveSize.cx==1904 &&
+            targets.accepted.back().VideoSignalInfo.ActiveSize.cy==3040);
+        ModeSet<D3DKMDT_VIDPN_TARGET_MODE> sourcePivotTargets;
+        assert(!dod.AddSingleTargetMode(&ti,&sourcePivotTargets,&source,0,&raw) &&
+            sourcePivotTargets.adds==2 && sourcePivotTargets.accepted.back().VideoSignalInfo.ActiveSize.cx==1904);
+        auto physical=source;
+        physical.Format.Graphics.PrimSurfSize=physical.Format.Graphics.VisibleRegionSize={1904,3040};
+        physical.Format.Graphics.Stride=7616;
+        targets={};
+        assert(dod.NativeDiagnosticModeCofunctional(&physical,&target,&raw)==FALSE);
+        assert(dod.AddSingleTargetMode(&ti,&targets,&physical,0,&raw)==
+            STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED && targets.adds==0);
+        auto wrongTarget=target;
+        wrongTarget.VideoSignalInfo.ActiveSize.cx++;
+        assert(!dod.NativeDiagnosticModeCofunctional(&source,&wrongTarget,&raw));
+    }
     // RecommendMonitorModes may run before an Activity/profile exists, while
     // the selected mode is 60Hz or a recovery resolution. Its cached result
     // must already contain the eventual exact physical165Hz monitor signal.
@@ -255,8 +294,8 @@ int main() {
         else {
             assert(sources.creates==1&&targets.creates==1&&monitors.creates==1);
             if(failure!=2) {
-                assert(sources.entry.Format.Graphics.PrimSurfSize.cx==1904);
-                assert(sources.entry.Format.Graphics.VisibleRegionSize.cy==3040 && sources.entry.Format.Graphics.Stride==7616);
+                assert(sources.entry.Format.Graphics.PrimSurfSize.cx==3040);
+                assert(sources.entry.Format.Graphics.VisibleRegionSize.cy==1904 && sources.entry.Format.Graphics.Stride==12160);
                 assert(targets.entry.VideoSignalInfo.ActiveSize.cx==1904 && targets.entry.VideoSignalInfo.TotalSize.cy==3200);
                 assert(monitors.entry.VideoSignalInfo.PixelRate==dod.hw.timing.PixelClock);
             }
@@ -268,7 +307,8 @@ int main() {
         ModeSet<D3DKMDT_VIDPN_SOURCE_MODE> sources; ModeSet<D3DKMDT_VIDPN_TARGET_MODE> targets;
         D3DKMDT_VIDPN_TARGET_MODE wrong{}; wrong.VideoSignalInfo.ActiveSize={3040,1904};
         assert(!dod.AddNativeDiagnosticSourceMode(&si,&sources,&wrong,&path) && !sources.creates);
-        auto wrongSource=source; wrongSource.Format.Graphics.VisibleRegionSize={3040,1904};
+        auto wrongSource=source; wrongSource.Format.Graphics.PrimSurfSize={1904,3040};
+        wrongSource.Format.Graphics.VisibleRegionSize={1904,3040}; wrongSource.Format.Graphics.Stride=7616;
         assert(dod.AddNativeDiagnosticTargetMode(&ti,&targets,&wrongSource,&path)==STATUS_NOT_FOUND && !targets.creates);
         assert(!dod.AddNativeDiagnosticTargetMode(&ti,&targets,&source,&path) && targets.creates==1);
     }
@@ -276,12 +316,13 @@ int main() {
         VioGpuDod dod; DXGK_VIDPNSOURCEMODESET_INTERFACE si; DXGK_VIDPNTARGETMODESET_INTERFACE ti;
         ModeSet<D3DKMDT_VIDPN_SOURCE_MODE> sources; ModeSet<D3DKMDT_VIDPN_TARGET_MODE> targets;
         assert(!dod.AddSingleSourceMode(&si,&sources,0,nullptr,&path) && sources.adds==1);
-        assert(sources.entry.Format.Graphics.PrimSurfSize.cx==1904);
-        auto logical=source;
-        logical.Format.Graphics.PrimSurfSize=logical.Format.Graphics.VisibleRegionSize={3040,1904};
-        logical.Format.Graphics.Stride=12160;
-        assert(dod.AddSingleTargetMode(&ti,&targets,&logical,0,&path)!=STATUS_SUCCESS && !targets.adds);
-        assert(!dod.AddSingleTargetMode(&ti,&targets,nullptr,0,&path) && targets.adds==1);
+        assert(sources.entry.Format.Graphics.PrimSurfSize.cx==3040);
+        auto physical=source;
+        physical.Format.Graphics.PrimSurfSize=physical.Format.Graphics.VisibleRegionSize={1904,3040};
+        physical.Format.Graphics.Stride=7616;
+        assert(dod.AddSingleTargetMode(&ti,&targets,&physical,0,&path)!=STATUS_SUCCESS && !targets.adds);
+        assert(!dod.AddSingleTargetMode(&ti,&targets,&source,0,&path) && targets.adds==1);
+        assert(!dod.AddSingleTargetMode(&ti,&targets,nullptr,0,&path) && targets.adds==2);
         assert(targets.entry.VideoSignalInfo.ActiveSize.cx==1904);
         D3DKMDT_VIDPN_TARGET_MODE logicalTarget{};
         dod.BuildVideoSignalInfo(&logicalTarget.VideoSignalInfo,&dod.hw.info);
@@ -291,7 +332,7 @@ int main() {
         auto identity=path; identity.ContentTransformation.Rotation=1;
         assert(!dod.AddSingleSourceMode(&si,&sources,0,&logicalTarget,&identity) && sources.adds==1);
         targets={};
-        assert(!dod.AddSingleTargetMode(&ti,&targets,&logical,0,&identity) && targets.adds==1);
+        assert(!dod.AddSingleTargetMode(&ti,&targets,&source,0,&identity) && targets.adds==1);
     }
     // Use the actual outer enumeration functions, reservation and support
     // calculation. No committed mode or diagnostic primary exists yet.
@@ -302,8 +343,8 @@ int main() {
         switch(failure) {
         case 1: src.Type=0; sourceValid=false; break;
         case 2: src.Format.Graphics.PixelFormat=22; sourceValid=false; break;
-        case 3: src.Format.Graphics.PrimSurfSize={3040,1904}; sourceValid=false; break;
-        case 4: src.Format.Graphics.VisibleRegionSize={3040,1904}; sourceValid=false; break;
+        case 3: src.Format.Graphics.PrimSurfSize={1904,3040}; sourceValid=false; break;
+        case 4: src.Format.Graphics.VisibleRegionSize={1904,3040}; sourceValid=false; break;
         case 5: src.Format.Graphics.Stride+=4; sourceValid=false; break;
         case 6: target.VideoSignalInfo.ActiveSize.cx++; targetValid=false; break;
         case 7: target.VideoSignalInfo.ActiveSize.cy++; targetValid=false; break;
@@ -384,8 +425,8 @@ int main() {
         if(failure==1)dod.enabled=false;
         if(failure==2)dod.available=false;
         if(failure==3)dod.rundown=false;
-        if(failure==4)src.Format.Graphics.PrimSurfSize={3040,1904};
-        if(failure==5)src.Format.Graphics.VisibleRegionSize={3040,1904};
+        if(failure==4)src.Format.Graphics.PrimSurfSize={1904,3040};
+        if(failure==5)src.Format.Graphics.VisibleRegionSize={1904,3040};
         if(failure==6)src.Format.Graphics.Stride+=4;
         if(failure==7)src.Format.Graphics.PixelFormat=22;
         if(failure==8)p.ContentTransformation.Rotation=4;
@@ -404,20 +445,23 @@ int main() {
             assert(status==0 && dod.hw.commits==1 && dod.drains==1 && dod.clears==1);
             assert(dod.m_CurrentMode.DispInfo.Width==1904 && dod.m_CurrentMode.DispInfo.Height==3040);
             assert(!dod.m_CurrentMode.FrameBuffer && !dod.m_CurrentMode.Flags.FrameBufferIsActive);
-            assert(dod.m_CurrentMode.SrcModeWidth==1904 && dod.m_CurrentMode.Rotation==2);
+            assert(dod.m_CurrentMode.SrcModeWidth==3040 && dod.m_CurrentMode.SrcModeHeight==1904 &&
+                dod.m_CurrentMode.Rotation==2);
         } else {
             assert(status!=0 && !dod.drains && !dod.clears && !dod.hw.selects);
             assert(std::memcmp(&prior,&dod.m_CurrentMode,sizeof(prior))==0);
             assert(VioGpuSameTiming(priorTiming,dod.m_CrtcTiming));
         }
     }
-    for(unsigned state=0;state<4;++state) {
+    for(unsigned state=0;state<6;++state) {
         VioGpuDod dod;
         if(state!=0) {
             dod.m_CurrentMode.DispInfo={1904,3040,7616,21};
-            dod.m_CurrentMode.SrcModeWidth=1904; dod.m_CurrentMode.SrcModeHeight=3040;
+            dod.m_CurrentMode.SrcModeWidth=3040; dod.m_CurrentMode.SrcModeHeight=1904;
             dod.m_CrtcTiming={1904,3040,1939,3200,dod.hw.timing.PixelClock};
         }
+        if(state==4)dod.m_CurrentMode.SrcModeWidth=1904, dod.m_CurrentMode.SrcModeHeight=3040;
+        if(state==5)dod.m_CurrentMode.DispInfo={3040,1904,12160,21};
         dod.hw.eligible=state>=2; dod.hw.revoked=state==3;
         const auto prior=dod.m_CurrentMode;
         const auto status=dod.SetNativeDiagnosticModeAndPath(nullptr,&path,nullptr,nullptr);

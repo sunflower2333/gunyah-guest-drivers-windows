@@ -38,7 +38,7 @@ void ZwClose(void*) { assert(locked); ++closes; }
 // INSERT_MAIN
 int main() {
     VioGpuDod dod;
-    const D3DKMDT_VIDPN_SOURCE_MODE source={{{{1904,3040},{1904,3040},7616,21,2,1}},D3DKMDT_RMT_GRAPHICS};
+    const D3DKMDT_VIDPN_SOURCE_MODE source={{{{3040,1904},{3040,1904},12160,21,2,1}},D3DKMDT_RMT_GRAPHICS};
     D3DKMDT_VIDPN_PRESENT_PATH path={0,0,{2,1}};
     path.ContentTransformation.RotationSupport.Rotate90=1;
     path.ContentTransformation.RotationSupport.Offset0=1;
@@ -51,8 +51,8 @@ int main() {
     VIOGPU_NATIVE_VALIDATION_RECORD record{};
     record.Ddi=2; record.PivotType=2; record.Step=21;
     VioGpuCaptureValidationInputs(&record,&source,&path,&target.VideoSignalInfo);
-    assert(record.Data.Flags==7 && record.Data.SourceWidth==1904 && record.Data.SourceHeight==3040);
-    assert(record.Data.VisibleWidth==1904 && record.Data.VisibleHeight==3040 && record.Data.Stride==7616);
+    assert(record.Data.Flags==7 && record.Data.SourceWidth==3040 && record.Data.SourceHeight==1904);
+    assert(record.Data.VisibleWidth==3040 && record.Data.VisibleHeight==1904 && record.Data.Stride==12160);
     assert(record.SourceType==1 && record.SourceColorBasis==2 && record.SourceAccessMode==1);
     assert(record.Data.TargetWidth==1904 && record.Data.TargetHeight==3040 && record.TargetScanLineOrdering==1);
     assert(record.Data.Rotation==2 && record.Data.Scaling==1 && record.ScalingSupport==1 && record.RotationSupport==18);
@@ -65,10 +65,10 @@ int main() {
         record.ExpectedHSyncDenominator==977 && record.ExpectedVSyncNumerator==1450850 &&
         record.ExpectedVSyncDenominator==8793 && record.ExpectedScanLineOrdering==1);
     assert(VioGpuNativeScanoutModeEqual(&mode,&record.Data.Mode));
-    auto logical=source;
-    logical.Format.Graphics.PrimSurfSize={3040,1904}; logical.Format.Graphics.VisibleRegionSize={3040,1904};
-    logical.Format.Graphics.Stride=12160;
-    assert(!dod.NativeDiagnosticModeCofunctional(&logical,&target,&path,&record) && record.Result==2);
+    auto physical=source;
+    physical.Format.Graphics.PrimSurfSize={1904,3040}; physical.Format.Graphics.VisibleRegionSize={1904,3040};
+    physical.Format.Graphics.Stride=7616;
+    assert(!dod.NativeDiagnosticModeCofunctional(&physical,&target,&path,&record) && record.Result==2);
     target.VideoSignalInfo.HSyncFreq.Denominator++;
     assert(!dod.NativeDiagnosticModeCofunctional(&source,&target,&path,&record) && record.Result==2);
     dod.available=false;

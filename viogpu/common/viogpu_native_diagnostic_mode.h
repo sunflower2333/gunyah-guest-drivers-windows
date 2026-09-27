@@ -111,8 +111,24 @@ static inline bool VioGpuNativeDiagnosticSourceMatches(const VIOGPU_NATIVE_SCANO
     unsigned width, unsigned height, unsigned visibleWidth, unsigned visibleHeight,
     unsigned stride, unsigned rotation, unsigned scaling)
 {
+    /* This is the required physical allocation/storage contract. VidPN source
+     * metadata is checked separately because the captured rotated path pins
+     * the desktop source in logical orientation while storage stays physical. */
     return VioGpuNativeScanoutModeValid(mode) && mode->Geometry.ContentRotationCw == 3 &&
         width == mode->Geometry.StorageWidth && height == mode->Geometry.StorageHeight &&
+        visibleWidth == width && visibleHeight == height && stride == width * 4 &&
+        rotation == 2 && scaling == 1;
+}
+
+static inline bool VioGpuNativeDiagnosticLogicalSourceMatches(const VIOGPU_NATIVE_SCANOUT_MODE *mode,
+    unsigned width, unsigned height, unsigned visibleWidth, unsigned visibleHeight,
+    unsigned stride, unsigned rotation, unsigned scaling)
+{
+    /* The native CCD capture pins this exact logical source and selects the
+     * physical target through a ROTATE90 path.  Keep this tuple narrow: no
+     * either-or geometry acceptance and no implicit source transpose. */
+    return VioGpuNativeScanoutModeValid(mode) && mode->Geometry.ContentRotationCw == 3 &&
+        width == mode->Geometry.LogicalWidth && height == mode->Geometry.LogicalHeight &&
         visibleWidth == width && visibleHeight == height && stride == width * 4 &&
         rotation == 2 && scaling == 1;
 }
