@@ -487,6 +487,8 @@ jobs:
           }
 
           $requiredTextSymbols = @(
+            @{ Name = 'VioGpuAdapter::SupportsNativeScanoutGeometry'; Pattern = '?SupportsNativeScanoutGeometry@VioGpuAdapter@@'; Object = '*viogpudo.obj' },
+            @{ Name = 'VioGpuAdapter::SupportsNativeAhbPaging'; Pattern = '?SupportsNativeAhbPaging@VioGpuAdapter@@'; Object = '*viogpudo.obj'; MayInline = $true },
             @{ Name = 'NativeAhbRefreshCompleted'; Pattern = '?NativeAhbRefreshCompleted@?A0x'; Object = '*wddmddi.obj' },
             @{ Name = 'VioGpuDod::RequestNativeAhbRefreshWork'; Pattern = '?RequestNativeAhbRefreshWork@VioGpuDod@@'; Object = '*viogpudo.obj' },
             @{ Name = 'VioGpuDod::GetScanLine'; Pattern = '?GetScanLine@VioGpuDod@@'; Object = '*viogpudo.obj' },
@@ -515,6 +517,10 @@ jobs:
               # the name too, but are metadata, not the executable symbol.
               $row.Count -ge 2 -and $row[1].StartsWith($symbol.Pattern, [StringComparison]::Ordinal)
             })
+            if ($symbolLines.Count -eq 0 -and $symbol.MayInline) {
+              Write-Host "optimized helper absent from MAP: $($symbol.Name); linked disassembly validation remains required"
+              continue
+            }
             if ($symbolLines.Count -ne 1) {
               $symbolLines | ForEach-Object { Write-Host "MAP candidate: $_" }
               throw "linker map must contain exactly one $($symbol.Name) symbol, found $($symbolLines.Count)"

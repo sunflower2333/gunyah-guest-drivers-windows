@@ -1139,8 +1139,8 @@ class VioGpuAdapter : IVioGpuPCI
     {
         InterlockedOr(reinterpret_cast<volatile LONG *>(&m_PendingWorks), ISR_REASON_DISPLAY);
     }
-    BOOLEAN SupportsNativeAhbPaging() const;
-    BOOLEAN SupportsNativeScanoutGeometry() const;
+    __declspec(code_seg(".text")) BOOLEAN SupportsNativeAhbPaging() const;
+    __declspec(code_seg(".text")) BOOLEAN SupportsNativeScanoutGeometry() const;
     BOOLEAN QueryNativeScanoutState(VIOGPU_SCANOUT_GEOMETRY *geometry,
                                     VIOGPU_SCANOUT_PROFILE *profile, ULONGLONG *localReset);
     BOOLEAN ReserveNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode);

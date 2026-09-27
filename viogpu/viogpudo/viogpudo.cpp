@@ -11695,6 +11695,9 @@ NTSTATUS VioGpuAdapter::FailNativeContextInitialization(NTSTATUS status)
 }
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
+/* QueueNativeAhbOperation permits DISPATCH_LEVEL even for unprofiled traffic.
+ * Keep this feature predicate and its dependency resident at that call site. */
+__declspec(code_seg(".text"))
 BOOLEAN VioGpuAdapter::SupportsNativeAhbPaging() const
 {
     return virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_V2) &&
@@ -11702,6 +11705,7 @@ BOOLEAN VioGpuAdapter::SupportsNativeAhbPaging() const
            virtio_is_feature_enabled(m_u64GuestFeatures, VIRTIO_GPU_F_NATIVE_AHB_PAGING);
 }
 
+__declspec(code_seg(".text"))
 BOOLEAN VioGpuAdapter::SupportsNativeScanoutGeometry() const
 {
     return SupportsNativeAhbPaging() &&
