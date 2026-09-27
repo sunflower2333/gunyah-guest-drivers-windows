@@ -21,16 +21,20 @@ VOID ReleaseHostSurfaceAllocation(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation);
 VOID PublishHostSurfaceAllocation(_In_ VIOGPU_WDDM_ALLOCATION *allocation);
 NTSTATUS UnmapHostSurfaceAllocation(_Inout_ VIOGPU_WDDM_ALLOCATION *allocation);
 VOID RemoveNativeImportsForContext(_In_ VIOGPU_WDDM_CONTEXT *context);
+__declspec(code_seg(".text"))
 NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU_WDDM_RENDER_COMMAND *header,
                                const DXGK_ALLOCATIONLIST *allocationList, UINT allocationListSize);
 __declspec(code_seg(".text")) VOID UnpinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission);
+__declspec(code_seg(".text"))
 NTSTATUS AdmitNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission);
 __declspec(code_seg(".text")) VOID RetireNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, BOOLEAN confirmed);
 VOID QueueAdmittedNativeSubmission(VIOGPU_WDDM_SUBMISSION *submission);
 BOOLEAN RepackNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission);
+__declspec(code_seg(".text"))
 NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocation);
 NTSTATUS PresentResidentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocation,
                                     ULONGLONG expectedPlacement, BOOLEAN modeChange);
+__declspec(code_seg(".text"))
 NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, VIOGPU_NATIVE_PASSIVE_WORK *work);
 const ULONG VIOGPU_WDDM_RESOURCE_SIGNATURE = 'rWGV';
 const ULONG VIOGPU_WDDM_ALLOCATION_SIGNATURE = 'aWGV';
@@ -4717,6 +4721,9 @@ static UINT CaptureNativeHostPagingOwners(const VIOGPU_WDDM_PAGING_PRIVATE *firs
     return ownerCount;
 }
 
+/* These passive workers still execute instructions at DISPATCH_LEVEL while
+ * holding the access spinlock. Keep their whole bodies resident. */
+__declspec(code_seg(".text"))
 static VOID RunNativeHostPagingWork(PVOID opaque)
 {
     auto work = static_cast<VIOGPU_NATIVE_HOST_PAGING_WORK *>(opaque);
@@ -4730,6 +4737,7 @@ static VOID RunNativeHostPagingWork(PVOID opaque)
     KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
 }
 
+__declspec(code_seg(".text"))
 static BOOLEAN DetachNativeHostPagingBatch(VIOGPU_WDDM_PAGING_PRIVATE *first)
 {
     if (first == NULL || first->BatchPrivateData == NULL || first->BatchPrivateStart >= first->BatchPrivateEnd ||
@@ -4895,6 +4903,7 @@ static VIOGPU_WDDM_ALLOCATION *ResolveKeyedHostSurfaceAllocation(const VIOGPU_WD
     return allocation;
 }
 
+__declspec(code_seg(".text"))
 NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU_WDDM_RENDER_COMMAND *header,
                                const DXGK_ALLOCATIONLIST *allocationList, UINT allocationListSize)
 {
@@ -5086,6 +5095,7 @@ BOOLEAN RepackNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission)
     return refreshed;
 }
 
+__declspec(code_seg(".text"))
 NTSTATUS AdmitNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission)
 {
     PAGED_CODE();
@@ -5309,6 +5319,9 @@ struct VIOGPU_HOST_SURFACE_PAGING_FAILURE
 };
 VIOGPU_HOST_SURFACE_PAGING_FAILURE g_VioGpuHostSurfacePagingFailure;
 
+/* Entry and waits remain passive, but the access-lock regions raise IRQL to
+ * DISPATCH_LEVEL. The caller instructions inside those regions must reside. */
+__declspec(code_seg(".text"))
 NTSTATUS ExecuteHostSurfacePaging(VIOGPU_WDDM_PAGING_TRANSACTION *transaction, VIOGPU_NATIVE_PASSIVE_WORK *work)
 {
     PAGED_CODE();
@@ -5630,6 +5643,7 @@ static BOOLEAN NativeHostSurfaceAllocationEligible(const VIOGPU_WDDM_NATIVE_SHAR
 
 /* Called with the passive share registry held. The immutable allocation/share
  * identity is already validated; only the canonical share owns pending BIND. */
+__declspec(code_seg(".text"))
 static BOOLEAN EnsureNativeHostSurfaceBinding(VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share)
 {
     PAGED_CODE();
@@ -5661,6 +5675,7 @@ static BOOLEAN EnsureNativeHostSurfaceBinding(VIOGPU_WDDM_NATIVE_SHARE_ENTRY *sh
     return TRUE;
 }
 
+__declspec(code_seg(".text"))
 NTSTATUS PresentHostSurface(VioGpuDod *adapter, VIOGPU_WDDM_ALLOCATION *allocation)
 {
     PAGED_CODE();
@@ -6554,6 +6569,7 @@ static VOID FindNativeAllocationRangeByResourceId(_In_ VIOGPU_WDDM_CONTEXT *cont
     KeReleaseSpinLock(&context->NativeContext.BindingLock, oldIrql);
 }
 
+__declspec(code_seg(".text"))
 static NTSTATUS ExportNativeShareLocked(_In_ VioGpuDod *adapter,
                                         _In_ VIOGPU_WDDM_CONTEXT *context,
                                         _In_ const VIOGPU_NATIVE_CONTEXT_SNAPSHOT *snapshot,
@@ -8124,6 +8140,7 @@ static NTSTATUS PresentBlit(VioGpuDod *adapter, CONST DXGKARG_ESCAPE *escape)
  * scoped, because the publishing runtime device holds no native context. A
  * publish of someone else's share can only make its importers wait for writes
  * that retire anyway, so no ownership check is needed for safety. */
+__declspec(code_seg(".text"))
 static NTSTATUS HandleNativePublishEscape(_In_ VioGpuDod *adapter, _In_ CONST DXGKARG_ESCAPE *escape)
 {
     PAGED_CODE();

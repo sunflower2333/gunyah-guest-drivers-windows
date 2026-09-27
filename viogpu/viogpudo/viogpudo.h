@@ -2926,6 +2926,7 @@ class VioGpuDod
                                   CONST D3DKMDT_VIDEO_SIGNAL_INFO *pTargetSignal,
                                   HANDLE hPrimaryAllocation = NULL);
 #if defined(VIOGPU_NATIVE_CONTEXT)
+    __declspec(code_seg(".text"))
     NTSTATUS SetNativeDiagnosticModeAndPath(const D3DKMDT_VIDPN_SOURCE_MODE *source,
         const D3DKMDT_VIDPN_PRESENT_PATH *path, const D3DKMDT_VIDEO_SIGNAL_INFO *signal,
         HANDLE primary);

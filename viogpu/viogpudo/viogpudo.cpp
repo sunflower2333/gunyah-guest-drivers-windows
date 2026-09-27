@@ -6504,6 +6504,8 @@ VioGpuDod::UpdateActiveVidPnPresentPath(_In_ CONST DXGKARG_UPDATEACTIVEVIDPNPRES
 }
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
+/* Passive entry still needs resident instructions while the timing lock raises IRQL. */
+__declspec(code_seg(".text"))
 NTSTATUS VioGpuDod::SetNativeDiagnosticModeAndPath(const D3DKMDT_VIDPN_SOURCE_MODE *source,
     const D3DKMDT_VIDPN_PRESENT_PATH *path, const D3DKMDT_VIDEO_SIGNAL_INFO *signal, HANDLE primary)
 {

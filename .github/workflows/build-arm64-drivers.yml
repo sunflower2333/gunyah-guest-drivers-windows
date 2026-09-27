@@ -57,6 +57,8 @@ jobs:
         run: |
           python viogpu/tests/native-ahb-release/ownership.py
           python viogpu/tests/native-ahb-release/run.py --negative-controls
+      - name: Verify native AHB spinlock code residency
+        run: python viogpu/tests/native-ahb-residency/run.py
       - name: Verify gated geometry profile and diagnostic contracts
         run: |
           python viogpu/tests/scanout-geometry/run.py
@@ -992,7 +994,7 @@ jobs:
           #   Mof(產 netkvmmof.h) -> VirtioLib / VirtioLib-WDF -> CoInstaller -> 各驅動
           # Unified flat API installation atop frozen 58473. All API files
           # share the display INF and the same signed catalog as the KMD/UMD.
-          $minor = 58613
+          $minor = 58614
           Write-Host "Driver version = 100.6.101.$minor"
           "DROIDVM_DRIVER_MINOR=$minor" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $common = @('/m','/p:ApiValidator_Enable=false','/p:SpectreMitigation=false','/p:SignMode=Off',
@@ -1076,8 +1078,8 @@ jobs:
             }
           }
 
-          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58613) {
-            throw "Unified flat candidate requires reserved version 100.6.101.58613"
+          if ([int]$env:DROIDVM_DRIVER_MINOR -ne 58614) {
+            throw "Unified flat candidate requires reserved version 100.6.101.58614"
           }
           $infVersion = "100.6.101.$env:DROIDVM_DRIVER_MINOR"
           $infText = Get-Content -LiteralPath $inf -Raw
@@ -1396,6 +1398,9 @@ jobs:
                 }
                 Copy-Item -LiteralPath $debugSource -Destination $dest -Force
               }
+              python viogpu/tests/native-ahb-residency/verify_binary.py `
+                (Join-Path $dest 'viogpuwddm.sys') (Join-Path $dest 'viogpuwddm.map')
+              if ($LASTEXITCODE -ne 0) { throw 'Native AHB spinlock code is pageable in the linked driver' }
               # The installed UMD is Mesa, so its symbols must come from that
               # same link rather than the separately built D3D shim.
               $mesaPdb = Join-Path $env:GITHUB_WORKSPACE 'mesa-umd/viogpud3d.pdb'
@@ -1448,7 +1453,7 @@ jobs:
         run: |
           python viogpu/package/verify_bundle.py --output out `
             --mesa d69aa548d973d6f0135c2f8222af4e9c4d22ad1b --mesa-run 35953846432 `
-            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58613
+            --clvk 147b42342ed6cfeb1c41dd3e0db72ae953ad0d27 --clvk-run 34742607712 --version 100.6.101.58614
           if ($LASTEXITCODE) { throw 'Joint signed package identity mismatch' }
 
       - name: Upload drivers artifact
