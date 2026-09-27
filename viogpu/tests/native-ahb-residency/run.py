@@ -14,6 +14,8 @@ dod_source = (root / 'viogpu/viogpudo/viogpudo.cpp').read_text()
 dod_header = (root / 'viogpu/viogpudo/viogpudo.h').read_text()
 method = 'SetNativeDiagnosticModeAndPath'
 annotation = '__declspec(code_seg(".text"))\n'
+outlined = ('AdmitNativeSubmitImports', 'DetachNativeHostPagingBatch')
+noinline = '__declspec(noinline)\n'
 
 def definition(name):
     text = dod_source if name == method else source
@@ -87,3 +89,14 @@ with tempfile.TemporaryDirectory(prefix='.native-ahb-residency-', dir=here) as t
             raise SystemExit(variant + ': wrong actual COFF placement: ' + repr(found))
         print('PASS ARM64 COFF ' + variant + (': resident bodies' if removed is None else ': PAGE regression detected'))
 print(f'PASS all {len(REQUIRED)} production spinlock-owner definitions and declarations resident')
+for function in outlined:
+    # The WDK optimizer eliminated these stand-alone MAP entries once their
+    # callers and bodies shared .text. Retain the final ten-symbol PE gate.
+    definition_prefix = (r'(?m)^' + re.escape(noinline + annotation)
+                         + r'(?:static )?(?:NTSTATUS|BOOLEAN) ' + function + r'\([^;{}]*\)\s*\{')
+    if not re.search(definition_prefix, source):
+        raise SystemExit('missing separately emitted resident owner: ' + function)
+if not re.search(r'(?m)^' + re.escape(noinline + annotation)
+                 + r'NTSTATUS AdmitNativeSubmitImports\([^;{}]*\);', source):
+    raise SystemExit('outlined resident owner has unmatched forward declaration')
+print('PASS optimized-MAP owners retain explicit out-of-line definitions')

@@ -25,6 +25,7 @@ __declspec(code_seg(".text"))
 NTSTATUS PinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, const VIOGPU_WDDM_RENDER_COMMAND *header,
                                const DXGK_ALLOCATIONLIST *allocationList, UINT allocationListSize);
 __declspec(code_seg(".text")) VOID UnpinNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission);
+__declspec(noinline)
 __declspec(code_seg(".text"))
 NTSTATUS AdmitNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission);
 __declspec(code_seg(".text")) VOID RetireNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission, BOOLEAN confirmed);
@@ -4737,6 +4738,8 @@ static VOID RunNativeHostPagingWork(PVOID opaque)
     KeReleaseSpinLock(&g_VioGpuNativeAccessLock, irql);
 }
 
+/* Keep this lock owner separately emitted for final linked residency checks. */
+__declspec(noinline)
 __declspec(code_seg(".text"))
 static BOOLEAN DetachNativeHostPagingBatch(VIOGPU_WDDM_PAGING_PRIVATE *first)
 {
@@ -5095,6 +5098,8 @@ BOOLEAN RepackNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission)
     return refreshed;
 }
 
+/* Keep this lock owner separately emitted for final linked residency checks. */
+__declspec(noinline)
 __declspec(code_seg(".text"))
 NTSTATUS AdmitNativeSubmitImports(VIOGPU_WDDM_SUBMISSION *submission)
 {
