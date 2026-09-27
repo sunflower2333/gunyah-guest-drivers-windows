@@ -15607,6 +15607,13 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
         return STATUS_DEVICE_NOT_READY;
     }
 
+    /* DRIVER_OK can synchronously raise a configuration interrupt, before the
+     * MMIO write returns (the native profile is published at host activation).
+     * The queues and DPC state are already initialized. Admit that interrupt
+     * before publishing readiness, or an unacknowledged INTx config bit can
+     * coalesce the first control response into an interrupt we discarded. */
+    KeClearEvent(&m_ConfigUpdateEvent);
+    InterlockedExchange(&m_InterruptDispatchEnabled, TRUE);
     VIOGPU_RECORD_NATIVE_START(m_pVioGpuDod, VioGpuNativeStartDriverReady, STATUS_PENDING, VioGpuNativeStartDetailNone);
     virtio_device_ready(&m_VioDev);
     if ((virtio_get_status(&m_VioDev) & VIRTIO_CONFIG_S_DRIVER_OK) == 0)
@@ -15618,7 +15625,6 @@ NTSTATUS VioGpuAdapter::StartNativeContextTransport(DXGK_DISPLAY_INFORMATION *pD
         return STATUS_DEVICE_NOT_READY;
     }
     m_pVioGpuDod->SetHardwareInit(TRUE);
-    InterlockedExchange(&m_InterruptDispatchEnabled, TRUE);
 
     VIOGPU_RECORD_NATIVE_START(m_pVioGpuDod,
                                VioGpuNativeStartSynchronousRequests,
@@ -15945,7 +15951,8 @@ NTSTATUS VioGpuAdapter::StartWorkThread(void)
     }
 
     m_bStopWorkThread = FALSE;
-    KeClearEvent(&m_ConfigUpdateEvent);
+    /* Preserve config notifications received after DRIVER_OK but before this
+     * worker was created. HWInit cleared only the old activation's event. */
 
     HANDLE threadHandle = NULL;
     NTSTATUS status = PsCreateSystemThread(&threadHandle,
