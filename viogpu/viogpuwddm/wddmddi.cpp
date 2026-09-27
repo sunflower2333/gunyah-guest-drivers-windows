@@ -5628,45 +5628,6 @@ static BOOLEAN NativeHostSurfaceAllocationEligible(const VIOGPU_WDDM_NATIVE_SHAR
         : share->Adapter->NativeScanoutBindingCurrent(&share->ScanoutBinding);
 }
 
-BOOLEAN VioGpuWddmValidateDiagnosticPrimary(VioGpuDod *adapter, HANDLE handle,
-                                            const VIOGPU_NATIVE_SCANOUT_MODE *mode)
-{
-    PAGED_CODE();
-    if (adapter == NULL || !adapter->NativeScanoutDiagnosticEnabled() || !VioGpuNativeScanoutModeValid(mode))
-        return FALSE;
-    /* Dxgkrnl may commit a mode before supplying any primary. This grants no
-     * resource permission: the first actual Present still requires mode+BIND. */
-    if (handle == NULL) return TRUE;
-    auto allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(handle);
-    if (!IsOwnedAllocation(allocation, adapter) ||
-        AcquireAllocationSubmissionReference(allocation, adapter) != STATUS_SUCCESS) return FALSE;
-    BOOLEAN valid = IsScanoutPrimaryAllocation(allocation) &&
-        allocation->Width == mode->Geometry.StorageWidth && allocation->Height == mode->Geometry.StorageHeight &&
-        (allocation->Format == D3DDDIFMT_A8R8G8B8 || allocation->Format == D3DDDIFMT_X8R8G8B8) &&
-        allocation->Pitch >= allocation->Width * 4 &&
-        allocation->BackingSize >= static_cast<ULONGLONG>(allocation->Pitch) * allocation->Height;
-    /* An ordinary shared primary is the physical Dxgkrnl mode placeholder.
-     * Validating it here grants no scanout: after Configure only a separately
-     * authenticated HostSurface can Present. A runtime requiring the ordinary
-     * primary itself to display is a refused diagnostic outcome. */
-    if (valid && allocation->HostSurface)
-    {
-        valid = FALSE;
-        if (AcquireNativeShareRegistry(FALSE))
-        {
-            auto share = FindNativeShareByKeyLocked(adapter, allocation->ShareKey);
-            valid = share != NULL && share->HostSurface && share->ResourceId == allocation->ResourceId &&
-                VioGpuNativeScanoutModeEqual(&share->ScanoutMode, mode) &&
-                VioGpuScanoutBindingMatches(&allocation->ScanoutBinding, &mode->Geometry, share->ResourceId,
-                    share->Key, mode->LocalResetGeneration, allocation->Width, allocation->Height) &&
-                NativeHostSurfaceAllocationEligible(share);
-            ReleaseNativeShareRegistry();
-        }
-    }
-    ReleaseAllocationSubmissionReference(allocation);
-    return valid;
-}
-
 /* Called with the passive share registry held. The immutable allocation/share
  * identity is already validated; only the canonical share owns pending BIND. */
 static BOOLEAN EnsureNativeHostSurfaceBinding(VIOGPU_WDDM_NATIVE_SHARE_ENTRY *share)
@@ -7599,6 +7560,45 @@ VOID VioGpuColorPresentWorker(_In_ PVOID context)
 }
 #endif
 } // namespace
+
+BOOLEAN VioGpuWddmValidateDiagnosticPrimary(VioGpuDod *adapter, HANDLE handle,
+                                            const VIOGPU_NATIVE_SCANOUT_MODE *mode)
+{
+    PAGED_CODE();
+    if (adapter == NULL || !adapter->NativeScanoutDiagnosticEnabled() || !VioGpuNativeScanoutModeValid(mode))
+        return FALSE;
+    /* Dxgkrnl may commit a mode before supplying any primary. This grants no
+     * resource permission: the first actual Present still requires mode+BIND. */
+    if (handle == NULL) return TRUE;
+    auto allocation = reinterpret_cast<VIOGPU_WDDM_ALLOCATION *>(handle);
+    if (!IsOwnedAllocation(allocation, adapter) ||
+        AcquireAllocationSubmissionReference(allocation, adapter) != STATUS_SUCCESS) return FALSE;
+    BOOLEAN valid = IsScanoutPrimaryAllocation(allocation) &&
+        allocation->Width == mode->Geometry.StorageWidth && allocation->Height == mode->Geometry.StorageHeight &&
+        (allocation->Format == D3DDDIFMT_A8R8G8B8 || allocation->Format == D3DDDIFMT_X8R8G8B8) &&
+        allocation->Pitch >= allocation->Width * 4 &&
+        allocation->BackingSize >= static_cast<ULONGLONG>(allocation->Pitch) * allocation->Height;
+    /* An ordinary shared primary is the physical Dxgkrnl mode placeholder.
+     * Validating it here grants no scanout: after Configure only a separately
+     * authenticated HostSurface can Present. A runtime requiring the ordinary
+     * primary itself to display is a refused diagnostic outcome. */
+    if (valid && allocation->HostSurface)
+    {
+        valid = FALSE;
+        if (AcquireNativeShareRegistry(FALSE))
+        {
+            auto share = FindNativeShareByKeyLocked(adapter, allocation->ShareKey);
+            valid = share != NULL && share->HostSurface && share->ResourceId == allocation->ResourceId &&
+                VioGpuNativeScanoutModeEqual(&share->ScanoutMode, mode) &&
+                VioGpuScanoutBindingMatches(&allocation->ScanoutBinding, &mode->Geometry, share->ResourceId,
+                    share->Key, mode->LocalResetGeneration, allocation->Width, allocation->Height) &&
+                NativeHostSurfaceAllocationEligible(share);
+            ReleaseNativeShareRegistry();
+        }
+    }
+    ReleaseAllocationSubmissionReference(allocation);
+    return valid;
+}
 
 // Called by the adapter worker in viogpudo.cpp; keep external C++ linkage.
 VOID VioGpuWddmRefreshNativeScanout(VioGpuDod *adapter, BOOLEAN requested)
