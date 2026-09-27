@@ -75,6 +75,11 @@ with tempfile.TemporaryDirectory(prefix='.geometry-', dir=here) as temp:
     for name, body, native in (
         ('pivot-native', pivot_production, True), ('pivot-legacy', pivot_production, False),
         ('pivot-diagnostic', pivot_production, True),
+        ('pivot-missing-offset0', pivot_production.replace(
+            'LocalVidPnPresentPath.ContentTransformation.RotationSupport.Offset0 = 1;', ''), True),
+        ('pivot-invalid-offset90', pivot_production.replace(
+            'LocalVidPnPresentPath.ContentTransformation.RotationSupport.Offset0 = 1;',
+            'LocalVidPnPresentPath.ContentTransformation.RotationSupport.Offset90 = 1;'), True),
         ('pivot-inverted', pivot_production.replace('EnumPivotType == D3DKMDT_EPT_ROTATION',
             'EnumPivotType != D3DKMDT_EPT_ROTATION'), True),
         ('pivot-stale-reserved', re.sub(r'\s*RtlZeroMemory\(&LocalVidPnPresentPath.ContentTransformation.RotationSupport,\s*'

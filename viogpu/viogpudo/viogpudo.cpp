@@ -5625,6 +5625,13 @@ NTSTATUS VioGpuDod::EnumVidPnCofuncModality(_In_ CONST DXGKARG_ENUMVIDPNCOFUNCMO
                 RtlZeroMemory(&LocalVidPnPresentPath.ContentTransformation.RotationSupport,
                               sizeof(LocalVidPnPresentPath.ContentTransformation.RotationSupport));
                 LocalVidPnPresentPath.ContentTransformation.RotationSupport.Identity = 1;
+#if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM1_3)
+                // Windows requires a zero-offset primary path even when only
+                // identity rotation is supported. Clearing every offset bit
+                // triggers VIDEO_DXGKRNL_FATAL_ERROR (0x113/0x1c) in
+                // UpdatePathSupportInfo on test-signed systems.
+                LocalVidPnPresentPath.ContentTransformation.RotationSupport.Offset0 = 1;
+#endif
 #if defined(VIOGPU_NATIVE_CONTEXT)
                 LocalVidPnPresentPath.ContentTransformation.RotationSupport.Rotate90 =
                     NativeScanoutDiagnosticEnabled() && SupportsNativeScanoutGeometry() ? 1 : 0;
