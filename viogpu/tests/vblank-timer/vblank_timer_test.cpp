@@ -51,9 +51,15 @@ NTSTATUS ZwSetValueKey(HANDLE, UNICODE_STRING* name, unsigned, unsigned kind, vo
     return STATUS_SUCCESS;
 }
 constexpr int EX_TIMER_HIGH_RESOLUTION = 1, VioGpuVsyncLateOver1ms = 1;
+#ifndef _In_
 #define _In_
+#endif
+#ifndef _In_opt_
 #define _In_opt_
+#endif
+#ifndef _Inout_
 #define _Inout_
+#endif
 #define TRUE true
 #define FALSE false
 #define PAGED_CODE() ((void)0)
@@ -194,7 +200,7 @@ struct VioGpuDod {
     LONGLONG m_CrtcEpoch = 0, m_CrtcPeriodTicks = 0, m_CrtcNextDueTicks = 0;
     VIOGPU_VBLANK_CADENCE_COUNTERS m_CrtcVblankCadence{};
     LONGLONG m_CrtcAdapterStartQpc = 1234;
-    unsigned delivered = 0, late = 0;
+    unsigned delivered = 0, lateEvents = 0;
     bool interruptAllowed = true, notifyAccepted = true;
     VioGpuAdapter hardware;
     VioGpuAdapter* m_pHWDevice = &hardware;
@@ -206,7 +212,7 @@ struct VioGpuDod {
     BOOLEAN CrtcVsyncDue();
     VOID RearmCrtcVsyncTimer(PEX_TIMER);
     VOID DisarmCrtcVsyncTimer();
-    VOID CountDisplayEvent(int) { ++late; }
+    VOID CountDisplayEvent(int) { ++lateEvents; }
     BOOLEAN IsHardwareInterruptDispatchAllowed() const { return interruptAllowed; }
     ULONG QueryNativeFenceEpoch() const { return 1; }
     BOOLEAN NotifyNativeSchedulerInterrupt(const DXGKARGCB_NOTIFY_INTERRUPT_DATA*, BOOLEAN, ULONG) {
