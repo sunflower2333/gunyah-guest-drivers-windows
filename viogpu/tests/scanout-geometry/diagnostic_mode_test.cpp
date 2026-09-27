@@ -5,6 +5,15 @@
 #include <initializer_list>
 using UINT=unsigned; using USHORT=unsigned short; using BOOLEAN=bool; using KIRQL=unsigned;
 using NTSTATUS=int; using LONGLONG=long long; using VOID=void; using HANDLE=void*;
+using ULONG=unsigned long; using D3DDDI_VIDEO_PRESENT_SOURCE_ID=unsigned;
+#define VIOGPU_NATIVE_CONTEXT
+#define _In_
+#define _In_opt_
+#define CONST const
+#define UNREFERENCED_PARAMETER(x) (void)(x)
+#define DbgPrint(level,args) ((void)0)
+#define NT_ASSERT(x) assert(x)
+#define RtlZeroMemory(p,n) std::memset(p,0,n)
 #define PAGED_CODE() ((void)0)
 #define NT_SUCCESS(s) ((s)>=0)
 #define DXGKDDI_INTERFACE_VERSION 0x5023
@@ -15,6 +24,9 @@ constexpr int STATUS_SUCCESS=0,STATUS_DEVICE_NOT_READY=-1,STATUS_GRAPHICS_VIDPN_
 constexpr int STATUS_NOT_FOUND=-3,STATUS_GRAPHICS_MODE_ALREADY_IN_MODESET=-4;
 constexpr unsigned D3DKMDT_RMT_GRAPHICS=1,D3DKMDT_CB_SCRGB=1,D3DKMDT_CB_SRGB=2,D3DKMDT_PVAM_DIRECT=1,
     D3DKMDT_VPPR_ROTATE90=2,D3DKMDT_VPPS_IDENTITY=1,D3DKMDT_MP_NOTPREFERRED=0,D3DKMDT_MCO_DRIVER=1;
+constexpr unsigned D3DKMDT_VPPR_UNPINNED=254,D3DKMDT_VPPR_NOTSPECIFIED=255,
+    D3DKMDT_VPPS_UNPINNED=254,D3DKMDT_VPPS_NOTSPECIFIED=255;
+constexpr unsigned D3DKMDT_MP_PREFERRED=1,D3DKMDT_EPT_SCALING=1,D3DKMDT_EPT_ROTATION=2;
 void KeAcquireSpinLock(unsigned*,unsigned *irql) { *irql=0; }
 void KeReleaseSpinLock(unsigned*,unsigned) {}
 struct Region { unsigned cx,cy; };
@@ -50,11 +62,24 @@ struct DXGKARG_RECOMMENDMONITORMODES {
     ModeInterface<D3DKMDT_MONITOR_SOURCE_MODE> *pMonitorSourceModeSetInterface;
     ModeSet<D3DKMDT_MONITOR_SOURCE_MODE> *hMonitorSourceModeSet;
 };
+struct D3DKMDT_VIDPN_PRESENT_PATH_SCALING_SUPPORT {
+    unsigned Identity:1,Centered:1,Stretched:1,AspectRatioCenteredMax:1,Custom:1,Reserved:27;
+};
+struct RotationSupport {
+    unsigned Identity:1,Rotate90:1,Rotate180:1,Rotate270:1;
+    unsigned Offset0:1,Offset90:1,Offset180:1,Offset270:1,Reserved:24;
+};
 struct D3DKMDT_VIDPN_PRESENT_PATH {
     unsigned VidPnSourceId,VidPnTargetId;
-    struct { unsigned Rotation,Scaling; } ContentTransformation;
+    struct {
+        unsigned Rotation,Scaling;
+        D3DKMDT_VIDPN_PRESENT_PATH_SCALING_SUPPORT ScalingSupport{};
+        struct RotationSupport RotationSupport{};
+    } ContentTransformation;
 };
+struct EnumRequest { unsigned EnumPivotType; struct { unsigned VidPnSourceId,VidPnTargetId; } EnumPivot; };
 struct VIDEO_MODE_INFORMATION { unsigned VisScreenWidth=3040,VisScreenHeight=1904,ScreenStride=12160; };
+using PVIDEO_MODE_INFORMATION=VIDEO_MODE_INFORMATION*;
 struct CURRENT_MODE {
     struct { unsigned Width=3040,Height=1904,Pitch=12160,ColorFormat=22; } DispInfo;
     unsigned SrcModeWidth=3040,SrcModeHeight=1904,Rotation=1,Scaling=1;
@@ -123,9 +148,19 @@ struct VioGpuDod {
     NTSTATUS SetNativeDiagnosticModeAndPath(const D3DKMDT_VIDPN_SOURCE_MODE*,
         const D3DKMDT_VIDPN_PRESENT_PATH*,const D3DKMDT_VIDEO_SIGNAL_INFO*,HANDLE);
     NTSTATUS AddNativeDiagnosticSourceMode(const DXGK_VIDPNSOURCEMODESET_INTERFACE*,
-        D3DKMDT_HVIDPNSOURCEMODESET,const D3DKMDT_VIDPN_TARGET_MODE*);
+        D3DKMDT_HVIDPNSOURCEMODESET,const D3DKMDT_VIDPN_TARGET_MODE*,const D3DKMDT_VIDPN_PRESENT_PATH*);
     NTSTATUS AddNativeDiagnosticTargetMode(const DXGK_VIDPNTARGETMODESET_INTERFACE*,
-        D3DKMDT_HVIDPNTARGETMODESET,const D3DKMDT_VIDPN_SOURCE_MODE*);
+        D3DKMDT_HVIDPNTARGETMODESET,const D3DKMDT_VIDPN_SOURCE_MODE*,const D3DKMDT_VIDPN_PRESENT_PATH*);
+    BOOLEAN NativeDiagnosticConstraintsMatch(const VIOGPU_NATIVE_SCANOUT_MODE*,const D3DKMDT_VIDEO_SIGNAL_INFO*,
+        const D3DKMDT_VIDPN_SOURCE_MODE*,const D3DKMDT_VIDPN_TARGET_MODE*,const D3DKMDT_VIDPN_PRESENT_PATH*) const;
+    BOOLEAN NativeDiagnosticModeCofunctional(const D3DKMDT_VIDPN_SOURCE_MODE*,
+        const D3DKMDT_VIDPN_TARGET_MODE*,const D3DKMDT_VIDPN_PRESENT_PATH*);
+    NTSTATUS AddSingleSourceMode(const DXGK_VIDPNSOURCEMODESET_INTERFACE*,D3DKMDT_HVIDPNSOURCEMODESET,
+        D3DDDI_VIDEO_PRESENT_SOURCE_ID,const D3DKMDT_VIDPN_TARGET_MODE*,const D3DKMDT_VIDPN_PRESENT_PATH*);
+    NTSTATUS AddSingleTargetMode(const DXGK_VIDPNTARGETMODESET_INTERFACE*,D3DKMDT_HVIDPNTARGETMODESET,
+        const D3DKMDT_VIDPN_SOURCE_MODE*,D3DDDI_VIDEO_PRESENT_SOURCE_ID,const D3DKMDT_VIDPN_PRESENT_PATH*);
+    D3DKMDT_VIDPN_PRESENT_PATH PathSupport(const EnumRequest*,const D3DKMDT_VIDPN_PRESENT_PATH*,
+        const D3DKMDT_VIDPN_SOURCE_MODE*,const D3DKMDT_VIDPN_TARGET_MODE*);
     NTSTATUS AddNativeDiagnosticMonitorMode(const DXGKARG_RECOMMENDMONITORMODES*);
 };
 bool VioGpuWddmValidateDiagnosticPrimary(VioGpuDod *dod,HANDLE,const VIOGPU_NATIVE_SCANOUT_MODE*) {
@@ -143,7 +178,7 @@ static D3DKMDT_VIDEO_SIGNAL_INFO signal(VioGpuDod &dod) {
     return result;
 }
 int main() {
-    const D3DKMDT_VIDPN_SOURCE_MODE source={{{{1904,3040},{1904,3040},7616,21}}};
+    const D3DKMDT_VIDPN_SOURCE_MODE source={{{{1904,3040},{1904,3040},7616,21}},D3DKMDT_RMT_GRAPHICS};
     const D3DKMDT_VIDPN_PRESENT_PATH path={0,0,{2,1}};
     for(unsigned failure=0;failure<6;++failure) {
         VioGpuDod dod;
@@ -163,8 +198,8 @@ int main() {
             sources.releaseStatus=targets.releaseStatus=monitors.releaseStatus=-12;
         }
         const int expected=failure==2?-10:failure==3?-11:failure==5?-12:0;
-        assert(dod.AddNativeDiagnosticSourceMode(&si,&sources,nullptr)==expected);
-        assert(dod.AddNativeDiagnosticTargetMode(&ti,&targets,nullptr)==(failure==1?STATUS_NOT_FOUND:expected));
+        assert(dod.AddNativeDiagnosticSourceMode(&si,&sources,nullptr,&path)==expected);
+        assert(dod.AddNativeDiagnosticTargetMode(&ti,&targets,nullptr,&path)==(failure==1?STATUS_NOT_FOUND:expected));
         assert(dod.AddNativeDiagnosticMonitorMode(&request)==expected);
         if(failure==1)assert(!sources.creates&&!targets.creates&&!monitors.creates);
         else {
@@ -182,10 +217,107 @@ int main() {
         VioGpuDod dod; DXGK_VIDPNSOURCEMODESET_INTERFACE si; DXGK_VIDPNTARGETMODESET_INTERFACE ti;
         ModeSet<D3DKMDT_VIDPN_SOURCE_MODE> sources; ModeSet<D3DKMDT_VIDPN_TARGET_MODE> targets;
         D3DKMDT_VIDPN_TARGET_MODE wrong{}; wrong.VideoSignalInfo.ActiveSize={3040,1904};
-        assert(!dod.AddNativeDiagnosticSourceMode(&si,&sources,&wrong) && !sources.creates);
+        assert(!dod.AddNativeDiagnosticSourceMode(&si,&sources,&wrong,&path) && !sources.creates);
         auto wrongSource=source; wrongSource.Format.Graphics.VisibleRegionSize={3040,1904};
-        assert(dod.AddNativeDiagnosticTargetMode(&ti,&targets,&wrongSource)==STATUS_NOT_FOUND && !targets.creates);
-        assert(!dod.AddNativeDiagnosticTargetMode(&ti,&targets,&source) && targets.creates==1);
+        assert(dod.AddNativeDiagnosticTargetMode(&ti,&targets,&wrongSource,&path)==STATUS_NOT_FOUND && !targets.creates);
+        assert(!dod.AddNativeDiagnosticTargetMode(&ti,&targets,&source,&path) && targets.creates==1);
+    }
+    {
+        VioGpuDod dod; DXGK_VIDPNSOURCEMODESET_INTERFACE si; DXGK_VIDPNTARGETMODESET_INTERFACE ti;
+        ModeSet<D3DKMDT_VIDPN_SOURCE_MODE> sources; ModeSet<D3DKMDT_VIDPN_TARGET_MODE> targets;
+        assert(!dod.AddSingleSourceMode(&si,&sources,0,nullptr,&path) && sources.adds==1);
+        assert(sources.entry.Format.Graphics.PrimSurfSize.cx==1904);
+        auto logical=source;
+        logical.Format.Graphics.PrimSurfSize=logical.Format.Graphics.VisibleRegionSize={3040,1904};
+        logical.Format.Graphics.Stride=12160;
+        assert(dod.AddSingleTargetMode(&ti,&targets,&logical,0,&path)!=STATUS_SUCCESS && !targets.adds);
+        assert(!dod.AddSingleTargetMode(&ti,&targets,nullptr,0,&path) && targets.adds==1);
+        assert(targets.entry.VideoSignalInfo.ActiveSize.cx==1904);
+        D3DKMDT_VIDPN_TARGET_MODE logicalTarget{};
+        dod.BuildVideoSignalInfo(&logicalTarget.VideoSignalInfo,&dod.hw.info);
+        sources={};
+        assert(!dod.AddSingleSourceMode(&si,&sources,0,&logicalTarget,&path) && !sources.adds);
+        // Default identity path still enumerates its existing landscape modes.
+        auto identity=path; identity.ContentTransformation.Rotation=1;
+        assert(!dod.AddSingleSourceMode(&si,&sources,0,&logicalTarget,&identity) && sources.adds==1);
+        targets={};
+        assert(!dod.AddSingleTargetMode(&ti,&targets,&logical,0,&identity) && targets.adds==1);
+    }
+    // Use the actual outer enumeration functions, reservation and support
+    // calculation. No committed mode or diagnostic primary exists yet.
+    for(unsigned failure=0;failure<26;++failure) {
+        VioGpuDod dod; auto src=source; auto p=path;
+        D3DKMDT_VIDPN_TARGET_MODE target{signal(dod),0};
+        bool sourceValid=true,targetValid=true,pathValid=true;
+        switch(failure) {
+        case 1: src.Type=0; sourceValid=false; break;
+        case 2: src.Format.Graphics.PixelFormat=22; sourceValid=false; break;
+        case 3: src.Format.Graphics.PrimSurfSize={3040,1904}; sourceValid=false; break;
+        case 4: src.Format.Graphics.VisibleRegionSize={3040,1904}; sourceValid=false; break;
+        case 5: src.Format.Graphics.Stride+=4; sourceValid=false; break;
+        case 6: target.VideoSignalInfo.ActiveSize.cx++; targetValid=false; break;
+        case 7: target.VideoSignalInfo.ActiveSize.cy++; targetValid=false; break;
+        case 8: target.VideoSignalInfo.TotalSize.cx++; targetValid=false; break;
+        case 9: target.VideoSignalInfo.TotalSize.cy++; targetValid=false; break;
+        case 10: target.VideoSignalInfo.PixelRate++; targetValid=false; break;
+        case 11: target.VideoSignalInfo.ScanLineOrdering++; targetValid=false; break;
+        case 12: target.VideoSignalInfo.HSyncFreq.Numerator++; targetValid=false; break;
+        case 13: target.VideoSignalInfo.HSyncFreq.Denominator++; targetValid=false; break;
+        case 14: target.VideoSignalInfo.VSyncFreq.Numerator++; targetValid=false; break;
+        case 15: target.VideoSignalInfo.VSyncFreq.Denominator++; targetValid=false; break;
+        case 16: p.ContentTransformation.Rotation=1; pathValid=false; break;
+        case 17: p.ContentTransformation.Rotation=3; pathValid=false; break;
+        case 18: p.ContentTransformation.Rotation=4; pathValid=false; break;
+        case 19: p.ContentTransformation.Scaling=2; pathValid=false; break;
+        case 20: p.ContentTransformation.Scaling=3; pathValid=false; break;
+        case 21: p.VidPnSourceId=1; pathValid=false; break;
+        case 22: p.VidPnTargetId=1; pathValid=false; break;
+        case 23: dod.enabled=false; pathValid=false; break;
+        case 24: dod.available=false; pathValid=false; break;
+        case 25: dod.hw.timing=VioGpuVirtualTiming(1920,1080,60); pathValid=false; break;
+        }
+        const bool admitted=sourceValid&&targetValid&&pathValid;
+        assert(dod.NativeDiagnosticModeCofunctional(&src,&target,&p)==admitted);
+        ModeSet<D3DKMDT_VIDPN_SOURCE_MODE> sources; ModeSet<D3DKMDT_VIDPN_TARGET_MODE> targets;
+        DXGK_VIDPNSOURCEMODESET_INTERFACE si; DXGK_VIDPNTARGETMODESET_INTERFACE ti;
+        assert(!dod.AddNativeDiagnosticSourceMode(&si,&sources,&target,&p));
+        assert(sources.adds==unsigned(targetValid&&pathValid));
+        const auto result=dod.AddNativeDiagnosticTargetMode(&ti,&targets,&src,&p);
+        assert((result==STATUS_SUCCESS)==(sourceValid&&pathValid));
+        assert(targets.adds==unsigned(sourceValid&&pathValid));
+        if(p.ContentTransformation.Rotation==2) {
+            sources={}; targets={};
+            assert(!dod.AddSingleSourceMode(&si,&sources,0,&target,&p));
+            assert(sources.adds==unsigned(targetValid&&pathValid));
+            const auto outer=dod.AddSingleTargetMode(&ti,&targets,&src,0,&p);
+            assert((outer==STATUS_SUCCESS)==(sourceValid&&pathValid));
+            assert(targets.adds==unsigned(sourceValid&&pathValid));
+        }
+        // An unpinned rotation may choose Rotate90 only if both pinned modes
+        // and the pinned scaling are cofunctional with that representation.
+        auto unpinned=p; unpinned.ContentTransformation.Rotation=D3DKMDT_VPPR_UNPINNED;
+        EnumRequest request{0,{0,0}};
+        const bool supported=sourceValid&&targetValid&&(failure<19 || failure>25);
+        const auto support=dod.PathSupport(&request,&unpinned,&src,&target);
+        assert(support.ContentTransformation.RotationSupport.Rotate90==supported);
+        // For a pinned Rotate90 path, centered scaling is never implemented.
+        if(p.ContentTransformation.Rotation==2) {
+            unpinned=p; unpinned.ContentTransformation.Scaling=D3DKMDT_VPPS_UNPINNED;
+            const auto scale=dod.PathSupport(&request,&unpinned,&src,&target);
+            const bool identity=sourceValid&&targetValid&&(failure<21 || failure>25);
+            assert(scale.ContentTransformation.ScalingSupport.Identity==identity);
+            assert(!scale.ContentTransformation.ScalingSupport.Centered);
+        }
+        assert(!dod.hw.committed&&!dod.hw.commits&&!dod.timings);
+    }
+    for(unsigned rotation : {D3DKMDT_VPPR_UNPINNED,D3DKMDT_VPPR_NOTSPECIFIED,2U})
+    for(unsigned scaling : {D3DKMDT_VPPS_UNPINNED,D3DKMDT_VPPS_NOTSPECIFIED,1U}) {
+        VioGpuDod dod; auto p=path; p.ContentTransformation={rotation,scaling};
+        D3DKMDT_VIDPN_TARGET_MODE target{signal(dod),0};
+        assert(dod.NativeDiagnosticModeCofunctional(nullptr,nullptr,&p));
+        assert(dod.NativeDiagnosticModeCofunctional(nullptr,&target,&p));
+        assert(dod.NativeDiagnosticModeCofunctional(&source,nullptr,&p));
+        assert(dod.NativeDiagnosticModeCofunctional(&source,&target,&p));
     }
     {
         VioGpuDod dod;

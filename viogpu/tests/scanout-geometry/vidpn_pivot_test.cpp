@@ -7,6 +7,7 @@ using BOOLEAN=bool;
 #define RtlZeroMemory(p,n) std::memset(p,0,n)
 constexpr unsigned D3DKMDT_EPT_SCALING=1,D3DKMDT_EPT_ROTATION=2;
 constexpr unsigned D3DKMDT_VPPS_UNPINNED=0,D3DKMDT_VPPR_UNPINNED=0;
+constexpr unsigned D3DKMDT_VPPR_ROTATE90=2;
 // Model the WDK's distinct 32-bit support fields, including all four path
 // offsets. A single fake Offset member previously hid the Offset0 contract.
 #define DXGKDDI_INTERFACE_VERSION_WDDM1_3 0x4002
@@ -43,6 +44,7 @@ bool NativeScanoutDiagnosticEnabled() {
 bool SupportsNativeScanoutGeometry() { return true; }
 Result update(const EnumRequest *pEnumCofuncModality,const D3DKMDT_VIDPN_PRESENT_PATH *pVidPnPresentPath)
 {
+    [[maybe_unused]] const bool diagnosticCofunctional=NativeScanoutDiagnosticEnabled();
 // INSERT_PRODUCTION
     return {SupportFieldsModified,LocalVidPnPresentPath};
 }

@@ -2930,20 +2930,29 @@ class VioGpuDod
         const D3DKMDT_VIDPN_PRESENT_PATH *path, const D3DKMDT_VIDEO_SIGNAL_INFO *signal,
         HANDLE primary);
     NTSTATUS AddNativeDiagnosticSourceMode(const DXGK_VIDPNSOURCEMODESET_INTERFACE *modeInterface,
-        D3DKMDT_HVIDPNSOURCEMODESET set, const D3DKMDT_VIDPN_TARGET_MODE *target);
+        D3DKMDT_HVIDPNSOURCEMODESET set, const D3DKMDT_VIDPN_TARGET_MODE *target,
+        const D3DKMDT_VIDPN_PRESENT_PATH *path);
     NTSTATUS AddNativeDiagnosticTargetMode(const DXGK_VIDPNTARGETMODESET_INTERFACE *modeInterface,
-        D3DKMDT_HVIDPNTARGETMODESET set, const D3DKMDT_VIDPN_SOURCE_MODE *source);
+        D3DKMDT_HVIDPNTARGETMODESET set, const D3DKMDT_VIDPN_SOURCE_MODE *source,
+        const D3DKMDT_VIDPN_PRESENT_PATH *path);
+    BOOLEAN NativeDiagnosticConstraintsMatch(const VIOGPU_NATIVE_SCANOUT_MODE *mode,
+        const D3DKMDT_VIDEO_SIGNAL_INFO *expected, const D3DKMDT_VIDPN_SOURCE_MODE *source,
+        const D3DKMDT_VIDPN_TARGET_MODE *target, const D3DKMDT_VIDPN_PRESENT_PATH *path) const;
+    BOOLEAN NativeDiagnosticModeCofunctional(const D3DKMDT_VIDPN_SOURCE_MODE *source,
+        const D3DKMDT_VIDPN_TARGET_MODE *target, const D3DKMDT_VIDPN_PRESENT_PATH *path);
     NTSTATUS AddNativeDiagnosticMonitorMode(const DXGKARG_RECOMMENDMONITORMODES *request);
 #endif
     NTSTATUS AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODES *CONST pRecommendMonitorModes);
     NTSTATUS AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTERFACE *pVidPnSourceModeSetInterface,
                                  D3DKMDT_HVIDPNSOURCEMODESET hVidPnSourceModeSet,
                                  D3DDDI_VIDEO_PRESENT_SOURCE_ID SourceId,
-                                 CONST D3DKMDT_VIDPN_TARGET_MODE *pPinnedTarget);
+                                 CONST D3DKMDT_VIDPN_TARGET_MODE *pPinnedTarget,
+                                 CONST D3DKMDT_VIDPN_PRESENT_PATH *pPath);
     NTSTATUS AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTERFACE *pVidPnTargetModeSetInterface,
                                  D3DKMDT_HVIDPNTARGETMODESET hVidPnTargetModeSet,
                                  _In_opt_ CONST D3DKMDT_VIDPN_SOURCE_MODE *pVidPnPinnedSourceModeInfo,
-                                 D3DDDI_VIDEO_PRESENT_SOURCE_ID SourceId);
+                                 D3DDDI_VIDEO_PRESENT_SOURCE_ID SourceId,
+                                 CONST D3DKMDT_VIDPN_PRESENT_PATH *pPath);
     NTSTATUS IsVidPnSourceModeFieldsValid(CONST D3DKMDT_VIDPN_SOURCE_MODE *pSourceMode) const;
     NTSTATUS IsVidPnPathFieldsValid(CONST D3DKMDT_VIDPN_PRESENT_PATH *pPath) const;
     NTSTATUS SetRegisterInfo(_In_ ULONG Id, _In_ DWORD MemSize);

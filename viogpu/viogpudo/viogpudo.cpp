@@ -4834,12 +4834,22 @@ NTSTATUS VioGpuDod::RecommendMonitorModes(_In_ CONST DXGKARG_RECOMMENDMONITORMOD
 NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTERFACE *pVidPnSourceModeSetInterface,
                                         D3DKMDT_HVIDPNSOURCEMODESET hVidPnSourceModeSet,
                                         D3DDDI_VIDEO_PRESENT_SOURCE_ID SourceId,
-                                        CONST D3DKMDT_VIDPN_TARGET_MODE *pPinnedTarget)
+                                        CONST D3DKMDT_VIDPN_TARGET_MODE *pPinnedTarget,
+                                        CONST D3DKMDT_VIDPN_PRESENT_PATH *pPath)
 {
     PAGED_CODE();
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("---> %s\n", __FUNCTION__));
     UNREFERENCED_PARAMETER(SourceId);
+
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    // Ordinary framebuffer modes cannot implement the native rotated path.
+    if (pPath->ContentTransformation.Rotation == D3DKMDT_VPPR_ROTATE90)
+        return AddNativeDiagnosticSourceMode(pVidPnSourceModeSetInterface, hVidPnSourceModeSet,
+            pPinnedTarget, pPath);
+#else
+    UNREFERENCED_PARAMETER(pPath);
+#endif
 
     UINT formatCount = 1;
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_3)
@@ -4938,7 +4948,7 @@ NTSTATUS VioGpuDod::AddSingleSourceMode(_In_ CONST DXGK_VIDPNSOURCEMODESET_INTER
 
     DbgPrint(TRACE_LEVEL_VERBOSE, ("<--- %s\n", __FUNCTION__));
 #if defined(VIOGPU_NATIVE_CONTEXT)
-    return AddNativeDiagnosticSourceMode(pVidPnSourceModeSetInterface, hVidPnSourceModeSet, pPinnedTarget);
+    return AddNativeDiagnosticSourceMode(pVidPnSourceModeSetInterface, hVidPnSourceModeSet, pPinnedTarget, pPath);
 #else
     return STATUS_SUCCESS;
 #endif
@@ -4974,7 +4984,8 @@ VOID VioGpuDod::BuildVideoSignalInfo(D3DKMDT_VIDEO_SIGNAL_INFO *pVideoSignalInfo
 NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTERFACE *pVidPnTargetModeSetInterface,
                                         D3DKMDT_HVIDPNTARGETMODESET hVidPnTargetModeSet,
                                         _In_opt_ CONST D3DKMDT_VIDPN_SOURCE_MODE *pVidPnPinnedSourceModeInfo,
-                                        D3DDDI_VIDEO_PRESENT_SOURCE_ID SourceId)
+                                        D3DDDI_VIDEO_PRESENT_SOURCE_ID SourceId,
+                                        CONST D3DKMDT_VIDPN_PRESENT_PATH *pPath)
 {
     PAGED_CODE();
     UNREFERENCED_PARAMETER(SourceId);
@@ -4982,6 +4993,17 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
     {
         return STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
     }
+
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (pPath->ContentTransformation.Rotation == D3DKMDT_VPPR_ROTATE90)
+    {
+        const NTSTATUS diagnostic = AddNativeDiagnosticTargetMode(pVidPnTargetModeSetInterface,
+            hVidPnTargetModeSet, pVidPnPinnedSourceModeInfo, pPath);
+        return diagnostic == STATUS_NOT_FOUND ? STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED : diagnostic;
+    }
+#else
+    UNREFERENCED_PARAMETER(pPath);
+#endif
 
     bool found = false;
     for (UINT ModeIndex = 0; ModeIndex < m_pHWDevice->GetModeCount(); ++ModeIndex)
@@ -5026,15 +5048,63 @@ NTSTATUS VioGpuDod::AddSingleTargetMode(_In_ CONST DXGK_VIDPNTARGETMODESET_INTER
     }
 #if defined(VIOGPU_NATIVE_CONTEXT)
     const NTSTATUS diagnostic = AddNativeDiagnosticTargetMode(pVidPnTargetModeSetInterface,
-        hVidPnTargetModeSet, pVidPnPinnedSourceModeInfo);
+        hVidPnTargetModeSet, pVidPnPinnedSourceModeInfo, pPath);
     if (diagnostic != STATUS_NOT_FOUND) return diagnostic;
 #endif
     return found ? STATUS_SUCCESS : STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED;
 }
 
 #if defined(VIOGPU_NATIVE_CONTEXT)
+BOOLEAN VioGpuDod::NativeDiagnosticConstraintsMatch(const VIOGPU_NATIVE_SCANOUT_MODE *mode,
+    const D3DKMDT_VIDEO_SIGNAL_INFO *expected, const D3DKMDT_VIDPN_SOURCE_MODE *source,
+    const D3DKMDT_VIDPN_TARGET_MODE *target, const D3DKMDT_VIDPN_PRESENT_PATH *path) const
+{
+    PAGED_CODE();
+    if (path == NULL || path->VidPnSourceId != 0 || path->VidPnTargetId != 0) return FALSE;
+    const auto rotation = path->ContentTransformation.Rotation;
+    const auto scaling = path->ContentTransformation.Scaling;
+    if ((rotation != D3DKMDT_VPPR_ROTATE90 && rotation != D3DKMDT_VPPR_UNPINNED &&
+         rotation != D3DKMDT_VPPR_NOTSPECIFIED) ||
+        (scaling != D3DKMDT_VPPS_IDENTITY && scaling != D3DKMDT_VPPS_UNPINNED &&
+         scaling != D3DKMDT_VPPS_NOTSPECIFIED)) return FALSE;
+    // Unpinned transformations may select the one implemented tuple. Pinned
+    // modes must already be that tuple; enumeration must never transpose them.
+    if (source != NULL && (source->Type != D3DKMDT_RMT_GRAPHICS ||
+        source->Format.Graphics.PixelFormat != D3DDDIFMT_A8R8G8B8 ||
+        !VioGpuNativeDiagnosticSourceMatches(mode,
+            source->Format.Graphics.PrimSurfSize.cx, source->Format.Graphics.PrimSurfSize.cy,
+            source->Format.Graphics.VisibleRegionSize.cx, source->Format.Graphics.VisibleRegionSize.cy,
+            source->Format.Graphics.Stride, D3DKMDT_VPPR_ROTATE90, D3DKMDT_VPPS_IDENTITY))) return FALSE;
+    if (target != NULL)
+    {
+        const auto &signal = target->VideoSignalInfo;
+        if (signal.ActiveSize.cx != expected->ActiveSize.cx || signal.ActiveSize.cy != expected->ActiveSize.cy ||
+            signal.TotalSize.cx != expected->TotalSize.cx || signal.TotalSize.cy != expected->TotalSize.cy ||
+            signal.PixelRate != expected->PixelRate || signal.ScanLineOrdering != expected->ScanLineOrdering ||
+            signal.VSyncFreq.Numerator != expected->VSyncFreq.Numerator ||
+            signal.VSyncFreq.Denominator != expected->VSyncFreq.Denominator ||
+            signal.HSyncFreq.Numerator != expected->HSyncFreq.Numerator ||
+            signal.HSyncFreq.Denominator != expected->HSyncFreq.Denominator) return FALSE;
+    }
+    return TRUE;
+}
+
+BOOLEAN VioGpuDod::NativeDiagnosticModeCofunctional(const D3DKMDT_VIDPN_SOURCE_MODE *source,
+    const D3DKMDT_VIDPN_TARGET_MODE *target, const D3DKMDT_VIDPN_PRESENT_PATH *path)
+{
+    PAGED_CODE();
+    VIOGPU_NATIVE_SCANOUT_MODE mode = {};
+    VIDEO_MODE_INFORMATION info = {};
+    VIOGPU_DISPLAY_TIMING timing = {};
+    D3DKMDT_VIDEO_SIGNAL_INFO signal = {};
+    USHORT index = 0;
+    return PrepareNativeDiagnosticMode(&mode, &info, &timing, &signal, &index) &&
+        NativeDiagnosticConstraintsMatch(&mode, &signal, source, target, path);
+}
+
 NTSTATUS VioGpuDod::AddNativeDiagnosticSourceMode(const DXGK_VIDPNSOURCEMODESET_INTERFACE *modeInterface,
-    D3DKMDT_HVIDPNSOURCEMODESET set, const D3DKMDT_VIDPN_TARGET_MODE *target)
+    D3DKMDT_HVIDPNSOURCEMODESET set, const D3DKMDT_VIDPN_TARGET_MODE *target,
+    const D3DKMDT_VIDPN_PRESENT_PATH *path)
 {
     PAGED_CODE();
     VIOGPU_NATIVE_SCANOUT_MODE mode = {};
@@ -5043,8 +5113,7 @@ NTSTATUS VioGpuDod::AddNativeDiagnosticSourceMode(const DXGK_VIDPNSOURCEMODESET_
     D3DKMDT_VIDEO_SIGNAL_INFO signal = {};
     USHORT index = 0;
     if (!PrepareNativeDiagnosticMode(&mode, &info, &timing, &signal, &index) ||
-        (target != NULL && (target->VideoSignalInfo.ActiveSize.cx != info.VisScreenWidth ||
-                           target->VideoSignalInfo.ActiveSize.cy != info.VisScreenHeight))) return STATUS_SUCCESS;
+        !NativeDiagnosticConstraintsMatch(&mode, &signal, NULL, target, path)) return STATUS_SUCCESS;
     D3DKMDT_VIDPN_SOURCE_MODE *entry = NULL;
     NTSTATUS status = modeInterface->pfnCreateNewModeInfo(set, &entry);
     if (!NT_SUCCESS(status)) return status;
@@ -5067,7 +5136,8 @@ NTSTATUS VioGpuDod::AddNativeDiagnosticSourceMode(const DXGK_VIDPNSOURCEMODESET_
 }
 
 NTSTATUS VioGpuDod::AddNativeDiagnosticTargetMode(const DXGK_VIDPNTARGETMODESET_INTERFACE *modeInterface,
-    D3DKMDT_HVIDPNTARGETMODESET set, const D3DKMDT_VIDPN_SOURCE_MODE *source)
+    D3DKMDT_HVIDPNTARGETMODESET set, const D3DKMDT_VIDPN_SOURCE_MODE *source,
+    const D3DKMDT_VIDPN_PRESENT_PATH *path)
 {
     PAGED_CODE();
     VIOGPU_NATIVE_SCANOUT_MODE mode = {};
@@ -5076,10 +5146,7 @@ NTSTATUS VioGpuDod::AddNativeDiagnosticTargetMode(const DXGK_VIDPNTARGETMODESET_
     D3DKMDT_VIDEO_SIGNAL_INFO signal = {};
     USHORT index = 0;
     if (!PrepareNativeDiagnosticMode(&mode, &info, &timing, &signal, &index) ||
-        (source != NULL && !VioGpuNativeDiagnosticSourceMatches(&mode,
-            source->Format.Graphics.PrimSurfSize.cx, source->Format.Graphics.PrimSurfSize.cy,
-            source->Format.Graphics.VisibleRegionSize.cx, source->Format.Graphics.VisibleRegionSize.cy,
-            source->Format.Graphics.Stride, D3DKMDT_VPPR_ROTATE90, D3DKMDT_VPPS_IDENTITY))) return STATUS_NOT_FOUND;
+        !NativeDiagnosticConstraintsMatch(&mode, &signal, source, NULL, path)) return STATUS_NOT_FOUND;
     D3DKMDT_VIDPN_TARGET_MODE *entry = NULL;
     NTSTATUS status = modeInterface->pfnCreateNewModeInfo(set, &entry);
     if (!NT_SUCCESS(status)) return status;
@@ -5407,7 +5474,8 @@ NTSTATUS VioGpuDod::EnumVidPnCofuncModality(_In_ CONST DXGKARG_ENUMVIDPNCOFUNCMO
                             Status = AddSingleSourceMode(pVidPnSourceModeSetInterface,
                                                          hVidPnSourceModeSet,
                                                          pVidPnPresentPath->VidPnSourceId,
-                                                         target);
+                                                         target,
+                                                         pVidPnPresentPath);
                         }
                         if (target != NULL)
                         {
@@ -5507,7 +5575,8 @@ NTSTATUS VioGpuDod::EnumVidPnCofuncModality(_In_ CONST DXGKARG_ENUMVIDPNCOFUNCMO
                 Status = AddSingleTargetMode(pVidPnTargetModeSetInterface,
                                              hVidPnTargetModeSet,
                                              pVidPnPinnedSourceModeInfo,
-                                             pVidPnPresentPath->VidPnSourceId);
+                                             pVidPnPresentPath->VidPnSourceId,
+                                             pVidPnPresentPath);
 
                 if (!NT_SUCCESS(Status))
                 {
@@ -5566,6 +5635,36 @@ NTSTATUS VioGpuDod::EnumVidPnCofuncModality(_In_ CONST DXGKARG_ENUMVIDPNCOFUNCMO
             }
         }
 
+        BOOLEAN diagnosticCofunctional = FALSE;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+        if (NativeScanoutDiagnosticEnabled() && SupportsNativeScanoutGeometry())
+        {
+            // The target can be the enumeration pivot, so inspect it even
+            // when its mode set was intentionally left untouched above.
+            D3DKMDT_HVIDPNTARGETMODESET targetSet = 0;
+            CONST DXGK_VIDPNTARGETMODESET_INTERFACE *targetInterface = NULL;
+            CONST D3DKMDT_VIDPN_TARGET_MODE *target = NULL;
+            Status = pVidPnInterface->pfnAcquireTargetModeSet(pEnumCofuncModality->hConstrainingVidPn,
+                pVidPnPresentPath->VidPnTargetId, &targetSet, &targetInterface);
+            if (!NT_SUCCESS(Status)) break;
+            Status = targetInterface->pfnAcquirePinnedModeInfo(targetSet, &target);
+            if (NT_SUCCESS(Status))
+                diagnosticCofunctional = NativeDiagnosticModeCofunctional(pVidPnPinnedSourceModeInfo,
+                    target, pVidPnPresentPath);
+            if (target != NULL)
+            {
+                const NTSTATUS released = targetInterface->pfnReleaseModeInfo(targetSet, target);
+                if (NT_SUCCESS(Status)) Status = released;
+            }
+            const NTSTATUS released = pVidPnInterface->pfnReleaseTargetModeSet(
+                pEnumCofuncModality->hConstrainingVidPn, targetSet);
+            if (NT_SUCCESS(Status)) Status = released;
+            if (!NT_SUCCESS(Status)) break;
+        }
+#else
+        UNREFERENCED_PARAMETER(diagnosticCofunctional);
+#endif
+
         if (pVidPnPinnedSourceModeInfo != NULL)
         {
             Status = pVidPnSourceModeSetInterface->pfnReleaseModeInfo(hVidPnSourceModeSet, pVidPnPinnedSourceModeInfo);
@@ -5612,6 +5711,13 @@ NTSTATUS VioGpuDod::EnumVidPnCofuncModality(_In_ CONST DXGKARG_ENUMVIDPNCOFUNCMO
                               sizeof(D3DKMDT_VIDPN_PRESENT_PATH_SCALING_SUPPORT));
                 LocalVidPnPresentPath.ContentTransformation.ScalingSupport.Identity = 1;
                 LocalVidPnPresentPath.ContentTransformation.ScalingSupport.Centered = 1;
+#if defined(VIOGPU_NATIVE_CONTEXT)
+                if (pVidPnPresentPath->ContentTransformation.Rotation == D3DKMDT_VPPR_ROTATE90)
+                {
+                    LocalVidPnPresentPath.ContentTransformation.ScalingSupport.Identity = diagnosticCofunctional;
+                    LocalVidPnPresentPath.ContentTransformation.ScalingSupport.Centered = 0;
+                }
+#endif
                 SupportFieldsModified = TRUE;
             }
         }
@@ -5634,7 +5740,7 @@ NTSTATUS VioGpuDod::EnumVidPnCofuncModality(_In_ CONST DXGKARG_ENUMVIDPNCOFUNCMO
 #endif
 #if defined(VIOGPU_NATIVE_CONTEXT)
                 LocalVidPnPresentPath.ContentTransformation.RotationSupport.Rotate90 =
-                    NativeScanoutDiagnosticEnabled() && SupportsNativeScanoutGeometry() ? 1 : 0;
+                    diagnosticCofunctional ? 1 : 0;
 #else
                 LocalVidPnPresentPath.ContentTransformation.RotationSupport.Rotate90 = 1;
 #endif

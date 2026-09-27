@@ -15,8 +15,10 @@ root = here.parents[2]
 source = (root / 'viogpu/viogpudo/viogpudo.cpp').read_text()
 bodies = []
 for name in ('PrepareNativeDiagnosticMode', 'SetNativeDiagnosticModeAndPath',
+             'NativeDiagnosticConstraintsMatch', 'NativeDiagnosticModeCofunctional',
+             'AddSingleSourceMode', 'AddSingleTargetMode',
              'AddNativeDiagnosticSourceMode', 'AddNativeDiagnosticTargetMode', 'AddNativeDiagnosticMonitorMode'):
-    match = re.search(r'^[^;\n]*\bVioGpuDod::' + name + r'\([^;]*?\)\s*\{', source, re.M)
+    match = re.search(r'^[^;\n]*\bVioGpuDod::' + name + r'\([^;]*?\)\s*(?:const\s*)?\{', source, re.M)
     assert match, name
     start = source.index('{', match.start())
     depth, end = 1, start + 1
@@ -25,6 +27,18 @@ for name in ('PrepareNativeDiagnosticMode', 'SetNativeDiagnosticModeAndPath',
         end += 1
     bodies.append(source[match.start():end])
 production = '\n'.join(bodies)
+support_start = source.index('        D3DKMDT_VIDPN_PRESENT_PATH LocalVidPnPresentPath = *pVidPnPresentPath;')
+support_end = source.index('        if (SupportFieldsModified)', support_start)
+production += '''
+D3DKMDT_VIDPN_PRESENT_PATH VioGpuDod::PathSupport(const EnumRequest *pEnumCofuncModality,
+    const D3DKMDT_VIDPN_PRESENT_PATH *pVidPnPresentPath,const D3DKMDT_VIDPN_SOURCE_MODE *source,
+    const D3DKMDT_VIDPN_TARGET_MODE *target) {
+    const BOOLEAN diagnosticCofunctional=NativeDiagnosticModeCofunctional(source,target,pVidPnPresentPath);
+''' + source[support_start:support_end] + '''
+    (void)SupportFieldsModified;
+    return LocalVidPnPresentPath;
+}
+'''
 fixture = (here / 'diagnostic_mode_test.cpp').read_text()
 variants = [('production', production)]
 for name, old, new in (
@@ -35,6 +49,16 @@ for name, old, new in (
     ('publish-before-ack', 'const auto committed = m_pHWDevice->CommitNativeScanoutMode(&mode);',
      'm_CurrentMode = candidate; const auto committed = m_pHWDevice->CommitNativeScanoutMode(&mode);'),
     ('post-ack-timing', '(VOID)TakePendingFlip();', 'SetCrtcTiming(timing); (VOID)TakePendingFlip();'),
+    ('enum-target-timing', 'signal.TotalSize.cx != expected->TotalSize.cx ||', ''),
+    ('enum-source-format', 'source->Format.Graphics.PixelFormat != D3DDDIFMT_A8R8G8B8 ||', ''),
+    ('enum-pinned-rotation', 'rotation != D3DKMDT_VPPR_NOTSPECIFIED)', 'rotation != D3DKMDT_VPPR_NOTSPECIFIED && false)'),
+    ('enum-pinned-scaling', 'scaling != D3DKMDT_VPPS_NOTSPECIFIED)', 'scaling != D3DKMDT_VPPS_NOTSPECIFIED && false)'),
+    ('enum-unconditional-rotation', 'diagnosticCofunctional ? 1 : 0;', '(diagnosticCofunctional || true) ? 1 : 0;'),
+    ('enum-centered-rotation', 'ScalingSupport.Centered = 0;', 'ScalingSupport.Centered = 1;'),
+    ('enum-ordinary-rotated-source', 'return AddNativeDiagnosticSourceMode(pVidPnSourceModeSetInterface, hVidPnSourceModeSet,\n            pPinnedTarget, pPath);',
+     '(void)pPinnedTarget;'),
+    ('enum-ordinary-rotated-target', 'return diagnostic == STATUS_NOT_FOUND ? STATUS_GRAPHICS_VIDPN_MODALITY_NOT_SUPPORTED : diagnostic;',
+     '(void)diagnostic;'),
 ):
     assert old in production
     variants.append((name, production.replace(old, new)))
