@@ -31,6 +31,55 @@ static_assert(offsetof(VIOGPU_NATIVE_DIAGNOSTIC_DDI_RECORD, SourceWidth) == 176,
 static_assert(offsetof(VIOGPU_NATIVE_DIAGNOSTIC_DDI_RECORD, TargetWidth) == 200, "DDI capture target offset");
 static_assert(offsetof(VIOGPU_NATIVE_DIAGNOSTIC_DDI_RECORD, PixelClock) == 216, "DDI capture clock offset");
 
+/* REG_BINARY NativeScanoutValidationCapture: last 32 completed calls, oldest
+ * first. Separate from the first-16 Commit capture and its cursor reset epoch.
+ * Sequence is adapter-local completion order; Time100ns is interrupt time.
+ * Ddi: 1 IsSupported, 2 Enum. Step identifies the last callback attempted.
+ * Result: IsSupported boolean; Enum 0 unchecked, 1 preparation failed,
+ * 2 constraints rejected, 3 cofunctional. Data.Mode is the mode actually
+ * prepared by Enum, never an additional query made for diagnostics.
+ * Source/TargetModeStatus are valid only with Operations bits 0/1 set.
+ * Data.Flags: source/path/signal bits retain the raw DDI capture meanings. */
+#pragma pack(push, 4)
+struct VIOGPU_NATIVE_VALIDATION_RECORD
+{
+    VIOGPU_NATIVE_DIAGNOSTIC_DDI_RECORD Data;
+    VIOGPU_GEOMETRY_U64 Sequence, Time100ns;
+    unsigned Ddi, Step, PivotType, PivotSourceId, PivotTargetId, Result, PathCount;
+    unsigned SourceType, SourceColorBasis, SourceAccessMode, TargetScanLineOrdering;
+    unsigned ScalingSupport, RotationSupport, Operations, SourceModeStatus, TargetModeStatus;
+    VIOGPU_GEOMETRY_U64 RequiredSize, SegmentSize;
+    unsigned ExpectedWidth, ExpectedHeight, ExpectedTotalWidth, ExpectedTotalHeight;
+    VIOGPU_GEOMETRY_U64 ExpectedPixelClock;
+    unsigned ExpectedHSyncNumerator, ExpectedHSyncDenominator;
+    unsigned ExpectedVSyncNumerator, ExpectedVSyncDenominator, ExpectedScanLineOrdering;
+};
+#pragma pack(pop)
+static_assert(sizeof(VIOGPU_NATIVE_VALIDATION_RECORD) == 380, "validation capture record");
+static_assert(offsetof(VIOGPU_NATIVE_VALIDATION_RECORD, Ddi) == 256, "validation metadata offset");
+static_assert(offsetof(VIOGPU_NATIVE_VALIDATION_RECORD, ExpectedWidth) == 336, "validation expected signal offset");
+
+struct VIOGPU_NATIVE_VALIDATION_CAPTURE
+{
+    VIOGPU_GEOMETRY_U64 Sequence;
+    unsigned Count;
+    VIOGPU_NATIVE_VALIDATION_RECORD Records[32];
+};
+
+/* Caller serializes append and publication. Keep the newest calls even after
+ * boot enumeration fills the capture; no reservation/Commit state is touched. */
+static inline void VioGpuAppendNativeValidation(VIOGPU_NATIVE_VALIDATION_CAPTURE *capture,
+    VIOGPU_NATIVE_VALIDATION_RECORD *record)
+{
+    if (capture->Count == 32)
+    {
+        for (unsigned i = 1; i < 32; ++i) capture->Records[i - 1] = capture->Records[i];
+        --capture->Count;
+    }
+    record->Sequence = ++capture->Sequence;
+    capture->Records[capture->Count++] = *record;
+}
+
 #pragma pack(push, 4)
 struct VIOGPU_NATIVE_DIAGNOSTIC_CURSOR_RECORD
 {

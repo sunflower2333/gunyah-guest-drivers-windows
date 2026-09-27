@@ -3,6 +3,7 @@
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 try:
     import resource
@@ -98,3 +99,5 @@ with tempfile.TemporaryDirectory(prefix='.diagnostic-', dir=here) as temporary:
         if (result.returncode == 0) != (name == 'negotiation'):
             raise SystemExit(name + ': unexpected result\n' + result.stdout + result.stderr)
         print(result.stdout.strip() if name == 'negotiation' else 'PASS negative control ' + name + ' rejected')
+
+subprocess.run([sys.executable, str(here / 'cursor_capture.py')], check=True)

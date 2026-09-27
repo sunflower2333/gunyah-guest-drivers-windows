@@ -1528,8 +1528,9 @@ class VioGpuDod
     UINT m_NativeDiagnosticCaptureCount;
     VIOGPU_NATIVE_DIAGNOSTIC_DDI_RECORD m_NativeDiagnosticCapture[16];
     VIOGPU_NATIVE_DIAGNOSTIC_CURSOR_RECORD m_NativeDiagnosticCursorCapture[2];
-    UINT m_NativeDiagnosticCursorMask;
+    volatile LONG m_NativeDiagnosticCursorMask;
     volatile LONG m_UmdPresentActive;
+    VIOGPU_NATIVE_VALIDATION_CAPTURE m_NativeValidationCapture;
     volatile LONG m_PublishSequence;
     volatile LONG m_PublishSequenceAtFlip;
     volatile LONG m_NativeContextFailCallerRva;
@@ -2076,6 +2077,7 @@ class VioGpuDod
         HANDLE primary, UINT stage, NTSTATUS status, const VIOGPU_NATIVE_SCANOUT_MODE *mode = NULL);
     VOID RecordNativeDiagnosticCursor(const DXGKARG_SETPOINTERPOSITION *position,
                                       const DXGKARG_SETPOINTERSHAPE *shape);
+    VOID RecordNativeValidation(VIOGPU_NATIVE_VALIDATION_RECORD *record, NTSTATUS status);
     BOOLEAN QueryReservedNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode, BOOLEAN *committed);
     BOOLEAN ReserveNativeScanoutMode(VIOGPU_NATIVE_SCANOUT_MODE *mode);
     BOOLEAN NativeScanoutModeEligible(const VIOGPU_NATIVE_SCANOUT_MODE *mode, BOOLEAN committedOnly);
@@ -2940,7 +2942,8 @@ class VioGpuDod
         const D3DKMDT_VIDEO_SIGNAL_INFO *expected, const D3DKMDT_VIDPN_SOURCE_MODE *source,
         const D3DKMDT_VIDPN_TARGET_MODE *target, const D3DKMDT_VIDPN_PRESENT_PATH *path) const;
     BOOLEAN NativeDiagnosticModeCofunctional(const D3DKMDT_VIDPN_SOURCE_MODE *source,
-        const D3DKMDT_VIDPN_TARGET_MODE *target, const D3DKMDT_VIDPN_PRESENT_PATH *path);
+        const D3DKMDT_VIDPN_TARGET_MODE *target, const D3DKMDT_VIDPN_PRESENT_PATH *path,
+        VIOGPU_NATIVE_VALIDATION_RECORD *capture = NULL);
     NTSTATUS AddNativeDiagnosticMonitorMode(const DXGKARG_RECOMMENDMONITORMODES *request);
 #endif
     NTSTATUS AddSingleMonitorMode(_In_ CONST DXGKARG_RECOMMENDMONITORMODES *CONST pRecommendMonitorModes);
