@@ -7192,11 +7192,12 @@ NTSTATUS MapApertureAllocation(_In_ VioGpuDod *adapter,
                 {
                     msmFlags |= MSM_BO_GPU_READONLY;
                 }
-                UINT blobFlags = VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE;
-                if ((allocation->Flags & VIOGPU_WDDM_ALLOCATION_CPU_VISIBLE) != 0)
-                {
-                    blobFlags |= VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE;
-                }
+                // Native guest allocations are scanout candidates. drm2kgsl
+                // can export a blob only when it was created with USE_MAPPABLE;
+                // gating that bit on CPU_VISIBLE made GPU-only render targets
+                // fall back to a full CPU readback despite shareable backing.
+                UINT blobFlags = VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE |
+                                 VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE;
                 BOOLEAN ownershipRetained = FALSE;
                 VIOGPU_HOST_CONTEXT_RESULT result = nativeIdentity.Adapter->CreateNativeGuestAllocation(&nativeIdentity,
                                                                                                           allocation->ResourceId,
