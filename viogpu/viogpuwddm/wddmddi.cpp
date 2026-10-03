@@ -7144,6 +7144,12 @@ NTSTATUS QueryCompletedFenceInfo(VioGpuDod *adapter, const DXGKARG_ESCAPE *escap
         response.Opcode = VIOGPU_WDDM_ESCAPE_GET_COMPLETED_FENCE;
         response.Flags = VIOGPU_WDDM_ESCAPE_FLAGS_NONE;
         response.ExpectedResetGeneration = request.ExpectedResetGeneration;
+        /* The UMD polls this escape while it waits for a fence. Answers the
+         * host already returned may still sit in the used ring behind a late
+         * or lost interrupt; queue the drain first so the DPC, which runs as
+         * soon as this thread is back below DISPATCH_LEVEL, can retire them
+         * for this query or the next. */
+        adapter->PollControlQueueIfAnswered();
         response.CompletedFence = QueryContextCompletedUmdFence(context);
         response.ResetGeneration = snapshot.ResetGeneration;
         response.ContextId = snapshot.ContextId;
