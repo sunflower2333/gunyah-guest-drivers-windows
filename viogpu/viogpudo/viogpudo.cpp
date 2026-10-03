@@ -184,6 +184,7 @@ static VOID VioGpuCrtcVsyncDpcRoutine(_In_ PEX_TIMER timer, _In_opt_ PVOID conte
         if (dod->CrtcVsyncDue())
         {
             dod->DeliverCrtcVsync();
+            dod->PollControlQueueIfAnswered();
         }
         dod->RearmCrtcVsyncTimer(timer);
     }
@@ -1099,6 +1100,31 @@ VOID VioGpuDod::PollControlQueue(void)
         m_DxgkInterface.DxgkCbQueueDpc(m_DxgkInterface.DeviceHandle);
     }
     ReleaseNativeSubmissionOperation();
+}
+
+/* The control-queue interrupt is not always delivered. On 2026-10-03 a logon
+ * left 1024 answered requests in the used ring (used.idx == avail.idx, driver
+ * last_used 1024 behind) with no ISR for 30 s while DWM waited synchronously
+ * in SetVidPnSourceAddress; re-raising the interrupt from the host did not
+ * help, so the guest must not depend on it alone. The vblank timer runs at
+ * the refresh rate whenever the compositor is active: when it finds answers
+ * waiting, it starts the same drain the interrupt would have. */
+VOID VioGpuDod::PollControlQueueIfAnswered(void)
+{
+#if defined(VIOGPU_NATIVE_CONTEXT)
+    if (!AcquireNativeSubmissionOperation())
+    {
+        return;
+    }
+    VioGpuAdapter *adapter = m_pHWDevice;
+    if (adapter != NULL && m_DxgkInterface.DxgkCbQueueDpc != NULL && adapter->HasUndrainedControlAnswers())
+    {
+        adapter->RequestDisplayQueueDrain();
+        m_DxgkInterface.DxgkCbQueueDpc(m_DxgkInterface.DeviceHandle);
+        CountDisplayEvent(VioGpuControlQueueVblankDrains);
+    }
+    ReleaseNativeSubmissionOperation();
+#endif
 }
 
 PGPU_VBUFFER VioGpuDod::PrepareNativeSubmit(_In_ UINT contextId, _In_ const void *command, _In_ UINT commandSize)
@@ -9046,6 +9072,8 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &flipDiagnostics[26]},
                                                                                                         {L"NativeRevokedImportRefsSkipped",
                                                                                                          &flipDiagnostics[27]},
+                                                                                                        {L"NativeControlQueueVblankDrains",
+                                                                                                         &flipDiagnostics[28]},
                                                                                                         {L"NativeSubmis"
                                                                                                          L"sionFaultPre"
                                                                                                          L"s"

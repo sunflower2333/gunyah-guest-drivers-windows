@@ -216,6 +216,8 @@ struct VioGpuDod {
         return true;
     }
     VOID DeliverCrtcVsync();
+    int answeredPolls = 0;
+    VOID PollControlQueueIfAnswered() { ++answeredPolls; }
     VOID RecordCrtcVblankDelivery(VIOGPU_VBLANK_DELIVERY_OUTCOME);
     VOID ReadCrtcVblankCadence(VIOGPU_VBLANK_CADENCE_SNAPSHOT&);
     NTSTATUS PublishCrtcVblankCadence(HANDLE);

@@ -463,6 +463,12 @@ class VioGpuQueue
             virtqueue_kick_always(m_pVirtQueue);
         }
     }
+    /* Answers the device returned that no DPC has reclaimed yet. A racy read
+     * of the used index: a stale answer only delays or adds one drain. */
+    BOOLEAN HasUsedBuffers(void)
+    {
+        return m_pVirtQueue ? virtqueue_has_buf(m_pVirtQueue) : FALSE;
+    }
     bool EnableInterrupt(void)
     {
         return m_pVirtQueue ? virtqueue_enable_cb(m_pVirtQueue) : false;

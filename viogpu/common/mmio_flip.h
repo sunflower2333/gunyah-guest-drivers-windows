@@ -237,5 +237,8 @@ enum : unsigned
      * to them dropped instead of failing the importer's submission. */
     VioGpuRevokedImportsKept = 118,
     VioGpuRevokedImportRefsSkipped = 119,
-    VioGpuDisplayCounterCount = 120,
+    /* Control-queue drains the vblank timer started because answered requests
+     * sat in the used ring with no interrupt delivered for them. */
+    VioGpuControlQueueVblankDrains = 120,
+    VioGpuDisplayCounterCount = 121,
 };

@@ -1139,6 +1139,11 @@ class VioGpuAdapter : IVioGpuPCI
     {
         InterlockedOr(reinterpret_cast<volatile LONG *>(&m_PendingWorks), ISR_REASON_DISPLAY);
     }
+    /* True when the control queue holds host answers no DPC has drained. */
+    BOOLEAN HasUndrainedControlAnswers(void)
+    {
+        return m_CtrlQueue.HasUsedBuffers();
+    }
     __declspec(code_seg(".text")) BOOLEAN SupportsNativeAhbPaging() const;
     __declspec(code_seg(".text")) BOOLEAN SupportsNativeScanoutGeometry() const;
     BOOLEAN QueryNativeScanoutState(VIOGPU_SCANOUT_GEOMETRY *geometry,
@@ -2055,6 +2060,7 @@ class VioGpuDod
                                     const VIOGPU_SCANOUT_GEOMETRY *geometry = NULL);
     __declspec(code_seg(".text")) VOID RequestNativeAhbRefreshWork(void);
     VOID PollControlQueue(void);
+    VOID PollControlQueueIfAnswered(void);
     BOOLEAN SupportsNativeAhbPaging() const;
     BOOLEAN SupportsNativeScanoutGeometry() const;
     BOOLEAN QueryNativeScanoutState(VIOGPU_SCANOUT_GEOMETRY *geometry,
