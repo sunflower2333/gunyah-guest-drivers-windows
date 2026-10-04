@@ -704,13 +704,35 @@ BOOLEAN IsStandardPresentSurface(const VIOGPU_WDDM_ALLOCATION *allocation)
                                   IsStandardPrimaryAllocation(allocation));
 }
 
+/* RecordNativeAllocationDestroyDiagnostic() opens the driver key and publishes well over a
+ * hundred values, and one allocation destroy records state about six times.  Measured in
+ * Geekbench 7 (2026-10-05): 6-11 ms of guest CPU per DestroyAllocation2, 33-43 s per run, which
+ * held every workload that frees buffers in its timed loop to 63-87 % of its neighbours.  A
+ * failure still publishes at once, so the evidence a stuck destroy needs is unchanged; a
+ * destroy that is going well refreshes the snapshot at most once a second. */
+static BOOLEAN ClaimDestroyDiagnosticPublication(_In_ NTSTATUS status)
+{
+    static volatile LONG64 nextPublishTime = 0;
+    if (status < 0)
+    {
+        return TRUE;
+    }
+    const LONG64 now = static_cast<LONG64>(KeQueryInterruptTime());
+    const LONG64 due = nextPublishTime;
+    if (now < due)
+    {
+        return FALSE;
+    }
+    return InterlockedCompareExchange64(&nextPublishTime, now + 10000000LL, due) == due;
+}
+
 VOID RecordNativeAllocationDestroyState(_In_ VioGpuDod *adapter,
                                         _In_ DWORD stage,
                                         _In_ NTSTATUS status,
                                         _In_ DWORD detail,
                                         _In_ VIOGPU_WDDM_ALLOCATION *allocation)
 {
-    if (adapter == NULL || allocation == NULL)
+    if (adapter == NULL || allocation == NULL || !ClaimDestroyDiagnosticPublication(status))
     {
         return;
     }
