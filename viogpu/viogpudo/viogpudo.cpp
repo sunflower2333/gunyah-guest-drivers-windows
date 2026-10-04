@@ -14044,14 +14044,43 @@ NTSTATUS VioGpuAdapter::ControlInterrupt(_In_ BOOLEAN enableInterrupt)
 
     if (enableInterrupt)
     {
-        if (!m_CtrlQueue.EnableInterrupt() || !m_CursorQueue.EnableInterrupt())
+        /* virtqueue_enable_cb() returns TRUE when no used buffers are
+         * pending and FALSE when callbacks were enabled but a completion is
+         * already available.  The latter is the usual disable/re-enable
+         * race: it must be drained by the DPC, not reported as a queue
+         * failure.  m_bQueuesInitialized is the adapter-level lifetime gate;
+         * check the queue objects separately so a genuinely torn-down queue
+         * remains an error. */
+        if (!m_CtrlQueue.IsInitialized() || !m_CursorQueue.IsInitialized())
         {
             m_CtrlQueue.DisableInterrupt();
             m_CursorQueue.DisableInterrupt();
             InterlockedExchange(&m_InterruptDispatchEnabled, FALSE);
             return STATUS_DEVICE_NOT_READY;
         }
+
+        const BOOLEAN controlQueueIdle = m_CtrlQueue.EnableInterrupt();
+        const BOOLEAN cursorQueueIdle = m_CursorQueue.EnableInterrupt();
         InterlockedExchange(&m_InterruptDispatchEnabled, TRUE);
+
+        ULONG pendingReasons = 0;
+        if (!controlQueueIdle)
+        {
+            pendingReasons |= ISR_REASON_DISPLAY;
+        }
+        if (!cursorQueueIdle)
+        {
+            pendingReasons |= ISR_REASON_CURSOR;
+        }
+        if (pendingReasons != 0)
+        {
+            InterlockedOr((PLONG)&m_PendingWorks, pendingReasons);
+            PDXGKRNL_INTERFACE dxgkInterface = m_pVioGpuDod->GetDxgkInterface();
+            if (dxgkInterface != NULL && dxgkInterface->DxgkCbQueueDpc != NULL)
+            {
+                dxgkInterface->DxgkCbQueueDpc(dxgkInterface->DeviceHandle);
+            }
+        }
         return STATUS_SUCCESS;
     }
 

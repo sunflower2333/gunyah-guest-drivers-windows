@@ -425,6 +425,10 @@ class VioGpuQueue
     {
         return m_pVirtQueue ? virtqueue_enable_cb(m_pVirtQueue) : false;
     }
+    BOOLEAN IsInitialized(void) const
+    {
+        return m_pVirtQueue != NULL;
+    }
     VOID DisableInterrupt(void)
     {
         if (m_pVirtQueue)
