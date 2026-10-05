@@ -6,16 +6,15 @@ Advance the unregistered DXVK candidate to exact source
 rotation regression in the ARM64 fixture handoff.
 
 ## Next step
-Commit the verified integration, then push the personal branch and dispatch
-build-arm64-drivers.yml. Root confirmed full DXVK CI 37310476652
-success and authorized these steps. Root owns source validation and all
+Follow paired CI 37312228456 for source 5798e077 to completion, then download
+and verify its signed package receipts. Root owns source validation and all
 guest operations.
 
 ## Phases
 - [complete] Audit clean paired baseline and source/fixture requirements.
 - [complete] Update exact pins, ARM64 fixture copy and documentation.
-- [in_progress] Commit after successful package tests and diff review.
-- [pending] Push and run paired CI after confirmed full source CI success.
+- [complete] Commit after successful package tests and diff review.
+- [in_progress] Follow paired CI and verify signed package/source receipts.
 
 ## Constraints
 Preserve reserved package version 100.6.101.58522, all Mesa pins and the eight

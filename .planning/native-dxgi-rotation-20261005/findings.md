@@ -18,3 +18,10 @@ as candidate integration evidence, without changing the installed stack.
 
 build-arm64-drivers.yml is the direct build/sign/catalog/load workflow.
 dev-release.yml also publishes the rolling release and is unnecessary here.
+
+Paired CI 37312228456 correctly fetched the pinned D3D Mesa source, but its
+OpenGL package job failed because the successful source run 34757244563 had
+expired all artifacts. A fresh exact-source Mesa rebuild, run 37312838033,
+completed successfully with three unexpired architecture artifacts. The
+paired workflow now consumes that run ID; source commit and package version
+remain unchanged.

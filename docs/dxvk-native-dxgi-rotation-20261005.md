@@ -28,7 +28,7 @@ workflow to validate the paired candidate's architecture loading, signing,
 catalog and source receipts. The workflow reserves version 100.6.101.58522
 and keeps its existing Mesa pins: D3D
 `eae74a860208698428227d89d05bb63d274a8853` and GL/Turnip
-`3e50dd4ba4f941fcb4ddeb91d0cbd688cabfdb4a` (Mesa CI 34757244563).
+`3e50dd4ba4f941fcb4ddeb91d0cbd688cabfdb4a` (Mesa CI 37312838033).
 
 This is an older package baseline than active installed driver 58623 with
 Mesa `b36366b53c17cc55c84df7b756b45fb6e4e4e8fa`. Its artifacts serve as
