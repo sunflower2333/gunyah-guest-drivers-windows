@@ -7,18 +7,17 @@ Present ownership across callback retirement, and nested Present/rotation
 exclusion. Keep the production DXGI rotation/lifetime ARM64 fixture handoff.
 
 ## Next step
-Commit/push the locally validated final DXVK source pin, then dispatch the
-paired build concurrently with pending source CI. Validate the VS2022
-cross-build plus mandatory Windows ARM64 functional/signed load jobs, then
-download and verify the package receipts. Root owns source validation, any
-future DXVK pin update and all guest operations.
+Paired CI 37338579561 for binary producer b6bf4c4f (DXVK 34ff484) passed all
+16 jobs; final archive, signed manifest, source pins, file hashes and Windows
+catalog/load receipts are verified. Record the documentation checkpoint.
+Root owns broader native runtime capability work and all guest operations.
 
 ## Phases
 - [complete] Audit clean paired baseline and source/fixture requirements.
 - [complete] Update exact pins, ARM64 fixture copy and documentation.
 - [complete] Validate the final Present ownership source pin locally.
-- [in_progress] Commit and dispatch the final source integration.
-- [in_progress] Follow paired CI and verify signed package/source receipts.
+- [complete] Commit and dispatch the final source integration.
+- [complete] Follow paired CI and verify signed package/source receipts.
 
 ## Constraints
 Preserve reserved package version 100.6.101.58522, all Mesa pins and the eight
@@ -43,3 +42,5 @@ cross-build job and both mandatory native ARM64 validation jobs.
 The final-pin commit initially staged its temporary message file through a
 directory add. Removed that disposable file and amended the unpushed commit;
 future commits stage planning files explicitly.
+Installed gh lacks run watch --compact. Use its supported --interval and
+--exit-status flags; the unsupported flag did not affect the dispatched run.

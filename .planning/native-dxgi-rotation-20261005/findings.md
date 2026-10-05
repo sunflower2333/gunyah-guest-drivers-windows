@@ -57,3 +57,12 @@ release and rejected nested operations. Fixture names and eight admission
 gaps are unchanged. Local source ASan/UBSan 69/180/147 and 101-slot WDK policy
 passed; exact Windows source CI remains pending. Root authorized concurrent
 paired CI after the local package checks.
+
+Exact 34ff484 source offline CI 37338141939 and full native CI 37338144307
+passed all four/six jobs. Paired CI 37338579561, producer b6bf4c4f, passed all
+16 jobs after the VS17/WDK repair. Windows x64 static and Windows ARM64 full
+checks both verified 53 actual catalog members/common signer and the 52-file
+manifest; the final joint receipt lists 64 GPU/9 installer files. Runtime
+checks loaded all native/EC/x86 GL/CL/D3D/DXVK paths. This validates packaging
+and closed-gate loadability only; native DX8/DX9, ordinary DX10/DX11 candidate
+runtime activation, Turnip hardware rendering and installation remain open.
