@@ -792,8 +792,8 @@ jobs:
 
       # The pinned DXVK tree's own functional fixtures, run natively on this
       # ARM64 runner by its own scripts/test-native-arm64.ps1 before anything is
-      # packaged: Texture1D, runtime GPU dispatch, production OpenAdapter and
-      # CreateDevice entry with the real admission gate, allocation, predication,
+      # packaged: production DXGI resource rotation, Texture1D, runtime GPU
+      # dispatch, OpenAdapter/CreateDevice with the real admission gate, allocation, predication,
       # stream output, queries and a Microsoft D3D11 runtime Draw/readback/Present.
       # The backend is WARP: DDI translation is proven, Turnip rendering is not.
       - name: Run the pinned DXVK tree's ARM64 functional fixtures

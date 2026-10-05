@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$DxvkRoot,
 
-    [string]$DxvkCommit = 'a677ab073ac09b1d4eacfabec0e8e10054d58e97',
+    [string]$DxvkCommit = '4f59adf77cf3d6207c85af85f7a39adff3d8e367',
     [string]$Vkd3dCommit = '376e716e4acdf7a9ded138b0099f2ee8a8863f91'
 )
 

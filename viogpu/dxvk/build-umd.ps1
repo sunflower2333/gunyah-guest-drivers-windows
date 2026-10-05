@@ -227,7 +227,8 @@ if (Compare-Object $recordedFiles $actualFiles) { throw "DXVK $Architecture outp
 if ($Fixtures) {
     # Functional fixtures run natively on the ARM64 runner by the tree's own
     # scripts\test-native-arm64.ps1, which also requires STATUS.txt.
-    $fixtureNames = @('STATUS.txt', "$library.dll", 'dxvk-umd-texture1d-test.exe', 'dxvk-umd-runtime-gpu-test.exe',
+    $fixtureNames = @('STATUS.txt', "$library.dll", 'dxvk-umd-rotation-test.exe',
+        'dxvk-umd-texture1d-test.exe', 'dxvk-umd-runtime-gpu-test.exe',
         'dxvk-umd-native-entry-test.exe', 'dxvk-umd-native-lifetime-test.exe', 'dxvk-umd-allocation-test.exe',
         'dxvk-umd-predication-test.exe', 'dxvk-umd-stream-output-test.exe', 'dxvk-umd-query-test.exe',
         'dxvk-umd-system-runtime-test.exe')
