@@ -2,12 +2,13 @@
 
 ## Goal
 Advance the unregistered DXVK candidate to exact source
-4f59adf77cf3d6207c85af85f7a39adff3d8e367 and include its production DXGI
-rotation regression in the ARM64 fixture handoff.
+34ff484ac87b66f77e1c9f6d8db914783b24788e with runtime callback-table lifetime,
+Present ownership across callback retirement, and nested Present/rotation
+exclusion. Keep the production DXGI rotation/lifetime ARM64 fixture handoff.
 
 ## Next step
-Commit/push the validated workflow contract repair; coordinate the next
-paired dispatch with root's final DXVK source pin. Validate the VS2022
+Commit/push the locally validated final DXVK source pin, then dispatch the
+paired build concurrently with pending source CI. Validate the VS2022
 cross-build plus mandatory Windows ARM64 functional/signed load jobs, then
 download and verify the package receipts. Root owns source validation, any
 future DXVK pin update and all guest operations.
@@ -15,7 +16,8 @@ future DXVK pin update and all guest operations.
 ## Phases
 - [complete] Audit clean paired baseline and source/fixture requirements.
 - [complete] Update exact pins, ARM64 fixture copy and documentation.
-- [complete] Commit after successful package tests and diff review.
+- [complete] Validate the final Present ownership source pin locally.
+- [in_progress] Commit and dispatch the final source integration.
 - [in_progress] Follow paired CI and verify signed package/source receipts.
 
 ## Constraints
@@ -38,3 +40,6 @@ atomically; reread root's current findings before applying the update.
 Replacement CI 37336134109 caught the old checker requiring exactly one
 windows-11-arm product runner. Updated the contract to enforce the VS2022
 cross-build job and both mandatory native ARM64 validation jobs.
+The final-pin commit initially staged its temporary message file through a
+directory add. Removed that disposable file and amended the unpushed commit;
+future commits stage planning files explicitly.

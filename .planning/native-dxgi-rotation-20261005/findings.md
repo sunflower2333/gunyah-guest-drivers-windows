@@ -33,3 +33,27 @@ for17.0. The existing gg-zero-copy workflow already resolves this pairing by
 cross-building on windows-2022 with x64 MSBuild and running signed ARM64X
 loads in a separate Windows ARM64 job. Adapt that proven split without
 renaming task DLLs or changing the kit/source/version pins.
+
+The first replacement split CI, 37336134109, failed the inherited literal
+runner assertion in check-contract.py. The strengthened checker now enforces
+the product VS17/x64 cross-build host, mandatory native ARM64 DXVK fixture
+dependency, and mandatory signed ARM64 runtime-load job without -StaticOnly.
+The full contract checker and 73 package tests pass. Root requested cancelling
+the superseded run after this diagnosed failure, ahead of the final Present
+source integration. Two exploratory searches used absent package/workflow
+paths; corrected the search to existing viogpu/package and workflow files.
+The retained artifacts root is /home/sunf/droidvm-repos/artifacts, not a path
+relative to gg-dxvk-umd. Corrected one attempted metadata redirection before
+successfully saving the cancelled run's final state there.
+
+Root reviewed and pushed final DXVK source
+34ff484ac87b66f77e1c9f6d8db914783b24788e. It retains the runtime DXGI callback
+table, separately pins Present allocation/readback/backend owners, and uses a
+live registry reservation to cancel submission after source retirement.
+Device-wide Present exclusion and mutual rotation exclusion protect shared
+publication and staging maps. The source fixtures poison private storage
+immediately from LockCb/CreateContextCb/PresentCb and check balanced deferred
+release and rejected nested operations. Fixture names and eight admission
+gaps are unchanged. Local source ASan/UBSan 69/180/147 and 101-slot WDK policy
+passed; exact Windows source CI remains pending. Root authorized concurrent
+paired CI after the local package checks.

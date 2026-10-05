@@ -45,3 +45,22 @@
   (11 jobs) and git diff --check passed with the stronger per-job runner,
   dependency, toolchain and full-load assertions. Commit/push the checker
   repair now; coordinate the next paired dispatch with root's final DXVK pin.
+- Committed/pushed the checker repair as 61d03f05. Root requested cancelling
+  superseded CI 37336134109 because its diagnosed checker failure makes the
+  product package impossible. Cancellation is not a timeout; its old DXVK
+  source has independent validation. Await the reviewed final source pin.
+- Confirmed CI 37336134109 completed cancelled and retained run-final.json
+  alongside its diagnosed failure log.
+
+## 2026-10-06
+- Root reviewed, committed and pushed final DXVK Present ownership source
+  34ff484ac87b66f77e1c9f6d8db914783b24788e. Updated both exact package pins
+  and current documentation; retained the existing rotation/lifetime fixture
+  inventory, all Mesa/VKD3D pins, package version and unregistered admission.
+  Source Windows CI is pending. Root authorized paired dispatch concurrently
+  after meaningful local full contract/package/YAML/diff validation.
+- All 73 existing package tests, workflow YAML parse (11 jobs) and diff check
+  passed after the final pin update. The full miniport contract checker is
+  running; D3D Mesa gitlink remains eae74a860208698428227d89d05bb63d274a8853.
+- Full miniport contract checker completed PASS. Final diff/source-pin review
+  confirms unchanged Mesa/VKD3D pins, 100.6.101.58522 and eight closed gaps.
