@@ -2,7 +2,7 @@
 # Disposable Windows CI runner only. No adapter staging, binding or GPU context.
 [CmdletBinding()]
 param([string]$Output='out', [string]$GlProbes='opengl-payload', [string]$ClProbes='opencl-payload',
-    [string]$D3dProbes='d3d10-payload', [string]$DxvkProbes='dxvk-umd')
+    [string]$D3dProbes='d3d10-payload', [string]$DxvkProbes='dxvk-umd', [switch]$StaticOnly)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This trust/ABI fixture is for disposable GitHub runners' }
@@ -51,43 +51,51 @@ try {
             throw "Invalid unified installer script signature: $($script.Name)"
         }
     }
-    foreach ($arch in @('arm64','x64','x86')) {
-        $loader = if ($arch -eq 'x86') {'OpenCL32.dll'} else {'OpenCL.dll'}
-        & (Join-Path $driver $manifest.loader_probes.$arch) (Join-Path $driver $loader)
-        if ($LASTEXITCODE) { throw "Signed $arch public loader ABI failed" }
-        & (Join-Path $cl "windows-flat-check-$arch.exe") (Join-Path $driver "viogpucl_$arch.dll") "viogpucl_vk_$arch.dll"
-        if ($LASTEXITCODE) { throw "Signed $arch CL runtime/compiler ABI failed" }
-        $icd = if ($arch -eq 'x86') {'viogpuopengl_x86.dll'} else {'viogpuopengl.dll'}
-        foreach ($mode in @('--vulkan','--opengl')) {
-            & (Join-Path $gl "small-stack-probe-$arch.exe") $mode (Join-Path $driver $icd)
-            if ($LASTEXITCODE) { throw "Signed $arch $mode constrained-stack validation failed" }
+    if (!$StaticOnly) {
+        # ARM64X contains the emulated x64 view for Windows ARM64, not an
+        # ordinary AMD64 DLL that an x64 Windows installation can load.
+        $hostArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+        if ($hostArchitecture -ne 'arm64') {
+            throw 'Signed ARM64/ARM64X runtime validation requires Windows ARM64; use -StaticOnly for catalog verification'
         }
-        & (Join-Path $gl "system-probe-$arch.exe") --load-only $driver
-        if ($LASTEXITCODE) { throw "Signed $arch GL/Vulkan ABI failed" }
-        & (Join-Path $gl "gles-probe-$arch.exe") --load-only $driver
-        if ($LASTEXITCODE) { throw "Signed $arch GLES ABI failed" }
-        # ARM64 and x64 processes enter through the ARM64X viogpud3dx.dll, x86
-        # through viogpud3d_x86.dll; each must reach its own Mesa UMD build.
-        & (Join-Path $d3d "d3d-umd-probe-$arch.exe") $driver
-        if ($LASTEXITCODE) { throw "Signed $arch D3D10 UMD ABI failed" }
-    }
-    # DXVK candidates: ARM64 and x64 processes enter through the ARM64X
-    # viogpudxvkx.dll, x86 through viogpudxvk_x86.dll. Each must reach its own
-    # signed DXVK build, find its OpenAdapter10 gate closed and resolve its
-    # private viogpu_gl_loader_<arch>.dll beside it.
-    $dxvkLog = Join-Path $env:RUNNER_TEMP 'dxvk-umd-probe-log'
-    New-Item -ItemType Directory -Force $dxvkLog | Out-Null
-    foreach ($arch in @('arm64','x64','x86')) {
-        $env:DXVK_LOG_PATH = $dxvkLog
-        try {
-            & (Join-Path $dxvk "$arch/dxvk-umd-probe-$arch.exe") $driver
-            $probeExit = $LASTEXITCODE
-        } finally {
-            Remove-Item Env:DXVK_LOG_PATH
+        foreach ($arch in @('arm64','x64','x86')) {
+            $loader = if ($arch -eq 'x86') {'OpenCL32.dll'} else {'OpenCL.dll'}
+            & (Join-Path $driver $manifest.loader_probes.$arch) (Join-Path $driver $loader)
+            if ($LASTEXITCODE) { throw "Signed $arch public loader ABI failed" }
+            & (Join-Path $cl "windows-flat-check-$arch.exe") (Join-Path $driver "viogpucl_$arch.dll") "viogpucl_vk_$arch.dll"
+            if ($LASTEXITCODE) { throw "Signed $arch CL runtime/compiler ABI failed" }
+            $icd = if ($arch -eq 'x86') {'viogpuopengl_x86.dll'} else {'viogpuopengl.dll'}
+            foreach ($mode in @('--vulkan','--opengl')) {
+                & (Join-Path $gl "small-stack-probe-$arch.exe") $mode (Join-Path $driver $icd)
+                if ($LASTEXITCODE) { throw "Signed $arch $mode constrained-stack validation failed" }
+            }
+            & (Join-Path $gl "system-probe-$arch.exe") --load-only $driver
+            if ($LASTEXITCODE) { throw "Signed $arch GL/Vulkan ABI failed" }
+            & (Join-Path $gl "gles-probe-$arch.exe") --load-only $driver
+            if ($LASTEXITCODE) { throw "Signed $arch GLES ABI failed" }
+            # ARM64 and x64 processes enter through the ARM64X viogpud3dx.dll, x86
+            # through viogpud3d_x86.dll; each must reach its own Mesa UMD build.
+            & (Join-Path $d3d "d3d-umd-probe-$arch.exe") $driver
+            if ($LASTEXITCODE) { throw "Signed $arch D3D10 UMD ABI failed" }
         }
-        if ($probeExit) { throw "Signed $arch DXVK candidate UMD ABI failed" }
+        # DXVK candidates: ARM64 and x64 processes enter through the ARM64X
+        # viogpudxvkx.dll, x86 through viogpudxvk_x86.dll. Each must reach its own
+        # signed DXVK build, find its OpenAdapter10 gate closed and resolve its
+        # private viogpu_gl_loader_<arch>.dll beside it.
+        $dxvkLog = Join-Path $env:RUNNER_TEMP 'dxvk-umd-probe-log'
+        New-Item -ItemType Directory -Force $dxvkLog | Out-Null
+        foreach ($arch in @('arm64','x64','x86')) {
+            $env:DXVK_LOG_PATH = $dxvkLog
+            try {
+                & (Join-Path $dxvk "$arch/dxvk-umd-probe-$arch.exe") $driver
+                $probeExit = $LASTEXITCODE
+            } finally {
+                Remove-Item Env:DXVK_LOG_PATH
+            }
+            if ($probeExit) { throw "Signed $arch DXVK candidate UMD ABI failed" }
+        }
+        Get-ChildItem -LiteralPath $dxvkLog -File | ForEach-Object { Write-Host "== $($_.Name)"; Get-Content -LiteralPath $_.FullName }
     }
-    Get-ChildItem -LiteralPath $dxvkLog -File | ForEach-Object { Write-Host "== $($_.Name)"; Get-Content -LiteralPath $_.FullName }
     # The unified installer's own package reader must accept this receipt,
     # including the candidate fields it does not act on.
     Import-Module (Join-Path $outputRoot 'viogpu-install-state.psm1') -Force
@@ -104,7 +112,11 @@ try {
         throw 'Unified installer reads DXVK as anything but an unregistered candidate'
     }
     Write-Host "PASS unified installer Read-FlatPackage accepts the signed receipt ($(@($package.Manifest.files.PSObject.Properties).Count) files)"
-    Write-Host 'PASS signed flat native/EC/x86 GL, CL and D3D UMD loading, native/EC/x86 DXVK candidate loading; GPU rendering and driver binding remain untested'
+    if ($StaticOnly) {
+        Write-Host 'PASS signed catalog, file hashes, common signer and installer receipt; runtime loading is delegated to Windows ARM64'
+    } else {
+        Write-Host 'PASS signed flat native/EC/x86 GL, CL and D3D UMD loading, native/EC/x86 DXVK candidate loading; GPU rendering and driver binding remain untested'
+    }
 } finally {
     Remove-GpuAttemptTrust $created
     $cert.Dispose()

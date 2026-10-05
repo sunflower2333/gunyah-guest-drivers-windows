@@ -20,3 +20,18 @@
   artifacts. Exact-source Mesa rebuild CI 37312838033 completed successfully
   and published three unexpired architecture artifacts. The paired workflow
   now consumes that replacement run ID; source/pin/version remain unchanged.
+- Resumed after a service interruption. Root pushed d5e482c4 and dispatched
+  replacement paired CI 37318070394; all 14 jobs except product build passed.
+- Retained product failure log under paired-ci-37318070394/build-job.log.
+  The ARM64 rotation regression passed before the VS18/WDK task failure.
+- Audited the established gg-zero-copy VS2022/ARM64 CI split for a narrow
+  toolchain repair; no GPU source, installed driver or VM changes.
+- Prepared the matching VS2022/x64 cross-build host, separate mandatory
+  DXVK native ARM64 fixture job, and separate signed runtime load job.
+  Added -StaticOnly for common catalog/signature/installer checks on x64;
+  native ARM64/EC/x86 load checks remain mandatory on Windows ARM64.
+- All 73 existing package tests and diff check passed after the CI split.
+  No local PowerShell parser is installed; Windows CI will parse/execute it.
+- Root reviewed the split and confirmed preserved native load/source guards.
+  Added always-uploaded ARM64 functional stdout/stderr and executable hashes
+  to retain exact test evidence on success or failure.

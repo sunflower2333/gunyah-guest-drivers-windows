@@ -25,3 +25,11 @@ expired all artifacts. A fresh exact-source Mesa rebuild, run 37312838033,
 completed successfully with three unexpired architecture artifacts. The
 paired workflow now consumes that run ID; source commit and package version
 remain unchanged.
+
+Paired CI 37318070394 passed all prerequisites and executed native ARM64
+rotation: 1281 checks/43 locks. Its build job failed before source compilation
+because windows-11-arm has VS18/MSBuild18.10 with WDK26100 tasks compiled only
+for17.0. The existing gg-zero-copy workflow already resolves this pairing by
+cross-building on windows-2022 with x64 MSBuild and running signed ARM64X
+loads in a separate Windows ARM64 job. Adapt that proven split without
+renaming task DLLs or changing the kit/source/version pins.

@@ -738,9 +738,57 @@ jobs:
           path: dxvk-fixtures/arm64/
           if-no-files-found: error
 
-  build:
+  dxvk-native-arm64:
+    name: DXVK native ARM64 functional fixtures
+    needs: dxvk-umd
     runs-on: windows-11-arm
-    needs: [mesa-umd, d3d10-multiarch, dxvk-umd, opengl-icd, opencl-icd, flat-package-tests]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Download the DXVK ARM64 functional fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: viogpu-dxvk-fixtures-arm64
+          path: dxvk-fixtures
+
+      # The pinned DXVK tree's own functional fixtures, run natively on this
+      # ARM64 runner by its own scripts/test-native-arm64.ps1 before anything is
+      # packaged: production DXGI resource rotation, Texture1D, runtime GPU
+      # dispatch, OpenAdapter/CreateDevice with the real admission gate, allocation, predication,
+      # stream output, queries and a Microsoft D3D11 runtime Draw/readback/Present.
+      # The backend is WARP: DDI translation is proven, Turnip rendering is not.
+      - name: Run the pinned DXVK tree's ARM64 functional fixtures
+        shell: pwsh
+        run: |
+          $pins = @(Select-String -LiteralPath viogpu/package/flat_package.py -Pattern '^\s*"dxvk": "([0-9a-f]{40})",\s*$')
+          if ($pins.Count -ne 1) { throw 'Cannot read the pinned DXVK commit' }
+          $pin = $pins[0].Matches[0].Groups[1].Value
+          $dxvk = Join-Path $env:RUNNER_TEMP 'dxvk-functional'
+          git init --quiet $dxvk
+          git -C $dxvk remote add origin https://github.com/sunflower2333/dxvk.git
+          git -C $dxvk fetch --quiet --depth 1 origin $pin
+          if ($LASTEXITCODE) { throw "Cannot fetch DXVK $pin" }
+          git -C $dxvk checkout --quiet --detach FETCH_HEAD
+          if ($LASTEXITCODE -or (git -C $dxvk rev-parse HEAD).Trim() -cne $pin) { throw "DXVK checkout is not $pin" }
+          # The script binds the fixtures to the source they were built from
+          # through STATUS.txt and GITHUB_SHA; for this step that source is the pin.
+          $env:GITHUB_SHA = $pin
+          & (Join-Path $dxvk 'scripts/test-native-arm64.ps1') -Directory dxvk-fixtures
+          Write-Host "PASS DXVK $pin ARM64 functional fixtures (WARP backend; no Turnip rendering claim)"
+      - name: Retain native ARM64 functional output and executable hashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: viogpu-dxvk-native-arm64-results
+          path: dxvk-fixtures/arm64-*.txt
+          if-no-files-found: warn
+
+  build:
+    # WDK26100 supplies VS17 tasks; cross-build on the matching VS2022 host.
+    # Native ARM64 functional and signed load validation remain separate jobs.
+    runs-on: windows-2022
+    needs: [mesa-umd, d3d10-multiarch, dxvk-umd, dxvk-native-arm64, opengl-icd, opencl-icd, flat-package-tests]
 
     steps:
       - name: Checkout
@@ -784,37 +832,6 @@ jobs:
           name: viogpu-dxvk-umd-x86
           path: dxvk-umd/x86
 
-      - name: Download the DXVK ARM64 functional fixtures
-        uses: actions/download-artifact@v4
-        with:
-          name: viogpu-dxvk-fixtures-arm64
-          path: dxvk-fixtures
-
-      # The pinned DXVK tree's own functional fixtures, run natively on this
-      # ARM64 runner by its own scripts/test-native-arm64.ps1 before anything is
-      # packaged: production DXGI resource rotation, Texture1D, runtime GPU
-      # dispatch, OpenAdapter/CreateDevice with the real admission gate, allocation, predication,
-      # stream output, queries and a Microsoft D3D11 runtime Draw/readback/Present.
-      # The backend is WARP: DDI translation is proven, Turnip rendering is not.
-      - name: Run the pinned DXVK tree's ARM64 functional fixtures
-        shell: pwsh
-        run: |
-          $pins = @(Select-String -LiteralPath viogpu/package/flat_package.py -Pattern '^\s*"dxvk": "([0-9a-f]{40})",\s*$')
-          if ($pins.Count -ne 1) { throw 'Cannot read the pinned DXVK commit' }
-          $pin = $pins[0].Matches[0].Groups[1].Value
-          $dxvk = Join-Path $env:RUNNER_TEMP 'dxvk-functional'
-          git init --quiet $dxvk
-          git -C $dxvk remote add origin https://github.com/sunflower2333/dxvk.git
-          git -C $dxvk fetch --quiet --depth 1 origin $pin
-          if ($LASTEXITCODE) { throw "Cannot fetch DXVK $pin" }
-          git -C $dxvk checkout --quiet --detach FETCH_HEAD
-          if ($LASTEXITCODE -or (git -C $dxvk rev-parse HEAD).Trim() -cne $pin) { throw "DXVK checkout is not $pin" }
-          # The script binds the fixtures to the source they were built from
-          # through STATUS.txt and GITHUB_SHA; for this step that source is the pin.
-          $env:GITHUB_SHA = $pin
-          & (Join-Path $dxvk 'scripts/test-native-arm64.ps1') -Directory dxvk-fixtures
-          Write-Host "PASS DXVK $pin ARM64 functional fixtures (WARP backend; no Turnip rendering claim)"
-
       - name: Download the ABI-validated OpenGL system ICD payload
         uses: actions/download-artifact@v4
         with:
@@ -834,15 +851,16 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
         with:
-          msbuild-architecture: arm64
+          msbuild-architecture: x64
+          vs-version: '[17.0,18.0)'
 
       - name: Verify ARM64 cross-build host tools
         shell: pwsh
         run: |
           $msbuild = (Get-Command msbuild -ErrorAction Stop).Source
           Write-Host "MSBuild host: $msbuild"
-          if ($msbuild -notmatch '\\arm64\\MSBuild\.exe$') {
-            throw "Expected the ARM64 MSBuild host required by the ARM64 WDK, got: $msbuild"
+          if ($msbuild -notmatch '\\amd64\\MSBuild\.exe$') {
+            throw "Expected the x64 MSBuild host for ARM64 cross-builds, got: $msbuild"
           }
 
       - name: Add host MSVC and WDK tools to PATH
@@ -850,6 +868,7 @@ jobs:
         with:
           # These are host-side tools; every MSBuild target below remains ARM64.
           arch: x64
+          vsversion: '2022'
 
       - name: Generate NetKVM MOF header
         shell: pwsh
@@ -1341,9 +1360,9 @@ jobs:
             throw "ARM64 bundle contains empty files: $($emptyFiles.FullName -join '; ')"
           }
 
-      - name: Verify actual catalog members and signed flat runtime loading
+      - name: Verify actual catalog members and common signer
         shell: pwsh
-        run: ./.github/scripts/test-signed-flat-gpu.ps1
+        run: ./.github/scripts/test-signed-flat-gpu.ps1 -StaticOnly
 
       - name: Verify and record the exact jointly signed package identity
         shell: pwsh
@@ -1359,3 +1378,42 @@ jobs:
           name: droidvm-arm64-drivers
           path: out/**
           if-no-files-found: error
+
+  signed-runtime-abi:
+    name: Signed flat GPU runtime loading on Windows ARM64
+    needs: build
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: droidvm-arm64-drivers
+          path: out
+      - uses: actions/download-artifact@v4
+        with:
+          name: viogpu-opengl-system-unsigned
+          path: opengl-payload
+      - uses: actions/download-artifact@v4
+        with:
+          name: viogpu-opencl-flat-unsigned
+          path: opencl-payload
+      - uses: actions/download-artifact@v4
+        with:
+          name: viogpu-d3d10-multiarch-unsigned
+          path: d3d10-payload
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: viogpu-dxvk-umd-*
+          path: dxvk-artifacts
+      - name: Arrange the per-architecture DXVK load probes
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dxvk-umd | Out-Null
+          foreach ($arch in @('arm64','x64','x86')) {
+            Copy-Item -LiteralPath "dxvk-artifacts/viogpu-dxvk-umd-$arch" -Destination "dxvk-umd/$arch" -Recurse
+          }
+      - name: Verify signed catalog and native plus emulated runtime loading
+        shell: pwsh
+        run: ./.github/scripts/test-signed-flat-gpu.ps1

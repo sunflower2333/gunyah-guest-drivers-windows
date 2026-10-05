@@ -34,3 +34,15 @@ This is an older package baseline than active installed driver 58623 with
 Mesa `b36366b53c17cc55c84df7b756b45fb6e4e4e8fa`. Its artifacts serve as
 candidate integration evidence; this checkpoint does not authorize replacing
 the active desktop stack.
+
+Paired CI 37318070394 passed the three DXVK architecture builds, all Mesa
+and API prerequisites, and the native ARM64 rotation regression (1281
+checks/43 locks). Driver compilation stopped before source compilation:
+the migrated Windows ARM64 image pairs VS18 with WDK26100, whose build task
+assembly supports VS17. The workflow now cross-builds the ARM64 driver
+targets on the matching VS2022/x64 host. Native DXVK functional fixtures
+remain mandatory in a Windows ARM64 job before packaging. Actual catalog,
+file hashes, common signer and installer receipt are checked on the build
+host; all signed ARM64/EC/x86 runtime load checks remain mandatory in a
+separate Windows ARM64 job after packaging. GPU source and package pins do
+not change for this CI repair.
