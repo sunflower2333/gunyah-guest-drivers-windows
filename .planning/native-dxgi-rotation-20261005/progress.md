@@ -35,3 +35,13 @@
 - Root reviewed the split and confirmed preserved native load/source guards.
   Added always-uploaded ARM64 functional stdout/stderr and executable hashes
   to retain exact test evidence on success or failure.
+- Committed/pushed e0449321acc7042b7af9a165ddb366b2f24158e5 with actual
+  multiline attribution and dispatched replacement paired CI 37336134109.
+  Kept the source pin at 4f59adf pending root's focused Present repair.
+- Replacement CI 37336134109 rejected the old literal ARM64 runner assertion
+  in check-contract.py. Updated it to require the actual VS2022 cross-build
+  and mandatory ARM64 functional/signed-load job split.
+- The full miniport contract checker, all 73 package unit tests, YAML parse
+  (11 jobs) and git diff --check passed with the stronger per-job runner,
+  dependency, toolchain and full-load assertions. Commit/push the checker
+  repair now; coordinate the next paired dispatch with root's final DXVK pin.

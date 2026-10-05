@@ -849,7 +849,6 @@ def check_arm64_workflow_contract() -> None:
         fail(f"missing shared Windows SDK/WDK locator: {WINDOWS_KIT_SCRIPT_PATH}")
     kit_script = WINDOWS_KIT_SCRIPT_PATH.read_text(encoding="utf-8")
     required_toolchain_fragments = (
-        "runs-on: windows-11-arm",
         "Locate preinstalled Windows SDK and WDK",
         ".github/scripts/locate-windows-kit.ps1",
     )
@@ -864,6 +863,39 @@ def check_arm64_workflow_contract() -> None:
                     f"{label} workflow must discover and verify one preinstalled ARM64 "
                     f"Windows SDK/WDK: {fragment}"
                 )
+
+        if label == "product drivers":
+            # WDK26100 supplies VS17 build tasks. Keep the matching cross-build
+            # host and both native ARM64 validation jobs mandatory.
+            job_contracts = {
+                "build": ("windows-2022", "dxvk-native-arm64"),
+                "dxvk-native-arm64": ("windows-11-arm", "dxvk-umd"),
+                "signed-runtime-abi": ("windows-11-arm", "build"),
+            }
+            for job_name, (runner, dependency) in job_contracts.items():
+                job = re.search(
+                    rf"(?ms)^  {re.escape(job_name)}:\n(.*?)(?=^  [\w-]+:|\Z)", source
+                )
+                if job is None or job.group(1).count(f"runs-on: {runner}") != 1:
+                    fail(f"product {job_name} job must use {runner}")
+                job_source = job.group(1)
+                needs = re.search(r"(?m)^    needs:\s*(.+)$", job_source)
+                dependencies = re.findall(r"[\w-]+", needs.group(1)) if needs else []
+                if dependency not in dependencies:
+                    fail(f"product {job_name} job must depend on {dependency}")
+                if job_name == "signed-runtime-abi" and not re.search(
+                    r"(?m)^        run: \./\.github/scripts/test-signed-flat-gpu\.ps1\s*$",
+                    job_source,
+                ):
+                    fail("signed runtime job must run the full load check without -StaticOnly")
+                if job_name == "build" and (
+                    job_source.count("msbuild-architecture: x64") != 1 or
+                    job_source.count("vs-version: '[17.0,18.0)'") != 1 or
+                    job_source.count("test-signed-flat-gpu.ps1 -StaticOnly") != 1
+                ):
+                    fail("product build must pair VS17/x64 MSBuild with static signed catalog checks")
+        elif source.count("runs-on: windows-11-arm") != 1:
+            fail(f"{label} workflow must use its native Windows ARM64 host")
 
         if re.search(r"winget\s+install\s+--id\s+Microsoft\.Windows(?:SDK|WDK)", source, re.I):
             fail(f"{label} workflow must not install the runner's preinstalled Windows SDK/WDK")

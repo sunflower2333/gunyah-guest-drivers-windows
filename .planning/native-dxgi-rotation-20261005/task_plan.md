@@ -6,10 +6,11 @@ Advance the unregistered DXVK candidate to exact source
 rotation regression in the ARM64 fixture handoff.
 
 ## Next step
-Repair the inherited VS18/WDK26100 runner mismatch from paired CI 37318070394.
-Use the proven VS2022 cross-build host and retain all native ARM64 functional
-and signed runtime load checks in ARM64 jobs. Then validate the replacement
-package and receipts. Root owns source validation and all guest operations.
+Commit/push the validated workflow contract repair; coordinate the next
+paired dispatch with root's final DXVK source pin. Validate the VS2022
+cross-build plus mandatory Windows ARM64 functional/signed load jobs, then
+download and verify the package receipts. Root owns source validation, any
+future DXVK pin update and all guest operations.
 
 ## Phases
 - [complete] Audit clean paired baseline and source/fixture requirements.
@@ -34,3 +35,6 @@ paired CI 37318070394 passed every prerequisite and the ARM64 rotation test,
 but all driver builds failed before compilation on missing WDK18.0 tasks.
 One resume planning patch used the pre-interruption findings text and failed
 atomically; reread root's current findings before applying the update.
+Replacement CI 37336134109 caught the old checker requiring exactly one
+windows-11-arm product runner. Updated the contract to enforce the VS2022
+cross-build job and both mandatory native ARM64 validation jobs.
