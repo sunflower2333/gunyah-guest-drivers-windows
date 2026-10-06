@@ -7,9 +7,15 @@
 #else
 #define __declspec(value)
 #endif
+#ifndef _In_
 #define _In_
+#endif
+#ifndef _Out_
 #define _Out_
+#endif
+#ifndef _Inout_
 #define _Inout_
+#endif
 #define VIOGPU_NATIVE_CONTEXT 1
 #define PAGED_CODE() ((void)0)
 #define UNREFERENCED_PARAMETER(value) ((void)(value))
