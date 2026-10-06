@@ -242,6 +242,10 @@ VioGpuDod::VioGpuDod(_In_ DEVICE_OBJECT *pPhysicalDeviceObject)
     KeInitializeSpinLock(&m_NativeFenceLock);
     m_HardwareResetCallerRva = 0;
     m_HardwareResetFirstCallerRva = 0;
+    m_ResetRequestPublication = 0;
+    RtlZeroMemory(&m_FirstResetRequest, sizeof(m_FirstResetRequest));
+    m_2DDestroyPublication = 0;
+    RtlZeroMemory(&m_First2DDestroyFailure, sizeof(m_First2DDestroyFailure));
     m_NativeContextFailFirstCallerRva = 0;
     m_NativeContextFailCount = 0;
     m_NativeContextFailFirstSite = VioGpuNativeFailSiteNone;
@@ -2937,11 +2941,15 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Destroy2DResource(_In_ UINT resourceId,
 {
     if (released == NULL)
     {
+        RecordNative2DDestroyFailure(VioGpu2DDestroyArguments, resourceId, MAXULONG, 0, 0,
+                                    VioGpuHostContextNotSubmitted);
         return VioGpuHostContextNotSubmitted;
     }
     *released = FALSE;
     if (!AcquireNativeSubmissionOperation())
     {
+        RecordNative2DDestroyFailure(VioGpu2DDestroyRundown, resourceId, MAXULONG, 0, 0,
+                                    VioGpuHostContextNotSubmitted);
         return VioGpuHostContextNotSubmitted;
     }
 
@@ -2952,6 +2960,9 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuDod::Destroy2DResource(_In_ UINT resourceId,
                                                                                      released,
                                                                                      retainIfBusy)
                                                         : VioGpuHostContextNotSubmitted;
+    if (adapter == NULL)
+        RecordNative2DDestroyFailure(VioGpu2DDestroyAdapter, resourceId, MAXULONG, 0, 0,
+                                    VioGpuHostContextNotSubmitted);
     ReleaseNativeSubmissionOperation();
     return result;
 }
@@ -7320,12 +7331,73 @@ __declspec(noinline) void VioGpuAdapter::RecordNativeOwnerUnprovenReleaseAtAnyIr
 #endif
 }
 
+#if defined(VIOGPU_NATIVE_CONTEXT)
+__declspec(code_seg(".text")) VOID VioGpuDod::RecordFirstResetRequest(_In_ ULONG_PTR callerRva)
+{
+    if (InterlockedCompareExchange(&m_ResetRequestPublication, 1, 0) != 0)
+        return;
+    VIOGPU_RESET_REQUEST_DIAGNOSTIC diagnostic = {};
+    const ULONGLONG time = KeQueryInterruptTime();
+    diagnostic.CallerRva = callerRva <= MAXULONG ? static_cast<ULONG>(callerRva) : 0;
+    diagnostic.HardwareState = ReadHardwareResetState();
+    diagnostic.TimeLow = static_cast<ULONG>(time);
+    diagnostic.TimeHigh = static_cast<ULONG>(time >> 32);
+    m_FirstResetRequest = diagnostic;
+    InterlockedExchange(&m_ResetRequestPublication, 2);
+}
+
+BOOLEAN VioGpuDod::GetFirstResetRequest(_Out_ VIOGPU_RESET_REQUEST_DIAGNOSTIC *diagnostic)
+{
+    if (diagnostic == NULL)
+        return FALSE;
+    RtlZeroMemory(diagnostic, sizeof(*diagnostic));
+    if (InterlockedCompareExchange(&m_ResetRequestPublication, 0, 0) != 2)
+        return FALSE;
+    *diagnostic = m_FirstResetRequest;
+    return TRUE;
+}
+
+VOID VioGpuDod::RecordNative2DDestroyFailure(_In_ ULONG stage, _In_ UINT resourceId, _In_ ULONG state,
+                                           _In_ ULONGLONG resourceGeneration, _In_ ULONGLONG adapterGeneration,
+                                           _In_ VIOGPU_HOST_CONTEXT_RESULT result)
+{
+    if (InterlockedCompareExchange(&m_2DDestroyPublication, 1, 0) != 0)
+        return;
+    VIOGPU_2D_DESTROY_DIAGNOSTIC diagnostic = {};
+    const ULONGLONG time = KeQueryInterruptTime();
+    diagnostic.Stage = stage;
+    diagnostic.Result = static_cast<ULONG>(result);
+    diagnostic.ResourceId = resourceId;
+    diagnostic.ResourceState = state;
+    diagnostic.ResourceGenerationLow = static_cast<ULONG>(resourceGeneration);
+    diagnostic.ResourceGenerationHigh = static_cast<ULONG>(resourceGeneration >> 32);
+    diagnostic.AdapterGenerationLow = static_cast<ULONG>(adapterGeneration);
+    diagnostic.AdapterGenerationHigh = static_cast<ULONG>(adapterGeneration >> 32);
+    diagnostic.TimeLow = static_cast<ULONG>(time);
+    diagnostic.TimeHigh = static_cast<ULONG>(time >> 32);
+    m_First2DDestroyFailure = diagnostic;
+    InterlockedExchange(&m_2DDestroyPublication, 2);
+}
+
+BOOLEAN VioGpuDod::GetFirst2DDestroyFailure(_Out_ VIOGPU_2D_DESTROY_DIAGNOSTIC *diagnostic)
+{
+    if (diagnostic == NULL)
+        return FALSE;
+    RtlZeroMemory(diagnostic, sizeof(*diagnostic));
+    if (InterlockedCompareExchange(&m_2DDestroyPublication, 0, 0) != 2)
+        return FALSE;
+    *diagnostic = m_First2DDestroyFailure;
+    return TRUE;
+}
+#endif
+
 __declspec(noinline) VOID VioGpuDod::RequestHardwareResetAtAnyIrql(void)
 {
 #if defined(VIOGPU_NATIVE_CONTEXT)
     ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
     ULONG_PTR returnAddress = reinterpret_cast<ULONG_PTR>(_ReturnAddress());
     ULONG_PTR callerRva = returnAddress >= imageBase ? returnAddress - imageBase : 0;
+    RecordFirstResetRequest(callerRva);
 #endif
     LONG previousState = InterlockedExchange(&m_HardwareResetState, VioGpuHardwareResetRequested);
 #if defined(VIOGPU_NATIVE_CONTEXT)
@@ -8260,6 +8332,13 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
     DWORD firstTimeoutCallerRva = firstTimeout.CallerRva;
     DWORD firstTimeoutEpochGeneration = firstTimeout.EpochGeneration;
     DWORD firstTimeoutCommandBytes = firstTimeout.CommandBytes;
+    VIOGPU_SYNCHRONOUS_ADMISSION_DIAGNOSTIC firstAdmission = {};
+    DWORD firstAdmissionValid =
+        m_pHWDevice != NULL && m_pHWDevice->GetFirstSynchronousAdmission(&firstAdmission) ? 1U : 0U;
+    VIOGPU_RESET_REQUEST_DIAGNOSTIC firstReset = {};
+    DWORD firstResetValid = GetFirstResetRequest(&firstReset) ? 1U : 0U;
+    VIOGPU_2D_DESTROY_DIAGNOSTIC firstDestroy = {};
+    DWORD firstDestroyValid = GetFirst2DDestroyFailure(&firstDestroy) ? 1U : 0U;
     DWORD timingPathCalls = ReadDisplayCounter(VioGpuTimingPathCalls);
     DWORD timingPathLastStatus = ReadDisplayCounter(VioGpuTimingPathLastStatus);
     DWORD timingPathWireFormat = ReadDisplayCounter(VioGpuTimingPathWireFormat);
@@ -8931,6 +9010,32 @@ VOID VioGpuDod::RecordNativeAllocationDestroyDiagnostic(_In_ DWORD stage,
                                                                                                          &firstTimeoutEpochGeneration},
                                                                                                         {L"NativeSynchronousFirstTimeoutCommandBytes",
                                                                                                          &firstTimeoutCommandBytes},
+                                                                                                        {L"NativeSynchronousFirstTimeoutTimeLow", &firstTimeout.TimeLow},
+                                                                                                        {L"NativeSynchronousFirstTimeoutTimeHigh", &firstTimeout.TimeHigh},
+                                                                                                        {L"NativeAdapterAdmissionValid", &firstAdmissionValid},
+                                                                                                        {L"NativeAdapterAdmissionReason", &firstAdmission.Reason},
+                                                                                                        {L"NativeAdapterAdmissionCallerRva", &firstAdmission.CallerRva},
+                                                                                                        {L"NativeAdapterAdmissionWaitStatus", &firstAdmission.WaitStatus},
+                                                                                                        {L"NativeAdapterAdmissionEpochState", &firstAdmission.EpochState},
+                                                                                                        {L"NativeAdapterAdmissionEpochGeneration", &firstAdmission.EpochGeneration},
+                                                                                                        {L"NativeAdapterAdmissionTimeLow", &firstAdmission.TimeLow},
+                                                                                                        {L"NativeAdapterAdmissionTimeHigh", &firstAdmission.TimeHigh},
+                                                                                                        {L"NativeResetRequestValid", &firstResetValid},
+                                                                                                        {L"NativeResetRequestCallerRva", &firstReset.CallerRva},
+                                                                                                        {L"NativeResetRequestHardwareState", &firstReset.HardwareState},
+                                                                                                        {L"NativeResetRequestTimeLow", &firstReset.TimeLow},
+                                                                                                        {L"NativeResetRequestTimeHigh", &firstReset.TimeHigh},
+                                                                                                        {L"Native2DDestroyValid", &firstDestroyValid},
+                                                                                                        {L"Native2DDestroyStage", &firstDestroy.Stage},
+                                                                                                        {L"Native2DDestroyResult", &firstDestroy.Result},
+                                                                                                        {L"Native2DDestroyResourceId", &firstDestroy.ResourceId},
+                                                                                                        {L"Native2DDestroyResourceState", &firstDestroy.ResourceState},
+                                                                                                        {L"Native2DDestroyResourceGenerationLow", &firstDestroy.ResourceGenerationLow},
+                                                                                                        {L"Native2DDestroyResourceGenerationHigh", &firstDestroy.ResourceGenerationHigh},
+                                                                                                        {L"Native2DDestroyAdapterGenerationLow", &firstDestroy.AdapterGenerationLow},
+                                                                                                        {L"Native2DDestroyAdapterGenerationHigh", &firstDestroy.AdapterGenerationHigh},
+                                                                                                        {L"Native2DDestroyTimeLow", &firstDestroy.TimeLow},
+                                                                                                        {L"Native2DDestroyTimeHigh", &firstDestroy.TimeHigh},
                                                                                                         {L"NativeTimingPathCalls",
                                                                                                          &timingPathCalls},
                                                                                                         {L"NativeTimingPathLastStatus",
@@ -13233,17 +13338,30 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId
 
     if (released == NULL)
     {
+        if (m_pVioGpuDod != NULL)
+            m_pVioGpuDod->RecordNative2DDestroyFailure(VioGpu2DDestroyArguments, resourceId, MAXULONG, 0, 0,
+                                                     VioGpuHostContextNotSubmitted);
         return VioGpuHostContextNotSubmitted;
     }
     *released = FALSE;
     if (resourceState == NULL || resourceResetGeneration == NULL || resourceId == 0 ||
         resourceId >= VIOGPU_NATIVE_RESOURCE_ID_START || KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
+        if (m_pVioGpuDod != NULL)
+            m_pVioGpuDod->RecordNative2DDestroyFailure(VioGpu2DDestroyArguments, resourceId, MAXULONG, 0, 0,
+                                                     VioGpuHostContextNotSubmitted);
         return VioGpuHostContextNotSubmitted;
     }
+    auto recordFailure = [&](ULONG stage, VIOGPU_HOST_CONTEXT_RESULT result) {
+        if (m_pVioGpuDod != NULL)
+            m_pVioGpuDod->RecordNative2DDestroyFailure(
+                stage, resourceId, static_cast<ULONG>(*resourceState), *resourceResetGeneration,
+                static_cast<ULONGLONG>(InterlockedCompareExchange64(&m_NativeContextResetGeneration, 0, 0)), result);
+    };
     BOOLEAN retired = FALSE;
     if (!Reconcile2DResourceAfterReset(resourceState, resourceResetGeneration, &retired))
     {
+        recordFailure(VioGpu2DDestroyReconcile, VioGpuHostContextNotSubmitted);
         return VioGpuHostContextNotSubmitted;
     }
     if (*resourceState == VioGpu2DResourceNone)
@@ -13254,6 +13372,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId
     if (*resourceState == VioGpu2DResourceUnknown ||
         (*resourceState != VioGpu2DResourceCreated && !VioGpuResourceBackingAttached(*resourceState)))
     {
+        recordFailure(VioGpu2DDestroyLedger, VioGpuHostContextUnknown);
         FailNativeContextAtAnyIrql(VioGpuNativeFailSiteDestroy2DPreexisting);
         return VioGpuHostContextUnknown;
     }
@@ -13263,6 +13382,7 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId
                                                                                         0));
     if (operationGeneration == 0 || *resourceResetGeneration != operationGeneration)
     {
+        recordFailure(VioGpu2DDestroyLedger, VioGpuHostContextUnknown);
         *resourceState = VioGpu2DResourceUnknown;
         FailNativeContextAtAnyIrql(VioGpuNativeFailSiteDestroy2DGeneration);
         return VioGpuHostContextUnknown;
@@ -13273,14 +13393,19 @@ VIOGPU_HOST_CONTEXT_RESULT VioGpuAdapter::Destroy2DResource(_In_ UINT resourceId
      * resource-level UNMAP part of the same synchronous destruction transaction
      * and fail closed if it cannot be acknowledged. */
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextConfirmed;
+    ULONG failureStage = VioGpu2DDestroyUnref;
     if (VioGpuResourceNativeAhbMapped(*resourceState))
     {
         result = m_CtrlQueue.UnmapBlobSynchronous(resourceId);
+        failureStage = VioGpu2DDestroyUnmap;
     }
     if (result == VioGpuHostContextConfirmed)
     {
         result = m_CtrlQueue.UnrefResourceSynchronous(resourceId);
+        failureStage = VioGpu2DDestroyUnref;
     }
+    if (result != VioGpuHostContextConfirmed)
+        recordFailure(failureStage, result);
     if (result == VioGpuHostContextConfirmed)
     {
         *resourceState = VioGpu2DResourceNone;

@@ -109,9 +109,19 @@ static LONG FixtureExchange(volatile LONG *dest, LONG value)
 #define InterlockedExchange          FixtureExchange
 #define InterlockedCompareExchange64 _InterlockedCompareExchange64
 #endif
+static int fixtureIrql = PASSIVE_LEVEL;
+static ULONGLONG fixtureTime = 0x123456789abcdef0ULL;
+static ULONGLONG KeQueryInterruptTime()
+{
+    return fixtureTime;
+}
 static int KeGetCurrentIrql()
 {
-    return PASSIVE_LEVEL;
+    return fixtureIrql;
+}
+static LONG InterlockedIncrement(volatile LONG *value)
+{
+    return InterlockedExchange(value, *value + 1) + 1;
 }
 static void KeClearEvent(KEVENT *event)
 {
@@ -148,6 +158,9 @@ struct CtrlQueue
     volatile LONG m_SynchronousTimeoutPublication = 0;
     volatile LONG m_SynchronousLongestWaitSlices = 0;
     VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC m_FirstSynchronousTimeout = {};
+    volatile LONG m_SynchronousAdmissionPublication = 0;
+    VIOGPU_SYNCHRONOUS_ADMISSION_DIAGNOSTIC m_FirstSynchronousAdmission = {};
+    volatile LONG m_SynchronousLockOrderRefusals = 0;
     int m_SynchronousMutex = 0;
     int queueResult = 0;
     unsigned queued = 0;
@@ -163,6 +176,11 @@ struct CtrlQueue
     void PoisonSynchronousRequests();
     void RecordFirstSynchronousTimeout(PGPU_VBUFFER, NTSTATUS, LONG64, ULONG_PTR);
     BOOLEAN GetFirstSynchronousTimeout(VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *);
+    void RecordFirstSynchronousAdmission(ULONG, NTSTATUS, ULONG_PTR);
+    BOOLEAN GetFirstSynchronousAdmission(VIOGPU_SYNCHRONOUS_ADMISSION_DIAGNOSTIC *);
+    BOOLEAN BeginSynchronousRequest();
+    void EndSynchronousRequest();
+    BOOLEAN IsNativeSynchronousOwnedByCurrentThread() { return FALSE; }
     ULONG SynchronousLongestWaitSlices();
     BOOLEAN EnableSynchronousRequests();
     void CompleteSynchronousRequestTeardown();
@@ -259,6 +277,8 @@ static void lifecycle()
               queue.SynchronousLongestWaitSlices() == VIOGPU_SYNCHRONOUS_COMPLETION_WAIT_SLICES,
           "an unanswered request is given up only after the whole wait budget");
     check(!queue.IsSynchronousRequestsHealthy(), "timeout poisons actual queue");
+    check(queue.GetFirstSynchronousTimeout(&diagnostic) && diagnostic.TimeLow == 0x9abcdef0 &&
+              diagnostic.TimeHigh == 0x12345678, "timeout uses the common kernel clock");
     check(queue.GetFirstSynchronousTimeout(&diagnostic) && diagnostic.Flags == 3 && diagnostic.Type == VIRTIO_GPU_CMD_RESOURCE_UNREF &&
                                                                                                               diagnostic.ContextId == 91 &&
                                                                                                               diagnostic.ResourceId == 0x80000123 &&
@@ -529,6 +549,58 @@ static void quiesce_failures()
     expectedWaitInterval = -50000000LL;
 }
 
+static void admission()
+{
+    VIOGPU_SYNCHRONOUS_ADMISSION_DIAGNOSTIC diagnostic = {};
+    CtrlQueue offline;
+    unsigned before = waits;
+    check(!offline.BeginSynchronousRequest() && waits == before, "offline admission refuses without waiting");
+    check(offline.GetFirstSynchronousAdmission(&diagnostic) &&
+              diagnostic.Reason == VioGpuSynchronousAdmissionEpoch && diagnostic.EpochState == VioGpuSynchronousOffline &&
+              diagnostic.CallerRva == 0x4321 && diagnostic.TimeLow == 0x9abcdef0 && diagnostic.TimeHigh == 0x12345678,
+          "admission captures exact gate, caller and common-clock time");
+    const auto first = diagnostic;
+    enable(offline);
+    waitResult = STATUS_TIMEOUT;
+    before = waits;
+    check(!offline.BeginSynchronousRequest() && waits == before + VIOGPU_SYNCHRONOUS_MUTEX_WAIT_SLICES &&
+              !offline.IsSynchronousRequestsHealthy(), "mutex admission retains wait budget and poisoning");
+    check(offline.GetFirstSynchronousAdmission(&diagnostic) && !std::memcmp(&first, &diagnostic, sizeof(first)),
+          "first admission refusal survives poison and recovery");
+    CtrlQueue mutex;
+    enable(mutex);
+    waitResult = STATUS_TIMEOUT;
+    check(!mutex.BeginSynchronousRequest() && mutex.GetFirstSynchronousAdmission(&diagnostic) &&
+              diagnostic.Reason == VioGpuSynchronousAdmissionMutex && diagnostic.WaitStatus == STATUS_TIMEOUT &&
+              diagnostic.EpochState == VioGpuSynchronousEnabled && diagnostic.EpochGeneration == 1,
+          "mutex failure captured before poisoning");
+    CtrlQueue irql;
+    enable(irql);
+    fixtureIrql = 2;
+    before = waits;
+    check(!irql.BeginSynchronousRequest() && waits == before && irql.GetFirstSynchronousAdmission(&diagnostic) &&
+              diagnostic.Reason == VioGpuSynchronousAdmissionIrql, "IRQL gate remains distinct and never waits");
+    fixtureIrql = PASSIVE_LEVEL;
+    CtrlQueue changed;
+    enable(changed);
+    waitAction = [&] { changed.PoisonSynchronousRequests(); };
+    before = mutexReleases;
+    check(!changed.BeginSynchronousRequest() && mutexReleases == before + 1 &&
+              changed.GetFirstSynchronousAdmission(&diagnostic) &&
+              diagnostic.Reason == VioGpuSynchronousAdmissionEpochAfterWait,
+          "post-wait epoch change releases mutex and captures its own gate");
+    waitAction = {};
+    CtrlQueue successful;
+    enable(successful);
+    check(successful.BeginSynchronousRequest() && !successful.GetFirstSynchronousAdmission(&diagnostic),
+          "successful admission publishes no refusal");
+    successful.EndSynchronousRequest();
+    successful.m_SynchronousAdmissionPublication = 1;
+    diagnostic.Reason = 123;
+    check(!successful.GetFirstSynchronousAdmission(&diagnostic) && !diagnostic.Reason &&
+              !successful.GetFirstSynchronousAdmission(nullptr), "partial and null admission reads rejected");
+}
+
 int main()
 {
     lifecycle();
@@ -536,5 +608,6 @@ int main()
     publication();
     channel_isolation();
     quiesce_failures();
+    admission();
     std::printf("PASS synchronous timeout lifecycle and boundaries: %d checks\n", checks);
 }

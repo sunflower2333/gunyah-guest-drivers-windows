@@ -4517,7 +4517,8 @@ def check_synchronous_2d_control_transactions() -> None:
         "BOOLEANsubmitted=FALSE;",
         "BOOLEANcompleted=SubmitSynchronousLocked(buf,&releaseBuffer,&submitted);",
         "VIOGPU_HOST_CONTEXT_RESULTresult=VioGpuHostContextUnknown;",
-        "if(!submitted){result=VioGpuHostContextNotSubmitted;}",
+        "if(!submitted){RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionQueueSubmit,"
+        "STATUS_DEVICE_NOT_READY,reinterpret_cast<ULONG_PTR>(_ReturnAddress()));result=VioGpuHostContextNotSubmitted;}",
         "elseif(completed&&buf->response_size==sizeof(GPU_CTRL_HDR))",
         "if(IsPlainControlResponse(response,VIRTIO_GPU_RESP_OK_NODATA))",
         "result=VioGpuHostContextConfirmed;",

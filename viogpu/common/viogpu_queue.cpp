@@ -539,7 +539,7 @@ static BOOLEAN IsValid2DRectangle(UINT width, UINT height, UINT x, UINT y)
     return width != 0 && height != 0 && x <= MAXUINT - width && y <= MAXUINT - height;
 }
 
-BOOLEAN CtrlQueue::BeginSynchronousRequest(void)
+__declspec(noinline) BOOLEAN CtrlQueue::BeginSynchronousRequest(void)
 {
     PAGED_CODE();
 
@@ -550,13 +550,22 @@ BOOLEAN CtrlQueue::BeginSynchronousRequest(void)
     if (IsNativeSynchronousOwnedByCurrentThread())
     {
         InterlockedIncrement(&m_SynchronousLockOrderRefusals);
+        RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionLockOrder, STATUS_DEVICE_NOT_READY,
+                                       reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
         NT_ASSERT(FALSE);
         return FALSE;
     }
 
-    if (KeGetCurrentIrql() != PASSIVE_LEVEL ||
-        VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)) != VioGpuSynchronousEnabled)
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
     {
+        RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionIrql, STATUS_DEVICE_NOT_READY,
+                                       reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
+        return FALSE;
+    }
+    if (VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)) != VioGpuSynchronousEnabled)
+    {
+        RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionEpoch, STATUS_DEVICE_NOT_READY,
+                                       reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
         return FALSE;
     }
 
@@ -569,11 +578,15 @@ BOOLEAN CtrlQueue::BeginSynchronousRequest(void)
     }
     if (status != STATUS_SUCCESS)
     {
+        RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionMutex, status,
+                                       reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
         PoisonSynchronousRequests();
         return FALSE;
     }
     if (VioGpuSynchronousState(VioGpuReadSynchronousEpochState(&m_SynchronousEpochState)) != VioGpuSynchronousEnabled)
     {
+        RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionEpochAfterWait, STATUS_DEVICE_NOT_READY,
+                                       reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
         KeReleaseMutex(&m_SynchronousMutex, FALSE);
         return FALSE;
     }
@@ -805,6 +818,9 @@ void CtrlQueue::RecordFirstSynchronousTimeout(PGPU_VBUFFER buf, NTSTATUS status,
     diagnostic.WaitStatus = static_cast<ULONG>(status);
     diagnostic.EpochGeneration = VioGpuSynchronousGeneration(epochState);
     diagnostic.CommandBytes = buf != NULL && buf->size > 0 ? static_cast<ULONG>(buf->size) : 0;
+    const ULONGLONG time = KeQueryInterruptTime();
+    diagnostic.TimeLow = static_cast<ULONG>(time);
+    diagnostic.TimeHigh = static_cast<ULONG>(time >> 32);
     ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
     ULONG_PTR callerRva = caller >= imageBase ? caller - imageBase : 0;
     diagnostic.CallerRva = callerRva <= MAXULONG ? static_cast<ULONG>(callerRva) : 0;
@@ -825,6 +841,37 @@ BOOLEAN CtrlQueue::GetFirstSynchronousTimeout(_Out_ VIOGPU_SYNCHRONOUS_TIMEOUT_D
         return FALSE;
     }
     *diagnostic = m_FirstSynchronousTimeout;
+    return TRUE;
+}
+
+void CtrlQueue::RecordFirstSynchronousAdmission(ULONG reason, NTSTATUS status, ULONG_PTR caller)
+{
+    if (InterlockedCompareExchange(&m_SynchronousAdmissionPublication, 1, 0) != 0)
+        return;
+    VIOGPU_SYNCHRONOUS_ADMISSION_DIAGNOSTIC diagnostic = {};
+    const ULONGLONG time = KeQueryInterruptTime();
+    const LONG64 epoch = VioGpuReadSynchronousEpochState(&m_SynchronousEpochState);
+    const ULONG_PTR imageBase = reinterpret_cast<ULONG_PTR>(&__ImageBase);
+    const ULONG_PTR rva = caller >= imageBase ? caller - imageBase : 0;
+    diagnostic.Reason = reason;
+    diagnostic.CallerRva = rva <= MAXULONG ? static_cast<ULONG>(rva) : 0;
+    diagnostic.WaitStatus = static_cast<ULONG>(status);
+    diagnostic.EpochState = static_cast<ULONG>(VioGpuSynchronousState(epoch));
+    diagnostic.EpochGeneration = VioGpuSynchronousGeneration(epoch);
+    diagnostic.TimeLow = static_cast<ULONG>(time);
+    diagnostic.TimeHigh = static_cast<ULONG>(time >> 32);
+    m_FirstSynchronousAdmission = diagnostic;
+    InterlockedExchange(&m_SynchronousAdmissionPublication, 2);
+}
+
+BOOLEAN CtrlQueue::GetFirstSynchronousAdmission(_Out_ VIOGPU_SYNCHRONOUS_ADMISSION_DIAGNOSTIC *diagnostic)
+{
+    if (diagnostic == NULL)
+        return FALSE;
+    RtlZeroMemory(diagnostic, sizeof(*diagnostic));
+    if (InterlockedCompareExchange(&m_SynchronousAdmissionPublication, 0, 0) != 2)
+        return FALSE;
+    *diagnostic = m_FirstSynchronousAdmission;
     return TRUE;
 }
 
@@ -1503,7 +1550,7 @@ __declspec(noinline) BOOLEAN CtrlQueue::SubmitNativeSynchronousLocked(PGPU_VBUFF
     return TRUE;
 }
 
-VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitSynchronousNoDataLocked(PGPU_VBUFFER buf)
+__declspec(noinline) VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitSynchronousNoDataLocked(PGPU_VBUFFER buf)
 {
     if (buf == NULL)
     {
@@ -1517,6 +1564,8 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitSynchronousNoDataLocked(PGPU_VBUFFER
     VIOGPU_HOST_CONTEXT_RESULT result = VioGpuHostContextUnknown;
     if (!submitted)
     {
+        RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionQueueSubmit, STATUS_DEVICE_NOT_READY,
+                                       reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
         result = VioGpuHostContextNotSubmitted;
     }
     else if (completed && buf->response_size == sizeof(GPU_CTRL_HDR))
@@ -1971,7 +2020,13 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnmapBlobSynchronous(UINT resource_id)
 {
     PAGED_CODE();
 
-    if (!IsStandard2DResourceId(resource_id) || !BeginSynchronousRequest())
+    if (!IsStandard2DResourceId(resource_id))
+    {
+        RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionResourceId, STATUS_DEVICE_NOT_READY,
+                                       reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
+        return VioGpuHostContextNotSubmitted;
+    }
+    if (!BeginSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -1981,6 +2036,8 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnmapBlobSynchronous(UINT resource_id)
                                                                                                 sizeof(*command)));
     if (command == NULL)
     {
+        RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionCommandAllocation, STATUS_INSUFFICIENT_RESOURCES,
+                                       reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
         EndSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }
@@ -2022,7 +2079,13 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefResourceSynchronous(UINT resource_id)
 {
     PAGED_CODE();
 
-    if (!IsStandard2DResourceId(resource_id) || !BeginSynchronousRequest())
+    if (!IsStandard2DResourceId(resource_id))
+    {
+        RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionResourceId, STATUS_DEVICE_NOT_READY,
+                                       reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
+        return VioGpuHostContextNotSubmitted;
+    }
+    if (!BeginSynchronousRequest())
     {
         return VioGpuHostContextNotSubmitted;
     }
@@ -2031,6 +2094,8 @@ VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::UnrefResourceSynchronous(UINT resource_id)
     PGPU_RES_UNREF command = static_cast<PGPU_RES_UNREF>(AllocCmd(&vbuf, sizeof(*command)));
     if (command == NULL)
     {
+        RecordFirstSynchronousAdmission(VioGpuSynchronousAdmissionCommandAllocation, STATUS_INSUFFICIENT_RESOURCES,
+                                       reinterpret_cast<ULONG_PTR>(_ReturnAddress()));
         EndSynchronousRequest();
         return VioGpuHostContextNotSubmitted;
     }

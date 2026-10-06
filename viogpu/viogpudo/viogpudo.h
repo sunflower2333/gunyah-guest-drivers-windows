@@ -220,6 +220,39 @@ enum : UINT
     VioGpuNativeContextDestroyDiagnosticSlotCount = 64,
 };
 
+enum VIOGPU_2D_DESTROY_FAILURE_STAGE : ULONG
+{
+    VioGpu2DDestroyArguments = 1,
+    VioGpu2DDestroyRundown,
+    VioGpu2DDestroyAdapter,
+    VioGpu2DDestroyLedger,
+    VioGpu2DDestroyReconcile,
+    VioGpu2DDestroyUnmap,
+    VioGpu2DDestroyUnref,
+};
+
+typedef struct viogpu_2d_destroy_diagnostic
+{
+    ULONG Stage;
+    ULONG Result;
+    ULONG ResourceId;
+    ULONG ResourceState;
+    ULONG ResourceGenerationLow;
+    ULONG ResourceGenerationHigh;
+    ULONG AdapterGenerationLow;
+    ULONG AdapterGenerationHigh;
+    ULONG TimeLow;
+    ULONG TimeHigh;
+} VIOGPU_2D_DESTROY_DIAGNOSTIC;
+
+typedef struct viogpu_reset_request_diagnostic
+{
+    ULONG CallerRva;
+    ULONG HardwareState;
+    ULONG TimeLow;
+    ULONG TimeHigh;
+} VIOGPU_RESET_REQUEST_DIAGNOSTIC;
+
 /* Pack the two facts that separate the four ways stage 8 (MapHost) can fail,
  * into the single detail DWORD the aperture recorder carries.  Decoding:
  *   result   = detail >> 28
@@ -906,6 +939,10 @@ class VioGpuAdapter : IVioGpuPCI
     {
         return m_CtrlQueue.GetFirstSynchronousTimeout(diagnostic);
     }
+    BOOLEAN GetFirstSynchronousAdmission(_Out_ VIOGPU_SYNCHRONOUS_ADMISSION_DIAGNOSTIC *diagnostic)
+    {
+        return m_CtrlQueue.GetFirstSynchronousAdmission(diagnostic);
+    }
     /* Per-channel epoch state for the driver key.  The pre-existing
      * NativeSynchronous* triple is written by RecordNativeSynchronousPoisonDiagnostic
      * and now describes the adapter channel; these are named explicitly so no
@@ -1447,6 +1484,10 @@ class VioGpuDod
 #if defined(VIOGPU_NATIVE_CONTEXT)
     volatile LONG m_HardwareResetCallerRva;
     volatile LONG m_HardwareResetFirstCallerRva;
+    volatile LONG m_ResetRequestPublication;
+    VIOGPU_RESET_REQUEST_DIAGNOSTIC m_FirstResetRequest;
+    volatile LONG m_2DDestroyPublication;
+    VIOGPU_2D_DESTROY_DIAGNOSTIC m_First2DDestroyFailure;
     volatile LONG m_NativeContextFailFirstCallerRva;
     volatile LONG m_NativeContextFailCount;
     volatile LONG m_NativeContextFailFirstSite;
@@ -2342,6 +2383,12 @@ class VioGpuDod
     {
         return static_cast<DWORD>(InterlockedCompareExchange(&m_HardwareResetFirstCallerRva, 0, 0));
     }
+    __declspec(code_seg(".text")) VOID RecordFirstResetRequest(_In_ ULONG_PTR callerRva);
+    BOOLEAN GetFirstResetRequest(_Out_ VIOGPU_RESET_REQUEST_DIAGNOSTIC *diagnostic);
+    VOID RecordNative2DDestroyFailure(_In_ ULONG stage, _In_ UINT resourceId, _In_ ULONG state,
+                                     _In_ ULONGLONG resourceGeneration, _In_ ULONGLONG adapterGeneration,
+                                     _In_ VIOGPU_HOST_CONTEXT_RESULT result);
+    BOOLEAN GetFirst2DDestroyFailure(_Out_ VIOGPU_2D_DESTROY_DIAGNOSTIC *diagnostic);
     /* FailNativeContextAtAnyIrql is what sets the reset latch, and it already
      * records its own caller -- that value just never reached the driver key. */
     DWORD ReadNativeContextFailCallerRva(void)

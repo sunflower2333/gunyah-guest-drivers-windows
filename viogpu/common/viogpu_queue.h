@@ -143,7 +143,32 @@ typedef struct viogpu_synchronous_timeout_diagnostic
     ULONG CallerRva;
     ULONG CommandBytes;
     ULONG EpochGeneration;
+    ULONG TimeLow;
+    ULONG TimeHigh;
 } VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC;
+
+enum VIOGPU_SYNCHRONOUS_ADMISSION_FAILURE : ULONG
+{
+    VioGpuSynchronousAdmissionLockOrder = 1,
+    VioGpuSynchronousAdmissionIrql,
+    VioGpuSynchronousAdmissionEpoch,
+    VioGpuSynchronousAdmissionMutex,
+    VioGpuSynchronousAdmissionEpochAfterWait,
+    VioGpuSynchronousAdmissionResourceId,
+    VioGpuSynchronousAdmissionCommandAllocation,
+    VioGpuSynchronousAdmissionQueueSubmit,
+};
+
+typedef struct viogpu_synchronous_admission_diagnostic
+{
+    ULONG Reason;
+    ULONG CallerRva;
+    ULONG WaitStatus;
+    ULONG EpochState;
+    ULONG EpochGeneration;
+    ULONG TimeLow;
+    ULONG TimeHigh;
+} VIOGPU_SYNCHRONOUS_ADMISSION_DIAGNOSTIC;
 
 /* A synchronous control request waits in five second slices. A GPU fault or
  * hang on the host (KGSL snapshot and GMU restart) stalls the control queue
@@ -515,6 +540,8 @@ class CtrlQueue : public VioGpuQueue
         m_SynchronousLockOrderRefusals = 0;
         m_NativeResourceIdRefusals = 0;
         RtlZeroMemory(&m_FirstSynchronousTimeout, sizeof(m_FirstSynchronousTimeout));
+        m_SynchronousAdmissionPublication = 0;
+        RtlZeroMemory(&m_FirstSynchronousAdmission, sizeof(m_FirstSynchronousAdmission));
         KeInitializeSpinLock(&m_NativeSubmitLock);
         InitializeListHead(&m_NativeSubmitBacklog);
         m_NativeSubmitBacklogPoisoned = 0;
@@ -646,6 +673,7 @@ class CtrlQueue : public VioGpuQueue
     ULONG SynchronousEpochStateValue(void);
     ULONG SynchronousEpochGenerationValue(void);
     BOOLEAN GetFirstSynchronousTimeout(_Out_ VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC *diagnostic);
+    BOOLEAN GetFirstSynchronousAdmission(_Out_ VIOGPU_SYNCHRONOUS_ADMISSION_DIAGNOSTIC *diagnostic);
     /* Most completion-wait slices any synchronous request has needed. More than
      * one means the host stalled past a single slice and was waited out. */
     ULONG SynchronousLongestWaitSlices(void);
@@ -734,14 +762,15 @@ class CtrlQueue : public VioGpuQueue
   private:
     static VOID CompleteNativeAhbOperation(PVOID context);
     static VOID CancelNativeAhbOperation(PVOID context);
-    BOOLEAN BeginSynchronousRequest(void);
+    __declspec(noinline) BOOLEAN BeginSynchronousRequest(void);
     void EndSynchronousRequest(void);
     BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer);
     __declspec(noinline) BOOLEAN SubmitSynchronousLocked(PGPU_VBUFFER buf,
                                                          _Out_ PBOOLEAN release_buffer,
                                                          _Out_ PBOOLEAN submitted);
     void RecordFirstSynchronousTimeout(PGPU_VBUFFER buf, NTSTATUS status, LONG64 epochState, ULONG_PTR caller);
-    VIOGPU_HOST_CONTEXT_RESULT SubmitSynchronousNoDataLocked(PGPU_VBUFFER buf);
+    void RecordFirstSynchronousAdmission(ULONG reason, NTSTATUS status, ULONG_PTR caller);
+    __declspec(noinline) VIOGPU_HOST_CONTEXT_RESULT SubmitSynchronousNoDataLocked(PGPU_VBUFFER buf);
     BOOLEAN BeginNativeSynchronousRequest(void);
     void EndNativeSynchronousRequest(void);
     BOOLEAN IsNativeSynchronousOwnedByCurrentThread(void);
@@ -772,6 +801,8 @@ class CtrlQueue : public VioGpuQueue
     volatile LONG m_SynchronousLockOrderRefusals;
     volatile LONG m_NativeResourceIdRefusals;
     VIOGPU_SYNCHRONOUS_TIMEOUT_DIAGNOSTIC m_FirstSynchronousTimeout;
+    volatile LONG m_SynchronousAdmissionPublication;
+    VIOGPU_SYNCHRONOUS_ADMISSION_DIAGNOSTIC m_FirstSynchronousAdmission;
     volatile LONG m_FenceIdr;
     KSPIN_LOCK m_NativeSubmitLock;
     LIST_ENTRY m_NativeSubmitBacklog;

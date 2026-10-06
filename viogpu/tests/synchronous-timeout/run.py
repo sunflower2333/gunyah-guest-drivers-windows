@@ -31,12 +31,14 @@ production = span(queue, 'static LONG64 VioGpuMakeSynchronousEpochState', 'stati
 production += span(queue, '__declspec(noinline) void CtrlQueue::PoisonNativeSynchronousRequests',
                    'ULONG CtrlQueue::NativeSynchronousPoisonCallerRva')
 production += span(queue, 'static void VioGpuDecodeSynchronousTimeoutCommand', 'static void VioGpuCompleteSynchronousEpochTeardown')
+production += span(queue, '__declspec(noinline) BOOLEAN CtrlQueue::BeginSynchronousRequest',
+                   '/* The native (per-context) twin of BeginSynchronousRequest.')
 # Starts at the shared epoch-teardown helper rather than at
 # CompleteSynchronousRequestTeardown itself: the helper is defined just above it and
 # the teardown now calls it for both channels.
 production += span(queue, 'static void VioGpuCompleteSynchronousEpochTeardown', 'PAGED_CODE_SEG_BEGIN')
 production += span(queue, 'BOOLEAN CtrlQueue::SubmitSynchronousLocked(PGPU_VBUFFER buf, _Out_ PBOOLEAN release_buffer)\n',
-                   'VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitSynchronousNoDataLocked')
+                   '__declspec(noinline) VIOGPU_HOST_CONTEXT_RESULT CtrlQueue::SubmitSynchronousNoDataLocked')
 if args.negative_control_overwrite:
     guard = 'if (InterlockedCompareExchange(&m_SynchronousTimeoutPublication, 1, 0) != 0)'
     assert production.count(guard) == 1

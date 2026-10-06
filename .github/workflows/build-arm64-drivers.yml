@@ -182,6 +182,8 @@ jobs:
           python viogpu/tests/vidpn-commit/run.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python viogpu/tests/synchronous-timeout/run.py
+          if ($LASTEXITCODE -ne 0) { throw 'Synchronous timeout fixture failed' }
+          python viogpu/tests/readiness-diagnostic/run.py --negative-controls
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           foreach ($control in @('native-result', 'native-timeout', 'adapter-timeout')) {
             python viogpu/tests/synchronous-timeout/run.py --negative-control-quiesce $control
