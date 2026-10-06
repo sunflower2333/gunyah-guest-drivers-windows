@@ -126,3 +126,10 @@
   /tmp archive. Keep extracted signed package and compact evidence/checksums.
   This paired checkpoint is complete; native DX8/DX9 and ordinary candidate
   DX10/DX11 activation/Turnip acceptance remain with root's broader program.
+
+- Root completed user-requested exactb6bf nativeARM64 KMD compilation in the
+  existing Windows VM with portable official MSVC/SDK/WDK tools. Independent
+  PE/hash/source and desktop/installed58623checksPASS. Runner5.114s,
+  KMD4.113s/VirtIO0.648s, base setup51.224s. Saved build guide and workspace
+  evidence. Unsigned/uninstalled, no package/load/hardware acceptance claim;
+  no source/pin/version/registration changes in this documentation checkpoint.

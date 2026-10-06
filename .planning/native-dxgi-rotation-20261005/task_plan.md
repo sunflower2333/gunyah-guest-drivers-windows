@@ -9,7 +9,9 @@ exclusion. Keep the production DXGI rotation/lifetime ARM64 fixture handoff.
 ## Next step
 Paired CI 37338579561 for binary producer b6bf4c4f (DXVK 34ff484) passed all
 16 jobs; final archive, signed manifest, source pins, file hashes and Windows
-catalog/load receipts are verified. Record the documentation checkpoint.
+catalog/load receipts are verified and documentation checkpoint09ec84ca pushed.
+Root also completed an isolated exact b6bf KMD build in the Windows guest:
+5.114s runner, verified unsigned ARM64 SYS; installed58623 remains unchanged.
 Root owns broader native runtime capability work and all guest operations.
 
 ## Phases
